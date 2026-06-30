@@ -24,8 +24,9 @@ export function dedupKey(a: DedupArgs): string {
       `req|${a.requestId}|${a.model ?? ""}|${a.inputTokens}|${a.outputTokens}|${a.cacheReadTokens}|${a.cacheCreationTokens}`,
     );
   } else {
+    // Codex 는 event.sequence 미전송이라 폴백키가 약함 → 캐시 토큰까지 포함해 충돌 위험 완화
     h.update(
-      `nat|${a.sessionId ?? ""}|${a.eventSequence ?? ""}|${a.tsMs}|${a.inputTokens}|${a.outputTokens}`,
+      `nat|${a.sessionId ?? ""}|${a.eventSequence ?? ""}|${a.tsMs}|${a.inputTokens}|${a.outputTokens}|${a.cacheReadTokens}|${a.cacheCreationTokens}`,
     );
   }
   return h.digest("hex");

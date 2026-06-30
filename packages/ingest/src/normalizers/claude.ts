@@ -2,6 +2,10 @@ import { dedupKey } from "../dedup";
 import type { FlatLogRecord, NormalizeContext, NormalizedUsage, ProviderNormalizer } from "../types";
 
 const API_REQUEST = "claude_code.api_request";
+// OTel SDK 는 event.name 을 prefixed(claude_code.api_request) 또는 bare(api_request)로 보낼 수
+// 있으므로 둘 다 허용한다(정확 일치만 하면 attribute 로만 채우는 SDK 에서 전량 누락).
+const isApiRequest = (e: string | null): boolean =>
+  e === API_REQUEST || e === "api_request" || (e?.endsWith(".api_request") ?? false);
 
 const num = (v: unknown): number =>
   typeof v === "number" ? v : typeof v === "string" ? Number(v) || 0 : 0;
@@ -19,7 +23,7 @@ export const claudeNormalizer: ProviderNormalizer = {
   normalize(records: FlatLogRecord[], ctx: NormalizeContext): NormalizedUsage[] {
     const out: NormalizedUsage[] = [];
     for (const r of records) {
-      if (r.eventName !== API_REQUEST) continue;
+      if (!isApiRequest(r.eventName)) continue;
       const a = r.attrs;
       const inputTokens = num(a["input_tokens"]);
       const outputTokens = num(a["output_tokens"]);

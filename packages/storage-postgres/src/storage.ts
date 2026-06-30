@@ -102,6 +102,7 @@ export class PostgresStorage implements StorageBackend {
   /** 마감 재계산 (DELETE 후 usage_events 에서 SUM+DISTINCT 재INSERT — 설계 §4.4) */
   async recomputeDaily(days: Array<{ day: string }>): Promise<void> {
     for (const { day } of days) {
+      // ── 사용자별 일별 집계 (SUM + DISTINCT 세션) ──
       await this.pool.query("DELETE FROM usage_daily_user WHERE day = $1::date", [day]);
       await this.pool.query(
         `INSERT INTO usage_daily_user
@@ -117,7 +118,23 @@ export class PostgresStorage implements StorageBackend {
          GROUP BY user_id, provider_key`,
         [day],
       );
-      // TODO(1차): usage_daily_department 도 동일 패턴으로 재계산.
+
+      // ── 부서별 일별 집계 (DISTINCT active_users·sessions; 현재 소속 users.department_id 기준) ──
+      await this.pool.query("DELETE FROM usage_daily_department WHERE day = $1::date", [day]);
+      await this.pool.query(
+        `INSERT INTO usage_daily_department
+           (department_id, day, provider_key, request_count, active_users, sessions,
+            input_tokens, output_tokens, cost_usd)
+         SELECT u.department_id, $1::date, e.provider_key,
+                COUNT(*), COUNT(DISTINCT e.user_id), COUNT(DISTINCT e.session_id),
+                SUM(e.input_tokens), SUM(e.output_tokens), SUM(e.cost_usd)
+         FROM usage_events e
+           JOIN users u ON u.id = e.user_id
+         WHERE u.department_id IS NOT NULL
+           AND (e.ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
+         GROUP BY u.department_id, e.provider_key`,
+        [day],
+      );
     }
   }
 

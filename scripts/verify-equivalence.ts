@@ -50,7 +50,7 @@ async function main(): Promise<void> {
   await cmp("getLeaderboard(user)", (s) => s.getLeaderboard({ ...period, scope: "user" }));
   await cmp("getLeaderboard(department)", (s) => s.getLeaderboard({ ...period, scope: "department" }));
   await cmp("getUserUsage", (s) => s.getUserUsage(u0, period));
-  // 에이전트 발견 재현: scope=department 는 CH 만 필터, PG 는 무시 → 불일치 예상
+  // scope=department: PG/CH 둘 다 department_id 비정규화로 필터(7a057b6 이후) → 일치해야 함
   await cmp("getDailyTimeseries(scope=department)", (s) => s.getDailyTimeseries({ ...period, scope: "department", departmentId: dept0 }));
 
   console.log(mismatches === 0 ? "\n전부 일치" : `\n${mismatches}건 불일치 (위 ✗)`);

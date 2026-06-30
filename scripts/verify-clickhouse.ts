@@ -21,7 +21,7 @@ async function main(): Promise<void> {
   const now = new Date();
   const ev = {
     dedupKey: "ch-verify-dept-key",
-    providerKey: "claude",
+    providerKey: "claude_code",
     userId,
     sessionId: "ch-sess-1",
     model: "claude-sonnet-4-5",

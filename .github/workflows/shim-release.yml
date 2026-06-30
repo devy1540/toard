@@ -1,6 +1,6 @@
 name: shim-release
 
-# v* 태그 push 시 4-플랫폼 크로스컴파일 후 GitHub Release 에 바이너리 업로드.
+# v* 태그 push 시 4-플랫폼을 각 OS 네이티브 러너에서 빌드해 GitHub Release 에 업로드.
 on:
   push:
     tags:
@@ -11,39 +11,46 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: shim/rust
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: >-
-            x86_64-apple-darwin,aarch64-apple-darwin,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-
-      - uses: mlugg/setup-zig@v1
-
-      - name: install cargo-zigbuild
-        run: cargo install cargo-zigbuild --locked
-
-      - name: build (4 platforms)
+          targets: ${{ matrix.target }}
+      - name: build
+        working-directory: shim/rust
         run: |
-          set -eux
+          cargo build --release --target ${{ matrix.target }}
           mkdir -p ../../dist
-          for t in \
-            x86_64-apple-darwin \
-            aarch64-apple-darwin \
-            x86_64-unknown-linux-gnu \
-            aarch64-unknown-linux-gnu; do
-            cargo zigbuild --release --target "$t"
-            cp "target/$t/release/shim" "../../dist/toard-shim-$t"
-          done
-          ( cd ../../dist && sha256sum toard-shim-* > SHA256SUMS )
+          cp "target/${{ matrix.target }}/release/shim" "../../dist/toard-shim-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: toard-shim-${{ matrix.target }}
+          path: dist/toard-shim-${{ matrix.target }}
 
-      - name: release
-        uses: softprops/action-gh-release@v2
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && sha256sum toard-shim-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/toard-shim-*

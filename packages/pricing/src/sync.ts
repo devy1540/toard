@@ -8,6 +8,8 @@ interface LiteLLMEntry {
   output_cost_per_token?: number;
   cache_read_input_token_cost?: number;
   cache_creation_input_token_cost?: number;
+  input_cost_per_token_above_200k_tokens?: number;
+  output_cost_per_token_above_200k_tokens?: number;
 }
 
 /** LiteLLM(per-token) → 내부 per-million 으로 변환 (zeude/day1co 와 동일 단위) */
@@ -29,6 +31,12 @@ export function fromLiteLLM(raw: Record<string, LiteLLMEntry>): PricingMap {
     }
     if (typeof e.cache_creation_input_token_cost === "number") {
       p.cacheCreatePerM = e.cache_creation_input_token_cost * PER_TOKEN_TO_PER_M;
+    }
+    if (typeof e.input_cost_per_token_above_200k_tokens === "number") {
+      p.inputAbove200kPerM = e.input_cost_per_token_above_200k_tokens * PER_TOKEN_TO_PER_M;
+    }
+    if (typeof e.output_cost_per_token_above_200k_tokens === "number") {
+      p.outputAbove200kPerM = e.output_cost_per_token_above_200k_tokens * PER_TOKEN_TO_PER_M;
     }
     map.set(model, p);
   }

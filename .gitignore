@@ -1,0 +1,22 @@
+node_modules/
+.next/
+dist/
+out/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+
+# os
+.DS_Store
+
+# shim build artifacts
+shim/go/shim
+shim/**/target/
+shim/dist/

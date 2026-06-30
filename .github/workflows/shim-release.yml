@@ -1,0 +1,60 @@
+name: shim-release
+
+# v* 태그 push 시 4-플랫폼을 각 OS 네이티브 러너에서 빌드해 GitHub Release 에 업로드.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # macOS 는 arm 러너 하나에서 arm64 native + x64 cross (동일 SDK)
+          - os: macos-latest
+            targets: aarch64-apple-darwin x86_64-apple-darwin
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            targets: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        working-directory: shim/rust
+        run: |
+          set -eux
+          mkdir -p ../../dist
+          for t in ${{ matrix.targets }}; do
+            rustup target add "$t"
+            cargo build --release --target "$t"
+            cp "target/$t/release/shim" "../../dist/toard-shim-$t"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shim-${{ matrix.os }}
+          path: dist/toard-shim-*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: checksums
+        run: cd dist && sha256sum toard-shim-* > SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/toard-shim-*
+            dist/SHA256SUMS
+            shim/install.sh
+          generate_release_notes: true

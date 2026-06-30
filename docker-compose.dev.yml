@@ -16,5 +16,31 @@ services:
       timeout: 5s
       retries: 5
 
+  # ClickHouse — 옵트인(STORAGE_BACKEND=clickhouse). 이벤트·집계만, 메타는 PG 유지(ADR-003).
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: toard-clickhouse-dev
+    environment:
+      CLICKHOUSE_USER: toard
+      CLICKHOUSE_PASSWORD: toard
+      CLICKHOUSE_DB: toard
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native
+    volumes:
+      - toard-ch:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   toard-pg:
+  toard-ch:

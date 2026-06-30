@@ -43,6 +43,17 @@ pnpm typecheck     # 전 패키지
 pnpm test          # pricing 단위 테스트 (resolveCost)
 ```
 
+## ClickHouse 모드 (옵트인)
+
+중규모 이상에서 이벤트·집계만 ClickHouse 로 (메타·인증은 항상 PG, ADR-003).
+
+```bash
+pnpm db:up                              # postgres + clickhouse 함께 기동
+STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
+```
+
+기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
+
 ## 핵심 결정 (요약)
 
 - **수집:** shim → 앱이 OTLP/JSON 직접 수신(Collector 없음). 무중단 배포 필수 (ADR-001)

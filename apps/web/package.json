@@ -20,6 +20,7 @@
     "@toard/core": "workspace:*",
     "@toard/ingest": "workspace:*",
     "@toard/pricing": "workspace:*",
+    "@toard/storage-clickhouse": "workspace:*",
     "@toard/storage-postgres": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

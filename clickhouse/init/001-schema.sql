@@ -18,8 +18,11 @@ CREATE TABLE IF NOT EXISTS toard.usage_events
   cost_usd              Decimal(18, 8),
   inserted_at           DateTime64(3, 'UTC') DEFAULT now64(3)
 )
+-- ORDER BY = dedup_key 로 ReplacingMergeTree dedup 단위를 dedup_key 에 고정(같은 dedup_key 가
+-- 다른 ts 로 와도 병합 보장). 시간범위 쿼리는 월 파티션으로 가지치기.
 ENGINE = ReplacingMergeTree(inserted_at)
-ORDER BY (user_id, ts, dedup_key);
+PARTITION BY toYYYYMM(ts)
+ORDER BY (dedup_key);
 
 -- 무손실 원형 보존(프롬프트 제거 후). id 는 앱이 생성해 전달.
 CREATE TABLE IF NOT EXISTS toard.raw_events

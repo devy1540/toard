@@ -33,13 +33,30 @@ export async function GET(req: Request): Promise<Response> {
   let upserted = 0;
   try {
     await client.query("BEGIN");
-    for (const [modelId, p] of pricing) {
+    // 건당 UPSERT 대신 청크 배치(다중 VALUES)로 라운드트립·클라이언트 점유시간 단축
+    const entries = [...pricing.entries()];
+    const CHUNK = 500;
+    for (let i = 0; i < entries.length; i += CHUNK) {
+      const chunk = entries.slice(i, i + CHUNK);
+      const params: unknown[] = [day]; // $1 = effective_date (전 row 공통)
+      const rows: string[] = [];
+      for (const [modelId, p] of chunk) {
+        const b = params.length + 1;
+        rows.push(
+          `($${b},$${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$1::date,'litellm')`,
+        );
+        params.push(
+          modelId, p.inputPerM, p.outputPerM, p.cacheReadPerM ?? null,
+          p.cacheCreatePerM ?? null, p.inputAbove200kPerM ?? null,
+          p.outputAbove200kPerM ?? null, p.fastMultiplier ?? 1,
+        );
+      }
       await client.query(
         `INSERT INTO pricing_models
            (model_id, input_price_per_mtok, output_price_per_mtok, cache_read_price_per_mtok,
             cache_creation_price_per_mtok, input_price_above_200k_per_mtok,
             output_price_above_200k_per_mtok, fast_multiplier, effective_date, source)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::date,'litellm')
+         VALUES ${rows.join(",")}
          ON CONFLICT (model_id, effective_date) DO UPDATE SET
            input_price_per_mtok            = EXCLUDED.input_price_per_mtok,
            output_price_per_mtok           = EXCLUDED.output_price_per_mtok,
@@ -49,13 +66,9 @@ export async function GET(req: Request): Promise<Response> {
            output_price_above_200k_per_mtok = EXCLUDED.output_price_above_200k_per_mtok,
            fast_multiplier                 = EXCLUDED.fast_multiplier,
            source                          = 'litellm'`,
-        [
-          modelId, p.inputPerM, p.outputPerM, p.cacheReadPerM ?? null,
-          p.cacheCreatePerM ?? null, p.inputAbove200kPerM ?? null,
-          p.outputAbove200kPerM ?? null, p.fastMultiplier ?? 1, day,
-        ],
+        params,
       );
-      upserted += 1;
+      upserted += chunk.length;
     }
     await client.query("COMMIT");
   } catch (e) {

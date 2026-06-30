@@ -335,6 +335,12 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 | **타임존** | `ts`=UTC `timestamptz`. Mart `day`=`(ts AT TIME ZONE 'Asia/Seoul')::date`로 **SQL 고정**(서버 TZ 비의존). 필터의 KST→UTC 환산은 앱이 책임. |
 | **사용자 매칭** | **인증 토큰의 user_id가 유일·최종 권위.** resource attribute의 user.id/email은 **신뢰하지 않음**(토큰 없을 때만 email로 임시 귀속 후 등록 시 소급). §10.1과 일치. |
 
+> **1차 구현 한계 (검증 반영, 2026-06-30)**
+> - **서빙은 event-direct**: 대시보드 쿼리는 `usage_events`를 직접 집계하며 Mart(`usage_daily_*`)·`bumpDailyUser`·`recomputeDaily`는 **미래 서빙 레이어로 현재 미사용**(데이터 규모가 커지면 읽기를 Mart로 전환). 따라서 "당일 증분 vs 마감 재계산 정합"은 현재 사용자 화면과 무관.
+> - **재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성은 2차 목표. 현재 `processed`는 항상 false, `raw_event_id`는 NULL.
+> - **부서 백필 없음**: `department_id` 비정규화는 수집(INSERT) 시점부터 적용되어, 마이그레이션 이전 이벤트는 부서 집계에서 제외(과거 시점 부서를 알 수 없어 NULL 유지).
+> - **기간 필터 KST 미정렬**: `recentPeriod`는 UTC 롤링 윈도라 KST 일경계와 어긋나 일별 차트 양끝이 부분일로 표시(향후 KST 일경계 스냅 예정).
+
 ---
 
 ## 5. 수집 파이프라인

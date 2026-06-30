@@ -17,9 +17,12 @@ export async function POST(req: Request): Promise<Response> {
   const userId = await authenticateIngestToken(req.headers.get("authorization"));
   if (!userId) return new Response("unauthorized", { status: 401 });
 
-  // 2. 파싱 후 프롬프트 제거 (raw 저장 전 — §10.3). 평탄화된 attrs 기준으로 정제해야 효과가 있다.
+  // 2. 파싱 후 프롬프트 제거 (raw 저장 전 — §10.3). attrs·resourceAttrs 양쪽을 평탄화 후 정제.
   const records = parseOtlpLogs(await req.json());
-  for (const r of records) r.attrs = sanitizeAttrs(r.attrs);
+  for (const r of records) {
+    r.attrs = sanitizeAttrs(r.attrs);
+    r.resourceAttrs = sanitizeAttrs(r.resourceAttrs);
+  }
   if (records.length === 0) {
     return Response.json({ inserted: 0, deduped: 0 });
   }
@@ -42,43 +45,50 @@ export async function POST(req: Request): Promise<Response> {
 
   let inserted = 0;
   let deduped = 0;
+  const failed: string[] = [];
   for (const [providerKey, recs] of byProvider) {
-    // 3. raw 보존
-    await storage.saveRawEvent(providerKey, recs);
+    // 프로바이더 그룹별로 격리 — 한 그룹 실패가 다른 그룹·이미 저장분을 무효화하지 않도록
+    try {
+      // 3. raw 보존
+      await storage.saveRawEvent(providerKey, recs);
 
-    const normalizer = normalizers[providerKey];
-    if (!normalizer) continue;
+      const normalizer = normalizers[providerKey];
+      if (!normalizer) continue;
 
-    // 4. 정규화 → 5. 비용 (정규화와 비용은 별도 단계 — §5.5)
-    const normalized = normalizer.normalize(recs, { userId });
-    const events: UsageEvent[] = normalized.map((u) => ({
-      dedupKey: u.dedupKey,
-      providerKey: u.providerKey,
-      userId: u.userId,
-      sessionId: u.sessionId,
-      model: u.model,
-      ts: u.ts,
-      inputTokens: u.inputTokens,
-      outputTokens: u.outputTokens,
-      cacheReadTokens: u.cacheReadTokens,
-      cacheCreationTokens: u.cacheCreationTokens,
-      costUsd: resolveCost({
+      // 4. 정규화 → 5. 비용 (정규화와 비용은 별도 단계 — §5.5)
+      const normalized = normalizer.normalize(recs, { userId });
+      const events: UsageEvent[] = normalized.map((u) => ({
+        dedupKey: u.dedupKey,
+        providerKey: u.providerKey,
+        userId: u.userId,
+        sessionId: u.sessionId,
         model: u.model,
+        ts: u.ts,
         inputTokens: u.inputTokens,
         outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens,
         cacheCreationTokens: u.cacheCreationTokens,
-        isFast: u.isFast,
-        providedCostUsd: u.providedCostUsd,
-        pricing,
-      }),
-    }));
+        costUsd: resolveCost({
+          model: u.model,
+          inputTokens: u.inputTokens,
+          outputTokens: u.outputTokens,
+          cacheReadTokens: u.cacheReadTokens,
+          cacheCreationTokens: u.cacheCreationTokens,
+          isFast: u.isFast,
+          providedCostUsd: u.providedCostUsd,
+          pricing,
+        }),
+      }));
 
-    // 6. 멱등 저장 + 당일 Mart 증분
-    const res = await storage.saveUsageEvents(events);
-    inserted += res.inserted;
-    deduped += res.deduped;
+      // 6. 멱등 저장 + 당일 Mart 증분
+      const res = await storage.saveUsageEvents(events);
+      inserted += res.inserted;
+      deduped += res.deduped;
+    } catch (e) {
+      failed.push(providerKey);
+      console.error(`ingest: provider ${providerKey} 처리 실패`, e);
+    }
   }
 
-  return Response.json({ inserted, deduped });
+  return Response.json({ inserted, deduped, ...(failed.length > 0 ? { failed } : {}) });
 }

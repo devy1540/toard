@@ -104,7 +104,9 @@ export class PostgresStorage implements StorageBackend {
     return m;
   }
 
-  /** 당일 SUM 지표 증분 (sessions 등 DISTINCT 는 recomputeDaily 가 채움 — 설계 §4.4) */
+  /** 당일 SUM 지표 증분 (sessions 등 DISTINCT 는 recomputeDaily 가 채움 — 설계 §4.4).
+   *  ⚠ Mart(usage_daily_*)는 1차 서빙에 미사용 — 대시보드는 usage_events 를 직접 집계한다(§4.4 구현 한계).
+   *  Mart 를 서빙으로 전환하기 전까지 이 증분은 쓰기 오버헤드. */
   private async bumpDailyUser(client: PoolClient, e: UsageEvent): Promise<void> {
     await client.query(
       `INSERT INTO usage_daily_user
@@ -123,41 +125,56 @@ export class PostgresStorage implements StorageBackend {
     );
   }
 
-  /** 마감 재계산 (DELETE 후 usage_events 에서 SUM+DISTINCT 재INSERT — 설계 §4.4) */
+  /** 마감 재계산 (DELETE 후 usage_events 에서 SUM+DISTINCT 재INSERT — 설계 §4.4).
+   *  day 단위 트랜잭션 + advisory lock 으로 cron 동시 실행 시 PK 위반·mart 소실을 방지. */
   async recomputeDaily(days: Array<{ day: string }>): Promise<void> {
-    for (const { day } of days) {
-      // ── 사용자별 일별 집계 (SUM + DISTINCT 세션) ──
-      await this.pool.query("DELETE FROM usage_daily_user WHERE day = $1::date", [day]);
-      await this.pool.query(
-        `INSERT INTO usage_daily_user
-           (user_id, day, provider_key, request_count, sessions,
-            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
-         SELECT user_id, $1::date, provider_key,
-                COUNT(*), COUNT(DISTINCT session_id),
-                SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
-                SUM(cache_creation_tokens), SUM(cost_usd)
-         FROM usage_events
-         WHERE user_id IS NOT NULL
-           AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
-         GROUP BY user_id, provider_key`,
-        [day],
-      );
+    const client = await this.pool.connect();
+    try {
+      for (const { day } of days) {
+        await client.query("BEGIN");
+        // 동일 day 의 동시 재계산을 직렬화 (트랜잭션 종료 시 자동 해제)
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`recompute:${day}`]);
 
-      // ── 부서별 일별 집계 — 이벤트의 비정규화 department_id 기준(시점 귀속, JOIN users 제거) ──
-      await this.pool.query("DELETE FROM usage_daily_department WHERE day = $1::date", [day]);
-      await this.pool.query(
-        `INSERT INTO usage_daily_department
-           (department_id, day, provider_key, request_count, active_users, sessions,
-            input_tokens, output_tokens, cost_usd)
-         SELECT department_id, $1::date, provider_key,
-                COUNT(*), COUNT(DISTINCT user_id), COUNT(DISTINCT session_id),
-                SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
-         FROM usage_events
-         WHERE department_id IS NOT NULL
-           AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
-         GROUP BY department_id, provider_key`,
-        [day],
-      );
+        // ── 사용자별 일별 집계 (SUM + DISTINCT 세션) ──
+        await client.query("DELETE FROM usage_daily_user WHERE day = $1::date", [day]);
+        await client.query(
+          `INSERT INTO usage_daily_user
+             (user_id, day, provider_key, request_count, sessions,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
+           SELECT user_id, $1::date, provider_key,
+                  COUNT(*), COUNT(DISTINCT session_id),
+                  SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+                  SUM(cache_creation_tokens), SUM(cost_usd)
+           FROM usage_events
+           WHERE user_id IS NOT NULL
+             AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
+           GROUP BY user_id, provider_key`,
+          [day],
+        );
+
+        // ── 부서별 일별 집계 — 이벤트의 비정규화 department_id 기준(시점 귀속, JOIN users 제거) ──
+        await client.query("DELETE FROM usage_daily_department WHERE day = $1::date", [day]);
+        await client.query(
+          `INSERT INTO usage_daily_department
+             (department_id, day, provider_key, request_count, active_users, sessions,
+              input_tokens, output_tokens, cost_usd)
+           SELECT department_id, $1::date, provider_key,
+                  COUNT(*), COUNT(DISTINCT user_id), COUNT(DISTINCT session_id),
+                  SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+           FROM usage_events
+           WHERE department_id IS NOT NULL
+             AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
+           GROUP BY department_id, provider_key`,
+          [day],
+        );
+
+        await client.query("COMMIT");
+      }
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
     }
   }
 

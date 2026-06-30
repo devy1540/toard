@@ -14,30 +14,31 @@ jobs:
     strategy:
       matrix:
         include:
+          # macOS 는 arm 러너 하나에서 arm64 native + x64 cross (동일 SDK)
           - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-13
-            target: x86_64-apple-darwin
+            targets: aarch64-apple-darwin x86_64-apple-darwin
           - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
+            targets: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
+            targets: aarch64-unknown-linux-gnu
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
       - name: build
         working-directory: shim/rust
         run: |
-          cargo build --release --target ${{ matrix.target }}
+          set -eux
           mkdir -p ../../dist
-          cp "target/${{ matrix.target }}/release/shim" "../../dist/toard-shim-${{ matrix.target }}"
+          for t in ${{ matrix.targets }}; do
+            rustup target add "$t"
+            cargo build --release --target "$t"
+            cp "target/$t/release/shim" "../../dist/toard-shim-$t"
+          done
       - uses: actions/upload-artifact@v4
         with:
-          name: toard-shim-${{ matrix.target }}
-          path: dist/toard-shim-${{ matrix.target }}
+          name: shim-${{ matrix.os }}
+          path: dist/toard-shim-*
 
   release:
     needs: build

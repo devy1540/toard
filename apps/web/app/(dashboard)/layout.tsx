@@ -2,6 +2,7 @@ import { Suspense, type ReactNode } from "react";
 import { Activity } from "lucide-react";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
+import { UserMenu } from "@/components/dashboard/user-menu";
 import { ModeToggle } from "@/components/mode-toggle";
 
 export default function DashboardLayout({ children }: { children: ReactNode }) {
@@ -21,6 +22,9 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
             <DashboardFilters />
           </Suspense>
           <ModeToggle />
+          <Suspense fallback={null}>
+            <UserMenu />
+          </Suspense>
         </div>
         <div className="p-6 lg:p-8">{children}</div>
       </main>

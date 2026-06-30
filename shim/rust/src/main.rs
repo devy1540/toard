@@ -7,6 +7,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
@@ -21,17 +22,17 @@ fn tool_name() -> String {
 }
 
 fn find_real_binary(name: &str) -> Option<PathBuf> {
-    let self_exe = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+    let self_canon = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
     let path = env::var_os("PATH")?;
     for dir in env::split_paths(&path) {
         let cand = dir.join(name);
         if !cand.is_file() {
             continue;
         }
-        if let (Some(se), Ok(cc)) = (self_exe.as_ref(), cand.canonicalize()) {
-            if &cc == se {
-                continue;
-            }
+        // canonicalize 실패 후보는 자기 자신 오인(재귀 exec)을 막기 위해 건너뛴다
+        let Ok(cc) = cand.canonicalize() else { continue };
+        if self_canon.as_ref() == Some(&cc) {
+            continue;
         }
         return Some(cand);
     }
@@ -106,8 +107,11 @@ fn inject_codex_config(endpoint: &str, token: Option<&str>) {
     block.push('\n');
 
     let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     let sep = if base.is_empty() || base.ends_with('\n') { "" } else { "\n" };
     let _ = std::fs::write(&path, format!("{base}{sep}{block}"));
+    // 토큰이 평문으로 들어가므로 소유자만 읽도록 제한
+    let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
 }
 
 fn main() {

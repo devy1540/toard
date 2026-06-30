@@ -36,11 +36,11 @@ fi
 echo "toard shim 설치 → ${target} (${VERSION})"
 mkdir -p "$BIN_DIR"
 tmp=$(mktemp)
-curl -fSL "$url" -o "$tmp"
+curl -fsSL "$url" -o "$tmp"
 
 # 무결성 검증 — 릴리즈 SHA256SUMS 대조 (공급망/MITM 방지)
 sums=$(mktemp)
-curl -fSL "$sums_url" -o "$sums"
+curl -fsSL "$sums_url" -o "$sums"
 expected=$(grep " ${asset}\$" "$sums" | awk '{print $1}')
 if [ -z "$expected" ]; then
   echo "체크섬 항목을 찾지 못함: $asset" >&2; rm -f "$tmp" "$sums"; exit 1

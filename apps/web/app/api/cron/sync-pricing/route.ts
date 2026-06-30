@@ -1,6 +1,7 @@
 import { fetchLiteLLMPricing } from "@toard/pricing";
 import { getPool } from "@/lib/db";
 import { kstDate } from "@/lib/kst";
+import { invalidatePricingCache } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
 
@@ -64,5 +65,6 @@ export async function GET(req: Request): Promise<Response> {
     client.release();
   }
 
+  invalidatePricingCache(); // 새 스냅샷 즉시 반영
   return Response.json({ ok: true, upserted, day });
 }

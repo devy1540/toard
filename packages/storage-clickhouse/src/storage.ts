@@ -67,8 +67,11 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   // ── 쓰기 ──
+  private rawSeq = 0;
+
   async saveRawEvent(providerKey: string, payload: unknown): Promise<number> {
-    const id = Date.now() * 1000 + Math.floor(Math.random() * 1000);
+    // ms 내 단조 증가 시퀀스로 충돌 완화(난수보다 안정적; raw id 하류 의존 없음)
+    const id = Date.now() * 1000 + (this.rawSeq++ % 1000);
     await this.ch.insert({
       table: "raw_events",
       values: [{ id, provider_key: providerKey, payload: JSON.stringify(payload) }],

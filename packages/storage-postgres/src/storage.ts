@@ -104,7 +104,9 @@ export class PostgresStorage implements StorageBackend {
     return m;
   }
 
-  /** 당일 SUM 지표 증분 (sessions 등 DISTINCT 는 recomputeDaily 가 채움 — 설계 §4.4) */
+  /** 당일 SUM 지표 증분 (sessions 등 DISTINCT 는 recomputeDaily 가 채움 — 설계 §4.4).
+   *  ⚠ Mart(usage_daily_*)는 1차 서빙에 미사용 — 대시보드는 usage_events 를 직접 집계한다(§4.4 구현 한계).
+   *  Mart 를 서빙으로 전환하기 전까지 이 증분은 쓰기 오버헤드. */
   private async bumpDailyUser(client: PoolClient, e: UsageEvent): Promise<void> {
     await client.query(
       `INSERT INTO usage_daily_user

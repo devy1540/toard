@@ -56,6 +56,9 @@ importers:
       '@toard/pricing':
         specifier: workspace:*
         version: link:../../packages/pricing
+      '@toard/storage-clickhouse':
+        specifier: workspace:*
+        version: link:../../packages/storage-clickhouse
       '@toard/storage-postgres':
         specifier: workspace:*
         version: link:../../packages/storage-postgres
@@ -146,6 +149,25 @@ importers:
         specifier: ^5.7.2
         version: 5.9.3
 
+  packages/storage-clickhouse:
+    dependencies:
+      '@clickhouse/client':
+        specifier: ^1.7.0
+        version: 1.23.0
+      '@toard/core':
+        specifier: workspace:*
+        version: link:../core
+      pg:
+        specifier: ^8.13.1
+        version: 8.22.0
+    devDependencies:
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+
   packages/storage-postgres:
     dependencies:
       '@toard/core':
@@ -204,6 +226,10 @@ packages:
   '@babel/runtime@7.29.7':
     resolution: {integrity: sha512-Nq8OhGWiZIZGV6hLHoyAKLLcJihP/xFeBMGJoUrxTX2psI8dCifzLhZISFb+VWS3wFMRDmCGw5R+dOySCqPLhw==}
     engines: {node: '>=6.9.0'}
+
+  '@clickhouse/client@1.23.0':
+    resolution: {integrity: sha512-Li6TBcRKfWVxyJa8g+lJwuyn+r+zV/pJJ3yxn3TVlC00vH+zfZ6njFXsZfqIamGXHRrY5iPhAEZu2hSWzlSo3Q==}
+    engines: {node: '>=20'}
 
   '@emnapi/runtime@1.11.1':
     resolution: {integrity: sha512-vgj7R3y3Wgx24IQaGPA/R6YFXLHVMOZ0uVEyIQPaWs+rd1AzfEMXlAC22FYwO1XkKR6NPsq7mUandH8oIRdZFw==}
@@ -1742,6 +1768,8 @@ snapshots:
       - nodemailer
 
   '@babel/runtime@7.29.7': {}
+
+  '@clickhouse/client@1.23.0': {}
 
   '@emnapi/runtime@1.11.1':
     dependencies:

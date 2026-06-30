@@ -7,7 +7,7 @@ import { getPool } from "@/lib/db";
 
 const allowedDomains = (process.env.ALLOWED_EMAIL_DOMAINS ?? "")
   .split(",")
-  .map((s) => s.trim())
+  .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
 // 자격(AUTH_*_ID/SECRET)이 설정된 provider 만 활성화 — 환경별 구성(ADR-007).
@@ -25,10 +25,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   providers,
   callbacks: {
     // 이메일 도메인 제한 (검증된 identity 기반 — 설계 §10.4)
-    signIn({ user }) {
+    signIn({ user, profile }) {
+      const email = (user.email ?? "").toLowerCase();
+      if (!email) return false;
+      // OIDC email_verified 가 명시적 false 면 거부 (미검증 이메일로 도메인 사칭 방지)
+      if ((profile as { email_verified?: boolean } | undefined)?.email_verified === false) {
+        return false;
+      }
       if (allowedDomains.length === 0) return true;
-      const email = user.email ?? "";
-      return allowedDomains.some((d) => email.endsWith(`@${d}`));
+      // 정확한 도메인 일치 (endsWith 대신 split 으로 서브도메인/접미사 모호성 제거)
+      return allowedDomains.includes(email.split("@").pop() ?? "");
     },
   },
 });

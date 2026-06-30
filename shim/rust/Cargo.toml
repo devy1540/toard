@@ -1,0 +1,15 @@
+[package]
+name = "toard-shim"
+version = "0.0.0"
+edition = "2021"
+
+[[bin]]
+name = "shim"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+codegen-units = 1

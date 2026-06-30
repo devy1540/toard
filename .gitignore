@@ -17,5 +17,6 @@ npm-debug.log*
 .DS_Store
 
 # shim build artifacts
-/shim/target/
-/shim/dist/
+shim/go/shim
+shim/**/target/
+shim/dist/

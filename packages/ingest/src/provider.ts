@@ -13,7 +13,7 @@ export function identifyProvider(
   if (typeof svc !== "string") return null;
   for (const p of providers) {
     if (!p.enabled) continue;
-    if (p.serviceNamePatterns.some((pat) => svc === pat || svc.includes(pat))) {
+    if (p.serviceNamePatterns.some((pat) => svc === pat)) {
       return p.key;
     }
   }

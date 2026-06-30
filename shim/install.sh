@@ -27,14 +27,35 @@ asset="toard-shim-${target}"
 
 if [ "$VERSION" = "latest" ]; then
   url="https://github.com/${REPO}/releases/latest/download/${asset}"
+  sums_url="https://github.com/${REPO}/releases/latest/download/SHA256SUMS"
 else
   url="https://github.com/${REPO}/releases/download/${VERSION}/${asset}"
+  sums_url="https://github.com/${REPO}/releases/download/${VERSION}/SHA256SUMS"
 fi
 
 echo "toard shim 설치 → ${target} (${VERSION})"
 mkdir -p "$BIN_DIR"
 tmp=$(mktemp)
 curl -fSL "$url" -o "$tmp"
+
+# 무결성 검증 — 릴리즈 SHA256SUMS 대조 (공급망/MITM 방지)
+sums=$(mktemp)
+curl -fSL "$sums_url" -o "$sums"
+expected=$(grep " ${asset}\$" "$sums" | awk '{print $1}')
+if [ -z "$expected" ]; then
+  echo "체크섬 항목을 찾지 못함: $asset" >&2; rm -f "$tmp" "$sums"; exit 1
+fi
+if command -v sha256sum >/dev/null 2>&1; then
+  actual=$(sha256sum "$tmp" | awk '{print $1}')
+else
+  actual=$(shasum -a 256 "$tmp" | awk '{print $1}')
+fi
+if [ "$expected" != "$actual" ]; then
+  echo "체크섬 불일치 — 설치 중단 (expected=$expected got=$actual)" >&2
+  rm -f "$tmp" "$sums"; exit 1
+fi
+rm -f "$sums"
+
 chmod +x "$tmp"
 mv "$tmp" "$BIN_DIR/claude"
 ln -sf "$BIN_DIR/claude" "$BIN_DIR/codex"

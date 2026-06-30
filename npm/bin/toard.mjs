@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // npx @toard/shim — 현재 OS/arch 를 감지해 GitHub Release 바이너리를
 // ~/.toard/bin/{claude,codex} 로 설치한다 (install.sh 의 npx 등가물).
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -32,6 +33,24 @@ if (!res.ok) {
   process.exit(1);
 }
 const buf = Buffer.from(await res.arrayBuffer());
+
+// 무결성 검증 — 릴리즈 SHA256SUMS 대조 (공급망/MITM 방지)
+const sumsRes = await fetch(`https://github.com/${REPO}/releases/latest/download/SHA256SUMS`, {
+  redirect: "follow",
+});
+if (!sumsRes.ok) {
+  console.error(`toard: SHA256SUMS 다운로드 실패 (HTTP ${sumsRes.status})`);
+  process.exit(1);
+}
+const sums = await sumsRes.text();
+const asset = `toard-shim-${target}`;
+const line = sums.split("\n").find((l) => l.trimEnd().endsWith(asset));
+const expected = line?.trim().split(/\s+/)[0];
+const actual = createHash("sha256").update(buf).digest("hex");
+if (!expected || expected !== actual) {
+  console.error(`toard: 체크섬 불일치 — 설치 중단 (expected=${expected ?? "(없음)"} got=${actual})`);
+  process.exit(1);
+}
 
 mkdirSync(binDir, { recursive: true });
 const claude = join(binDir, "claude");

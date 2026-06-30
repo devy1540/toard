@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { claudeNormalizer } from "./normalizers/claude";
 import { codexNormalizer } from "./normalizers/codex";
+import { parseOtlpLogs } from "./otlp";
 import type { FlatLogRecord } from "./types";
 
 function rec(eventName: string | null, attrs: Record<string, string | number | boolean>): FlatLogRecord {
@@ -63,4 +64,20 @@ test("Claude: api_request 가 아닌 이벤트는 무시", () => {
     { userId: "u1" },
   );
   assert.equal(out.length, 0);
+});
+
+test("Claude: bare 'api_request' eventName 도 폴백 매칭 (attribute-only SDK)", () => {
+  const out = claudeNormalizer.normalize(
+    [rec("api_request", { input_tokens: 100, output_tokens: 50, model: "claude-sonnet-4-5", request_id: "r-bare" })],
+    { userId: "u1" },
+  );
+  assert.equal(out.length, 1);
+  assert.equal(out[0]!.inputTokens, 100);
+});
+
+test("parseOtlpLogs: timeUnixNano 없으면 레코드 제외 (epoch 오염 방지)", () => {
+  const recs = parseOtlpLogs({
+    resourceLogs: [{ scopeLogs: [{ logRecords: [{ eventName: "x", attributes: [] }] }] }],
+  });
+  assert.equal(recs.length, 0);
 });

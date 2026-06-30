@@ -52,6 +52,8 @@ export function parseOtlpLogs(payload: unknown): FlatLogRecord[] {
       for (const lr of sl.logRecords ?? []) {
         const attrs = attrsToRecord(lr.attributes);
         const nano = Number(lr.timeUnixNano ?? lr.observedTimeUnixNano ?? 0);
+        // ts 없는 레코드는 epoch(1970) 버킷으로 마트를 오염시키므로 제외
+        if (!Number.isFinite(nano) || nano <= 0) continue;
         const eventName =
           lr.eventName ?? (typeof attrs["event.name"] === "string" ? (attrs["event.name"] as string) : null);
         out.push({ resourceAttrs, scopeName, eventName, ts: new Date(nano / 1e6), attrs });

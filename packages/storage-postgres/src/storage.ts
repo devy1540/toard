@@ -18,7 +18,7 @@ const KST = "Asia/Seoul";
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
-type ScopedQuery = PeriodQuery & { userId?: string };
+type ScopedQuery = PeriodQuery & { userId?: string; departmentId?: string };
 
 export class PostgresStorage implements StorageBackend {
   constructor(private readonly pool: Pool) {}
@@ -34,6 +34,10 @@ export class PostgresStorage implements StorageBackend {
     if (q.userId) {
       params.push(q.userId);
       conds.push(`user_id = $${params.length}`);
+    }
+    if (q.departmentId) {
+      params.push(q.departmentId);
+      conds.push(`department_id = $${params.length}`);
     }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
@@ -52,16 +56,23 @@ export class PostgresStorage implements StorageBackend {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      // user_id → 현재 department_id 를 이벤트에 비정규화(수집 시점 스냅샷, 설계 §4.3)
+      const deptMap = await this.departmentMap(
+        client,
+        events.map((e) => e.userId).filter((x): x is string => !!x),
+      );
       let inserted = 0;
       for (const e of events) {
         const r = await client.query(
           `INSERT INTO usage_events
-             (dedup_key, provider_key, user_id, session_id, model, ts,
+             (dedup_key, provider_key, user_id, department_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
-            e.dedupKey, e.providerKey, e.userId, e.sessionId, e.model, e.ts,
+            e.dedupKey, e.providerKey, e.userId,
+            e.userId ? (deptMap.get(e.userId) ?? null) : null,
+            e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
           ],
         );
@@ -78,6 +89,19 @@ export class PostgresStorage implements StorageBackend {
     } finally {
       client.release();
     }
+  }
+
+  /** user_id → 현재 department_id (없으면 제외) */
+  private async departmentMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
+    if (userIds.length === 0) return new Map();
+    const uniq = [...new Set(userIds)];
+    const r = await client.query<{ id: string; department_id: string | null }>(
+      "SELECT id, department_id FROM users WHERE id = ANY($1)",
+      [uniq],
+    );
+    const m = new Map<string, string>();
+    for (const row of r.rows) if (row.department_id) m.set(row.id, row.department_id);
+    return m;
   }
 
   /** 당일 SUM 지표 증분 (sessions 등 DISTINCT 는 recomputeDaily 가 채움 — 설계 §4.4) */
@@ -119,20 +143,19 @@ export class PostgresStorage implements StorageBackend {
         [day],
       );
 
-      // ── 부서별 일별 집계 (DISTINCT active_users·sessions; 현재 소속 users.department_id 기준) ──
+      // ── 부서별 일별 집계 — 이벤트의 비정규화 department_id 기준(시점 귀속, JOIN users 제거) ──
       await this.pool.query("DELETE FROM usage_daily_department WHERE day = $1::date", [day]);
       await this.pool.query(
         `INSERT INTO usage_daily_department
            (department_id, day, provider_key, request_count, active_users, sessions,
             input_tokens, output_tokens, cost_usd)
-         SELECT u.department_id, $1::date, e.provider_key,
-                COUNT(*), COUNT(DISTINCT e.user_id), COUNT(DISTINCT e.session_id),
-                SUM(e.input_tokens), SUM(e.output_tokens), SUM(e.cost_usd)
-         FROM usage_events e
-           JOIN users u ON u.id = e.user_id
-         WHERE u.department_id IS NOT NULL
-           AND (e.ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
-         GROUP BY u.department_id, e.provider_key`,
+         SELECT department_id, $1::date, provider_key,
+                COUNT(*), COUNT(DISTINCT user_id), COUNT(DISTINCT session_id),
+                SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+         FROM usage_events
+         WHERE department_id IS NOT NULL
+           AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
+         GROUP BY department_id, provider_key`,
         [day],
       );
     }
@@ -198,7 +221,7 @@ export class PostgresStorage implements StorageBackend {
     return this.overviewQuery(q);
   }
 
-  // 부서 필터(scope='department')는 user_id ∈ 부서 소속으로 좁힌다 — 1차는 전체/사용자 경로 우선.
+  // scope='department' + departmentId 는 periodWhere 가 비정규화 department_id 로 필터.
   getDailyTimeseries(
     q: PeriodQuery & { scope?: TimeseriesScope; departmentId?: string },
   ): Promise<DailyPoint[]> {
@@ -217,6 +240,9 @@ export class PostgresStorage implements StorageBackend {
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]> {
     const { where, params } = this.periodWhere(q);
+    const ePrefixed = where
+      .replace(/ts /g, "e.ts ")
+      .replace(/provider_key /g, "e.provider_key ");
     const sql =
       q.scope === "user"
         ? `SELECT u.id AS key, COALESCE(u.name, u.email) AS label,
@@ -224,16 +250,14 @@ export class PostgresStorage implements StorageBackend {
                   COALESCE(SUM(e.input_tokens + e.output_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions
            FROM usage_events e JOIN users u ON u.id = e.user_id
-           ${where.replace(/ts /g, "e.ts ").replace(/provider_key /g, "e.provider_key ").replace(/user_id /g, "e.user_id ")}
+           ${ePrefixed}
            GROUP BY u.id, label ORDER BY cost DESC LIMIT 100`
         : `SELECT d.id AS key, d.name AS label,
                   COALESCE(SUM(e.cost_usd),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions
-           FROM usage_events e
-             JOIN users u ON u.id = e.user_id
-             JOIN departments d ON d.id = u.department_id
-           ${where.replace(/ts /g, "e.ts ").replace(/provider_key /g, "e.provider_key ").replace(/user_id /g, "e.user_id ")}
+           FROM usage_events e JOIN departments d ON d.id = e.department_id
+           ${ePrefixed} AND e.department_id IS NOT NULL
            GROUP BY d.id, d.name ORDER BY cost DESC LIMIT 100`;
     const res = await this.pool.query(sql, params);
     return res.rows.map((r) => ({

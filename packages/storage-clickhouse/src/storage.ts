@@ -80,8 +80,9 @@ export class ClickHouseStorage implements StorageBackend {
   async saveUsageEvents(events: UsageEvent[]): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
 
-    // 1) 기존 dedup_key 확인 — ReplacingMergeTree 는 물리 중복을 허용하므로
-    //    정확한 inserted 카운트를 위해 사전 조회한다.
+    // 1) 기존 dedup_key 확인 — ReplacingMergeTree 는 물리 중복을 허용하므로 inserted 카운트를
+    //    위해 사전 조회한다. 단 사전조회+INSERT 가 원자적이지 않아 동시 요청이 같은 dedup_key 를
+    //    보내면 카운트가 과대될 수 있다(읽기 FINAL 로 집계 정확성은 유지). CH 모드의 inserted 는 근사치.
     const existing = await this.existingKeys(events.map((e) => e.dedupKey));
     const fresh = events.filter((e) => !existing.has(e.dedupKey));
     if (fresh.length === 0) return { inserted: 0, deduped: events.length };

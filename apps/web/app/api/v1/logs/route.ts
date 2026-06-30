@@ -9,7 +9,7 @@ import { resolveCost } from "@toard/pricing";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingMap } from "@/lib/pricing";
 import { getStorage } from "@/lib/storage";
-import { stripPrompts } from "@/lib/sanitize";
+import { sanitizeAttrs } from "@/lib/sanitize";
 
 // OTLP/JSON 수신 (ADR-001). shim 의 OTEL_EXPORTER_OTLP_ENDPOINT=<base>/api 가 /v1/logs 로 도달.
 export async function POST(req: Request): Promise<Response> {
@@ -17,9 +17,9 @@ export async function POST(req: Request): Promise<Response> {
   const userId = await authenticateIngestToken(req.headers.get("authorization"));
   if (!userId) return new Response("unauthorized", { status: 401 });
 
-  // 2. 파싱 + 프롬프트 제거 (raw 저장 전 — §10.3)
-  const payload = stripPrompts(await req.json());
-  const records = parseOtlpLogs(payload);
+  // 2. 파싱 후 프롬프트 제거 (raw 저장 전 — §10.3). 평탄화된 attrs 기준으로 정제해야 효과가 있다.
+  const records = parseOtlpLogs(await req.json());
+  for (const r of records) r.attrs = sanitizeAttrs(r.attrs);
   if (records.length === 0) {
     return Response.json({ inserted: 0, deduped: 0 });
   }

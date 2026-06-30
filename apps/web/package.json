@@ -1,0 +1,33 @@
+{
+  "name": "@toard/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@auth/pg-adapter": "^1.7.4",
+    "@tanstack/react-query": "^5.62.0",
+    "@toard/core": "workspace:*",
+    "@toard/ingest": "workspace:*",
+    "@toard/pricing": "workspace:*",
+    "@toard/storage-postgres": "workspace:*",
+    "next": "^15.1.3",
+    "next-auth": "5.0.0-beta.25",
+    "pg": "^8.13.1",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "recharts": "^2.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "typescript": "^5.7.2"
+  }
+}

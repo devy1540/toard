@@ -1,0 +1,33 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "claude-code" } },
+          { "key": "toard.user.id", "value": { "stringValue": "display-only" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "com.anthropic.claude_code" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1719800000000000000",
+              "eventName": "claude_code.api_request",
+              "attributes": [
+                { "key": "request_id", "value": { "stringValue": "req_test_001" } },
+                { "key": "model", "value": { "stringValue": "claude-sonnet-4-5" } },
+                { "key": "session.id", "value": { "stringValue": "sess_test_1" } },
+                { "key": "input_tokens", "value": { "intValue": "1200" } },
+                { "key": "output_tokens", "value": { "intValue": "340" } },
+                { "key": "cache_read_tokens", "value": { "intValue": "0" } },
+                { "key": "cache_creation_tokens", "value": { "intValue": "0" } },
+                { "key": "cost_usd", "value": { "doubleValue": 0.0087 } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

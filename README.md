@@ -36,6 +36,20 @@ curl -X POST http://localhost:3000/api/v1/logs \
 # → {"inserted":1,"deduped":0}  (재실행 시 deduped:1 — 멱등)
 ```
 
+## shim 설치 (사용량 수집)
+
+개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송. OS/arch 자동 감지 — 두 경로:
+
+```bash
+# curl
+curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh
+
+# 또는 npx (AI 친화)
+npx @toard/shim
+```
+
+설치 후 `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 두고, `~/.toard/credentials` 에 `agent_key`·`endpoint` 설정. `v*` 태그 push → GitHub Actions 가 4-플랫폼 빌드 후 Release(+npm) 게시.
+
 ## 검증
 
 ```bash

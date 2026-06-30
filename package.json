@@ -18,7 +18,8 @@
     "db:down": "docker compose -f docker-compose.dev.yml down",
     "migrate": "node-pg-migrate -j sql -m migrations -d DATABASE_URL up",
     "migrate:down": "node-pg-migrate -j sql -m migrations -d DATABASE_URL down",
-    "seed": "tsx scripts/seed.ts"
+    "seed": "tsx scripts/seed.ts",
+    "seed:demo": "tsx scripts/seed-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

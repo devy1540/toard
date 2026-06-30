@@ -58,3 +58,25 @@ jobs:
             dist/SHA256SUMS
             shim/install.sh
           generate_release_notes: true
+
+  # npm 패키지(@toard/shim) 배포 — NPM_TOKEN 시크릿이 있을 때만.
+  npm:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+      - name: publish
+        working-directory: npm
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "NPM_TOKEN 미설정 — npm publish 를 건너뜁니다."
+            exit 0
+          fi
+          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

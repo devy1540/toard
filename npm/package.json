@@ -1,0 +1,29 @@
+{
+  "name": "@toard/shim",
+  "version": "0.1.0",
+  "description": "toard OTEL shim 설치기 — 플랫폼 바이너리를 ~/.toard/bin/{claude,codex} 로 자동 설치",
+  "type": "module",
+  "bin": {
+    "toard-shim": "./bin/toard.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin"
+  ],
+  "keywords": [
+    "toard",
+    "claude",
+    "codex",
+    "otel",
+    "usage",
+    "shim"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/devy1540/toard.git",
+    "directory": "npm"
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,29 @@
+{
+  "resourceLogs": [
+    {
+      "resource": {
+        "attributes": [
+          { "key": "service.name", "value": { "stringValue": "codex" } }
+        ]
+      },
+      "scopeLogs": [
+        {
+          "scope": { "name": "codex" },
+          "logRecords": [
+            {
+              "timeUnixNano": "1719800000000000000",
+              "attributes": [
+                { "key": "request_id", "value": { "stringValue": "req-codex-fixture" } },
+                { "key": "conversation.id", "value": { "stringValue": "codex-conv-1" } },
+                { "key": "model", "value": { "stringValue": "gpt-5.3-codex" } },
+                { "key": "input_token_count", "value": { "intValue": "5000" } },
+                { "key": "output_token_count", "value": { "intValue": "1500" } },
+                { "key": "cached_token_count", "value": { "intValue": "2000" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

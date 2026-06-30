@@ -8,11 +8,14 @@ type Scalar = string | number | boolean;
 const DENY_KEYS = new Set([
   "prompt",
   "prompt_text",
+  "user_prompt",
   "body",
   "Body",
   "latest_user_message",
   "message",
   "content",
+  "text",
+  "tool_result",
 ]);
 
 /** flat attrs 에서 프롬프트/자유텍스트 키 제거 (PII 미수집) */

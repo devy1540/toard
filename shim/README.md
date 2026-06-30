@@ -7,6 +7,12 @@
 2. 실행 시 OTEL env 주입 — `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`(ingest token).
 3. PATH 에서 진짜 `claude` 를 찾아(자기 자신 제외) `exec` — 프로세스 대체(PTY 불필요).
 
+## 설치
+```sh
+curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh
+```
+OS/arch(darwin·linux × x64·arm64) 를 자동 감지해 해당 바이너리를 `~/.toard/bin/{claude,codex}` 에 설치한다. 릴리즈는 `v*` 태그 push 시 GitHub Actions(`cargo-zigbuild`)가 4-플랫폼을 빌드해 GitHub Release 에 업로드한다.
+
 ## 설정
 `~/.toard/credentials` (또는 동명 env `TOARD_INGEST_TOKEN`/`TOARD_INGEST_ENDPOINT`):
 ```

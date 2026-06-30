@@ -1,0 +1,52 @@
+name: shim-release
+
+# v* 태그 push 시 4-플랫폼 크로스컴파일 후 GitHub Release 에 바이너리 업로드.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shim/rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            x86_64-apple-darwin,aarch64-apple-darwin,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+
+      - uses: mlugg/setup-zig@v1
+
+      - name: install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
+
+      - name: build (4 platforms)
+        run: |
+          set -eux
+          mkdir -p ../../dist
+          for t in \
+            x86_64-apple-darwin \
+            aarch64-apple-darwin \
+            x86_64-unknown-linux-gnu \
+            aarch64-unknown-linux-gnu; do
+            cargo zigbuild --release --target "$t"
+            cp "target/$t/release/shim" "../../dist/toard-shim-$t"
+          done
+          ( cd ../../dist && sha256sum toard-shim-* > SHA256SUMS )
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/toard-shim-*
+            dist/SHA256SUMS
+            shim/install.sh
+          generate_release_notes: true

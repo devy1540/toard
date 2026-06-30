@@ -34,3 +34,8 @@ export async function getPricingMap(): Promise<PricingMap> {
   cache = { map, at: now };
   return map;
 }
+
+/** 가격 동기화 cron 후 캐시 무효화 — 다음 호출이 최신 스냅샷을 즉시 로드(1h TTL 대기 회피) */
+export function invalidatePricingCache(): void {
+  cache = undefined;
+}

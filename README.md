@@ -54,6 +54,19 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
 
+## 로그인 (OAuth)
+
+OAuth 자격을 설정하면 실제 로그인이 활성화된다. 미설정 dev 환경은 첫 user 로 폴백(화면 확인용).
+
+```bash
+AUTH_SECRET=...                             # openssl rand -base64 33
+AUTH_GITHUB_ID=...  AUTH_GITHUB_SECRET=...  # GitHub OAuth App
+AUTH_GOOGLE_ID=...  AUTH_GOOGLE_SECRET=...  # Google OAuth Client (선택)
+ALLOWED_EMAIL_DOMAINS=day1company.co.kr     # (선택) 허용 이메일 도메인
+```
+
+콜백 URL: `http://localhost:3000/api/auth/callback/{github|google}`. 자격이 있는 provider 만 활성화되며, 헤더 우측에 로그인/로그아웃이 표시된다.
+
 ## 핵심 결정 (요약)
 
 - **수집:** shim → 앱이 OTLP/JSON 직접 수신(Collector 없음). 무중단 배포 필수 (ADR-001)

@@ -70,21 +70,28 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 ## 로그인 (인증 모드)
 
-`AUTH_MODE` 로 조직 환경에 맞게 선택한다(ADR-007, JWT 세션).
+`AUTH_MODE` 로 조직 환경에 맞게 선택한다(ADR-007, JWT 세션). 로그인 페이지는 `/login`.
 
 | 모드 | 동작 | 용도 |
 |---|---|---|
-| `oauth` (기본) | GitHub/Google 로그인 | 외부·조직 |
+| `oauth` (기본) | GitHub/Google OAuth + **id/pw** 로그인·가입 | 외부·조직 |
 | `open` | 인증 없이 접근(첫/지정 user) — **대시보드 공개** | 내부망·단일 조직 |
 
-> id/pw(credentials)·이메일 매직링크는 확장 예정.
+OAuth 와 id/pw 는 함께 켤 수 있다(둘 다 `/login` 에 노출). 이메일 매직링크는 확장 예정.
+
+**id/pw (credentials)** — 기본 활성. 가입은 `/signup`(도메인 게이팅), 비번 변경/설정은 `/settings`:
+```bash
+AUTH_CREDENTIALS_ENABLED=true               # false 로 OAuth 전용
+ALLOWED_EMAIL_DOMAINS=day1company.co.kr     # (선택) 가입 허용 도메인
+BOOTSTRAP_ADMIN_PASSWORD=...                # (선택) seed 가 admin 비번 해시 저장 → 최초 로그인
+```
+비번은 bcrypt(cost 12) 해시로만 저장. 기존 OAuth 계정 이메일로는 가입 불가(계정 탈취 방지) — 대신 `/settings` 에서 비번 설정.
 
 **oauth** — 자격이 있는 provider 만 활성화(미설정 dev 는 첫 user 폴백):
 ```bash
 AUTH_SECRET=...                             # openssl rand -base64 33
 AUTH_GITHUB_ID=...  AUTH_GITHUB_SECRET=...  # GitHub OAuth App
 AUTH_GOOGLE_ID=...  AUTH_GOOGLE_SECRET=...  # Google OAuth Client (선택)
-ALLOWED_EMAIL_DOMAINS=day1company.co.kr     # (선택) 허용 이메일 도메인
 ```
 콜백 URL: `http://localhost:3000/api/auth/callback/{github|google}`.
 
@@ -109,5 +116,5 @@ AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정
 - **수집:** shim → 앱이 OTLP/JSON 직접 수신(Collector 없음). 무중단 배포 필수 (ADR-001)
 - **저장:** Postgres 단일(기본) · ClickHouse 옵트인 — `StorageBackend` 추상화 (ADR-003)
 - **비용:** LiteLLM per-million + tiered(200k) + 캐시/fast (ADR-004)
-- **인증:** Auth.js + 자체 PG 세션 (ADR-007)
+- **인증:** Auth.js — OAuth·id/pw·open 모드, JWT 세션 (ADR-007)
 - 자세한 근거·검토 이력은 설계 문서 §2(ADR) 참조.

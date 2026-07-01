@@ -1,11 +1,12 @@
-import { auth, oauthConfigured, signIn, signOut } from "@/auth";
+import Link from "next/link";
+import { auth, credentialsEnabled, oauthConfigured, signOut } from "@/auth";
 import { Button } from "@/components/ui/button";
 
 /**
  * 헤더 사용자 메뉴 (server component).
  *  - 로그인됨: 이메일 + 로그아웃
- *  - OAuth 구성 + 미로그인: 로그인 버튼
- *  - OAuth 미구성(dev 폴백): 표시 없음
+ *  - 로그인 수단(OAuth 또는 id/pw) 있음 + 미로그인: 로그인 버튼 → /login
+ *  - 로그인 수단 없음(dev 폴백): 표시 없음
  */
 export async function UserMenu() {
   const session = await auth();
@@ -28,18 +29,11 @@ export async function UserMenu() {
     );
   }
 
-  if (!oauthConfigured) return null;
+  if (!oauthConfigured && !credentialsEnabled) return null;
 
   return (
-    <form
-      action={async () => {
-        "use server";
-        await signIn();
-      }}
-    >
-      <Button type="submit" variant="outline" size="sm">
-        로그인
-      </Button>
-    </form>
+    <Button asChild variant="outline" size="sm">
+      <Link href="/login">로그인</Link>
+    </Button>
   );
 }

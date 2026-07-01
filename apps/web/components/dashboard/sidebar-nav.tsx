@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Trophy, User } from "lucide-react";
+import { LayoutDashboard, Settings, Trophy, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "개요", icon: LayoutDashboard },
   { href: "/me", label: "마이페이지", icon: User },
   { href: "/leaderboard", label: "리더보드", icon: Trophy },
+  { href: "/settings", label: "설정", icon: Settings },
 ];
 
 export function SidebarNav() {

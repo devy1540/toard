@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Settings, Trophy, User } from "lucide-react";
+import { Download, LayoutDashboard, Settings, Trophy, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "개요", icon: LayoutDashboard },
   { href: "/me", label: "마이페이지", icon: User },
+  { href: "/onboarding", label: "설치", icon: Download },
   { href: "/leaderboard", label: "리더보드", icon: Trophy },
   { href: "/settings", label: "설정", icon: Settings },
 ];

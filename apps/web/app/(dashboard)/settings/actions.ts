@@ -1,6 +1,6 @@
 "use server";
 
-import { getCurrentUserId } from "@/lib/current-user";
+import { auth } from "@/auth";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword, verifyPassword } from "@/lib/password";
 
@@ -9,12 +9,15 @@ export type PasswordState = { error?: string; ok?: boolean };
 /**
  * 비밀번호 변경/설정. 기존 비번이 있으면 현재 비번 확인 후 변경,
  * 없으면(OAuth 전용 계정) 새로 설정 → 이후 id/pw 로그인 가능.
+ * 반드시 실제 세션 필요 — open/dev 폴백의 가짜 신원(첫 user)으로는 비번을 바꿀 수 없다
+ * (익명 방문자가 로그인 수단을 심는 것을 차단).
  */
 export async function changePasswordAction(
   _prev: PasswordState,
   formData: FormData,
 ): Promise<PasswordState> {
-  const userId = await getCurrentUserId();
+  const session = await auth();
+  const userId = session?.user?.id;
   if (!userId) return { error: "로그인이 필요합니다." };
 
   const current = String(formData.get("current") ?? "");

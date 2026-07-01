@@ -38,9 +38,11 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
       "INSERT INTO users (email, name, password_hash, role) VALUES ($1, $2, $3, 'member')",
       [email, name || null, hash],
     );
-  } catch {
-    // UNIQUE 경합 등 — 방금 사이에 동일 이메일 생성
-    return { error: "가입에 실패했습니다. 다시 시도하세요." };
+  } catch (e) {
+    // UNIQUE(email) 경합만 친절히 처리(위 SELECT 이후 동시 가입). 그 외 DB 오류는
+    // 삼키지 않고 재전파해 실제 장애가 관측되게 한다.
+    if ((e as { code?: string }).code === "23505") return { error: "이미 가입된 이메일입니다." };
+    throw e;
   }
 
   try {

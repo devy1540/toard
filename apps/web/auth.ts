@@ -63,11 +63,14 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: { signIn: "/login" },
   providers,
   callbacks: {
-    // 이메일 도메인 제한 (검증된 identity 기반 — 설계 §10.4). credentials·OAuth 공통.
-    signIn({ user, profile }) {
+    // 이메일 도메인 제한 (검증된 identity 기반 — 설계 §10.4).
+    signIn({ user, account, profile }) {
       const email = (user.email ?? "").toLowerCase();
       if (!email) return false;
-      // OIDC email_verified 가 명시적 false 면 거부 (미검증 이메일로 도메인 사칭 방지)
+      // credentials 는 가입(도메인 게이팅)·seed(신뢰)에서 이미 검증됨. 로그인마다 재검사하면
+      // 도메인 정책 변경 시 기존 계정(부트스트랩 admin 포함)이 잠기므로 스킵.
+      if (account?.provider === "credentials") return true;
+      // OAuth(새 identity 연합): 미검증 이메일 거부(도메인 사칭 방지) + 도메인 게이팅.
       if ((profile as { email_verified?: boolean } | undefined)?.email_verified === false) {
         return false;
       }

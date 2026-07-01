@@ -1,11 +1,22 @@
 import { Suspense, type ReactNode } from "react";
+import { redirect } from "next/navigation";
 import { Activity } from "lucide-react";
+import { auth } from "@/auth";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { UserMenu } from "@/components/dashboard/user-menu";
 import { ModeToggle } from "@/components/mode-toggle";
+import { hasAnyUser } from "@/lib/setup";
 
-export default function DashboardLayout({ children }: { children: ReactNode }) {
+export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  // open 모드(내부망 공개)가 아니면 로그인 필수 — 미로그인은 로그인 화면으로.
+  if ((process.env.AUTH_MODE ?? "oauth") !== "open") {
+    const session = await auth();
+    if (!session?.user) {
+      redirect((await hasAnyUser()) ? "/login" : "/setup");
+    }
+  }
+
   return (
     <div className="flex min-h-screen">
       <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r p-4 md:flex">

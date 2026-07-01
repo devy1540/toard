@@ -26,12 +26,18 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # 마이그레이션 (일회성) — app 기동 전 완료. 멱등(node-pg-migrate 가 적용분 추적).
+  # 마이그레이션 + baseline 시드(providers·pricing) — app 기동 전 완료. 멱등.
+  # 관리자는 여기서 만들지 않는다 → 첫 실행 시 /setup 에서 직접 생성.
+  # (BOOTSTRAP_ADMIN_EMAIL/PASSWORD 를 주면 seed 가 admin 도 선생성 — headless 대안)
   migrate:
     build:
       context: .
       target: migrator
-    environment: *db-url
+    command: ["sh", "-c", "pnpm migrate && pnpm seed"]
+    environment:
+      <<: *db-url
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -40,6 +40,7 @@ spec:
         - name: migrate
           image: "{{ .Values.image.migrate.repository }}:{{ .Values.image.migrate.tag }}"
           imagePullPolicy: {{ .Values.image.migrate.pullPolicy }}
+          command: ["sh", "-c", "pnpm migrate && pnpm seed"] # 마이그레이션 + baseline(providers·pricing). admin 은 /setup.
           envFrom:
             - secretRef:
                 name: {{ include "toard.secretName" . }}

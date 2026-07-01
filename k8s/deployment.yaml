@@ -31,7 +31,8 @@ spec:
             - name: POSTGRES_USER
               valueFrom: { configMapKeyRef: { name: toard-config, key: POSTGRES_USER } }
         - name: migrate
-          image: toard-migrate:latest # 기본 CMD = pnpm migrate
+          image: toard-migrate:latest
+          command: ["sh", "-c", "pnpm migrate && pnpm seed"] # 마이그레이션 + baseline(providers·pricing). admin 은 /setup.
           envFrom:
             - secretRef:
                 name: toard-secrets

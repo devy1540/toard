@@ -1,0 +1,30 @@
+# 의존성·빌드 산출물 (이미지 스테이지 내에서 생성)
+**/node_modules
+**/.next
+**/dist
+**/.turbo
+
+# VCS·에디터·툴링
+.git
+.gitignore
+.github
+.claude
+**/.DS_Store
+
+# 시크릿·로그 (.env.example 은 유지해 문서 참조 가능)
+.env
+.env.*
+!.env.example
+**/*.log
+
+# 배포 산출물 자체 (빌드 컨텍스트에 불필요)
+Dockerfile
+.dockerignore
+docker-compose*.yml
+k8s
+helm
+
+# 서버 이미지에 불필요 (client 도구 · 별도 패키지 · 문서)
+shim
+npm
+docs

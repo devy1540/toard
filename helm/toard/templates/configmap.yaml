@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "toard.fullname" . }}-config
+  labels:
+    {{- include "toard.labels" . | nindent 4 }}
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  HOSTNAME: "0.0.0.0"
+  AUTH_TRUST_HOST: {{ .Values.config.authTrustHost | quote }}
+  AUTH_MODE: {{ .Values.config.authMode | quote }}
+  AUTH_CREDENTIALS_ENABLED: {{ .Values.config.authCredentialsEnabled | quote }}
+  ALLOWED_EMAIL_DOMAINS: {{ .Values.config.allowedEmailDomains | quote }}
+  STORAGE_BACKEND: {{ .Values.config.storageBackend | quote }}
+  CLICKHOUSE_URL: {{ .Values.config.clickhouseUrl | quote }}
+  POSTGRES_USER: {{ .Values.postgres.auth.user | quote }}
+  POSTGRES_DB: {{ .Values.postgres.auth.database | quote }}

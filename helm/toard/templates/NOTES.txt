@@ -1,0 +1,30 @@
+toard 가 배포되었습니다. (release: {{ .Release.Name }}, ns: {{ .Release.Namespace }})
+
+1) 파드 상태:
+   kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/instance={{ .Release.Name }}
+
+2) 접속:
+{{- if .Values.ingress.enabled }}
+   https://{{ .Values.ingress.host }}  (Ingress)
+{{- else }}
+   포트포워드: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "toard.fullname" . }} 3000:{{ .Values.service.port }}
+   → http://localhost:3000
+{{- end }}
+
+3) 로그인:
+{{- if eq .Values.config.authMode "open" }}
+   AUTH_MODE=open — 인증 없이 접근(내부망 전제).
+{{- else }}
+   /login (id/pw) · /signup (가입){{ if .Values.config.allowedEmailDomains }} · 허용 도메인: {{ .Values.config.allowedEmailDomains }}{{ end }}
+{{- if not .Values.migrate.seedOnInstall }}
+   최초 admin: migrate.seedOnInstall=true + secrets.bootstrapAdmin.* 로 재설치하거나,
+   seed Job 을 수동 실행하세요.
+{{- end }}
+{{- end }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- if eq .Values.secrets.authSecret "" }}
+
+⚠  secrets.authSecret 이 비어 있습니다 — 배포가 실패합니다. --set secrets.authSecret=$(openssl rand -base64 33)
+{{- end }}
+{{- end }}

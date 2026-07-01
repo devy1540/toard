@@ -1,0 +1,37 @@
+{{- if and .Values.migrate.enabled .Values.migrate.seedOnInstall }}
+# 최초 설치 시 1회: providers·admin 시드. migrate 를 먼저 실행해 스키마 보장(멱등).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "toard.fullname" . }}-seed
+  labels:
+    {{- include "toard.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        {{- include "toard.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if .Values.postgres.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image }}
+          command: ["sh", "-c", "until pg_isready -h {{ include "toard.postgresHost" . }} -U {{ .Values.postgres.auth.user }}; do sleep 2; done"]
+      {{- end }}
+      containers:
+        - name: seed
+          image: "{{ .Values.image.migrate.repository }}:{{ .Values.image.migrate.tag }}"
+          imagePullPolicy: {{ .Values.image.migrate.pullPolicy }}
+          command: ["sh", "-c", "pnpm migrate && pnpm seed"]
+          envFrom:
+            - secretRef:
+                name: {{ include "toard.secretName" . }}
+            - configMapRef:
+                name: {{ include "toard.fullname" . }}-config
+{{- end }}

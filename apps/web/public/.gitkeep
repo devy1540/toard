@@ -1,0 +1,1 @@
+# 정적 에셋 디렉터리. Next standalone/Docker 이미지가 public/ 을 복사하므로 비어 있어도 유지한다.

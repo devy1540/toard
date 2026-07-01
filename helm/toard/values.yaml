@@ -1,0 +1,104 @@
+# toard Helm values. 최소 설정:
+#   helm install toard ./helm/toard \
+#     --set secrets.authSecret=$(openssl rand -base64 33) \
+#     --set postgres.auth.password=$(openssl rand -hex 16)
+
+image:
+  app:
+    repository: toard # 배포 시 REG/toard 로 교체 (docker build --target runner)
+    tag: latest
+    pullPolicy: IfNotPresent
+  migrate:
+    repository: toard-migrate # docker build --target migrator
+    tag: latest
+    pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 2
+
+# 앱 런타임 설정(비밀 아님) → ConfigMap
+config:
+  authMode: oauth # oauth | open
+  authCredentialsEnabled: true
+  allowedEmailDomains: "" # 예: corp.com
+  authTrustHost: true
+  storageBackend: postgres # postgres | clickhouse
+  clickhouseUrl: "" # storageBackend=clickhouse 일 때
+
+# 시크릿 → Secret. 프로덕션은 existingSecret 로 외부 관리 권장.
+secrets:
+  existingSecret: "" # 지정 시 아래 값 무시하고 해당 Secret 사용
+  authSecret: "" # 필수 (openssl rand -base64 33). existingSecret 없으면 required.
+  cronSecret: ""
+  databaseUrl: "" # postgres.enabled=false 일 때만 필수(외부 DB)
+  github:
+    id: ""
+    secret: ""
+  google:
+    id: ""
+    secret: ""
+  clickhousePassword: "toard"
+  bootstrapAdmin: # 최초 admin id/pw (migrate.seedOnInstall=true 일 때 사용)
+    email: ""
+    password: ""
+
+# 번들 Postgres. 프로덕션은 관리형 DB 권장(enabled=false + secrets.databaseUrl).
+postgres:
+  enabled: true
+  image: postgres:16-alpine
+  auth:
+    user: toard
+    password: toard # 반드시 교체
+    database: toard
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClass: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# 마이그레이션 — pre-install/pre-upgrade 훅으로 앱 롤아웃 전에 완료 보장.
+migrate:
+  enabled: true
+  seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: nginx
+  host: toard.example.com
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "16m"
+  tls:
+    enabled: false
+    secretName: ""
+
+# 무중단 롤링(ADR-001)
+strategy:
+  maxUnavailable: 0
+  maxSurge: 1
+terminationGracePeriodSeconds: 40
+preStopDrainSeconds: 15
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 512Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: toard-config
+data:
+  NODE_ENV: "production"
+  PORT: "3000"
+  HOSTNAME: "0.0.0.0"
+  AUTH_TRUST_HOST: "true"
+  AUTH_MODE: "oauth" # oauth | open
+  AUTH_CREDENTIALS_ENABLED: "true"
+  ALLOWED_EMAIL_DOMAINS: "" # 예: corp.com (OAuth·id/pw 가입 도메인 제한)
+  STORAGE_BACKEND: "postgres" # postgres | clickhouse
+  POSTGRES_USER: "toard"
+  POSTGRES_DB: "toard"

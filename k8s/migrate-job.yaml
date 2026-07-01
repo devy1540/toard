@@ -1,0 +1,38 @@
+# [선택] 독립 마이그레이션/시드 Job. 기본 배포엔 불필요 — 앱 파드 initContainer 가 마이그레이션을
+# 처리한다(deployment.yaml). 이 Job 은 CI 사전 마이그레이션이나 최초 시드에만 쓴다.
+#   시드: kubectl apply -f k8s/migrate-job.yaml 후 command 를 ["pnpm","seed"] 로(또는 아래 주석 해제)
+#        + BOOTSTRAP_ADMIN_* 시크릿 설정. 재실행: kubectl delete job toard-migrate -n toard 후 재적용.
+# kustomization 기본 resources 에서는 제외(중복 방지).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: toard-migrate
+spec:
+  backoffLimit: 4
+  template:
+    metadata:
+      labels:
+        app: toard-migrate
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-c", "until pg_isready -h postgres -U $POSTGRES_USER; do echo waiting-for-db; sleep 2; done"]
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: toard-config, key: POSTGRES_USER } }
+      containers:
+        - name: migrate
+          image: toard-migrate:latest # 기본 CMD = pnpm migrate
+          envFrom:
+            - secretRef:
+                name: toard-secrets
+            - configMapRef:
+                name: toard-config
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              memory: "512Mi"

@@ -1,0 +1,77 @@
+# toard 앱 (Next.js standalone). 무중단 롤링 배포 (ADR-001):
+#   maxUnavailable=0 + 프로브로 준비된 파드만 트래픽 수신, preStop 으로 수집(OTLP) 드레인.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: toard-app
+  labels:
+    app: toard-app
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0 # 항상 최소 replicas 유지 → 무중단
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: toard-app
+  template:
+    metadata:
+      labels:
+        app: toard-app
+    spec:
+      terminationGracePeriodSeconds: 40
+      initContainers:
+        # DB 연결 대기 → 스키마 마이그레이션(멱등, node-pg-migrate 락으로 멀티파드 안전) → 앱 기동
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command: ["sh", "-c", "until pg_isready -h postgres -U $POSTGRES_USER; do sleep 2; done"]
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: toard-config, key: POSTGRES_USER } }
+        - name: migrate
+          image: toard-migrate:latest # 기본 CMD = pnpm migrate
+          envFrom:
+            - secretRef:
+                name: toard-secrets
+            - configMapRef:
+                name: toard-config
+      containers:
+        - name: app
+          image: toard:latest
+          ports:
+            - containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: toard-secrets
+            - configMapRef:
+                name: toard-config
+          startupProbe: # 초기 기동 대기 (최대 60s)
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 3
+            failureThreshold: 20
+          readinessProbe: # DB 연결 가능할 때만 트래픽 수신
+            httpGet:
+              path: /api/ready
+              port: 3000
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe: # 프로세스 헬스 (DB 무관 — 재시작 루프 방지)
+            httpGet:
+              path: /api/health
+              port: 3000
+            periodSeconds: 15
+            timeoutSeconds: 3
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 15"] # 엔드포인트 제거 후 in-flight OTLP 드레인
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              memory: "512Mi"

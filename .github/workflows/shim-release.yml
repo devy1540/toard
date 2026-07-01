@@ -53,6 +53,7 @@ jobs:
         run: cd dist && sha256sum toard-shim-* > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          make_latest: true # releases/latest 가 항상 이 릴리스를 가리키게 (install.sh 는 latest 에서 다운로드)
           files: |
             dist/toard-shim-*
             dist/SHA256SUMS

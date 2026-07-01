@@ -1,8 +1,8 @@
-import { Suspense, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { redirect } from "next/navigation";
 import { Activity } from "lucide-react";
 import { auth } from "@/auth";
-import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
+import { DashboardTopbar } from "@/components/dashboard/dashboard-topbar";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { UserMenu } from "@/components/dashboard/user-menu";
 import { ModeToggle } from "@/components/mode-toggle";
@@ -25,18 +25,16 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <span className="text-lg font-bold">toard</span>
         </div>
         <SidebarNav />
-        <div className="text-muted-foreground mt-auto px-2 text-xs">AI 사용량 대시보드</div>
+        <div className="border-sidebar-border mt-auto flex flex-col gap-3 border-t pt-4">
+          <UserMenu />
+          <div className="flex items-center justify-between px-2">
+            <span className="text-muted-foreground text-xs">AI 사용량 대시보드</span>
+            <ModeToggle />
+          </div>
+        </div>
       </aside>
       <main className="flex-1">
-        <div className="bg-background/80 sticky top-0 z-10 flex items-center justify-end gap-2 border-b px-6 py-3 backdrop-blur">
-          <Suspense fallback={null}>
-            <DashboardFilters />
-          </Suspense>
-          <ModeToggle />
-          <Suspense fallback={null}>
-            <UserMenu />
-          </Suspense>
-        </div>
+        <DashboardTopbar />
         <div className="p-6 lg:p-8">{children}</div>
       </main>
     </div>

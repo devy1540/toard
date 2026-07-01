@@ -32,8 +32,8 @@ export default async function OnboardingPage() {
         <CardHeader>
           <CardTitle>1. 내 토큰 발급 · 설치</CardTitle>
           <CardDescription>
-            토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. 관리자는 이 페이지 링크만
-            공유하면 됩니다.
+            토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. 발급 후 아래 명령으로
+            설치하세요.
           </CardDescription>
         </CardHeader>
         <CardContent>

@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { auth, credentialsEnabled, oauthProviders, signIn } from "@/auth";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { hasAnyUser } from "@/lib/setup";
 import { LoginForm } from "./login-form";
 
 const PROVIDER_LABELS: Record<string, string> = { github: "GitHub", google: "Google" };
@@ -10,6 +11,8 @@ const PROVIDER_LABELS: Record<string, string> = { github: "GitHub", google: "Goo
 export default async function LoginPage() {
   const session = await auth();
   if (session?.user) redirect("/");
+  // 첫 실행(사용자 0명): 초기 설정으로 유도
+  if (!(await hasAnyUser())) redirect("/setup");
 
   const hasOAuth = oauthProviders.length > 0;
 

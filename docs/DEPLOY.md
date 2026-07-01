@@ -29,12 +29,9 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build
 # → http://localhost:3000  (PORT 로 변경 가능)
 ```
 
-- `migrate` 서비스가 Postgres 준비 후 스키마를 맞추고(멱등) 종료 → 그다음 `app` 기동.
-- **최초 admin id/pw**(선택):
-  ```bash
-  BOOTSTRAP_ADMIN_EMAIL=you@corp.com BOOTSTRAP_ADMIN_PASSWORD='...' \
-    docker compose --profile seed run --rm seed
-  ```
+- `migrate` 서비스가 Postgres 준비 후 스키마 + baseline(providers·pricing) 을 맞추고(멱등) 종료 → `app` 기동.
+- **최초 관리자**: 배포 후 브라우저로 열면 사용자가 0명이라 **`/setup`** 으로 유도된다 → 이메일·비번 직접 입력해 admin 생성(첫 사용자만 admin, 이후 잠김). **노출 전 즉시 설정**할 것.
+  - headless(사전 프로비저닝) 대안: `BOOTSTRAP_ADMIN_EMAIL`·`BOOTSTRAP_ADMIN_PASSWORD` env 설정 시 `migrate` 가 admin 도 선생성 → `/setup` 창이 열리지 않음.
 - **ClickHouse 모드**(선택): `STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 docker compose --profile clickhouse up -d --build`
 - **외부 DB**: `postgres` 서비스를 빼고 `DATABASE_URL` 을 외부 DB 로 지정.
 

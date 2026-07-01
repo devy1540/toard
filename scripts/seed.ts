@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import bcrypt from "bcryptjs";
 import { Pool } from "pg";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -39,6 +40,15 @@ async function main(): Promise<void> {
   );
   const adminId = u.rows[0]!.id;
   console.log(`✓ admin: ${adminEmail}`);
+
+  // (선택) admin 비밀번호 — id/pw 로그인 부트스트랩 (ADR-007).
+  // OAuth 없이 credentials 로만 운영할 때 최초 로그인 수단.
+  const adminPassword = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+  if (adminPassword) {
+    const pwHash = await bcrypt.hash(adminPassword, 12);
+    await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [pwHash, adminId]);
+    console.log("✓ admin password 설정 (id/pw 로그인 가능)");
+  }
 
   // dev ingest token (해시만 저장, 평문은 지금만 표시)
   const token = `tk_${randomBytes(24).toString("hex")}`;

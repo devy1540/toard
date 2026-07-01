@@ -21,6 +21,7 @@
     "@toard/pricing": "workspace:*",
     "@toard/storage-clickhouse": "workspace:*",
     "@toard/storage-postgres": "workspace:*",
+    "bcryptjs": "^3.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.469.0",

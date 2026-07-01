@@ -79,5 +79,22 @@ helm install toard ./helm/toard \
 - Deployment `RollingUpdate maxUnavailable=0, maxSurge=1` — 항상 최소 replica 유지.
 - `readinessProbe=/api/ready`(DB 포함) 로 준비된 파드만 트래픽 수신, `livenessProbe=/api/health`(DB 무관)로 재시작 루프 방지.
 - 종료 시 `preStop sleep` + `terminationGracePeriodSeconds` 로 in-flight OTLP 수집을 드레인.
-- **스키마 변경**은 expand→contract 로 전개(구/신 파드가 잠깐 공존) — 파괴적 변경을 한 번에 넣지 말 것.
+- **스키마 변경**은 파괴적 변경을 한 번에 넣지 말 것 — 아래 expand→contract 절.
 - cron(`sync-pricing`)은 배포 플랫폼 스케줄러로 별도 등록(README 스케줄러 절).
+
+## 스키마 마이그레이션 (expand → contract)
+
+무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. 새 파드의 `migrate` initContainer 가 스키마를
+먼저 올리므로, 그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
+마이그레이션은 현재 돌고 있는(구) 코드와 하위호환**이어야 한다. `migrations/` 는 forward-only
+(node-pg-migrate) — 파괴적 변경은 여러 배포에 걸쳐 나눈다.
+
+| 변경 | 방법 |
+|---|---|
+| **컬럼 추가** | nullable 로 추가(1단계). 구 코드 무시, 신 코드가 사용 — 안전. |
+| **이름/타입 변경** | ①새 컬럼 추가+신 코드 dual-write ②backfill ③다음 배포에서 구 컬럼 DROP. |
+| **NOT NULL 추가** | ①nullable 로 추가+신 코드가 항상 기록 ②backfill 로 NULL 제거 ③이후 배포에서 `SET NOT NULL`. |
+| **삭제/제약 제거** | 항상 **마지막(contract)** — 구 코드가 완전히 빠진 뒤. |
+| **인덱스** | 대량 테이블은 `CREATE INDEX CONCURRENTLY`. 단 node-pg-migrate 는 마이그레이션을 트랜잭션으로 감싸므로 CONCURRENTLY 는 해당 파일을 트랜잭션 밖에서 실행하도록 분리. |
+
+파괴적 변경이 불가피하면 replicas 를 잠깐 1 로 줄여 순단을 감수하거나 유지보수 창을 잡는다.

@@ -5,11 +5,13 @@
 # pnpm 모노레포 + Next standalone. bcryptjs/pg 는 순수 JS → alpine(musl) 무리 없음.
 ARG NODE_VERSION=22-alpine
 
-# ---- base: corepack(pnpm) 준비 ----
+# ---- base: pnpm 준비 ----
+# corepack 대신 전역 설치 — 런타임(비루트)에 corepack 이 pnpm 을 다운로드하려다 캐시 쓰기 실패하는
+# 문제 회피(k8s runAsNonRoot). 빌드 시 이미지에 pnpm 을 박아 런타임 네트워크 의존도 제거.
 FROM node:${NODE_VERSION} AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-RUN corepack enable
+RUN npm install -g pnpm@9.15.0
 WORKDIR /app
 
 # ---- deps: 워크스페이스 의존성 설치 (매니페스트만 복사 → 캐시 최대화) ----
@@ -54,6 +56,8 @@ CMD ["node", "apps/web/server.js"]
 # deps 스테이지 재사용(node-pg-migrate·tsx·pg·bcryptjs 포함). DATABASE_URL 필수.
 #   기본: pnpm migrate   |  시드: command 를 ["pnpm","seed"] 로 오버라이드
 FROM deps AS migrator
+# 비루트(k8s runAsNonRoot)로 실행돼도 pnpm/node 가 캐시를 쓸 수 있게 쓰기 가능한 HOME.
+ENV HOME=/tmp
 COPY migrations/ ./migrations/
 COPY scripts/ ./scripts/
 CMD ["pnpm", "migrate"]

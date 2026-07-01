@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { getIngestEndpoint } from "@/lib/public-url";
+import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getActiveTokenMeta } from "@/lib/tokens";
 import { OnboardingPanel } from "./onboarding-panel";
 
@@ -13,7 +13,11 @@ export default async function OnboardingPage() {
   const userId = session?.user?.id;
   if (!userId) redirect("/login");
 
-  const [meta, endpoint] = await Promise.all([getActiveTokenMeta(userId), getIngestEndpoint()]);
+  const [meta, endpoint, baseUrl] = await Promise.all([
+    getActiveTokenMeta(userId),
+    getIngestEndpoint(),
+    getPublicBaseUrl(),
+  ]);
 
   return (
     <div className="mx-auto max-w-2xl space-y-6">
@@ -34,6 +38,7 @@ export default async function OnboardingPage() {
         </CardHeader>
         <CardContent>
           <OnboardingPanel
+            baseUrl={baseUrl}
             endpoint={endpoint}
             hasToken={Boolean(meta)}
             createdAt={meta?.createdAt.toISOString() ?? null}

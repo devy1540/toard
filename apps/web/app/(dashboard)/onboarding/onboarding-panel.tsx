@@ -64,7 +64,7 @@ export function OnboardingPanel({
   const [state, action, pending] = useActionState(issueTokenAction, INITIAL);
   const token = state.token;
   const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : "—");
-  const placeholder = "<발급/재발급으로 토큰 받기>";
+  const placeholder = "<발급으로 토큰 받기>";
   const one = oneLiner(token ?? placeholder, baseUrl);
 
   return (
@@ -90,7 +90,7 @@ export function OnboardingPanel({
         </div>
         <form action={action}>
           <Button type="submit" disabled={pending}>
-            {pending ? "발급 중…" : hasToken || token ? "재발급(회전)" : "토큰 발급"}
+            {pending ? "발급 중…" : "토큰 발급"}
           </Button>
         </form>
       </div>
@@ -100,7 +100,7 @@ export function OnboardingPanel({
       {token ? (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
           <p className="font-medium">새 토큰 — 지금만 표시됩니다. 아래 명령을 복사해 실행하세요.</p>
-          <p className="text-muted-foreground mt-1 text-xs">재발급하면 이전 토큰은 즉시 폐기됩니다.</p>
+          <p className="text-muted-foreground mt-1 text-xs">다시 발급하면 이전 토큰은 즉시 폐기됩니다.</p>
         </div>
       ) : null}
 
@@ -112,7 +112,7 @@ export function OnboardingPanel({
         </div>
         {!token ? (
           <p className="text-muted-foreground text-xs">
-            위에서 <b>발급/재발급</b> 하면 아래 명령에 내 토큰이 채워집니다.
+            위에서 <b>발급</b> 하면 아래 명령에 내 토큰이 채워집니다.
           </p>
         ) : null}
         <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{one}</pre>

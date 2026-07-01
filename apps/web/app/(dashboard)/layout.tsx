@@ -25,12 +25,8 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <span className="text-lg font-bold">toard</span>
         </div>
         <SidebarNav />
-        <div className="border-sidebar-border mt-auto flex flex-col gap-3 border-t pt-4">
-          <UserMenu />
-          <div className="flex items-center justify-between px-2">
-            <span className="text-muted-foreground text-xs">AI 사용량 대시보드</span>
-            <ModeToggle />
-          </div>
+        <div className="border-sidebar-border mt-auto border-t pt-4">
+          <UserMenu trailing={<ModeToggle />} />
         </div>
       </aside>
       <main className="flex-1">

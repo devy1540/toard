@@ -1,0 +1,111 @@
+# toard 올인원 배포 (프로덕션). 한 방 실행:
+#   AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build
+# 최초 admin id/pw 부트스트랩(선택):
+#   BOOTSTRAP_ADMIN_EMAIL=you@corp.com BOOTSTRAP_ADMIN_PASSWORD=... \
+#     docker compose --profile seed run --rm seed
+# ClickHouse 모드(선택): STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 \
+#     docker compose --profile clickhouse up -d --build
+name: toard
+
+x-db-url: &db-url
+  DATABASE_URL: postgres://${POSTGRES_USER:-toard}:${POSTGRES_PASSWORD:-toard}@postgres:5432/${POSTGRES_DB:-toard}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-toard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-toard}
+      POSTGRES_DB: ${POSTGRES_DB:-toard}
+    volumes:
+      - toard-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-toard} -d ${POSTGRES_DB:-toard}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # 마이그레이션 (일회성) — app 기동 전 완료. 멱등(node-pg-migrate 가 적용분 추적).
+  migrate:
+    build:
+      context: .
+      target: migrator
+    environment: *db-url
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      target: runner
+    environment:
+      <<: *db-url
+      AUTH_SECRET: ${AUTH_SECRET:-CHANGE_ME_openssl_rand_base64_33_in_production}
+      AUTH_TRUST_HOST: "true"
+      AUTH_MODE: ${AUTH_MODE:-oauth}
+      AUTH_CREDENTIALS_ENABLED: ${AUTH_CREDENTIALS_ENABLED:-true}
+      ALLOWED_EMAIL_DOMAINS: ${ALLOWED_EMAIL_DOMAINS:-}
+      AUTH_GITHUB_ID: ${AUTH_GITHUB_ID:-}
+      AUTH_GITHUB_SECRET: ${AUTH_GITHUB_SECRET:-}
+      AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
+      AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
+      CRON_SECRET: ${CRON_SECRET:-}
+      STORAGE_BACKEND: ${STORAGE_BACKEND:-postgres}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-toard}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-toard}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-toard}
+    ports:
+      - "${PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # 선택(profile=seed): providers·admin·비번 시드. `docker compose --profile seed run --rm seed`
+  seed:
+    build:
+      context: .
+      target: migrator
+    command: ["pnpm", "seed"]
+    profiles: ["seed"]
+    environment:
+      <<: *db-url
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # 선택(profile=clickhouse): 이벤트·집계만 CH, 메타·인증은 PG(ADR-003).
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    profiles: ["clickhouse"]
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-toard}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-toard}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-toard}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - toard-ch:/var/lib/clickhouse
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  toard-pg:
+  toard-ch:

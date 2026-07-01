@@ -111,6 +111,20 @@ AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정
 
 `CRON_SECRET` 미설정 시 엔드포인트가 인증 없이 열리므로 **프로덕션에선 반드시 설정**. `recompute` 는 Mart 를 서빙에 쓸 때만 등록(현재 event-direct 라 불필요 — §4.4).
 
+## 배포 (Docker · Kubernetes · Helm)
+
+컨테이너 배포 산출물 제공 — 상세·옵션은 [docs/DEPLOY.md](docs/DEPLOY.md).
+
+```bash
+# 올인원 (app + Postgres + 마이그레이션) 한 방
+AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build   # → http://localhost:3000
+```
+
+- **Docker**: 멀티타깃 `Dockerfile`(runner·migrator) + `docker-compose.yml`(ClickHouse·seed 프로파일)
+- **Kubernetes**: `k8s/`(kustomize) — 무중단 롤링 + 프로브 + preStop 드레인, 마이그레이션은 앱 initContainer
+- **Helm**: `helm/toard` — values 로 이미지·시크릿·번들/외부 DB·Ingress 튜닝
+- 헬스: `/api/health`(liveness) · `/api/ready`(readiness, DB ping)
+
 ## 핵심 결정 (요약)
 
 - **수집:** shim → 앱이 OTLP/JSON 직접 수신(Collector 없음). 무중단 배포 필수 (ADR-001)

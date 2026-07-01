@@ -1,0 +1,14 @@
+apiVersion: v2
+name: toard
+description: 경량 멀티 프로바이더 AI 사용량 대시보드 (Next.js + Postgres, ClickHouse 옵트인)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/devy1540/toard
+sources:
+  - https://github.com/devy1540/toard
+keywords:
+  - ai
+  - usage
+  - dashboard
+  - observability

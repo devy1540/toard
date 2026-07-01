@@ -1,0 +1,59 @@
+# syntax=docker/dockerfile:1
+# toard 프로덕션 이미지 (멀티 타깃).
+#   --target runner   → Next.js standalone 앱 (기본)
+#   --target migrator → 마이그레이션/시드 실행용 (node-pg-migrate · tsx)
+# pnpm 모노레포 + Next standalone. bcryptjs/pg 는 순수 JS → alpine(musl) 무리 없음.
+ARG NODE_VERSION=22-alpine
+
+# ---- base: corepack(pnpm) 준비 ----
+FROM node:${NODE_VERSION} AS base
+ENV PNPM_HOME=/pnpm
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
+WORKDIR /app
+
+# ---- deps: 워크스페이스 의존성 설치 (매니페스트만 복사 → 캐시 최대화) ----
+FROM base AS deps
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json ./
+COPY apps/web/package.json ./apps/web/
+COPY packages/core/package.json ./packages/core/
+COPY packages/ingest/package.json ./packages/ingest/
+COPY packages/pricing/package.json ./packages/pricing/
+COPY packages/storage-postgres/package.json ./packages/storage-postgres/
+COPY packages/storage-clickhouse/package.json ./packages/storage-clickhouse/
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# ---- builder: next build → standalone 산출 ----
+FROM deps AS builder
+COPY . .
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN pnpm --filter @toard/web build
+
+# ---- runner: 최소 런타임 (standalone) ----
+FROM node:${NODE_VERSION} AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+# 비루트 실행
+RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
+# outputFileTracingRoot=저장소 루트 → standalone 은 apps/web/server.js 및 node_modules 를 루트 기준으로 담음
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
+USER nextjs
+EXPOSE 3000
+# 컨테이너 헬스체크: readiness(DB 포함). Node 내장 fetch 사용 → curl/wget 불필요.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=25s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/api/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "apps/web/server.js"]
+
+# ---- migrator: 마이그레이션 + 시드 (일회성 Job/init) ----
+# deps 스테이지 재사용(node-pg-migrate·tsx·pg·bcryptjs 포함). DATABASE_URL 필수.
+#   기본: pnpm migrate   |  시드: command 를 ["pnpm","seed"] 로 오버라이드
+FROM deps AS migrator
+COPY migrations/ ./migrations/
+COPY scripts/ ./scripts/
+CMD ["pnpm", "migrate"]

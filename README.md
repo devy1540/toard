@@ -38,17 +38,15 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 ## shim 설치 (사용량 수집)
 
-개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송. OS/arch 자동 감지 — 두 경로:
+개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지).
 
+**사용자(권장)** — 로그인 후 **`/onboarding`** 에서 본인 토큰 + 설치 스니펫을 복사한다. 관리자는 toard 링크만 공유하면 각 사용자가 자기 토큰으로 셀프 온보딩한다(사용량이 본인 계정에 귀속).
+
+**수동**:
 ```bash
-# curl
 curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh
-
-# 또는 npx (AI 친화)
-npx @toard/shim
 ```
-
-설치 후 `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 두고, `~/.toard/credentials` 에 `agent_key`·`endpoint` 설정. `v*` 태그 push → GitHub Actions 가 4-플랫폼 빌드 후 Release(+npm) 게시.
+설치 후 `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 두고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 설정. `v*` 태그 push → GitHub Actions 가 4-플랫폼 빌드 후 Release 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정).
 
 ## 검증
 

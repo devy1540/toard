@@ -21,7 +21,9 @@ export const oauthConfigured = providers.length > 0;
 // Auth.js (ADR-007) — 자체 PG 세션. 메타·인증은 항상 PG(ADR-003).
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: PostgresAdapter(getPool()),
-  session: { strategy: "database" },
+  // credentials(id/pw) 확장 대비 JWT 세션 (Auth.js Credentials 는 database 세션 미지원 — ADR-007).
+  // 트레이드오프: 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완.
+  session: { strategy: "jwt" },
   providers,
   callbacks: {
     // 이메일 도메인 제한 (검증된 identity 기반 — 설계 §10.4)
@@ -35,6 +37,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       if (allowedDomains.length === 0) return true;
       // 정확한 도메인 일치 (endsWith 대신 split 으로 서브도메인/접미사 모호성 제거)
       return allowedDomains.includes(email.split("@").pop() ?? "");
+    },
+    // JWT 에 user.id 를 실어 세션에 노출 (database 세션이 아니므로 직접 전달)
+    jwt({ token, user }) {
+      if (user?.id) token.uid = user.id;
+      return token;
+    },
+    session({ session, token }) {
+      if (session.user && typeof token.uid === "string") {
+        session.user.id = token.uid;
+      }
+      return session;
     },
   },
 });

@@ -68,18 +68,32 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
 
-## 로그인 (OAuth)
+## 로그인 (인증 모드)
 
-OAuth 자격을 설정하면 실제 로그인이 활성화된다. 미설정 dev 환경은 첫 user 로 폴백(화면 확인용).
+`AUTH_MODE` 로 조직 환경에 맞게 선택한다(ADR-007, JWT 세션).
 
+| 모드 | 동작 | 용도 |
+|---|---|---|
+| `oauth` (기본) | GitHub/Google 로그인 | 외부·조직 |
+| `open` | 인증 없이 접근(첫/지정 user) — **대시보드 공개** | 내부망·단일 조직 |
+
+> id/pw(credentials)·이메일 매직링크는 확장 예정.
+
+**oauth** — 자격이 있는 provider 만 활성화(미설정 dev 는 첫 user 폴백):
 ```bash
 AUTH_SECRET=...                             # openssl rand -base64 33
 AUTH_GITHUB_ID=...  AUTH_GITHUB_SECRET=...  # GitHub OAuth App
 AUTH_GOOGLE_ID=...  AUTH_GOOGLE_SECRET=...  # Google OAuth Client (선택)
 ALLOWED_EMAIL_DOMAINS=day1company.co.kr     # (선택) 허용 이메일 도메인
 ```
+콜백 URL: `http://localhost:3000/api/auth/callback/{github|google}`.
 
-콜백 URL: `http://localhost:3000/api/auth/callback/{github|google}`. 자격이 있는 provider 만 활성화되며, 헤더 우측에 로그인/로그아웃이 표시된다.
+**open** — 대시보드가 인증 없이 열리므로 **신뢰된 내부망에서만**:
+```bash
+AUTH_MODE=open
+AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정 시 첫 user
+```
+수집 ingest 토큰은 모드와 무관하게 항상 필요(수집 보안 유지).
 
 ## 스케줄러 (cron)
 

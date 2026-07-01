@@ -135,6 +135,19 @@ export function OnboardingPanel({
           {manualSnippet(token ?? placeholder, endpoint)}
         </pre>
       </details>
+
+      {/* 제거 */}
+      <div className="space-y-2 border-t pt-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold">제거</h2>
+          <CopyButton text={`curl -fsSL ${baseUrl}/uninstall.sh | sh`} label="명령 복사" />
+        </div>
+        <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{`curl -fsSL ${baseUrl}/uninstall.sh | sh`}</pre>
+        <p className="text-muted-foreground text-xs">
+          shim · 자격증명 · PATH 설정 · codex <code>[otel]</code> 블록을 되돌립니다(각 파일 백업 남김).
+          진짜 <code>claude</code>/<code>codex</code> 는 건드리지 않습니다.
+        </p>
+      </div>
     </div>
   );
 }

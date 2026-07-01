@@ -48,6 +48,8 @@ curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh
 ```
 설치 후 `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 두고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 설정. `v*` 태그 push → GitHub Actions 가 4-플랫폼 빌드 후 Release 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정).
 
+**제거** — `curl -fsSL <toard>/uninstall.sh | sh` (shim·자격증명·PATH·codex `[otel]` 블록을 백업 남기고 되돌림. 진짜 claude/codex 는 그대로).
+
 ## 검증
 
 ```bash

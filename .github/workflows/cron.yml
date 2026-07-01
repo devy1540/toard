@@ -1,0 +1,34 @@
+name: cron
+
+# 배포 플랫폼이 Vercel 이 아니거나 self-host 일 때 사용하는 대안 스케줄러.
+# 배포 앱 URL(secrets.APP_URL)의 cron 엔드포인트를 CRON_SECRET Bearer 로 호출한다.
+# Vercel 배포라면 vercel.json 의 crons 를 쓰고 이 워크플로는 비활성(파일 삭제)해도 된다.
+on:
+  schedule:
+    - cron: "0 18 * * *" # UTC 18:00 = KST 03:00 — 일 1회 가격 동기화
+  workflow_dispatch: {}
+
+jobs:
+  sync-pricing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: trigger /api/cron/sync-pricing
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL/CRON_SECRET 시크릿 미설정 — 건너뜀"; exit 0
+          fi
+          curl -fsS "$APP_URL/api/cron/sync-pricing" -H "Authorization: Bearer $CRON_SECRET"
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+
+  # recompute 는 Mart(usage_daily_*)가 서빙에 쓰일 때만 의미가 있다(현재 event-direct 라 no-op).
+  # Mart 서빙 전환 시 아래 주석을 해제한다.
+  # recompute:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: trigger /api/cron/recompute
+  #       run: curl -fsS "$APP_URL/api/cron/recompute" -H "Authorization: Bearer $CRON_SECRET"
+  #       env:
+  #         APP_URL: ${{ secrets.APP_URL }}
+  #         CRON_SECRET: ${{ secrets.CRON_SECRET }}

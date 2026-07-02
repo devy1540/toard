@@ -2,7 +2,7 @@
 
 import { useActionState, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { issueTokenAction, type TokenState } from "./actions";
+import { issueTokenAction, type TokenState } from "./token-actions";
 
 const RELEASE_INSTALL = "https://github.com/devy1540/toard/releases/latest/download/install.sh";
 const INITIAL: TokenState = {};

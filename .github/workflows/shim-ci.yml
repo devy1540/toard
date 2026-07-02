@@ -1,0 +1,50 @@
+name: shim-ci
+
+# shim 변경 PR/push 검증 — 릴리스(shim-release)는 태그 시에만 돌므로,
+# 여기서 fmt·clippy·test·release build 를 미리 잡는다.
+on:
+  pull_request:
+    paths:
+      - "shim/**"
+      - "npm/**"
+      - ".github/workflows/shim-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "shim/**"
+      - "npm/**"
+      - ".github/workflows/shim-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shim/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test
+      - name: build (release)
+        run: cargo build --release
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck install.sh
+        run: |
+          sh -n shim/install.sh
+          sh -n shim/fake-claude.sh
+      - name: node syntax check
+        run: node --check npm/bin/toard.mjs

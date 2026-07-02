@@ -12,11 +12,19 @@
 
 진단 메시지는 TTY 에서만 stderr 로 출력한다(`TOARD_SHIM_DEBUG=1` 로 강제).
 
+## 관리 CLI (`toard-shim`)
+같은 바이너리가 `toard-shim` 이름으로도 설치되어 관리 커맨드를 받는다:
+```sh
+toard-shim doctor    # 자격 증명·endpoint 연결·토큰 유효성·PATH 순서·codex config 상태 진단
+toard-shim version   # 배포 버전 (릴리스 CI 가 태그를 임베드)
+```
+`doctor` 의 endpoint 점검은 `POST <endpoint>/v1/logs` 에 빈 OTLP(`{}`)를 보내 연결·인증만 확인한다(레코드 0건 — 부작용 없음, curl 사용).
+
 ## 설치
 ```sh
 curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh
 ```
-OS/arch(darwin·linux × x64·arm64) 를 자동 감지해 해당 바이너리를 `~/.toard/bin/{claude,codex}` 에 설치한다(다운로드 후 `SHA256SUMS` 대조). 릴리즈는 `v*` 태그 push 시 GitHub Actions 가 OS 네이티브 매트릭스(macOS 러너에서 arm64 native + x64 cross, Ubuntu x64·arm64 native)로 4-플랫폼을 빌드해 GitHub Release(+npm) 에 업로드한다.
+OS/arch(darwin·linux × x64·arm64) 를 자동 감지해 해당 바이너리를 `~/.toard/bin/{claude,codex,toard-shim}` 에 설치한다(다운로드 후 `SHA256SUMS` 대조). 릴리즈는 `v*` 태그 push 시 GitHub Actions 가 OS 네이티브 매트릭스(macOS 러너에서 arm64 native + x64 cross, Ubuntu x64·arm64 native)로 4-플랫폼을 빌드해 GitHub Release(+npm) 에 업로드한다.
 
 ## 설정
 `~/.toard/credentials` (또는 동명 env `TOARD_INGEST_TOKEN`/`TOARD_INGEST_ENDPOINT`):

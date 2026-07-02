@@ -71,7 +71,11 @@ const codex = join(binDir, "codex");
 rmSync(codex, { force: true });
 symlinkSync(claude, codex);
 
-console.log(`toard: 설치 완료 → ${claude}, ${codex}`);
+const shimCli = join(binDir, "toard-shim");
+rmSync(shimCli, { force: true });
+symlinkSync(claude, shimCli);
+
+console.log(`toard: 설치 완료 → ${claude}, ${codex}, ${shimCli}`);
 console.log("");
 console.log("PATH 에 추가하세요 (진짜 claude 보다 앞서야 함):");
 console.log(`  export PATH="${binDir}:$PATH"`);

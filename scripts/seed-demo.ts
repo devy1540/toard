@@ -1,5 +1,6 @@
 // 데모 시드: 부서·멤버·사용량 이벤트를 넣어 리더보드 부서 모드를 채운다.
 // 운영 seed(scripts/seed.ts)와 분리된 데모 전용. 멱등(dedup_key/email ON CONFLICT).
+import "dotenv/config"; // 루트 .env 로드 (셸 env 우선)
 import { createHash } from "node:crypto";
 import { Pool } from "pg";
 

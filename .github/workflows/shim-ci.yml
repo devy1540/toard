@@ -7,12 +7,14 @@ on:
     paths:
       - "shim/**"
       - "npm/**"
+      - "fixtures/usage-event.golden.json" # UsageEvent 계약 미러 테스트 (§5.6)
       - ".github/workflows/shim-ci.yml"
   push:
     branches: [main]
     paths:
       - "shim/**"
       - "npm/**"
+      - "fixtures/usage-event.golden.json"
       - ".github/workflows/shim-ci.yml"
 
 permissions:

@@ -15,6 +15,7 @@ mod json;
 mod otel;
 mod resolve;
 mod update;
+mod usage_event;
 
 use std::env;
 use std::ffi::OsString;

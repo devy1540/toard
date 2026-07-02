@@ -7,11 +7,10 @@
 
 use std::env;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 
+use crate::bg;
 use crate::cli::version;
-use crate::fsx;
 
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
@@ -37,21 +36,6 @@ const TARGET: &str = "aarch64-unknown-linux-gnu";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const TARGET: &str = "x86_64-unknown-linux-gnu";
 
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// 스로틀 판정 — 기록이 없거나 손상됐거나 주기가 지났으면 true.
-fn should_check(stamp_content: Option<&str>, now: u64) -> bool {
-    match stamp_content.and_then(|s| s.trim().parse::<u64>().ok()) {
-        Some(prev) => now.saturating_sub(prev) >= CHECK_INTERVAL_SECS,
-        None => true,
-    }
-}
-
 /// wrap 경로에서 호출 — exec 직전, 논블로킹.
 pub fn maybe_spawn_background_check() {
     // 개발 빌드(0.0.0)는 자동 업데이트 대상이 아니다
@@ -64,43 +48,14 @@ pub fn maybe_spawn_background_check() {
     ) {
         return;
     }
-    let Some(state) = fsx::state_dir() else {
-        return;
-    };
-    let stamp = state.join("last-update-check");
-    let now = now_unix();
-    if !should_check(std::fs::read_to_string(&stamp).ok().as_deref(), now) {
-        return;
-    }
-    // 실패해도 주기 내 재시도하지 않도록 체크 시각을 먼저 기록 (동시 실행 stampede 방지)
-    let _ = fsx::write_atomic(&stamp, &format!("{now}\n"), 0o644);
-
-    let Ok(exe) = env::current_exe() else { return };
-    // double-spawn: 중간 프로세스(SPAWN_ARG)가 업데이터(RUN_ARG)를 분리 후 즉시 종료
-    // → 업데이터는 init 에 재부모화되고, 우리는 중간 프로세스만 reap 해 좀비가 없다
-    if let Ok(mut child) = Command::new(&exe)
-        .arg(SPAWN_ARG)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
-        let _ = child.wait();
+    if bg::throttle("last-update-check", CHECK_INTERVAL_SECS) {
+        bg::kick(SPAWN_ARG);
     }
 }
 
 /// SPAWN_ARG 로 실행된 중간 프로세스 — 업데이터를 새 프로세스 그룹으로 분리하고 종료.
 pub fn spawn_detached_updater() -> ! {
-    if let Ok(exe) = env::current_exe() {
-        let _ = Command::new(exe)
-            .arg(RUN_ARG)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
-    }
-    std::process::exit(0);
+    bg::detach(RUN_ARG)
 }
 
 /// 실제 업데이트 — `toard-shim update`(수동, 출력 있음)와 RUN_ARG(백그라운드, 무음) 공용.
@@ -244,25 +199,6 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn throttle_logic() {
-        let now = 2_000_000_000;
-        assert!(should_check(None, now), "기록 없음 → 체크");
-        assert!(should_check(Some("garbage"), now), "손상 → 체크");
-        assert!(should_check(
-            Some(&format!("{}", now - CHECK_INTERVAL_SECS)),
-            now
-        ));
-        assert!(
-            !should_check(Some(&format!("{}", now - 100)), now),
-            "주기 내 → skip"
-        );
-        assert!(
-            !should_check(Some(&format!("{}", now + 100)), now),
-            "미래 시각 → skip(시계 역행 보호)"
-        );
-    }
 
     #[test]
     fn parses_location_header() {

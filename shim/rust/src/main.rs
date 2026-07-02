@@ -6,11 +6,14 @@
 //   - toard-shim: 관리 CLI (doctor/version)
 // OTEL SDK 없음 — 설정 주입 + resolver + exec 뿐인 얇은 래퍼 (설계 ADR-001/006).
 
+mod bg;
 mod claude_env;
 mod cli;
 mod codex;
+mod collect;
 mod credentials;
 mod fsx;
+mod iso;
 mod json;
 mod otel;
 mod resolve;
@@ -32,10 +35,12 @@ use resolve::{find_real_binary, tool_name_from};
 const GUARD_ENV: &str = "TOARD_SHIM_GUARD_PID";
 
 fn main() {
-    // 자동 업데이트 내부 재진입 — argv0 과 무관하게 최우선 분기
+    // 백그라운드 작업 내부 재진입 — argv0 과 무관하게 최우선 분기
     match env::args().nth(1).as_deref() {
         Some(update::SPAWN_ARG) => update::spawn_detached_updater(),
         Some(update::RUN_ARG) => std::process::exit(update::run_self_update(true)),
+        Some(collect::SPAWN_ARG) => collect::spawn_detached_collector(),
+        Some(collect::RUN_ARG) => std::process::exit(collect::run(None, false)),
         _ => {}
     }
 
@@ -79,8 +84,9 @@ fn main() {
         }
     };
 
-    // 24h 스로틀 기반 백그라운드 업데이트 체크 — exec 경로에 네트워크 없음
-    update::maybe_spawn_background_check();
+    // 백그라운드 편승 작업 — exec 경로에 네트워크 없음 (스탬프 파일 판정만)
+    update::maybe_spawn_background_check(); // 24h: 자동 업데이트
+    collect::maybe_spawn_background(); // 10m: 비-OTEL 로컬 로그 수집 (§5.6)
 
     env::set_var(GUARD_ENV, &pid);
     let args: Vec<OsString> = env::args_os().skip(1).collect();

@@ -21,6 +21,7 @@ pub fn run(args: &[String]) -> ! {
     match args.first().map(String::as_str) {
         Some("doctor") => std::process::exit(doctor()),
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
+        Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
@@ -47,12 +48,39 @@ fn print_usage() {
   doctor                       설치·자격 증명·endpoint·PATH 상태 진단
   claude-env on|off|status     ~/.claude/settings.json env 주입 관리
                                (IDE 등 PATH 를 거치지 않는 실행까지 수집)
+  collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
+          [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 24h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()
     );
+}
+
+// ── collect — 로컬 로그 pull 수집 ──
+
+fn collect_cmd(args: &[String]) -> i32 {
+    let mut dry_run = false;
+    let mut only: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--dry-run" => dry_run = true,
+            "--adapter" => match it.next() {
+                Some(key) => only = Some(key.clone()),
+                None => {
+                    eprintln!("toard-shim: --adapter 뒤에 어댑터 이름이 필요합니다");
+                    return 2;
+                }
+            },
+            other => {
+                eprintln!("toard-shim: collect 가 모르는 인자: {other}");
+                return 2;
+            }
+        }
+    }
+    crate::collect::run(only.as_deref(), dry_run)
 }
 
 // ── claude-env — settings.json env 주입 관리 ──

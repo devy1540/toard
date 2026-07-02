@@ -23,6 +23,12 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 
 `claude-env` 는 shim 의 커버리지 갭(PATH 를 거치지 않는 IDE 확장·절대경로·alias 실행)을 메운다 — Claude Code 가 직접 읽는 settings.json 의 `env` 에 동일 OTEL 키를 병합 주입한다. 우리가 넣은 값은 `~/.toard/state/claude-env.json` 에 기록되며, 사용자가 직접 설정했거나 이후 변경한 키는 덮지도 지우지도 않는다(경고만). 토큰이 평문으로 들어가므로 settings.json 은 0600 으로 조정된다.
 
+## 자동 업데이트 (ADR-006)
+wrap 실행 경로에는 네트워크가 없다 — 24h 스로틀 파일(`~/.toard/state/last-update-check`)만 확인하고, 주기가 지났으면 업데이터를 double-spawn 으로 백그라운드 분리(좀비 없음)한 뒤 즉시 exec 한다. 업데이터는 releases/latest 의 302 Location 에서 태그를 읽고, 새 버전이면 다운로드 → `SHA256SUMS` 검증 → rename(원자적 교체). 개발 빌드(0.0.0)는 대상 제외.
+- 즉시 실행: `toard-shim update`
+- 끄기: `TOARD_SHIM_AUTO_UPDATE=0`
+- 미러/에어갭: `TOARD_SHIM_RELEASE_BASE=<host>` (기본 `https://github.com`)
+
 ## 설치
 ```sh
 curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh

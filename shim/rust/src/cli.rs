@@ -21,6 +21,7 @@ pub fn run(args: &[String]) -> ! {
     match args.first().map(String::as_str) {
         Some("doctor") => std::process::exit(doctor()),
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
+        Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
             std::process::exit(0);
@@ -46,6 +47,8 @@ fn print_usage() {
   doctor                       설치·자격 증명·endpoint·PATH 상태 진단
   claude-env on|off|status     ~/.claude/settings.json env 주입 관리
                                (IDE 등 PATH 를 거치지 않는 실행까지 수집)
+  update                       최신 릴리스로 즉시 업데이트
+                               (평소엔 24h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()

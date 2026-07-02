@@ -6,8 +6,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
 
+use crate::claude_env;
 use crate::codex;
 use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
+use crate::fsx;
 use crate::resolve::{find_real_binary, first_in_path};
 
 /// 릴리스 빌드는 CI 가 태그를 주입(TOARD_SHIM_BUILD_VERSION), 개발 빌드는 0.0.0.
@@ -18,6 +20,7 @@ pub fn version() -> &'static str {
 pub fn run(args: &[String]) -> ! {
     match args.first().map(String::as_str) {
         Some("doctor") => std::process::exit(doctor()),
+        Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
             std::process::exit(0);
@@ -40,11 +43,114 @@ fn print_usage() {
 
 사용법: toard-shim <command>
 
-  doctor    설치·자격 증명·endpoint·PATH 상태 진단
-  version   버전 출력
-  help      이 도움말",
+  doctor                       설치·자격 증명·endpoint·PATH 상태 진단
+  claude-env on|off|status     ~/.claude/settings.json env 주입 관리
+                               (IDE 등 PATH 를 거치지 않는 실행까지 수집)
+  version                      버전 출력
+  help                         이 도움말",
         version()
     );
+}
+
+// ── claude-env — settings.json env 주입 관리 ──
+
+fn claude_env_cmd(args: &[String]) -> i32 {
+    let Some(home) = fsx::home_dir() else {
+        eprintln!("toard-shim: HOME 이 없어 settings.json 위치를 알 수 없습니다");
+        return 1;
+    };
+    let settings_path = home.join(".claude").join("settings.json");
+    let Some(state_path) = fsx::state_dir().map(|d| d.join("claude-env.json")) else {
+        return 1;
+    };
+    let settings_text = std::fs::read_to_string(&settings_path).unwrap_or_default();
+    let prev_state = std::fs::read_to_string(&state_path)
+        .map(|t| claude_env::state_from_json(&t))
+        .unwrap_or_default();
+
+    match args.first().map(String::as_str) {
+        Some("on") => {
+            let creds = read_credentials();
+            let Some(token) = creds.token else {
+                eprintln!("toard-shim: 자격 증명이 없습니다 — ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정 후 재시도");
+                return 1;
+            };
+            let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
+            match claude_env::plan_on(&settings_text, &prev_state, endpoint, &token) {
+                Ok(r) => {
+                    // 토큰이 평문으로 들어가므로 settings.json 을 0600 으로 조인다
+                    if let Some(text) = &r.settings {
+                        if let Err(e) = fsx::write_atomic(&settings_path, text, 0o600) {
+                            eprintln!("toard-shim: settings.json 쓰기 실패: {e}");
+                            return 1;
+                        }
+                    }
+                    let _ =
+                        fsx::write_atomic(&state_path, &claude_env::state_to_json(&r.state), 0o600);
+                    for w in &r.warnings {
+                        warn(w);
+                    }
+                    ok(&format!(
+                        "claude-env on — {} 개 키 관리 중 ({})",
+                        r.state.len(),
+                        settings_path.display()
+                    ));
+                    0
+                }
+                Err(e) => {
+                    eprintln!("toard-shim: {e}");
+                    1
+                }
+            }
+        }
+        Some("off") => match claude_env::plan_off(&settings_text, &prev_state) {
+            Ok(r) => {
+                if let Some(text) = &r.settings {
+                    if let Err(e) = fsx::write_atomic(&settings_path, text, 0o600) {
+                        eprintln!("toard-shim: settings.json 쓰기 실패: {e}");
+                        return 1;
+                    }
+                }
+                let _ = std::fs::remove_file(&state_path);
+                for w in &r.warnings {
+                    warn(w);
+                }
+                ok("claude-env off — toard 관리 키 제거됨");
+                0
+            }
+            Err(e) => {
+                eprintln!("toard-shim: {e}");
+                1
+            }
+        },
+        Some("status") | None => {
+            if prev_state.is_empty() {
+                info("claude-env: off (관리 중인 키 없음)");
+                return 0;
+            }
+            let env = crate::json::parse(&settings_text)
+                .ok()
+                .and_then(|root| root.get("env").cloned());
+            for (key, ours) in &prev_state {
+                match env
+                    .as_ref()
+                    .and_then(|e| e.get(key))
+                    .and_then(crate::json::Value::as_str)
+                {
+                    Some(cur) if cur == ours => ok(&format!("{key} 주입됨")),
+                    Some(_) => warn(&format!("{key}: 사용자 변경으로 toard 관리 밖")),
+                    None => warn(&format!(
+                        "{key}: settings.json 에서 사라짐 — claude-env on 으로 재주입"
+                    )),
+                }
+            }
+            0
+        }
+        Some(other) => {
+            eprintln!("toard-shim: claude-env 사용법: on|off|status (받은 값: {other})");
+            2
+        }
+    }
 }
 
 fn ok(msg: &str) {

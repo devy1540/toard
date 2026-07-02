@@ -6,9 +6,12 @@
 //   - toard-shim: 관리 CLI (doctor/version)
 // OTEL SDK 없음 — 설정 주입 + resolver + exec 뿐인 얇은 래퍼 (설계 ADR-001/006).
 
+mod claude_env;
 mod cli;
 mod codex;
 mod credentials;
+mod fsx;
+mod json;
 mod otel;
 mod resolve;
 

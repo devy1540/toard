@@ -6,6 +6,7 @@ use std::env;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+use crate::fsx;
 use crate::otel::notice;
 
 const BEGIN: &str = "# >>> toard otel >>>";
@@ -71,19 +72,11 @@ pub fn plan(existing: &str, endpoint: &str, token: &str) -> Plan {
     }
 }
 
-/// temp 파일에 쓴 뒤 rename — 부분 쓰기/동시 실행에도 config.toml 이 항상 온전하다.
 /// 토큰이 평문으로 들어가므로 파일 0600, 디렉토리 0700.
-fn write_atomic(dir: &Path, path: &Path, content: &str) {
+fn write_config(dir: &Path, path: &Path, content: &str) {
     let _ = std::fs::create_dir_all(dir);
     let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-    let tmp: PathBuf = dir.join(format!(".config.toml.toard-tmp-{}", std::process::id()));
-    if std::fs::write(&tmp, content).is_err() {
-        return;
-    }
-    let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-    if std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
+    let _ = fsx::write_atomic(path, content, 0o600);
 }
 
 pub fn inject_config(endpoint: &str, token: &str) {
@@ -95,11 +88,11 @@ pub fn inject_config(endpoint: &str, token: &str) {
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     match plan(&existing, endpoint, token) {
         Plan::Unchanged => {}
-        Plan::Write(content) => write_atomic(&dir, &path, &content),
+        Plan::Write(content) => write_config(&dir, &path, &content),
         Plan::SkipUserOtel { cleaned } => {
             notice("~/.codex/config.toml 에 사용자 [otel] 설정이 있어 자동 주입을 건너뜁니다(수동 설정 필요)");
             if let Some(content) = cleaned {
-                write_atomic(&dir, &path, &content);
+                write_config(&dir, &path, &content);
                 notice("충돌 방지를 위해 기존 toard [otel] 블록은 제거했습니다");
             }
         }

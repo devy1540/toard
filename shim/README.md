@@ -15,10 +15,13 @@
 ## 관리 CLI (`toard-shim`)
 같은 바이너리가 `toard-shim` 이름으로도 설치되어 관리 커맨드를 받는다:
 ```sh
-toard-shim doctor    # 자격 증명·endpoint 연결·토큰 유효성·PATH 순서·codex config 상태 진단
-toard-shim version   # 배포 버전 (릴리스 CI 가 태그를 임베드)
+toard-shim doctor                    # 자격 증명·endpoint 연결·토큰 유효성·PATH 순서·codex config 상태 진단
+toard-shim claude-env on|off|status  # ~/.claude/settings.json env 주입 관리
+toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를 임베드)
 ```
 `doctor` 의 endpoint 점검은 `POST <endpoint>/v1/logs` 에 빈 OTLP(`{}`)를 보내 연결·인증만 확인한다(레코드 0건 — 부작용 없음, curl 사용).
+
+`claude-env` 는 shim 의 커버리지 갭(PATH 를 거치지 않는 IDE 확장·절대경로·alias 실행)을 메운다 — Claude Code 가 직접 읽는 settings.json 의 `env` 에 동일 OTEL 키를 병합 주입한다. 우리가 넣은 값은 `~/.toard/state/claude-env.json` 에 기록되며, 사용자가 직접 설정했거나 이후 변경한 키는 덮지도 지우지도 않는다(경고만). 토큰이 평문으로 들어가므로 settings.json 은 0600 으로 조정된다.
 
 ## 설치
 ```sh

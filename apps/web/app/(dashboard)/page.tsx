@@ -3,6 +3,7 @@ import { Activity, ArrowUpDown, DollarSign, Inbox } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,6 +55,8 @@ export default async function MyUsagePage({
         description="내 AI 도구 사용량·비용"
         actions={<DashboardFilters providers={providers} />}
       />
+
+      <PricingNotice />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard label="내 비용" value={fmtUsd(overview.totalCostUsd)} icon={<DollarSign className="size-4" />} />

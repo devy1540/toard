@@ -5,7 +5,12 @@
 ## 동작
 1. `~/.toard/bin/claude`(또는 `codex`) 로 설치되고 PATH 에서 우선한다.
 2. 실행 시 OTEL env 주입 — `CLAUDE_CODE_ENABLE_TELEMETRY=1`, `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_PROTOCOL=http/json`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`(ingest token).
-3. PATH 에서 진짜 `claude` 를 찾아(자기 자신 제외) `exec` — 프로세스 대체(PTY 불필요).
+   - 사용자 env 는 존중: 이미 설정된 키는 덮지 않고, `OTEL_EXPORTER_OTLP_HEADERS`/`OTEL_RESOURCE_ATTRIBUTES` 는 **병합**(사용자 Authorization 존재 시 미주입 + 경고).
+   - **토큰이 없으면 주입 없이 순수 패스스루** — 죽은 endpoint 로의 전송을 만들지 않는다.
+3. PATH 에서 진짜 `claude` 를 찾아(자기 자신 제외) `exec` — 프로세스 대체(PTY 불필요). exec 는 PID 를 보존하므로 `TOARD_SHIM_GUARD_PID` 로 재귀 exec(자기 자신/사본 핑퐁)을 차단한다.
+4. `codex` 는 `~/.codex/config.toml` 에 `[otel]` 마커 블록을 멱등 주입 — 내용 동일 시 무변경, 쓰기는 temp+rename(원자적), 사용자 `[otel]` 존재 시 건너뛰고 stale toard 블록은 제거.
+
+진단 메시지는 TTY 에서만 stderr 로 출력한다(`TOARD_SHIM_DEBUG=1` 로 강제).
 
 ## 설치
 ```sh

@@ -6,9 +6,9 @@ import { Pool } from "pg";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 const DEPTS: Array<{ name: string; members: Array<[string, string]> }> = [
-  { name: "엔지니어링", members: [["eng-alice@day1company.co.kr", "Alice"], ["eng-bob@day1company.co.kr", "Bob"]] },
-  { name: "프로덕트", members: [["pm-carol@day1company.co.kr", "Carol"]] },
-  { name: "디자인", members: [["design-dave@day1company.co.kr", "Dave"]] },
+  { name: "엔지니어링", members: [["eng-alice@example.com", "Alice"], ["eng-bob@example.com", "Bob"]] },
+  { name: "프로덕트", members: [["pm-carol@example.com", "Carol"]] },
+  { name: "디자인", members: [["design-dave@example.com", "Dave"]] },
 ];
 
 const PRICE: Record<string, [number, number]> = {

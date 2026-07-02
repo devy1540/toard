@@ -66,14 +66,16 @@ export class PostgresStorage implements StorageBackend {
         const r = await client.query(
           `INSERT INTO usage_events
              (dedup_key, provider_key, user_id, department_id, session_id, model, ts,
-              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+              log_adapter)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
             e.userId ? (deptMap.get(e.userId) ?? null) : null,
             e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
+            e.logAdapter ?? null,
           ],
         );
         if (r.rowCount === 1) {

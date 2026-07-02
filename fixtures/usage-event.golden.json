@@ -10,7 +10,8 @@
     "outputTokens": 340,
     "cacheReadTokens": 500,
     "cacheCreationTokens": 0,
-    "costUsd": 0
+    "costUsd": 0,
+    "logAdapter": "gemini"
   },
   {
     "dedupKey": "min-fields-0000000000000000000000000000000000000000000000000000",

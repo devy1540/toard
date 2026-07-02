@@ -16,8 +16,10 @@ test("골든 fixture 전체가 파싱된다", () => {
   assert.equal(full!.providerKey, "gemini");
   assert.equal(full!.ts.toISOString(), "2026-07-01T12:00:00.000Z");
   assert.equal(full!.cacheReadTokens, 500);
+  assert.equal(full!.logAdapter, "gemini");
   assert.equal(minimal!.sessionId, null);
   assert.equal(minimal!.model, null);
+  assert.equal(minimal!.logAdapter, null, "logAdapter 는 선택적 — 없으면 null");
   assert.equal(cached!.cacheCreationTokens, 4096);
   // shim 은 cost 를 계산하지 않는다 — 서버 권위 (§5.6)
   for (const e of events) assert.equal(e.costUsd, 0);

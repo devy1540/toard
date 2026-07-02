@@ -68,6 +68,7 @@ export function parseUsageEventWire(v: unknown): UsageEvent {
     cacheReadTokens: tokenCount(v.cacheReadTokens, "cacheReadTokens"),
     cacheCreationTokens: tokenCount(v.cacheCreationTokens, "cacheCreationTokens"),
     costUsd,
+    logAdapter: nullableString(v.logAdapter, "logAdapter"),
   };
 }
 

@@ -10,7 +10,9 @@ async function main(): Promise<void> {
     `INSERT INTO providers (key, display_name, service_name_patterns, collection_method, enabled)
      VALUES
        ('claude_code', 'Claude Code', ARRAY['claude-code'], 'otel', true),
-       ('codex', 'Codex', ARRAY['codex','codex_cli_rs','codex_exec'], 'otel', true)
+       ('codex', 'Codex', ARRAY['codex','codex_cli_rs','codex_exec'], 'otel', true),
+       ('gemini', 'Gemini CLI', ARRAY[]::text[], 'logfile', true),
+       ('qwen', 'Qwen Code', ARRAY[]::text[], 'logfile', true)
      ON CONFLICT (key) DO NOTHING`,
   );
   console.log("✓ providers");

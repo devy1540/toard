@@ -29,7 +29,7 @@ pnpm dev                      # http://localhost:3000
 ## 수집 테스트 (shim 없이)
 
 ```bash
-TOARD_INGEST_TOKEN=<seed 또는 /onboarding 이 발급한 토큰> pnpm exec tsx scripts/send-sample-event.ts
+TOARD_INGEST_TOKEN=<seed 또는 설정→설치 탭에서 발급한 토큰> pnpm exec tsx scripts/send-sample-event.ts
 # → 200 {"inserted":1,"deduped":0} — 현재 시각으로 전송되어 대시보드 "최근 30일"에 바로 보임
 ```
 
@@ -48,7 +48,7 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지).
 
-**사용자(권장)** — 로그인 후 **`/onboarding`** 에서 본인 토큰 + 설치 스니펫을 복사한다. 관리자는 toard 링크만 공유하면 각 사용자가 자기 토큰으로 셀프 온보딩한다(사용량이 본인 계정에 귀속).
+**사용자(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 본인 토큰 + 설치 스니펫을 복사한다. 관리자는 toard 링크만 공유하면 각 사용자가 자기 토큰으로 셀프 온보딩한다(사용량이 본인 계정에 귀속).
 
 **수동**:
 ```bash

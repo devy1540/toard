@@ -38,7 +38,7 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 - 멀티 프로바이더 **수집** (앱 직접 OTLP/JSON 수신)
 - **비용/사용량 차트** (KPI 카드 + 시계열)
 - **개인 마이페이지** (자기 사용량 + 모델별 분해)
-- **리더보드 / 부서별 비교**
+- **리더보드 / 팀별 비교**
 
 **1차 비범위 (Out of Scope, 추후)**
 - OTEL Collector(진화 경로 — §ADR-001) · ClickHouse 모드(옵트인) · metrics 수신(logs만)
@@ -88,7 +88,7 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 ### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4)
 - **결정:** 이벤트 `ts`는 항상 **UTC `timestamptz`** 저장(불변). 일별 집계·리더보드의 "하루" 경계는 **조직 단위 타임존 설정 `ORG_TIMEZONE`**(IANA, 기본 `UTC`)으로 결정한다. 앱이 env를 읽어 검증(무효 시 UTC 폴백) 후 `StorageBackend` 생성자에 주입 — 패키지는 env를 직접 읽지 않는다(core 의존성 0 유지).
 - **근거:** v3까지는 KST(Asia/Seoul)가 storage 쿼리·Mart 정의에 하드코딩돼 있었다(선행작 day1co 유산). 오픈소스 범용화(v4)에서 특정 타임존 가정은 성립하지 않는다. 서빙이 event-direct(§4.4 — Mart 미사용)인 지금이 전환 비용이 가장 싼 시점이다.
-- **단위 선택:** **조직 단위 1개**(per-user 아님) — 리더보드·부서 비교의 "같은 하루" 비교 가능성이 개인화보다 중요. per-user 타임존은 기각(일경계가 사용자마다 달라 집계 의미가 붕괴).
+- **단위 선택:** **조직 단위 1개**(per-user 아님) — 리더보드·팀 비교의 "같은 하루" 비교 가능성이 개인화보다 중요. per-user 타임존은 기각(일경계가 사용자마다 달라 집계 의미가 붕괴).
 - **트레이드오프:** `ORG_TIMEZONE` 변경 시 과거 일별 뷰의 버킷이 바뀐다 — event-direct 서빙은 쿼리 시점 계산이라 자동 반영, Mart를 서빙으로 전환한 후라면 전체 `recomputeDaily` 필요(운영 문서에 명시).
 
 ---
@@ -196,22 +196,23 @@ export interface StorageBackend {
 
   // ─ 읽기 ─
   getOverview(q: PeriodQuery): Promise<OverviewStats>;
-  getDailyTimeseries(q: PeriodQuery & { scope?: 'all' | 'department'; departmentId?: string }): Promise<DailyPoint[]>;
+  getDailyTimeseries(q: PeriodQuery & { scope?: 'all' | 'team'; teamId?: string }): Promise<DailyPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery): Promise<{ overview: OverviewStats; daily: DailyPoint[]; byModel: ModelBreakdown[] }>;
-  getLeaderboard(q: PeriodQuery & { scope: 'user' | 'department' }): Promise<LeaderRow[]>;
+  getLeaderboard(q: PeriodQuery & { scope: 'user' | 'team' }): Promise<LeaderRow[]>;
 }
 ```
 
-> 메타(users/departments) CRUD·인증은 인터페이스 밖(항상 PG, ADR-003). `StorageBackend`는 "이벤트 저장 + 분석 쿼리"만.
+> 메타(users/teams) CRUD·인증은 인터페이스 밖(항상 PG, ADR-003). `StorageBackend`는 "이벤트 저장 + 분석 쿼리"만.
 
 ### 4.2 Postgres 스키마 (기본 모드)
 
 #### 메타데이터 (항상 PG)
+> 용어: 부서(departments)→팀(teams) 범용 리네임 — 2026-07-02, 마이그레이션 `1700000007`(오픈소스 재포지셔닝 §1.3-6).
 ```sql
-CREATE TABLE departments (
+CREATE TABLE teams (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name TEXT NOT NULL,
-  parent_id UUID REFERENCES departments(id),
+  parent_id UUID REFERENCES teams(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -219,16 +220,16 @@ CREATE TABLE users (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   email TEXT NOT NULL UNIQUE,
   name TEXT,
-  department_id UUID REFERENCES departments(id),
+  team_id UUID REFERENCES teams(id),
   role TEXT NOT NULL DEFAULT 'member',          -- 'member' | 'admin'
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 부서 이동 이력(1차 비활성, users.department_id로 운영)
-CREATE TABLE user_department_assignments (
+-- 팀 이동 이력(1차 비활성, users.team_id로 운영)
+CREATE TABLE user_team_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id),
-  department_id UUID NOT NULL REFERENCES departments(id),
+  team_id UUID NOT NULL REFERENCES teams(id),
   effective_from DATE NOT NULL, effective_to DATE,
   UNIQUE (user_id, effective_from)
 );
@@ -302,8 +303,8 @@ CREATE TABLE usage_daily_user (
   PRIMARY KEY (user_id, day, provider_key)
 );
 
-CREATE TABLE usage_daily_department (
-  department_id UUID NOT NULL REFERENCES departments(id),
+CREATE TABLE usage_daily_team (
+  team_id UUID NOT NULL REFERENCES teams(id),
   day DATE NOT NULL,
   provider_key TEXT NOT NULL REFERENCES providers(key),
   request_count BIGINT NOT NULL DEFAULT 0,
@@ -312,18 +313,18 @@ CREATE TABLE usage_daily_department (
   input_tokens BIGINT NOT NULL DEFAULT 0,
   output_tokens BIGINT NOT NULL DEFAULT 0,
   cost_usd NUMERIC(16,8) NOT NULL DEFAULT 0,
-  PRIMARY KEY (department_id, day, provider_key)
+  PRIMARY KEY (team_id, day, provider_key)
 );
 CREATE INDEX ON usage_daily_user (day, provider_key);
-CREATE INDEX ON usage_daily_department (day, provider_key);
+CREATE INDEX ON usage_daily_team (day, provider_key);
 ```
 
 ### 4.3 ClickHouse 모드 (옵트인)
-메타는 PG에 그대로. 이벤트·집계만 CH. **부서 시점 귀속을 위해 수집 시점의 `department_id`를 비정규화**한다.
+메타는 PG에 그대로. 이벤트·집계만 CH. **팀 시점 귀속을 위해 수집 시점의 `team_id`를 비정규화**한다.
 ```sql
 CREATE TABLE usage_events (
   dedup_key String, provider_key LowCardinality(String),
-  user_id String, department_id String,           -- 수집 시점 스냅샷(시점 귀속)
+  user_id String, team_id String,           -- 수집 시점 스냅샷(시점 귀속)
   session_id String, model LowCardinality(String),
   ts DateTime64(3,'UTC'),
   input_tokens UInt64, output_tokens UInt64, cache_read_tokens UInt64, cache_creation_tokens UInt64,
@@ -336,7 +337,7 @@ SELECT user_id, toDate(ts, <ORG_TIMEZONE>) AS day, provider_key,   -- 조직 타
   uniqState(session_id) AS sessions, sum(input_tokens) AS input_tokens, /* … */ sum(cost_usd) AS cost_usd
 FROM usage_events GROUP BY user_id, day, provider_key;
 ```
-> CH는 `department_id`를 이벤트에 동봉하므로 부서 GROUP BY가 PG 모드와 **동일 의미**(시점 귀속)로 성립한다. 리더보드 라벨(이름)만 PG에서 머지. 부서별 DISTINCT(`active_users`·`sessions`)는 `usage_daily_department_mv`(AggregatingMergeTree, `uniqState(user_id)`/`uniqState(session_id)`, `department_id` GROUP BY) 또는 `usage_events`에서 `uniq()` 직접 쿼리로 산출.
+> CH는 `team_id`를 이벤트에 동봉하므로 팀 GROUP BY가 PG 모드와 **동일 의미**(시점 귀속)로 성립한다. 리더보드 라벨(이름)만 PG에서 머지. 팀별 DISTINCT(`active_users`·`sessions`)는 `usage_daily_team_mv`(AggregatingMergeTree, `uniqState(user_id)`/`uniqState(session_id)`, `team_id` GROUP BY) 또는 `usage_events`에서 `uniq()` 직접 쿼리로 산출.
 
 ### 4.4 핵심 설계 노트
 
@@ -354,7 +355,7 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 > **1차 구현 한계 (검증 반영, 2026-06-30)**
 > - **서빙은 event-direct**: 대시보드 쿼리는 `usage_events`를 직접 집계하며 Mart(`usage_daily_*`)·`bumpDailyUser`·`recomputeDaily`는 **미래 서빙 레이어로 현재 미사용**(데이터 규모가 커지면 읽기를 Mart로 전환). 따라서 "당일 증분 vs 마감 재계산 정합"은 현재 사용자 화면과 무관.
 > - **재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성은 2차 목표. 현재 `processed`는 항상 false, `raw_event_id`는 NULL.
-> - **부서 백필 없음**: `department_id` 비정규화는 수집(INSERT) 시점부터 적용되어, 마이그레이션 이전 이벤트는 부서 집계에서 제외(과거 시점 부서를 알 수 없어 NULL 유지).
+> - **팀 백필 없음**: `team_id` 비정규화는 수집(INSERT) 시점부터 적용되어, 마이그레이션 이전 이벤트는 팀 집계에서 제외(과거 시점 팀을 알 수 없어 NULL 유지).
 > - **기간 필터 일경계 미정렬**: `recentPeriod`는 UTC 롤링 윈도라 조직 타임존(`ORG_TIMEZONE`이 UTC가 아닌 경우) 일경계와 어긋나 일별 차트 양끝이 부분일로 표시(향후 조직 타임존 일경계 스냅 예정).
 
 ---
@@ -493,11 +494,16 @@ export function resolveCost(a: {
 - 초기: Server Component가 `StorageBackend` 직접 호출(SSR). 갱신: TanStack Query가 `/api/stats/*` 호출.
 - 컴포넌트는 백엔드(PG/CH) 모름(ADR-003).
 
-### 7.2 라우트
+### 7.2 라우트 (역할 축 IA — 2026-07-02 개편)
 ```
 app/
 ├── (auth)/login/page.tsx                # Auth.js
-├── (dashboard)/{layout,page,me,leaderboard}
+├── (dashboard)/
+│   ├── page.tsx                          # 내 사용량 (랜딩 — 멤버 관점 우선)
+│   ├── org/page.tsx                      # 전체 현황 — 탭: 개요 | 순위(개인·팀)
+│   ├── settings/page.tsx                 # 설정 — 탭: 계정 | 설치·토큰
+│   ├── admin/page.tsx                    # 관리(admin 전용) — 멤버 목록·초대 (수집 상태·도구는 2차 확장 자리)
+│   └── {me,onboarding,leaderboard}/      # 구 경로 — 리다이렉트(호환)
 └── api/
     ├── v1/logs/route.ts                  # OTLP/JSON 수신 — OTEL push (metrics 1차 미구현)
     ├── v1/events/route.ts                # 정규화 UsageEvent[] 수신 — shim pull (2차, §5.6)
@@ -506,16 +512,17 @@ app/
 ```
 
 ### 7.3 1차 화면
-- **① 개요(`/`)**: KPI(총비용·총토큰·세션수·**활성 사용자**) + 일별 시계열 + 미니 리더보드. `getOverview`+`getDailyTimeseries`+`getLeaderboard`.
-- **② 마이페이지(`/me`)**: 개인 KPI + 시계열 + **모델별 분해**. `getUserUsage`(`{overview, daily, byModel}`).
-- **③ 리더보드/부서별(`/leaderboard`)**: 개인↔부서 토글, 정렬, 부서 비교 막대 + 부서 시계열. `getLeaderboard({scope})` + `getDailyTimeseries({scope:'department'})`.
-- **④ 로그인(`/login`)**: Auth.js, 도메인 제한, setup(토큰 발급 + shim 설치).
+- **① 내 사용량(`/`, 랜딩)**: 개인 KPI + 일별 시계열 + **모델별 분해**. 미설치(토큰 없음/수신 이력 없음) 시 빈 상태에 설치 CTA. `getUserUsage`.
+- **② 전체 현황(`/org`)**: **개요 탭** — KPI(총비용·총토큰·세션수·활성 사용자) + 일별 시계열 + 상위 사용자(→ 순위 탭 링크). **순위 탭** — 개인↔팀 토글, 비교 막대 + 순위 테이블. `getOverview`+`getDailyTimeseries`+`getLeaderboard`.
+- **③ 설정(`/settings`)**: 계정(비밀번호) · 설치·토큰(shim 설치, 구 온보딩) 탭.
+- **④ 관리(`/admin`, admin 전용)**: 멤버 목록(역할·팀·**마지막 수신** = 수집 연결 상태) + 초대. 서버 가드(비 admin 은 `/` 리다이렉트).
+- **⑤ 로그인(`/login`)**: Auth.js, 도메인 제한.
 
 ### 7.4 공통/상태
-- `DateRangeFilter`(조직 타임존 기준, ADR-008), `ProviderFilter`. shadcn/ui + Recharts. TanStack Query(staleTime 30~60s). 필터는 URL searchParams.
+- `PageHeader`(제목 + 우측 필터) · `LinkTabs`(URL 쿼리 기반 탭 — shadcn Tabs 스타일 미러) · `DashboardFilters`(기간 세그먼트 + 도구 셀렉트, providers 테이블 동적 로딩). shadcn/ui + Recharts. 필터·탭은 URL searchParams(페이지 스코프).
 
 ### 7.5 권한
-- `member`: 자기 마이페이지 + 공개 리더보드. `admin`: 전체 + 사용자/부서/프로바이더/토큰 관리. role은 **Auth.js 세션 클레임**으로 서버 검증.
+- `member`: 내 사용량 + 공개 전체 현황. `admin`: 전체 + 관리(`/admin` — 멤버·초대, 향후 수집 상태·도구·토큰 관리). role은 **Auth.js 세션 클레임**으로 서버 검증.
 
 ### 7.6 온보딩
 1. `/login`(Auth.js, 도메인 제한) → 2. 첫 로그인 시 `users` 생성 → 3. setup에서 `POST /api/tokens`로 ingest_token 발급(평문 1회) + OS별 shim 설치 → 4. 첫 텔레메트리 도착 시 `user_id` 매칭 → 5. 미식별(`NULL`) 이벤트는 email 매칭으로 소급.
@@ -559,7 +566,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 |---|---|
 | **1차 (MVP)** | shim(env 주입) + OTLP push 수신(Claude Code, JSON) · PG 단일 · LiteLLM 비용 · 4개 화면 · Auth.js. **수렴 아키텍처(`UsageEvent[]`) 검증.** |
 | **공개 준비 (OSS, v4)** | **완료:** 타임존 설정화(ADR-008) · 예시 값 중립화 · LICENSE=MIT(§12.1) · PR 검증 CI(typecheck·test + shim clippy) · SECURITY.md · CONTRIBUTING.md · 이슈/PR 템플릿. **남은 것:** NOTICE(ccusage 벤더링 시) · i18n 백로그(§12.2) |
-| **2차 (범용 수집)** | **fat shim(Rust) + ccusage 어댑터 벤더링 → 로컬 로그 pull(`/api/v1/events`)** · Codex(config.toml 주입) · 비-OTEL 도구 대량 확장(Gemini·Qwen·Copilot·OpenCode·Goose·… 실사용분부터 `enabled`) · 부서 이동 이력 · OTEL Collector(유실 문제화 시) |
+| **2차 (범용 수집)** | **fat shim(Rust) + ccusage 어댑터 벤더링 → 로컬 로그 pull(`/api/v1/events`)** · Codex(config.toml 주입) · 비-OTEL 도구 대량 확장(Gemini·Qwen·Copilot·OpenCode·Goose·… 실사용분부터 `enabled`) · 팀 이동 이력 · OTEL Collector(유실 문제화 시) |
 | **3차 (스케일·기능)** | ClickHouse 모드 · 중앙 설정 배포(shim watch-list 핸드셰이크 포함) · LLM 분류/해석 |
 
 ---

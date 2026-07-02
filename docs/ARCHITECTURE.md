@@ -558,7 +558,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 | 단계 | 내용 |
 |---|---|
 | **1차 (MVP)** | shim(env 주입) + OTLP push 수신(Claude Code, JSON) · PG 단일 · LiteLLM 비용 · 4개 화면 · Auth.js. **수렴 아키텍처(`UsageEvent[]`) 검증.** |
-| **공개 준비 (OSS, v4)** | 타임존 설정화(`ORG_TIMEZONE`, 완료 — ADR-008) · 예시 값 중립화(완료) · **LICENSE = MIT**(완료, §12.1 — NOTICE 는 ccusage 벤더링 시) · PR 검증 CI(typecheck·test) · SECURITY.md · CONTRIBUTING.md · i18n은 백로그(§12.2) |
+| **공개 준비 (OSS, v4)** | **완료:** 타임존 설정화(ADR-008) · 예시 값 중립화 · LICENSE=MIT(§12.1) · PR 검증 CI(typecheck·test + shim clippy) · SECURITY.md · CONTRIBUTING.md · 이슈/PR 템플릿. **남은 것:** NOTICE(ccusage 벤더링 시) · i18n 백로그(§12.2) |
 | **2차 (범용 수집)** | **fat shim(Rust) + ccusage 어댑터 벤더링 → 로컬 로그 pull(`/api/v1/events`)** · Codex(config.toml 주입) · 비-OTEL 도구 대량 확장(Gemini·Qwen·Copilot·OpenCode·Goose·… 실사용분부터 `enabled`) · 부서 이동 이력 · OTEL Collector(유실 문제화 시) |
 | **3차 (스케일·기능)** | ClickHouse 모드 · 중앙 설정 배포(shim watch-list 핸드셰이크 포함) · LLM 분류/해석 |
 
@@ -604,8 +604,8 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 ### 12.2 언어 정책
 - **한국어 1급**(문서·UI·커밋). 영어 README·UI i18n은 **백로그**로 관리(GitHub Projects) — 다국어화 시 next-intl류 도입과 UI 문자열(~320곳) 추출이 선행 과제.
 
-### 12.3 공개 체크리스트
-- `LICENSE`(+`NOTICE`) · `SECURITY.md`(취약점 신고 채널 — 인증·토큰을 다루므로 필수) · `CONTRIBUTING.md` · 이슈/PR 템플릿 · **PR 검증 CI**(typecheck·test — 현재 릴리스·cron 워크플로만 존재).
+### 12.3 공개 체크리스트 (2026-07-02 구비 완료)
+- `LICENSE`(MIT) · `SECURITY.md`(GitHub 비공개 advisory 신고 채널 — 인증·토큰을 다루므로 필수) · `CONTRIBUTING.md` · 이슈/PR 템플릿 · **PR 검증 CI**(`ci.yml` — typecheck·test; shim 은 `shim-ci.yml` paths 필터로 clippy·build). `NOTICE` 만 ccusage 벤더링 시점(2차)에 추가.
 - 조직 고유 값 하드코딩 금지(§1.3-6): 타임존(ADR-008)·이메일 도메인·데모 데이터는 env/예시값(example.com)으로 완료.
 
 ### 12.4 배포 채널

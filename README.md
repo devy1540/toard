@@ -134,6 +134,10 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build   # → http
 - **타임존:** 일별 집계 "하루" 경계는 `ORG_TIMEZONE`(IANA, 기본 UTC)으로 설정 — 예: `ORG_TIMEZONE=Asia/Seoul` (ADR-008)
 - 자세한 근거·검토 이력은 설계 문서 §2(ADR) 참조.
 
+## 기여 · 보안
+
+기여 가이드는 [CONTRIBUTING.md](CONTRIBUTING.md), 취약점 신고는 [SECURITY.md](SECURITY.md)(비공개 advisory)를 참고.
+
 ## 라이선스
 
 [MIT](LICENSE)

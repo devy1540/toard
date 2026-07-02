@@ -1,0 +1,25 @@
+name: 기능 제안 (Feature request)
+description: 새 기능·개선 제안 (새 프로바이더/도구 지원 요청 포함)
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 어떤 문제를 풀고 싶나요?
+      description: 배경과 사용 시나리오를 적어 주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 제안하는 방식
+      description: 생각해 둔 접근이 있다면. (설계 문서 docs/ARCHITECTURE.md 의 관련 섹션이 있으면 링크)
+    validations:
+      required: false
+  - type: input
+    id: tool
+    attributes:
+      label: (프로바이더 요청 시) 도구 이름과 로그/텔레메트리 방식
+      placeholder: 예) Gemini CLI — ~/.gemini 로컬 로그 / OTEL 미지원
+    validations:
+      required: false

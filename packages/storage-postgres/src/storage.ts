@@ -16,7 +16,7 @@ import { Pool, type PoolClient } from "pg";
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
-type ScopedQuery = PeriodQuery & { userId?: string; departmentId?: string };
+type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
 
 export interface PostgresStorageOptions {
   /** 일별 집계의 "하루" 경계 타임존 (IANA, ADR-008). 기본 UTC. */
@@ -45,9 +45,9 @@ export class PostgresStorage implements StorageBackend {
       params.push(q.userId);
       conds.push(`user_id = $${params.length}`);
     }
-    if (q.departmentId) {
-      params.push(q.departmentId);
-      conds.push(`department_id = $${params.length}`);
+    if (q.teamId) {
+      params.push(q.teamId);
+      conds.push(`team_id = $${params.length}`);
     }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
@@ -66,8 +66,8 @@ export class PostgresStorage implements StorageBackend {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      // user_id → 현재 department_id 를 이벤트에 비정규화(수집 시점 스냅샷, 설계 §4.3)
-      const deptMap = await this.departmentMap(
+      // user_id → 현재 team_id 를 이벤트에 비정규화(수집 시점 스냅샷, 설계 §4.3)
+      const deptMap = await this.teamMap(
         client,
         events.map((e) => e.userId).filter((x): x is string => !!x),
       );
@@ -75,7 +75,7 @@ export class PostgresStorage implements StorageBackend {
       for (const e of events) {
         const r = await client.query(
           `INSERT INTO usage_events
-             (dedup_key, provider_key, user_id, department_id, session_id, model, ts,
+             (dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
            ON CONFLICT (dedup_key) DO NOTHING`,
@@ -101,16 +101,16 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
-  /** user_id → 현재 department_id (없으면 제외) */
-  private async departmentMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
+  /** user_id → 현재 team_id (없으면 제외) */
+  private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
     if (userIds.length === 0) return new Map();
     const uniq = [...new Set(userIds)];
-    const r = await client.query<{ id: string; department_id: string | null }>(
-      "SELECT id, department_id FROM users WHERE id = ANY($1)",
+    const r = await client.query<{ id: string; team_id: string | null }>(
+      "SELECT id, team_id FROM users WHERE id = ANY($1)",
       [uniq],
     );
     const m = new Map<string, string>();
-    for (const row of r.rows) if (row.department_id) m.set(row.id, row.department_id);
+    for (const row of r.rows) if (row.team_id) m.set(row.id, row.team_id);
     return m;
   }
 
@@ -162,19 +162,19 @@ export class PostgresStorage implements StorageBackend {
           [day, this.tz],
         );
 
-        // ── 부서별 일별 집계 — 이벤트의 비정규화 department_id 기준(시점 귀속, JOIN users 제거) ──
-        await client.query("DELETE FROM usage_daily_department WHERE day = $1::date", [day]);
+        // ── 팀별 일별 집계 — 이벤트의 비정규화 team_id 기준(시점 귀속, JOIN users 제거) ──
+        await client.query("DELETE FROM usage_daily_team WHERE day = $1::date", [day]);
         await client.query(
-          `INSERT INTO usage_daily_department
-             (department_id, day, provider_key, request_count, active_users, sessions,
+          `INSERT INTO usage_daily_team
+             (team_id, day, provider_key, request_count, active_users, sessions,
               input_tokens, output_tokens, cost_usd)
-           SELECT department_id, $1::date, provider_key,
+           SELECT team_id, $1::date, provider_key,
                   COUNT(*), COUNT(DISTINCT user_id), COUNT(DISTINCT session_id),
                   SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
            FROM usage_events
-           WHERE department_id IS NOT NULL
+           WHERE team_id IS NOT NULL
              AND (ts AT TIME ZONE $2)::date = $1::date
-           GROUP BY department_id, provider_key`,
+           GROUP BY team_id, provider_key`,
           [day, this.tz],
         );
 
@@ -249,9 +249,9 @@ export class PostgresStorage implements StorageBackend {
     return this.overviewQuery(q);
   }
 
-  // scope='department' + departmentId 는 periodWhere 가 비정규화 department_id 로 필터.
+  // scope='team' + teamId 는 periodWhere 가 비정규화 team_id 로 필터.
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; departmentId?: string },
+    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]> {
     return this.dailyQuery(q);
   }
@@ -284,8 +284,8 @@ export class PostgresStorage implements StorageBackend {
                   COALESCE(SUM(e.cost_usd),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions
-           FROM usage_events e JOIN departments d ON d.id = e.department_id
-           ${ePrefixed} AND e.department_id IS NOT NULL
+           FROM usage_events e JOIN teams d ON d.id = e.team_id
+           ${ePrefixed} AND e.team_id IS NOT NULL
            GROUP BY d.id, d.name ORDER BY cost DESC LIMIT 100`;
     const res = await this.pool.query(sql, params);
     return res.rows.map((r) => ({

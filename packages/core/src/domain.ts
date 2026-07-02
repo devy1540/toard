@@ -7,12 +7,12 @@ export interface User {
   id: string;
   email: string;
   name: string | null;
-  departmentId: string | null;
+  teamId: string | null;
   role: Role;
   createdAt: Date;
 }
 
-export interface Department {
+export interface Team {
   id: string;
   name: string;
   parentId: string | null;

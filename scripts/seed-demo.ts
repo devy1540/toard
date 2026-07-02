@@ -1,4 +1,4 @@
-// 데모 시드: 부서·멤버·사용량 이벤트를 넣어 리더보드 부서 모드를 채운다.
+// 데모 시드: 팀·멤버·사용량 이벤트를 넣어 리더보드 팀 모드를 채운다.
 // 운영 seed(scripts/seed.ts)와 분리된 데모 전용. 멱등(dedup_key/email ON CONFLICT).
 import "dotenv/config"; // 루트 .env 로드 (셸 env 우선)
 import { createHash } from "node:crypto";
@@ -19,16 +19,16 @@ const PRICE: Record<string, [number, number]> = {
 const MODELS = Object.keys(PRICE);
 
 async function deptId(name: string): Promise<string> {
-  const ex = await pool.query<{ id: string }>("SELECT id FROM departments WHERE name = $1", [name]);
+  const ex = await pool.query<{ id: string }>("SELECT id FROM teams WHERE name = $1", [name]);
   if (ex.rows[0]) return ex.rows[0].id;
-  const r = await pool.query<{ id: string }>("INSERT INTO departments (name) VALUES ($1) RETURNING id", [name]);
+  const r = await pool.query<{ id: string }>("INSERT INTO teams (name) VALUES ($1) RETURNING id", [name]);
   return r.rows[0]!.id;
 }
 
 async function userId(email: string, name: string, dept: string): Promise<string> {
   const r = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, name, department_id, role) VALUES ($1, $2, $3, 'member')
-     ON CONFLICT (email) DO UPDATE SET department_id = $3, name = $2 RETURNING id`,
+    `INSERT INTO users (email, name, team_id, role) VALUES ($1, $2, $3, 'member')
+     ON CONFLICT (email) DO UPDATE SET team_id = $3, name = $2 RETURNING id`,
     [email, name, dept],
   );
   return r.rows[0]!.id;
@@ -53,17 +53,17 @@ async function main(): Promise<void> {
           const dedup = createHash("sha256").update(`demo-${uid}-${seq}`).digest("hex");
           await pool.query(
             `INSERT INTO usage_events
-               (dedup_key, provider_key, user_id, session_id, model, ts, input_tokens, output_tokens, cost_usd)
-             VALUES ($1, 'claude_code', $2, $3, $4, $5, $6, $7, $8)
+               (dedup_key, provider_key, user_id, team_id, session_id, model, ts, input_tokens, output_tokens, cost_usd)
+             VALUES ($1, 'claude_code', $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (dedup_key) DO NOTHING`,
-            [dedup, uid, `demo-${uid}-${day}`, model, ts, input, output, cost],
+            [dedup, uid, dept, `demo-${uid}-${day}`, model, ts, input, output, cost],
           );
         }
       }
       console.log(`✓ ${name} (${d.name})`);
     }
   }
-  console.log("데모 시드 완료 — 부서 3 · 멤버 4");
+  console.log("데모 시드 완료 — 팀 3 · 멤버 4");
   await pool.end();
 }
 

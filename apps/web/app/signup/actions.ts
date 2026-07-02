@@ -46,8 +46,8 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
   }
 
   try {
-    // 가입 직후 설치(온보딩)로 안착
-    await signIn("credentials", { email, password, redirectTo: "/onboarding" });
+    // 가입 직후 설치(설정의 설치 탭)로 안착
+    await signIn("credentials", { email, password, redirectTo: "/settings?tab=install" });
     return {};
   } catch (e) {
     if (e instanceof AuthError) {

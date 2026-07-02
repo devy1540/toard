@@ -20,7 +20,7 @@ const n = (v: unknown): number => (v == null ? 0 : Number(v));
 /** UTC Date → ClickHouse DateTime64 문자열 'YYYY-MM-DD HH:mm:ss.SSS' */
 const chTs = (d: Date): string => d.toISOString().replace("T", " ").replace("Z", "");
 
-type ScopedQuery = PeriodQuery & { userId?: string; departmentId?: string };
+type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
 type Params = Record<string, unknown>;
 
 export interface ClickHouseStorageOptions {
@@ -45,7 +45,7 @@ interface AggRow {
 /**
  * ClickHouse 저장 백엔드 (설계 §4.3, ADR-003 옵트인).
  * 이벤트·집계는 CH(ReplacingMergeTree, 읽기 시 FINAL), 메타(이름)는 PG 에서 머지.
- * 부서 귀속은 수집 시점 department_id 를 이벤트에 비정규화해 CH 단독 GROUP BY 로 성립.
+ * 팀 귀속은 수집 시점 team_id 를 이벤트에 비정규화해 CH 단독 GROUP BY 로 성립.
  */
 export class ClickHouseStorage implements StorageBackend {
   private readonly tz: string;
@@ -70,9 +70,9 @@ export class ClickHouseStorage implements StorageBackend {
       conds.push("user_id = {uid:String}");
       params.uid = q.userId;
     }
-    if (q.departmentId) {
-      conds.push("department_id = {did:String}");
-      params.did = q.departmentId;
+    if (q.teamId) {
+      conds.push("team_id = {did:String}");
+      params.did = q.teamId;
     }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
@@ -106,8 +106,8 @@ export class ClickHouseStorage implements StorageBackend {
     const fresh = events.filter((e) => !existing.has(e.dedupKey));
     if (fresh.length === 0) return { inserted: 0, deduped: events.length };
 
-    // 2) user_id → department_id (PG, 수집 시점 스냅샷)
-    const deptMap = await this.departmentMap(
+    // 2) user_id → team_id (PG, 수집 시점 스냅샷)
+    const deptMap = await this.teamMap(
       fresh.map((e) => e.userId).filter((x): x is string => !!x),
     );
 
@@ -118,7 +118,7 @@ export class ClickHouseStorage implements StorageBackend {
         dedup_key: e.dedupKey,
         provider_key: e.providerKey,
         user_id: e.userId ?? "",
-        department_id: e.userId ? (deptMap.get(e.userId) ?? "") : "",
+        team_id: e.userId ? (deptMap.get(e.userId) ?? "") : "",
         session_id: e.sessionId ?? "",
         model: e.model ?? "",
         ts: chTs(e.ts),
@@ -141,15 +141,15 @@ export class ClickHouseStorage implements StorageBackend {
     return new Set(rows.map((r) => r.dedup_key));
   }
 
-  private async departmentMap(userIds: string[]): Promise<Map<string, string>> {
+  private async teamMap(userIds: string[]): Promise<Map<string, string>> {
     if (userIds.length === 0) return new Map();
     const uniq = [...new Set(userIds)];
-    const rs = await this.pg.query<{ id: string; department_id: string | null }>(
-      "SELECT id, department_id FROM users WHERE id = ANY($1)",
+    const rs = await this.pg.query<{ id: string; team_id: string | null }>(
+      "SELECT id, team_id FROM users WHERE id = ANY($1)",
       [uniq],
     );
     const m = new Map<string, string>();
-    for (const r of rs.rows) if (r.department_id) m.set(r.id, r.department_id);
+    for (const r of rs.rows) if (r.team_id) m.set(r.id, r.team_id);
     return m;
   }
 
@@ -223,7 +223,7 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; departmentId?: string },
+    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]> {
     return this.dailyQuery(q);
   }
@@ -240,7 +240,7 @@ export class ClickHouseStorage implements StorageBackend {
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]> {
     const { where, params } = this.periodWhere(q);
-    const col = q.scope === "user" ? "user_id" : "department_id";
+    const col = q.scope === "user" ? "user_id" : "team_id";
     const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string }>(
       `SELECT ${col} AS key,
               sum(cost_usd)                             AS cost,
@@ -268,7 +268,7 @@ export class ClickHouseStorage implements StorageBackend {
     const sql =
       scope === "user"
         ? "SELECT id::text AS id, COALESCE(name, email) AS label FROM users WHERE id = ANY($1)"
-        : "SELECT id::text AS id, name AS label FROM departments WHERE id = ANY($1)";
+        : "SELECT id::text AS id, name AS label FROM teams WHERE id = ANY($1)";
     const rs = await this.pg.query<{ id: string; label: string }>(sql, [ids]);
     return new Map(rs.rows.map((r) => [r.id, r.label]));
   }

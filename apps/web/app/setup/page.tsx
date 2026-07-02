@@ -15,7 +15,7 @@ export default async function SetupPage() {
         <CardHeader>
           <CardTitle className="text-xl">toard 초기 설정</CardTitle>
           <CardDescription>
-            첫 관리자 계정을 만듭니다. 이 계정이 조직 대시보드를 운영합니다.
+            첫 관리자 계정을 만듭니다. 이 계정이 대시보드를 운영합니다.
           </CardDescription>
         </CardHeader>
         <CardContent>

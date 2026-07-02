@@ -1,5 +1,5 @@
 // StorageBackend — 수집·대시보드가 의존하는 유일한 데이터 액세스 계약 (설계 §4.1, ADR-003).
-// 메타(users/departments) CRUD·인증은 인터페이스 밖(항상 PG). 여기는 "이벤트 저장 + 분석 쿼리"만.
+// 메타(users/teams) CRUD·인증은 인터페이스 밖(항상 PG). 여기는 "이벤트 저장 + 분석 쿼리"만.
 
 export interface PeriodQuery {
   /** UTC, inclusive */
@@ -63,7 +63,7 @@ export interface ModelBreakdown {
 }
 
 export interface LeaderRow {
-  /** userId 또는 departmentId */
+  /** userId 또는 teamId */
   key: string;
   /** 표시 이름 */
   label: string;
@@ -72,8 +72,8 @@ export interface LeaderRow {
   sessions: number;
 }
 
-export type LeaderScope = "user" | "department";
-export type TimeseriesScope = "all" | "department";
+export type LeaderScope = "user" | "team";
+export type TimeseriesScope = "all" | "team";
 
 export interface SaveResult {
   inserted: number;
@@ -98,7 +98,7 @@ export interface StorageBackend {
   // ── 읽기 (대시보드) ──
   getOverview(q: PeriodQuery): Promise<OverviewStats>;
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; departmentId?: string },
+    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage>;
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;

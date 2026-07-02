@@ -13,11 +13,11 @@ const pg = new Pool({
 async function main(): Promise<void> {
   const s = createClickHouseStorage(pg);
 
-  const u = await pg.query<{ id: string; department_id: string | null }>(
-    "SELECT id, department_id FROM users WHERE department_id IS NOT NULL LIMIT 1",
+  const u = await pg.query<{ id: string; team_id: string | null }>(
+    "SELECT id, team_id FROM users WHERE team_id IS NOT NULL LIMIT 1",
   );
   const userId = u.rows[0]?.id ?? null;
-  console.log("PG user:", userId, "/ dept:", u.rows[0]?.department_id ?? "(none)");
+  console.log("PG user:", userId, "/ dept:", u.rows[0]?.team_id ?? "(none)");
 
   const now = new Date();
   const ev = {
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
   console.log("overview:", await s.getOverview({ from, to }));
   console.log("daily:", await s.getDailyTimeseries({ from, to }));
   console.log("leaderboard(user):", await s.getLeaderboard({ from, to, scope: "user" }));
-  console.log("leaderboard(dept):", await s.getLeaderboard({ from, to, scope: "department" }));
+  console.log("leaderboard(dept):", await s.getLeaderboard({ from, to, scope: "team" }));
 
   await pg.end();
   process.exit(0);

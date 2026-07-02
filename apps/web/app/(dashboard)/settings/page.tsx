@@ -1,39 +1,58 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
+import { LinkTabs } from "@/components/dashboard/link-tabs";
+import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getPool } from "@/lib/db";
-import { listPendingInvites } from "@/lib/invites";
-import { getPublicBaseUrl } from "@/lib/public-url";
-import { InvitePanel } from "./invite-panel";
+import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
+import { getActiveTokenMeta } from "@/lib/tokens";
+import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage() {
+type Tab = "account" | "install";
+
+/** 설정 — 계정·설치 탭 (멤버 관리는 /admin 으로 분리, 역할 축 개편). */
+export default async function SettingsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ tab?: string }>;
+}) {
   // 실제 세션 필수 — 폴백 신원으로는 접근 불가.
   const session = await auth();
   const userId = session?.user?.id;
   if (!userId) redirect("/login");
 
-  const r = await getPool().query<{ email: string; password_hash: string | null; role: string }>(
-    "SELECT email, password_hash, role FROM users WHERE id = $1",
+  const r = await getPool().query<{ email: string; password_hash: string | null }>(
+    "SELECT email, password_hash FROM users WHERE id = $1",
     [userId],
   );
   const email = r.rows[0]?.email ?? null;
   const hasPassword = Boolean(r.rows[0]?.password_hash);
-  const isAdmin = r.rows[0]?.role === "admin";
 
-  const [baseUrl, pending] = isAdmin
-    ? await Promise.all([getPublicBaseUrl(), listPendingInvites()])
-    : ["", []];
+  const tab: Tab = (await searchParams).tab === "install" ? "install" : "account";
 
   return (
-    <div className="mx-auto max-w-lg space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold">설정</h1>
-        {email ? <p className="text-muted-foreground text-sm">{email}</p> : null}
-      </div>
+    <div className="space-y-6">
+      <PageHeader title="설정" description={email ?? undefined} />
 
+      <LinkTabs
+        active={tab}
+        tabs={[
+          { value: "account", label: "계정", href: "/settings?tab=account" },
+          { value: "install", label: "설치 · 토큰", href: "/settings?tab=install" },
+        ]}
+      />
+
+      {tab === "account" ? <AccountTab hasPassword={hasPassword} /> : <InstallTab userId={userId} />}
+    </div>
+  );
+}
+
+function AccountTab({ hasPassword }: { hasPassword: boolean }) {
+  return (
+    <div className="grid items-start gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>{hasPassword ? "비밀번호 변경" : "비밀번호 설정"}</CardTitle>
@@ -47,27 +66,54 @@ export default async function SettingsPage() {
           <PasswordForm hasPassword={hasPassword} />
         </CardContent>
       </Card>
+    </div>
+  );
+}
 
-      {isAdmin ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>멤버 초대</CardTitle>
-            <CardDescription>
-              초대 링크를 만들어 전달하면, 받은 사람이 비밀번호를 설정해 가입하고 설치까지 이어집니다.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <InvitePanel
-              baseUrl={baseUrl}
-              pending={pending.map((p) => ({
-                email: p.email,
-                role: p.role,
-                expiresAt: p.expiresAt.toISOString(),
-              }))}
-            />
-          </CardContent>
-        </Card>
-      ) : null}
+async function InstallTab({ userId }: { userId: string }) {
+  const [meta, endpoint, baseUrl] = await Promise.all([
+    getActiveTokenMeta(userId),
+    getIngestEndpoint(),
+    getPublicBaseUrl(),
+  ]);
+
+  return (
+    <div className="grid items-start gap-4 lg:grid-cols-3">
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <CardTitle>내 토큰 발급 · 설치</CardTitle>
+          <CardDescription>
+            내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를
+            설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <OnboardingPanel
+            baseUrl={baseUrl}
+            endpoint={endpoint}
+            hasToken={Boolean(meta)}
+            createdAt={meta?.createdAt.toISOString() ?? null}
+            lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+          />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>확인</CardTitle>
+          <CardDescription>설치가 되었는지 점검합니다.</CardDescription>
+        </CardHeader>
+        <CardContent className="text-muted-foreground space-y-1 text-sm">
+          <p>
+            • <code>which claude</code> → <code>~/.toard/bin/claude</code> 가 먼저 잡혀야 합니다(shim
+            우선).
+          </p>
+          <p>
+            • 이후 <code>claude</code> 사용 시 <a className="text-primary underline-offset-4 hover:underline" href="/">내 사용량</a> 에 쌓입니다.
+          </p>
+          <p>• 전제: 실제 Claude Code/Codex 가 설치되어 있어야 하며, 그 CLI 의 텔레메트리를 수집합니다.</p>
+        </CardContent>
+      </Card>
     </div>
   );
 }

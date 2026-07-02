@@ -46,7 +46,7 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 ## shim 설치 (사용량 수집)
 
-개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지).
+개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지). **프롬프트·코드 내용은 수집하지 않는다** — 토큰 수·모델·비용 등 사용량 메타데이터만 전송된다. 설치 후에는 **설정 → 설치 · 토큰 탭의 "연결 확인"** 으로 실제 수신 여부를 즉시 점검할 수 있다.
 
 **사용자(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 본인 토큰 + 설치 스니펫을 복사한다. 관리자는 toard 링크만 공유하면 각 사용자가 자기 토큰으로 셀프 온보딩한다(사용량이 본인 계정에 귀속).
 
@@ -118,6 +118,8 @@ AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정
 - **그 외/self-host**: `.github/workflows/cron.yml` 이 `secrets.APP_URL`·`secrets.CRON_SECRET` 로 엔드포인트를 호출(둘 중 하나만 활성화).
 
 `CRON_SECRET` 미설정 시 엔드포인트가 인증 없이 열리므로 **프로덕션에선 반드시 설정**. `recompute` 는 Mart 를 서빙에 쓸 때만 등록(현재 event-direct 라 불필요 — §4.4).
+
+cron 등록 전이거나 실패했다면 **관리 → 시스템 탭에서 수동 동기화**할 수 있다(모델 수·마지막 동기화 시각 표시). 가격이 비어 있으면 비용이 $0 으로 계산되므로 대시보드에 경고가 표시된다.
 
 ## 배포 (Docker · Kubernetes · Helm)
 

@@ -2,11 +2,21 @@
 // npx @toard/shim — 현재 OS/arch 를 감지해 GitHub Release 바이너리를
 // ~/.toard/bin/{claude,codex} 로 설치한다 (install.sh 의 npx 등가물).
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const REPO = process.env.TOARD_REPO ?? "devy1540/toard";
+
+// 패키지 버전으로 릴리스를 고정 — `npx @toard/shim@X.Y.Z` 가 정확히 vX.Y.Z 바이너리를 설치한다.
+// 0.0.0(개발 트리) 또는 TOARD_SHIM_VERSION=latest 는 latest 로 폴백.
+const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const rawVersion = process.env.TOARD_SHIM_VERSION ?? (pkg.version && pkg.version !== "0.0.0" ? pkg.version : "latest");
+const version = rawVersion === "latest" || rawVersion.startsWith("v") ? rawVersion : `v${rawVersion}`;
+const releaseBase =
+  version === "latest"
+    ? `https://github.com/${REPO}/releases/latest/download`
+    : `https://github.com/${REPO}/releases/download/${version}`;
 
 const TARGETS = {
   "darwin-arm64": "aarch64-apple-darwin",
@@ -24,9 +34,9 @@ if (!target) {
 }
 
 const binDir = process.env.TOARD_BIN_DIR ?? join(homedir(), ".toard", "bin");
-const url = `https://github.com/${REPO}/releases/latest/download/toard-shim-${target}`;
+const url = `${releaseBase}/toard-shim-${target}`;
 
-console.log(`toard: ${target} 바이너리 다운로드 중…`);
+console.log(`toard: ${target} 바이너리 다운로드 중… (${version})`);
 const res = await fetch(url, { redirect: "follow" });
 if (!res.ok) {
   console.error(`toard: 다운로드 실패 (HTTP ${res.status})\n  ${url}`);
@@ -35,7 +45,7 @@ if (!res.ok) {
 const buf = Buffer.from(await res.arrayBuffer());
 
 // 무결성 검증 — 릴리즈 SHA256SUMS 대조 (공급망/MITM 방지)
-const sumsRes = await fetch(`https://github.com/${REPO}/releases/latest/download/SHA256SUMS`, {
+const sumsRes = await fetch(`${releaseBase}/SHA256SUMS`, {
   redirect: "follow",
 });
 if (!sumsRes.ok) {

@@ -56,7 +56,7 @@ if [ "$expected" != "$actual" ]; then
 fi
 rm -f "$sums"
 
-chmod +x "$tmp"
+chmod 755 "$tmp"
 mv "$tmp" "$BIN_DIR/claude"
 ln -sf "$BIN_DIR/claude" "$BIN_DIR/codex"
 

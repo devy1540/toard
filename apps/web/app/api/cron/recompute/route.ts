@@ -1,4 +1,4 @@
-import { kstDate } from "@/lib/kst";
+import { orgDate } from "@/lib/org-time";
 import { getStorage } from "@/lib/storage";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +18,7 @@ export async function GET(req: Request): Promise<Response> {
     }
   }
 
-  const days = [{ day: kstDate(-1) }, { day: kstDate(0) }];
+  const days = [{ day: orgDate(-1) }, { day: orgDate(0) }];
   await getStorage().recomputeDaily(days);
 
   return Response.json({ recomputed: days.map((d) => d.day) });

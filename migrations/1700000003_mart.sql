@@ -3,7 +3,7 @@
 -- 일별 사용자 집계. SUM 지표는 당일 증분, DISTINCT(sessions)는 마감 재계산 (설계 §4.4)
 CREATE TABLE usage_daily_user (
   user_id               UUID NOT NULL REFERENCES users(id),
-  day                   DATE NOT NULL,                 -- KST: (ts AT TIME ZONE 'Asia/Seoul')::date
+  day                   DATE NOT NULL,                 -- 조직 타임존(ORG_TIMEZONE, 기본 UTC) 기준: (ts AT TIME ZONE <tz>)::date
   provider_key          TEXT NOT NULL REFERENCES providers(key),
   request_count         BIGINT NOT NULL DEFAULT 0,
   sessions              INT NOT NULL DEFAULT 0,

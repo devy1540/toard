@@ -13,15 +13,25 @@ import type {
 } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
-const KST = "Asia/Seoul";
-
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
 type ScopedQuery = PeriodQuery & { userId?: string; departmentId?: string };
 
+export interface PostgresStorageOptions {
+  /** 일별 집계의 "하루" 경계 타임존 (IANA, ADR-008). 기본 UTC. */
+  timezone?: string;
+}
+
 export class PostgresStorage implements StorageBackend {
-  constructor(private readonly pool: Pool) {}
+  private readonly tz: string;
+
+  constructor(
+    private readonly pool: Pool,
+    opts: PostgresStorageOptions = {},
+  ) {
+    this.tz = opts.timezone ?? "UTC";
+  }
 
   // ── 공통 WHERE 빌더 ──
   private periodWhere(q: ScopedQuery): { where: string; params: unknown[] } {
@@ -120,7 +130,7 @@ export class PostgresStorage implements StorageBackend {
          cache_read_tokens     = usage_daily_user.cache_read_tokens + EXCLUDED.cache_read_tokens,
          cache_creation_tokens = usage_daily_user.cache_creation_tokens + EXCLUDED.cache_creation_tokens,
          cost_usd              = usage_daily_user.cost_usd + EXCLUDED.cost_usd`,
-      [e.userId, e.ts, KST, e.providerKey,
+      [e.userId, e.ts, this.tz, e.providerKey,
        e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd],
     );
   }
@@ -147,9 +157,9 @@ export class PostgresStorage implements StorageBackend {
                   SUM(cache_creation_tokens), SUM(cost_usd)
            FROM usage_events
            WHERE user_id IS NOT NULL
-             AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
+             AND (ts AT TIME ZONE $2)::date = $1::date
            GROUP BY user_id, provider_key`,
-          [day],
+          [day, this.tz],
         );
 
         // ── 부서별 일별 집계 — 이벤트의 비정규화 department_id 기준(시점 귀속, JOIN users 제거) ──
@@ -163,9 +173,9 @@ export class PostgresStorage implements StorageBackend {
                   SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
            FROM usage_events
            WHERE department_id IS NOT NULL
-             AND (ts AT TIME ZONE 'Asia/Seoul')::date = $1::date
+             AND (ts AT TIME ZONE $2)::date = $1::date
            GROUP BY department_id, provider_key`,
-          [day],
+          [day, this.tz],
         );
 
         await client.query("COMMIT");
@@ -202,8 +212,9 @@ export class PostgresStorage implements StorageBackend {
 
   private async dailyQuery(q: ScopedQuery): Promise<DailyPoint[]> {
     const { where, params } = this.periodWhere(q);
+    params.push(this.tz);
     const res = await this.pool.query(
-      `SELECT to_char((ts AT TIME ZONE 'Asia/Seoul')::date, 'YYYY-MM-DD') AS day,
+      `SELECT to_char((ts AT TIME ZONE $${params.length})::date, 'YYYY-MM-DD') AS day,
               COUNT(DISTINCT session_id) AS sessions,
               COALESCE(SUM(cost_usd),0)  AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,

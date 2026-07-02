@@ -47,7 +47,7 @@ export interface OverviewStats {
 }
 
 export interface DailyPoint {
-  /** 'YYYY-MM-DD' (KST) */
+  /** 'YYYY-MM-DD' — 조직 타임존(ORG_TIMEZONE, 기본 UTC) 기준 일자 (ADR-008) */
   day: string;
   sessions: number;
   costUsd: number;

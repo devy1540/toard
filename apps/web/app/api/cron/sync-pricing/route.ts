@@ -1,6 +1,6 @@
 import { fetchLiteLLMPricing } from "@toard/pricing";
 import { getPool } from "@/lib/db";
-import { kstDate } from "@/lib/kst";
+import { orgDate } from "@/lib/org-time";
 import { invalidatePricingCache } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +28,7 @@ export async function GET(req: Request): Promise<Response> {
     return Response.json({ ok: false, kept: "snapshot", error: String(e) });
   }
 
-  const day = kstDate(0);
+  const day = orgDate(0);
   const client = await getPool().connect();
   let upserted = 0;
   try {

@@ -23,6 +23,17 @@ const chTs = (d: Date): string => d.toISOString().replace("T", " ").replace("Z",
 type ScopedQuery = PeriodQuery & { userId?: string; departmentId?: string };
 type Params = Record<string, unknown>;
 
+export interface ClickHouseStorageOptions {
+  /** 일별 집계의 "하루" 경계 타임존 (IANA, ADR-008). 기본 UTC. */
+  timezone?: string;
+}
+
+/** CH 쿼리에 리터럴로 들어가므로 IANA 형식만 허용(주입 방지). 무효 시 UTC. */
+function safeTimezone(tz: string | undefined): string {
+  if (!tz || !/^[A-Za-z0-9_+/-]+$/.test(tz)) return "UTC";
+  return tz;
+}
+
 interface AggRow {
   sessions?: string;
   active_users?: string;
@@ -37,10 +48,15 @@ interface AggRow {
  * 부서 귀속은 수집 시점 department_id 를 이벤트에 비정규화해 CH 단독 GROUP BY 로 성립.
  */
 export class ClickHouseStorage implements StorageBackend {
+  private readonly tz: string;
+
   constructor(
     private readonly ch: ClickHouseClient,
     private readonly pg: Pool,
-  ) {}
+    opts: ClickHouseStorageOptions = {},
+  ) {
+    this.tz = safeTimezone(opts.timezone);
+  }
 
   // ── 공통 ──
   private periodWhere(q: ScopedQuery): { where: string; params: Params } {
@@ -165,7 +181,7 @@ export class ClickHouseStorage implements StorageBackend {
   private async dailyQuery(q: ScopedQuery): Promise<DailyPoint[]> {
     const { where, params } = this.periodWhere(q);
     const rows = await this.queryJson<{ day: string } & AggRow>(
-      `SELECT toString(toDate(ts, 'Asia/Seoul'))              AS day,
+      `SELECT toString(toDate(ts, '${this.tz}'))              AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
               sum(cost_usd)     AS cost,
               sum(input_tokens) AS input,
@@ -259,12 +275,12 @@ export class ClickHouseStorage implements StorageBackend {
 }
 
 /** 환경변수로 CH 클라이언트를 구성해 스토리지를 만든다 (메타용 PG 풀은 주입). */
-export function createClickHouseStorage(pg: Pool): ClickHouseStorage {
+export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
   const ch = createClient({
     url: process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
     username: process.env.CLICKHOUSE_USER ?? "toard",
     password: process.env.CLICKHOUSE_PASSWORD ?? "toard",
     database: process.env.CLICKHOUSE_DB ?? "toard",
   });
-  return new ClickHouseStorage(ch, pg);
+  return new ClickHouseStorage(ch, pg, opts);
 }

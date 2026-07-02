@@ -1,0 +1,27 @@
+name: shim-ci
+
+# shim(Rust) 변경 시에만 도는 PR 검증 — clippy(-D warnings) + build.
+# 릴리스 빌드(4-플랫폼)는 shim-release.yml 이 v* 태그에서 수행한다.
+on:
+  pull_request:
+    paths: ["shim/rust/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: shim/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shim/rust
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo build

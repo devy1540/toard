@@ -17,11 +17,18 @@
 ```sh
 toard-shim doctor                    # 자격 증명·endpoint 연결·토큰 유효성·PATH 순서·codex config 상태 진단
 toard-shim claude-env on|off|status  # ~/.claude/settings.json env 주입 관리
+toard-shim collect [--dry-run]       # 비-OTEL 도구 로컬 로그 수집 → /api/v1/events 전송
 toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를 임베드)
 ```
 `doctor` 의 endpoint 점검은 `POST <endpoint>/v1/logs` 에 빈 OTLP(`{}`)를 보내 연결·인증만 확인한다(레코드 0건 — 부작용 없음, curl 사용).
 
 `claude-env` 는 shim 의 커버리지 갭(PATH 를 거치지 않는 IDE 확장·절대경로·alias 실행)을 메운다 — Claude Code 가 직접 읽는 settings.json 의 `env` 에 동일 OTEL 키를 병합 주입한다. 우리가 넣은 값은 `~/.toard/state/claude-env.json` 에 기록되며, 사용자가 직접 설정했거나 이후 변경한 키는 덮지도 지우지도 않는다(경고만). 토큰이 평문으로 들어가므로 settings.json 은 0600 으로 조정된다.
+
+## 로컬 로그 pull 수집 (§5.6 — 2차)
+비-OTEL 도구(gemini·qwen …)의 로컬 로그를 어댑터로 파싱해 `UsageEvent[]` 로 정규화하고 `POST /api/v1/events` 로 보낸다. 파서는 ccusage(MIT) Rust 어댑터에서 이식(`shim/NOTICE` attribution 참조).
+- **커서**: 로그가 append 가 아니라 세션 파일 제자리 갱신이라, 파일별 stamp(mtime+size) 를 `~/.toard/state/cursors/` 에 기록하고 변한 파일만 재파싱. 재파싱 중복은 dedup_key 멱등 저장이 흡수.
+- **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).
+- **실행 모델**: 데몬 없음. `claude`/`codex` wrap 실행에 편승해 10분 스로틀(double-spawn 분리)로 백그라운드 수집. `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절, `toard-shim collect` 즉시 실행.
 
 ## 자동 업데이트 (ADR-006)
 wrap 실행 경로에는 네트워크가 없다 — 24h 스로틀 파일(`~/.toard/state/last-update-check`)만 확인하고, 주기가 지났으면 업데이터를 double-spawn 으로 백그라운드 분리(좀비 없음)한 뒤 즉시 exec 한다. 업데이터는 releases/latest 의 302 Location 에서 태그를 읽고, 새 버전이면 다운로드 → `SHA256SUMS` 검증 → rename(원자적 교체). 개발 빌드(0.0.0)는 대상 제외.

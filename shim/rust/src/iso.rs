@@ -37,7 +37,6 @@ pub fn epoch_ms_to_iso(ms: i64) -> String {
 /// ISO 8601 부분집합 파싱 → epoch ms.
 /// 허용: `YYYY-MM-DD[T ]HH:MM[:SS[.frac]][Z|±HH[:MM]]` — 오프셋 없으면 UTC 로 간주.
 /// (어댑터 파서가 사용 — ccusage parse_ts_timestamp 대체)
-#[allow(dead_code)]
 pub fn iso_to_epoch_ms(s: &str) -> Option<i64> {
     let s = s.trim();
     let bytes = s.as_bytes();

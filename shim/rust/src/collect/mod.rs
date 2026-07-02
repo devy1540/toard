@@ -4,6 +4,7 @@
 
 pub mod cursor;
 pub mod gemini;
+pub mod gemini_family;
 pub mod post;
 pub mod qwen;
 
@@ -97,7 +98,6 @@ pub fn walk_files(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>, depth: u32)
 }
 
 /// 어댑터 파서의 타임스탬프 폴백용 (ccusage file_modified_timestamp 대체)
-#[allow(dead_code)]
 pub fn file_mtime_ms(path: &Path) -> i64 {
     cursor::stamp(path).map(|s| s.mtime_ms).unwrap_or(0)
 }

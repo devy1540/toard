@@ -1,7 +1,7 @@
 name: shim-ci
 
-# shim 변경 PR/push 검증 — 릴리스(shim-release)는 태그 시에만 돌므로,
-# 여기서 fmt·clippy·test·release build 를 미리 잡는다.
+# shim 변경 PR/push 검증 — 릴리스 빌드(4-플랫폼)는 shim-release.yml 이 v* 태그에서 수행.
+# fmt·clippy(-D warnings)·test·release build 와 설치 스크립트 문법 검사를 미리 잡는다.
 on:
   pull_request:
     paths:
@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 jobs:
-  rust:
+  check:
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -31,6 +31,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shim/rust
       - name: fmt
         run: cargo fmt --check
       - name: clippy

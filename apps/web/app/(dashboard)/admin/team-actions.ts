@@ -1,0 +1,62 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { getPool } from "@/lib/db";
+import { getSessionUser } from "@/lib/session-user";
+
+export type TeamState = { error?: string; ok?: boolean };
+
+async function requireAdmin(): Promise<TeamState | null> {
+  const user = await getSessionUser();
+  if (!user || user.role !== "admin") return { error: "관리자만 가능합니다." };
+  return null;
+}
+
+/** 팀 생성 — 공백·중복 이름 거부. */
+export async function createTeamAction(_prev: TeamState, formData: FormData): Promise<TeamState> {
+  const guard = await requireAdmin();
+  if (guard) return guard;
+
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) return { error: "팀 이름을 입력하세요." };
+  if (name.length > 50) return { error: "팀 이름은 50자 이내로 입력하세요." };
+
+  const dup = await getPool().query("SELECT 1 FROM teams WHERE name = $1", [name]);
+  if ((dup.rowCount ?? 0) > 0) return { error: "이미 있는 팀 이름입니다." };
+
+  await getPool().query("INSERT INTO teams (name) VALUES ($1)", [name]);
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+/** 팀 삭제 — 소속 멤버 0명 + 귀속 이벤트 0건일 때만 (usage_events FK 가 이력을 보호). */
+export async function deleteTeamAction(id: string): Promise<TeamState> {
+  const guard = await requireAdmin();
+  if (guard) return guard;
+
+  const r = await getPool().query<{ members: string; has_events: boolean }>(
+    `SELECT (SELECT count(*) FROM users WHERE team_id = $1) AS members,
+            EXISTS(SELECT 1 FROM usage_events WHERE team_id = $1) AS has_events`,
+    [id],
+  );
+  const members = Number(r.rows[0]?.members ?? 0);
+  if (members > 0) return { error: "소속 멤버가 있는 팀은 삭제할 수 없습니다." };
+  if (r.rows[0]?.has_events) return { error: "수집 이력이 귀속된 팀은 삭제할 수 없습니다." };
+
+  await getPool().query("DELETE FROM teams WHERE id = $1", [id]);
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+/** 멤버 팀 배정/해제 — 이후 수집분부터 반영(이벤트는 수집 시점 귀속, §4.3). */
+export async function assignTeamAction(
+  userId: string,
+  teamId: string | null,
+): Promise<TeamState> {
+  const guard = await requireAdmin();
+  if (guard) return guard;
+
+  await getPool().query("UPDATE users SET team_id = $2 WHERE id = $1", [userId, teamId]);
+  revalidatePath("/admin");
+  return { ok: true };
+}

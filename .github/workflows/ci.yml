@@ -1,0 +1,25 @@
+name: ci
+
+# PR·main push 검증 — typecheck + 단위 테스트 (설계 §12.3).
+# lint 는 패키지에 스크립트가 없어 제외(도입 시 여기에 추가).
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4 # 버전은 package.json packageManager 필드를 따름
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test

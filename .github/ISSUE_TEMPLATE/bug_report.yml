@@ -1,0 +1,34 @@
+name: 버그 신고 (Bug report)
+description: 동작이 기대와 다를 때 (보안 취약점은 SECURITY.md 절차로 비공개 신고)
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: 무엇이 잘못되나요?
+      description: 기대한 동작과 실제 동작을 적어 주세요.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 재현 절차
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: 환경
+      description: 배포 방식(docker compose / k8s / dev), STORAGE_BACKEND, AUTH_MODE, 커밋/버전 등
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 로그 / 스크린샷
+      description: 관련 로그나 화면. 토큰·시크릿은 반드시 가려 주세요.
+    validations:
+      required: false

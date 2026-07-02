@@ -2,22 +2,23 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Download, LayoutDashboard, Settings, Trophy, User } from "lucide-react";
+import { ChartBar, Settings, ShieldCheck, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { href: "/", label: "개요", icon: LayoutDashboard },
-  { href: "/me", label: "마이페이지", icon: User },
-  { href: "/onboarding", label: "설치", icon: Download },
-  { href: "/leaderboard", label: "리더보드", icon: Trophy },
+  { href: "/", label: "내 사용량", icon: User },
+  { href: "/org", label: "전체 현황", icon: ChartBar },
   { href: "/settings", label: "설정", icon: Settings },
 ];
 
-export function SidebarNav() {
+const ADMIN_NAV = [{ href: "/admin", label: "관리", icon: ShieldCheck }];
+
+export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
+  const items = isAdmin ? [...NAV, ...ADMIN_NAV] : NAV;
   return (
     <nav className="flex flex-col gap-1">
-      {NAV.map(({ href, label, icon: Icon }) => {
+      {items.map(({ href, label, icon: Icon }) => {
         const active = pathname === href;
         return (
           <Link

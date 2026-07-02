@@ -25,7 +25,7 @@ export async function acceptInviteAction(_prev: AcceptState, formData: FormData)
   if (!res) return { error: "초대 수락에 실패했습니다(만료됐거나 이미 가입된 이메일)." };
 
   try {
-    await signIn("credentials", { email: res.email, password, redirectTo: "/onboarding" });
+    await signIn("credentials", { email: res.email, password, redirectTo: "/settings?tab=install" });
     return {};
   } catch (e) {
     if (e instanceof AuthError) {

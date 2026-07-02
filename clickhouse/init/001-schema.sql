@@ -1,5 +1,5 @@
 -- ClickHouse 스키마 (설계 §4.3). 옵트인 모드: 이벤트·집계만, 메타는 PG.
--- 부서 시점 귀속을 위해 department_id 를 비정규화(수집 시점 스냅샷)한다.
+-- 팀 시점 귀속을 위해 team_id 를 비정규화(수집 시점 스냅샷)한다.
 CREATE DATABASE IF NOT EXISTS toard;
 
 CREATE TABLE IF NOT EXISTS toard.usage_events
@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS toard.usage_events
   dedup_key             String,
   provider_key          LowCardinality(String),
   user_id               String,            -- 미식별 = '' (빈 문자열)
-  department_id         String,            -- 수집 시점 스냅샷(시점 귀속), 없으면 ''
+  team_id               String,            -- 수집 시점 스냅샷(시점 귀속), 없으면 ''
   session_id            String,
   model                 LowCardinality(String),
   ts                    DateTime64(3, 'UTC'),

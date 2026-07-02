@@ -24,6 +24,7 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
     "node-pg-migrate": "^7.9.0",
     "pg": "^8.13.1",
     "tsx": "^4.19.2",

@@ -90,7 +90,11 @@ export function ConnectionCheck({
             <span className="text-muted-foreground">토큰 미발급 — 먼저 토큰을 발급하세요.</span>
           ) : status.lastUsedAt ? (
             <span>
-              연결됨 <span className="text-muted-foreground">· 마지막 수신 {rel(status.lastUsedAt)}</span>
+              연결됨{" "}
+              {/* 상대 시각은 렌더 시점 의존 — SSR 과 달라질 수 있어 클라이언트 값 유지 */}
+              <span className="text-muted-foreground" suppressHydrationWarning>
+                · 마지막 수신 {rel(status.lastUsedAt)}
+              </span>
             </span>
           ) : (
             <span className="text-muted-foreground">아직 수신된 데이터가 없습니다.</span>

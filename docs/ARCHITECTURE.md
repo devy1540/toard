@@ -520,6 +520,7 @@ app/
 
 ### 7.4 공통/상태
 - `PageHeader`(제목 + 우측 필터) · `LinkTabs`(URL 쿼리 기반 탭 — shadcn Tabs 스타일 미러) · `DashboardFilters`(기간 세그먼트 + 도구 셀렉트, providers 테이블 동적 로딩). shadcn/ui + Recharts. 필터·탭은 URL searchParams(페이지 스코프).
+- 액션 피드백은 **sonner 토스트**(복사·발급·팀 생성/배정/삭제·초대 — `CopyButton` 공용), 파괴적 동작은 **alert-dialog 확인**(토큰 재발급 = 이전 토큰 즉시 폐기, 팀 삭제).
 
 ### 7.5 권한
 - `member`: 내 사용량 + 공개 전체 현황. `admin`: 전체 + 관리(`/admin` — 멤버·초대, 향후 수집 상태·도구·토큰 관리). role은 **Auth.js 세션 클레임**으로 서버 검증.

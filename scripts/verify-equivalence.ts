@@ -1,5 +1,6 @@
 // PG↔CH 동등성 동적 대조 — 같은 이벤트셋을 양쪽에 저장하고 같은 기간 쿼리 결과를 비교.
 // 격리 기간(2027)을 써서 기존 데이터와 섞이지 않게 한다.
+import "dotenv/config"; // 루트 .env 로드 (셸 env 우선)
 import { Pool } from "pg";
 import { createClickHouseStorage } from "../packages/storage-clickhouse/src/index.ts";
 import { PostgresStorage } from "../packages/storage-postgres/src/index.ts";

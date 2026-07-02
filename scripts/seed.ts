@@ -1,3 +1,4 @@
+import "dotenv/config"; // 루트 .env 로드 (셸 env 우선)
 import { createHash, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";

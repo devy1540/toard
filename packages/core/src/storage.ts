@@ -35,6 +35,8 @@ export interface UsageEvent {
   cacheCreationTokens: number;
   /** pricing 엔진이 채움 */
   costUsd: number;
+  /** logfile 경로 전용(§5.6): shim 벤더 어댑터 식별자. otel 경로는 없음/ null */
+  logAdapter?: string | null;
 }
 
 export interface OverviewStats {

@@ -127,6 +127,7 @@ export class ClickHouseStorage implements StorageBackend {
         cache_read_tokens: e.cacheReadTokens,
         cache_creation_tokens: e.cacheCreationTokens,
         cost_usd: e.costUsd,
+        log_adapter: e.logAdapter ?? "",
       })),
       format: "JSONEachRow",
     });

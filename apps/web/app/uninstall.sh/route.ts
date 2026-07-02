@@ -20,7 +20,7 @@ const UNINSTALL = [
   'echo "toard shim 제거 중…"',
   "",
   "# 1) shim 바이너리 + 자격 증명 제거 (진짜 claude 는 그대로)",
-  'rm -f "$BIN_DIR/claude" "$BIN_DIR/codex" "$HOME/.toard/credentials"',
+  'rm -f "$BIN_DIR/claude" "$BIN_DIR/codex" "$BIN_DIR/toard-shim" "$HOME/.toard/credentials"',
   'rmdir "$BIN_DIR" 2>/dev/null || true',
   'rmdir "$HOME/.toard" 2>/dev/null || true',
   "",

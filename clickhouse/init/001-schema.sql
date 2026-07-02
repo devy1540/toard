@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS toard.usage_events
   cache_read_tokens     UInt64,
   cache_creation_tokens UInt64,
   cost_usd              Decimal(18, 8),
+  log_adapter           LowCardinality(String) DEFAULT '',  -- logfile 경로 전용(§5.6), otel = ''
   inserted_at           DateTime64(3, 'UTC') DEFAULT now64(3)
 )
 -- ORDER BY = dedup_key 로 ReplacingMergeTree dedup 단위를 dedup_key 에 고정(같은 dedup_key 가

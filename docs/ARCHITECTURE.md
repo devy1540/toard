@@ -1,8 +1,9 @@
 # toard 아키텍처 설계
 
-> **상태:** v3 (범용 수집 재설계) · **최종 수정:** 2026-07-01 · **범위:** 1차 설계
+> **상태:** v4 (오픈소스 재포지셔닝) · **최종 수정:** 2026-07-02 · **범위:** 1차 설계
 >
-> v2 대비: **범용화** — 수집을 OTLP push 단일 1급에서 **다중 프론트엔드(OTLP push + 로컬 로그 pull)가 `UsageEvent[]`로 수렴**하는 구조로 재설계. shim을 "범용 수집 에이전트"로 격상(ADR-006 Rust 확정에 ccusage MIT 어댑터 벤더링 추가). §4 데이터 모델은 수집방식 불변이라 **무변경**, §2 ADR-002/006·§5 수집·§9 로드맵만 재우선순위.
+> v3 대비: **오픈소스·범용화** — "사내 대시보드" 전제를 제거하고 **어느 조직이든 셀프호스팅하는 오픈소스 프로젝트**로 재정의. 일별 집계 타임존을 KST 고정에서 `ORG_TIMEZONE` 설정(기본 UTC)으로 일반화(**ADR-008 신설**), 조직 고유 예시 값(이메일 도메인·데모 데이터) 중립화, §12 오픈소스 운영 신설. 데이터 모델 구조 무변경(Mart `day` 의미만 "조직 타임존 기준"으로 일반화 — 기존 KST 데이터는 재계산 대상).
+> v2→v3: **수집 범용화** — OTLP push 단일 1급에서 **다중 프론트엔드(OTLP push + 로컬 로그 pull)가 `UsageEvent[]`로 수렴**하는 구조로 재설계. shim을 "범용 수집 에이전트"로 격상(ADR-006 Rust 확정에 ccusage MIT 어댑터 벤더링 추가).
 > v1→v2: dedup 키 교정(`request_id`), shim env 정정, 수집 방식 확정(앱 직접 + JSON only), 인증(Auth.js → AUTH_MODE/JWT), 비용 계산 정확화(tiered/캐시/단위), 보안 강화. 가장 되돌리기 비싼 부분은 **§4 데이터 모델**과 **§5 수집 계약**이다.
 
 ---
@@ -10,13 +11,13 @@
 ## 1. 개요 & 목표
 
 ### 1.1 정의
-toard는 사내 AI 코딩 도구 전반(Claude Code · Codex · Gemini CLI · Copilot · OpenCode 등 코딩 에이전트 CLI)의 **사용량·비용을 추적하는 경량·범용 멀티 프로바이더 대시보드**다. day1co(사내) · zeude · ccusage를 벤치마킹해 **"더 가볍고, 더 많은 도구를 먹는"** 버전을 목표로 한다 — 수집은 도구가 OTEL을 뿜든(push) 로컬 로그만 남기든(pull) 무관하게 흡수한다.
+toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · Gemini CLI · Copilot · OpenCode 등 코딩 에이전트 CLI)의 **사용량·비용을 추적하는 경량·범용 멀티 프로바이더 대시보드**다. **오픈소스·셀프호스팅이 전제**이며, 특정 조직에 묶인 가정(타임존·이메일 도메인·언어 등)은 모두 설정으로 밀어낸다(v4 재포지셔닝). day1co(선행 사내 대시보드, 비공개) · zeude · ccusage를 벤치마킹해 **"더 가볍고, 더 많은 도구를 먹는"** 버전을 목표로 한다 — 수집은 도구가 OTEL을 뿜든(push) 로컬 로그만 남기든(pull) 무관하게 흡수한다.
 
 ### 1.2 배경 — 세 레퍼런스 벤치마킹
 
 | 프로젝트 | 구현 | 수집 | 저장 | toard가 가져온 것 |
 |---|---|---|---|---|
-| **day1co** | TS/Next, `pg`, 최소 의존성(~십수~20개) | Hook script (push) | PostgreSQL + Mart | 의존성 미니멀리즘, Mart 집계·upsert, LiteLLM 동기화, KST 처리 |
+| **day1co**(비공개 사내 선행작) | TS/Next, `pg`, 최소 의존성(~십수~20개) | Hook script (push) | PostgreSQL + Mart | 의존성 미니멀리즘, Mart 집계·upsert, LiteLLM 동기화, 타임존 일경계 처리 |
 | **zeude** | Go shim + TS/Next | OTEL shim → Collector | PostgreSQL + ClickHouse | OTEL 표준, 프로바이더 정규화, TanStack Query |
 | **ccusage** | TS(+Rust 포팅 진행), npx | 로컬 JSONL (pull) | 영속 없음 | 비용 모드(display/auto/calculate), `message.id+request_id` dedup |
 
@@ -26,8 +27,9 @@ toard는 사내 AI 코딩 도구 전반(Claude Code · Codex · Gemini CLI · Co
 1. **가볍게 시작, 무손실 확장** — 불확실한 규모를 위해 미리 짊어지지 않되, 이관을 봉쇄하는 결정은 피한다.
 2. **범용 수집, 단일 수렴** — 수집 방식(OTLP push / 로컬 로그 pull)은 도구에 맞춰 열되, 모든 소스는 **`UsageEvent[]` 한 형태로 수렴**한다(§4.1). OTEL 지원 도구는 OTLP/JSON push가 1급(실시간·고품질), 미지원 도구는 shim이 로컬 로그를 읽어 pull. 표준(OTLP)은 "가능한 곳에서 우선"이지 "유일한 관문"이 아니다.
 3. **역할 분리** — OLTP(메타·인증)는 Postgres, OLAP(이벤트 집계)는 필요 시 ClickHouse.
-4. **의존성 미니멀리즘** — day1co의 최소 의존성 수준 지향.
+4. **의존성 미니멀리즘** — 선행 벤치마크(day1co)의 최소 의존성 수준 지향.
 5. **되돌리기 비싼 것만 신중히** — 데이터 모델·수집 계약은 정밀하게, 화면·표현은 가볍게.
+6. **특정 조직 비의존** — 타임존·이메일 도메인 등 조직 고유 값은 하드코딩하지 않고 설정(env)으로 받는다. 어느 조직이든 그대로 배포 가능해야 한다(v4).
 
 ### 1.4 1차 범위 / 비범위
 
@@ -82,6 +84,12 @@ toard는 사내 AI 코딩 도구 전반(Claude Code · Codex · Gemini CLI · Co
 ### ADR-007 — 인증: Auth.js (NextAuth), AUTH_MODE + JWT 세션
 - **결정:** 인증은 **Auth.js**. 계정·user 는 **Postgres**(adapter), 세션은 **JWT**(Credentials 는 database 세션 미지원). `AUTH_MODE` 로 배포 시 선택: `oauth`(GitHub/Google **+ id/pw credentials**)·`open`(인증 없음·내부망 전제). credentials 는 `AUTH_CREDENTIALS_ENABLED`(기본 on)로 토글 — 로그인 `/login`·가입 `/signup`(도메인 게이팅)·비번 변경/설정 `/settings`. 비번은 **bcrypt(cost 12)** 해시로만 저장. magic-link 는 확장 예정. 이메일 도메인 제한 + 검증된 identity.
 - **근거:** ADR-003(메타·계정은 항상 PG)과 일치. 조직마다 인증 요구가 달라(OAuth 불필요한 내부망 조직도 존재) 모드 선택이 필요. Supabase Auth(zeude·day1co) 대비 외부 종속 없음. **JWT 트레이드오프:** 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(database 세션의 즉시 무효화는 포기). **credentials 보안:** 기존 OAuth 이메일로는 가입 불가(계정 탈취 방지), 미존재/OAuth 전용 계정도 더미 해시 비교로 사용자 열거(timing) 완화.
+
+### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4)
+- **결정:** 이벤트 `ts`는 항상 **UTC `timestamptz`** 저장(불변). 일별 집계·리더보드의 "하루" 경계는 **조직 단위 타임존 설정 `ORG_TIMEZONE`**(IANA, 기본 `UTC`)으로 결정한다. 앱이 env를 읽어 검증(무효 시 UTC 폴백) 후 `StorageBackend` 생성자에 주입 — 패키지는 env를 직접 읽지 않는다(core 의존성 0 유지).
+- **근거:** v3까지는 KST(Asia/Seoul)가 storage 쿼리·Mart 정의에 하드코딩돼 있었다(선행작 day1co 유산). 오픈소스 범용화(v4)에서 특정 타임존 가정은 성립하지 않는다. 서빙이 event-direct(§4.4 — Mart 미사용)인 지금이 전환 비용이 가장 싼 시점이다.
+- **단위 선택:** **조직 단위 1개**(per-user 아님) — 리더보드·부서 비교의 "같은 하루" 비교 가능성이 개인화보다 중요. per-user 타임존은 기각(일경계가 사용자마다 달라 집계 의미가 붕괴).
+- **트레이드오프:** `ORG_TIMEZONE` 변경 시 과거 일별 뷰의 버킷이 바뀐다 — event-direct 서빙은 쿼리 시점 계산이라 자동 반영, Mart를 서빙으로 전환한 후라면 전체 `recomputeDaily` 필요(운영 문서에 명시).
 
 ---
 
@@ -282,7 +290,7 @@ CREATE INDEX ON usage_events (session_id);
 ```sql
 CREATE TABLE usage_daily_user (
   user_id UUID NOT NULL REFERENCES users(id),
-  day DATE NOT NULL,                              -- KST: (ts AT TIME ZONE 'Asia/Seoul')::date
+  day DATE NOT NULL,                              -- 조직 타임존(ORG_TIMEZONE, 기본 UTC): (ts AT TIME ZONE <tz>)::date
   provider_key TEXT NOT NULL REFERENCES providers(key),
   request_count BIGINT NOT NULL DEFAULT 0,        -- 증분 SUM
   sessions INT NOT NULL DEFAULT 0,                -- DISTINCT → 재계산만
@@ -324,7 +332,7 @@ CREATE TABLE usage_events (
 
 CREATE MATERIALIZED VIEW usage_daily_user_mv ENGINE = SummingMergeTree
 ORDER BY (user_id, day, provider_key) AS
-SELECT user_id, toDate(ts,'Asia/Seoul') AS day, provider_key,
+SELECT user_id, toDate(ts, <ORG_TIMEZONE>) AS day, provider_key,   -- 조직 타임존 (ADR-008)
   uniqState(session_id) AS sessions, sum(input_tokens) AS input_tokens, /* … */ sum(cost_usd) AS cost_usd
 FROM usage_events GROUP BY user_id, day, provider_key;
 ```
@@ -340,14 +348,14 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 | **토큰·비용 권위 소스** | **logs**(`api_request` 이벤트). metrics에도 토큰 카운터가 있으나 per-event 정확도·dedup·세션 귀속 위해 logs를 SSOT로 채택, **metrics는 1차 미수신**(§5.2). 비용은 `pricing_models`로 재계산(제공 `cost_usd`는 `auto` 모드 fallback). |
 | **Mart 갱신** | SUM 지표(토큰·비용·`request_count`)는 **당일(미마감)에만** 증분 upsert. DISTINCT(`sessions`·`active_users`)와 **마감된 과거 날짜**는 항상 `recomputeDaily`(DELETE 후 `usage_events`에서 통째 재INSERT). 재처리·지연도착이 건드린 `(user_id, day)`를 dirty로 마킹 → cron이 그 집합만 재계산. |
 | **데이터 보존(TTL)** | `raw_events`=처리 후 14일. `usage_events`=365일(파티션 드롭). Mart=영속. |
-| **타임존** | `ts`=UTC `timestamptz`. Mart `day`=`(ts AT TIME ZONE 'Asia/Seoul')::date`로 **SQL 고정**(서버 TZ 비의존). 필터의 KST→UTC 환산은 앱이 책임. |
+| **타임존** | `ts`=UTC `timestamptz`. 일별 `day`=`(ts AT TIME ZONE <ORG_TIMEZONE>)::date` — 타임존은 **`ORG_TIMEZONE` 설정(기본 UTC)을 앱이 검증 후 `StorageBackend` 생성자로 주입**(SQL에 서버 TZ 비의존, ADR-008). 필터의 조직 타임존→UTC 환산은 앱이 책임. |
 | **사용자 매칭** | **인증 토큰의 user_id가 유일·최종 권위.** resource attribute의 user.id/email은 **신뢰하지 않음**(토큰 없을 때만 email로 임시 귀속 후 등록 시 소급). §10.1과 일치. |
 
 > **1차 구현 한계 (검증 반영, 2026-06-30)**
 > - **서빙은 event-direct**: 대시보드 쿼리는 `usage_events`를 직접 집계하며 Mart(`usage_daily_*`)·`bumpDailyUser`·`recomputeDaily`는 **미래 서빙 레이어로 현재 미사용**(데이터 규모가 커지면 읽기를 Mart로 전환). 따라서 "당일 증분 vs 마감 재계산 정합"은 현재 사용자 화면과 무관.
 > - **재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성은 2차 목표. 현재 `processed`는 항상 false, `raw_event_id`는 NULL.
 > - **부서 백필 없음**: `department_id` 비정규화는 수집(INSERT) 시점부터 적용되어, 마이그레이션 이전 이벤트는 부서 집계에서 제외(과거 시점 부서를 알 수 없어 NULL 유지).
-> - **기간 필터 KST 미정렬**: `recentPeriod`는 UTC 롤링 윈도라 KST 일경계와 어긋나 일별 차트 양끝이 부분일로 표시(향후 KST 일경계 스냅 예정).
+> - **기간 필터 일경계 미정렬**: `recentPeriod`는 UTC 롤링 윈도라 조직 타임존(`ORG_TIMEZONE`이 UTC가 아닌 경우) 일경계와 어긋나 일별 차트 양끝이 부분일로 표시(향후 조직 타임존 일경계 스냅 예정).
 
 ---
 
@@ -472,7 +480,7 @@ export function resolveCost(a: {
 - **모드:** display/auto/calculate (ccusage 정합).
 - **프로바이더 차이:** Claude는 cost 제공→`auto` 그대로 / Codex는 미제공→계산, `cacheCreationTokens=0`(§5.3). `inputTokens`는 이미 캐시 제외(§4.1 불변식)이므로 이중계상 없음.
 - **fast:** `api_request`의 `speed` 어트리뷰트로 `isFast` 판정. 단위는 전부 per-million → `/1e6`.
-- **캐시 200k 차등(ccusage와 의도적 차이):** ccusage는 캐시 토큰에도 tiered를 적용하지만, toard는 **캐시는 단순 곱(200k tiered 미적용)**. 사내 주력 모델에서 캐시 above-200k 영향이 미미하다고 판단해 `pricing_models`에 `cache_*_above_200k` 컬럼을 두지 않는다. 정밀도가 필요해지면 컬럼+tiered 추가.
+- **캐시 200k 차등(ccusage와 의도적 차이):** ccusage는 캐시 토큰에도 tiered를 적용하지만, toard는 **캐시는 단순 곱(200k tiered 미적용)**. 주류 사용 패턴(코딩 에이전트 CLI)에서 캐시 above-200k 영향이 미미하다고 판단해 `pricing_models`에 `cache_*_above_200k` 컬럼을 두지 않는다. 정밀도가 필요해지면 컬럼+tiered 추가.
 
 ### 6.4 모델 별칭 (ccusage 8자리 날짜 정규화 패턴 차용)
 - **풀 모델ID로 LiteLLM 직접 조회 우선**(LiteLLM 키는 날짜 포함 풀ID). 미스 시에만 폴백: ① 벤더 프리픽스 strip(`anthropic.`, `openai/`, `bedrock/`), ② **8자리(YYYYMMDD) 접미사일 때만 날짜 제거**(ccusage `MODEL_DATE_SUFFIX_DIGITS=8` 패턴), ③ 부분문자열 fuzzy(가장 긴 키 우선), ④ 수동 별칭 맵.
@@ -504,7 +512,7 @@ app/
 - **④ 로그인(`/login`)**: Auth.js, 도메인 제한, setup(토큰 발급 + shim 설치).
 
 ### 7.4 공통/상태
-- `DateRangeFilter`(KST), `ProviderFilter`. shadcn/ui + Recharts. TanStack Query(staleTime 30~60s). 필터는 URL searchParams.
+- `DateRangeFilter`(조직 타임존 기준, ADR-008), `ProviderFilter`. shadcn/ui + Recharts. TanStack Query(staleTime 30~60s). 필터는 URL searchParams.
 
 ### 7.5 권한
 - `member`: 자기 마이페이지 + 공개 리더보드. `admin`: 전체 + 사용자/부서/프로바이더/토큰 관리. role은 **Auth.js 세션 클레임**으로 서버 검증.
@@ -518,12 +526,13 @@ app/
 
 ### 8.1 환경 변수
 ```bash
+ORG_TIMEZONE=UTC                         # 일별 집계 "하루" 경계 (IANA, 예 Asia/Seoul) — ADR-008
 STORAGE_BACKEND=postgres                 # 'postgres'(기본) | 'clickhouse'
 DATABASE_URL=postgres://…
 CLICKHOUSE_URL=                          # CH 모드만
 AUTH_SECRET=…                            # Auth.js
 AUTH_TRUST_HOST=true
-ALLOWED_EMAIL_DOMAINS=day1company.co.kr
+ALLOWED_EMAIL_DOMAINS=example.com        # (선택) 가입 허용 도메인
 INGEST_BASE_URL=https://toard.example.com/api   # shim OTEL_EXPORTER_OTLP_ENDPOINT (base)
 LITELLM_PRICING_URL=…
 BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
@@ -549,6 +558,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 | 단계 | 내용 |
 |---|---|
 | **1차 (MVP)** | shim(env 주입) + OTLP push 수신(Claude Code, JSON) · PG 단일 · LiteLLM 비용 · 4개 화면 · Auth.js. **수렴 아키텍처(`UsageEvent[]`) 검증.** |
+| **공개 준비 (OSS, v4)** | 타임존 설정화(`ORG_TIMEZONE`, 완료 — ADR-008) · 예시 값 중립화(완료) · **LICENSE = MIT**(완료, §12.1 — NOTICE 는 ccusage 벤더링 시) · PR 검증 CI(typecheck·test) · SECURITY.md · CONTRIBUTING.md · i18n은 백로그(§12.2) |
 | **2차 (범용 수집)** | **fat shim(Rust) + ccusage 어댑터 벤더링 → 로컬 로그 pull(`/api/v1/events`)** · Codex(config.toml 주입) · 비-OTEL 도구 대량 확장(Gemini·Qwen·Copilot·OpenCode·Goose·… 실사용분부터 `enabled`) · 부서 이동 이력 · OTEL Collector(유실 문제화 시) |
 | **3차 (스케일·기능)** | ClickHouse 모드 · 중앙 설정 배포(shim watch-list 핸드셰이크 포함) · LLM 분류/해석 |
 
@@ -580,14 +590,32 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 ### 11.2 테스트 (핵심만)
 - `pricing`: tiered·캐시 fallback(1.25/0.1)·OpenAI cacheCreation=0·모드별·단위(per-million).
 - `ingest`: provider 식별(service.name)·api_request 필터·Codex subset 보정·dedup_key 멱등.
-- `storage-postgres`: 당일 증분 vs 마감 재계산 정합·dirty 재계산·KST day 경계.
+- `storage-postgres`: 당일 증분 vs 마감 재계산 정합·dirty 재계산·조직 타임존(`ORG_TIMEZONE`) day 경계.
 - `shim`(2차): 벤더 어댑터별 파싱 파리티(ccusage 픽스처 재사용)·`UsageEvent` 계약 미러·`dedup_key` 규칙 일치·오프셋 커서 재전송 멱등.
 
 ---
 
+## 12. 오픈소스 운영 (v4)
+
+### 12.1 라이선스
+- **본체 라이선스: MIT**(2026-07-02 확정, 루트 `LICENSE`). 선정 근거 — 채택 극대화가 목표이고, 벤더링 대상 ccusage 와 동일 계열이라 호환 부담 최소, 특허 민감도·SaaS 경쟁 위협이 낮아 Apache-2.0/AGPL 의 추가 조항 실익이 작음.
+- **서드파티 attribution:** 2차의 ccusage(MIT) Rust 어댑터 벤더링 시 **NOTICE 파일에 원저작자·라이선스 고지 필수**(ADR-006). LiteLLM 가격 데이터는 원격 fetch(코드 벤더링 아님)라 고지 대상 아님.
+
+### 12.2 언어 정책
+- **한국어 1급**(문서·UI·커밋). 영어 README·UI i18n은 **백로그**로 관리(GitHub Projects) — 다국어화 시 next-intl류 도입과 UI 문자열(~320곳) 추출이 선행 과제.
+
+### 12.3 공개 체크리스트
+- `LICENSE`(+`NOTICE`) · `SECURITY.md`(취약점 신고 채널 — 인증·토큰을 다루므로 필수) · `CONTRIBUTING.md` · 이슈/PR 템플릿 · **PR 검증 CI**(typecheck·test — 현재 릴리스·cron 워크플로만 존재).
+- 조직 고유 값 하드코딩 금지(§1.3-6): 타임존(ADR-008)·이메일 도메인·데모 데이터는 env/예시값(example.com)으로 완료.
+
+### 12.4 배포 채널
+- GitHub Releases(shim 4-플랫폼 + install.sh) · npm `@toard/shim`(게시 예정) · 컨테이너 이미지. 리포 경로는 shim `install.sh`·`npm/bin`에 상수로 존재 — org 이전 시 일괄 변경 지점.
+
+---
+
 ## 부록 — 결정의 출처
-- 의사결정 기록: 메모리 `toard-project-direction`, `benchmark-day1co-zeude`
-- 벤치마킹 원본: `day1co-ai-usage-dashboard`, `zeude`, `ccusage`(`/Users/hjyoon/Develop/workspace/`)
+- 벤치마킹 레퍼런스: day1co(비공개 사내 선행작) · zeude · [ccusage](https://github.com/ryoppippi/ccusage)(MIT) — §1.2 표 참조
 - v2 근거: 4개 정밀 검토(데이터모델·수집/OTEL·비용/보안·일관성) + Claude Code OTEL 공식 스펙
 - v3 근거: ccusage 어댑터 15종 실측(`ccusage rust/crates/ccusage/src/adapter/`, MIT) + 수집 3전략(push/pull/proxy) 범용성·비용 비교
+- v4 근거: 오픈소스 재포지셔닝 결정(2026-07-02) — "사내 전제" 전수 조사(타임존 하드코딩 7파일·조직 도메인 예시·비공개 레퍼런스 경로) 및 OSS 공개 요건 갭 분석
 - **변경 시 주의:** §4 데이터 모델·§5 수집 계약·§2 ADR을 함께 갱신(나머지가 의존). **UsageEvent 계약은 TS(`core`)와 shim(Rust) 양쪽 미러 — 동시 갱신**(§5.6).

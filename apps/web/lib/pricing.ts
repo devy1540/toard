@@ -39,3 +39,13 @@ export async function getPricingMap(): Promise<PricingMap> {
 export function invalidatePricingCache(): void {
   cache = undefined;
 }
+
+export type PricingStatus = { models: number; lastDay: string | null };
+
+/** 가격 스냅샷 현황 — 관리 시스템 탭 표시·미동기화($0 비용 함정) 경고용. */
+export async function getPricingStatus(): Promise<PricingStatus> {
+  const r = await getPool().query<{ models: string; last_day: string | null }>(
+    "SELECT count(DISTINCT model_id) AS models, max(effective_date)::text AS last_day FROM pricing_models",
+  );
+  return { models: Number(r.rows[0]?.models ?? 0), lastDay: r.rows[0]?.last_day ?? null };
+}

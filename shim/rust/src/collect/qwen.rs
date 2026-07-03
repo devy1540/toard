@@ -14,8 +14,12 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::gemini_family::{apply_total_token_fallback, lenient_u64, non_empty_string};
-use super::{file_mtime_ms, walk_files, LogAdapter, RawUsage};
+use serde_json::Value;
+
+use super::gemini_family::{
+    apply_total_token_fallback, content_from_message, lenient_u64, non_empty_string, session_id_of,
+};
+use super::{file_mtime_ms, walk_files, LogAdapter, RawContent, RawUsage};
 use crate::iso::iso_to_epoch_ms;
 
 const DEFAULT_QWEN_MODEL: &str = "unknown";
@@ -51,6 +55,42 @@ impl LogAdapter for Qwen {
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
         parse_chat_file(path)
     }
+
+    fn parse_content(&self, path: &Path) -> Vec<RawContent> {
+        parse_content_file(path)
+    }
+}
+
+/// user/assistant 라인의 텍스트를 뽑는다. 세션 id 는 라인의 sessionId 를 따르고,
+/// 없으면 project-stem 폴백(토큰 경로와 동일). 텍스트 필드는 "text"/"content" 를 시도한다
+/// — qwen 실로그의 본문 키가 다르면 빈 결과가 되므로(안전) 실배포 전 실로그 검증 대상.
+fn parse_content_file(path: &Path) -> Vec<RawContent> {
+    let fallback_timestamp = file_mtime_ms(path);
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let project = project_from_file(path).unwrap_or_else(|| "unknown".to_string());
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let mut session_id = format!("{project}-{stem}");
+    let mut out = Vec::new();
+    for line in bytes.split(|b| *b == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
+        if let Some(s) = session_id_of(obj) {
+            session_id = s;
+        }
+        if let Some(record) = content_from_message(obj, &session_id, fallback_timestamp) {
+            out.push(record);
+        }
+    }
+    out
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -342,5 +382,30 @@ mod tests {
             project_from_file(Path::new("/tmp/project/chat.jsonl")),
             None
         );
+    }
+
+    // ⑦ 본문: user/assistant 라인 텍스트, 세션 승계, 기타 타입·텍스트없음 스킵
+    #[test]
+    fn content_extracts_user_and_assistant_text() {
+        let tmp = TempDir::new("qwen-content");
+        let path = tmp.write(
+            "projects/myProject/chats/chat-a.jsonl",
+            &[
+                r#"{"type":"user","text":"질문","sessionId":"s","timestamp":"2026-02-23T14:24:56.857Z"}"#,
+                r#"{"type":"assistant","text":"답변","timestamp":"2026-02-23T14:24:57.000Z","usageMetadata":{"promptTokenCount":1}}"#,
+                r#"{"type":"tool","text":"skip"}"#,
+                r#"{"type":"assistant","usageMetadata":{"promptTokenCount":1}}"#,
+            ]
+            .join("\n"),
+        );
+        let items = Qwen.parse_content(&path);
+        assert_eq!(items.len(), 2, "tool·텍스트없음 스킵");
+        assert_eq!(items[0].role, "user");
+        assert_eq!(items[0].text, "질문");
+        assert_eq!(items[0].session_id.as_deref(), Some("s"));
+        assert_eq!(items[0].ts_ms, iso_to_epoch_ms("2026-02-23T14:24:56.857Z").unwrap());
+        assert_eq!(items[1].role, "assistant");
+        assert_eq!(items[1].text, "답변");
+        assert_eq!(items[1].session_id.as_deref(), Some("s"), "세션 승계");
     }
 }

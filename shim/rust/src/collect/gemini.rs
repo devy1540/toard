@@ -16,9 +16,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::gemini_family::{
-    apply_total_token_fallback, lenient_str, non_empty_json_string, non_empty_string,
+    apply_total_token_fallback, content_from_message, lenient_str, non_empty_json_string,
+    non_empty_string, session_id_of,
 };
-use super::{file_mtime_ms, walk_files, LogAdapter, RawUsage};
+use super::{file_mtime_ms, walk_files, LogAdapter, RawContent, RawUsage};
 use crate::iso::iso_to_epoch_ms;
 
 const DEFAULT_MODEL: &str = "unknown";
@@ -49,6 +50,90 @@ impl LogAdapter for Gemini {
             parse_json_file(path)
         }
     }
+
+    fn parse_content(&self, path: &Path) -> Vec<RawContent> {
+        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            parse_content_jsonl(path)
+        } else {
+            parse_content_json(path)
+        }
+    }
+}
+
+/// 전체 파일 JSON: messages 배열의 user/gemini 메시지 텍스트를 뽑는다.
+/// 세션 id·타임스탬프 폴백은 토큰 경로(parse_json_file)와 동일 규칙.
+fn parse_content_json(path: &Path) -> Vec<RawContent> {
+    let fallback_timestamp = file_mtime_ms(path);
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return Vec::new();
+    };
+    let Some(obj) = value.as_object() else {
+        return Vec::new();
+    };
+    let session_id = session_id_of(obj).unwrap_or_else(|| file_stem(path));
+    let session_ts = obj
+        .get("startTime")
+        .and_then(Value::as_str)
+        .and_then(iso_to_epoch_ms)
+        .or_else(|| {
+            obj.get("lastUpdated")
+                .and_then(Value::as_str)
+                .and_then(iso_to_epoch_ms)
+        })
+        .unwrap_or(fallback_timestamp);
+    if let Some(messages) = obj.get("messages").and_then(Value::as_array) {
+        return messages
+            .iter()
+            .filter_map(Value::as_object)
+            .filter_map(|m| content_from_message(m, &session_id, session_ts))
+            .collect();
+    }
+    // messages 배열이 없으면 최상위 레코드 자체를 하나의 메시지로 시도
+    content_from_message(obj, &session_id, session_ts)
+        .into_iter()
+        .collect()
+}
+
+/// JSONL: 라인별 user/gemini 텍스트. 세션 id 힌트는 라인을 따라 승계되고,
+/// 같은 id+role 은 교체(제자리 갱신 대응) — 토큰 경로의 direct 이벤트와 같은 의미.
+fn parse_content_jsonl(path: &Path) -> Vec<RawContent> {
+    let fallback_timestamp = file_mtime_ms(path);
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let mut session_id = file_stem(path);
+    let mut out: Vec<RawContent> = Vec::new();
+    let mut seen: HashMap<(String, &'static str), usize> = HashMap::new();
+    for line in bytes.split(|b| *b == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
+        if let Some(s) = session_id_of(obj) {
+            session_id = s;
+        }
+        let Some(record) = content_from_message(obj, &session_id, fallback_timestamp) else {
+            continue;
+        };
+        match record.message_id.clone() {
+            Some(id) => {
+                let k = (id, record.role);
+                if let Some(&i) = seen.get(&k) {
+                    out[i] = record;
+                } else {
+                    seen.insert(k, out.len());
+                    out.push(record);
+                }
+            }
+            None => out.push(record),
+        }
+    }
+    out
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -657,5 +742,64 @@ mod tests {
         let mut expected = vec![a, b];
         expected.sort();
         assert_eq!(Gemini.discover_files(), expected);
+    }
+
+    // ⑦ 본문(JSON messages): user/gemini 텍스트만, 공백·기타 타입 스킵, ts·id·세션 매핑
+    #[test]
+    fn content_from_messages_array() {
+        let tmp = TempDir::new("gemini-content-json");
+        let path = tmp.write(
+            "chats/session-1.json",
+            r#"{
+              "sessionId": "sess-1",
+              "startTime": "2026-05-17T11:07:00.000Z",
+              "messages": [
+                {"type": "user", "text": "안녕 프롬프트", "timestamp": "2026-05-17T11:07:10.000Z"},
+                {"type": "gemini", "id": "m1", "text": "응답이야", "timestamp": "2026-05-17T11:07:32.000Z"},
+                {"type": "user", "text": "   "},
+                {"type": "tool", "text": "skip me"},
+                {"type": "gemini", "tokens": {"input": 1}}
+              ]
+            }"#,
+        );
+        let items = Gemini.parse_content(&path);
+        assert_eq!(items.len(), 2, "빈 텍스트·tool·텍스트없음은 스킵");
+
+        let u = &items[0];
+        assert_eq!(u.role, "user");
+        assert_eq!(u.text, "안녕 프롬프트");
+        assert_eq!(u.session_id.as_deref(), Some("sess-1"));
+        assert_eq!(u.message_id, None);
+        assert_eq!(u.ts_ms, iso_to_epoch_ms("2026-05-17T11:07:10.000Z").unwrap());
+
+        let a = &items[1];
+        assert_eq!(a.role, "assistant");
+        assert_eq!(a.text, "응답이야");
+        assert_eq!(a.message_id.as_deref(), Some("m1"));
+        assert_eq!(a.ts_ms, iso_to_epoch_ms("2026-05-17T11:07:32.000Z").unwrap());
+    }
+
+    // ⑧ 본문(JSONL): 세션 승계 + 같은 id 교체 + ts 없으면 mtime 폴백
+    #[test]
+    fn content_jsonl_inherits_session_and_replaces_same_id() {
+        let tmp = TempDir::new("gemini-content-jsonl");
+        let path = tmp.write(
+            "logs/session-a.jsonl",
+            &[
+                r#"{"sessionId":"session-a"}"#,
+                r#"{"type":"user","text":"첫 질문"}"#,
+                r#"{"type":"gemini","id":"m1","text":"부분 응답"}"#,
+                "not json",
+                r#"{"type":"gemini","id":"m1","text":"최종 응답"}"#,
+            ]
+            .join("\n"),
+        );
+        let items = Gemini.parse_content(&path);
+        assert_eq!(items.len(), 2, "같은 id 는 교체되어 1건");
+        assert_eq!(items[0].role, "user");
+        assert_eq!(items[0].text, "첫 질문");
+        assert_eq!(items[0].session_id.as_deref(), Some("session-a"));
+        assert_eq!(items[1].text, "최종 응답", "뒤 레코드가 앞을 교체");
+        assert_eq!(items[1].ts_ms, file_mtime_ms(&path), "ts 없으면 파일 mtime");
     }
 }

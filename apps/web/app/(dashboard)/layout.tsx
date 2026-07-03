@@ -4,6 +4,7 @@ import { Activity } from "lucide-react";
 import { auth } from "@/auth";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { UserMenu } from "@/components/dashboard/user-menu";
+import { LanguageToggle } from "@/components/language-toggle";
 import { ModeToggle } from "@/components/mode-toggle";
 import { getSessionUser } from "@/lib/session-user";
 import { hasAnyUser } from "@/lib/setup";
@@ -29,8 +30,9 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <span className="text-lg font-bold">toard</span>
         </div>
         <SidebarNav isAdmin={isAdmin} />
-        <div className="border-sidebar-border mt-auto border-t pt-4">
+        <div className="border-sidebar-border mt-auto flex flex-col gap-3 border-t pt-4">
           <UserMenu trailing={<ModeToggle />} />
+          <LanguageToggle />
         </div>
       </aside>
       <main className="flex-1">

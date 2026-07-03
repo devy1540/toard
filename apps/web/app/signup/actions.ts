@@ -1,6 +1,7 @@
 "use server";
 
 import { AuthError } from "next-auth";
+import { getTranslations } from "next-intl/server";
 import { credentialsEnabled, signIn } from "@/auth";
 import { isEmailDomainAllowed, isValidEmail } from "@/lib/auth-policy";
 import { getPool } from "@/lib/db";
@@ -13,7 +14,8 @@ export type SignupState = { error?: string };
  * 기존 이메일(특히 OAuth 계정)에는 비번을 덮어씌우지 않는다(계정 탈취 방지).
  */
 export async function signupAction(_prev: SignupState, formData: FormData): Promise<SignupState> {
-  if (!credentialsEnabled) return { error: "비밀번호 가입이 비활성화되어 있습니다." };
+  const t = await getTranslations("auth");
+  if (!credentialsEnabled) return { error: t("errors.signupDisabled") };
 
   const email = String(formData.get("email") ?? "")
     .toLowerCase()
@@ -22,15 +24,15 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
   const password = String(formData.get("password") ?? "");
   const confirm = String(formData.get("confirm") ?? "");
 
-  if (!isValidEmail(email)) return { error: "올바른 이메일 형식이 아닙니다." };
-  if (!isEmailDomainAllowed(email)) return { error: "허용되지 않은 이메일 도메인입니다." };
+  if (!isValidEmail(email)) return { error: t("errors.invalidEmail") };
+  if (!isEmailDomainAllowed(email)) return { error: t("errors.domainNotAllowed") };
   const pwErr = validatePassword(password);
   if (pwErr) return { error: pwErr };
-  if (password !== confirm) return { error: "비밀번호가 일치하지 않습니다." };
+  if (password !== confirm) return { error: t("errors.passwordMismatch") };
 
   const pool = getPool();
   const existing = await pool.query("SELECT 1 FROM users WHERE email = $1", [email]);
-  if ((existing.rowCount ?? 0) > 0) return { error: "이미 가입된 이메일입니다." };
+  if ((existing.rowCount ?? 0) > 0) return { error: t("errors.emailAlreadyExists") };
 
   const hash = await hashPassword(password);
   try {
@@ -41,7 +43,7 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
   } catch (e) {
     // UNIQUE(email) 경합만 친절히 처리(위 SELECT 이후 동시 가입). 그 외 DB 오류는
     // 삼키지 않고 재전파해 실제 장애가 관측되게 한다.
-    if ((e as { code?: string }).code === "23505") return { error: "이미 가입된 이메일입니다." };
+    if ((e as { code?: string }).code === "23505") return { error: t("errors.emailAlreadyExists") };
     throw e;
   }
 
@@ -51,7 +53,7 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
     return {};
   } catch (e) {
     if (e instanceof AuthError) {
-      return { error: "가입은 완료됐지만 자동 로그인에 실패했습니다. 로그인 페이지에서 로그인하세요." };
+      return { error: t("errors.signupAutoLoginFailed") };
     }
     throw e; // redirect 재전파
   }

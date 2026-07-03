@@ -1,0 +1,28 @@
+{
+  "title": "전체 현황",
+  "description": "전체 사용량·비용",
+  "tabOverview": "개요",
+  "tabRanking": "순위",
+  "totalCost": "총 비용",
+  "sessions": "세션",
+  "activeUsers": "활성 사용자",
+  "totalTokens": "총 토큰",
+  "tokenHint": "입력 {in} · 출력 {out}",
+  "dailyCost": "일별 비용",
+  "noDataTitle": "데이터가 없습니다",
+  "noCollectedUsageDescription": "선택한 기간·도구에 수집된 사용량이 없습니다.",
+  "topUsers": "상위 사용자",
+  "viewAllRanking": "전체 순위 →",
+  "user": "사용자",
+  "cost": "비용",
+  "noUsersTitle": "사용자 없음",
+  "scope": {
+    "user": "개인",
+    "team": "팀"
+  },
+  "topByCost": "비용 상위 {scope}",
+  "rankingTitle": "{scope} 순위",
+  "noScopeUsageDescription": "선택한 기간·도구에 {scope} 사용량이 없습니다.",
+  "sessionsCol": "세션",
+  "tokensCol": "토큰"
+}

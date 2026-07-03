@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getValidInvite } from "@/lib/invites";
@@ -13,16 +14,17 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
 
   const { token } = await params;
   const invite = await getValidInvite(token);
+  const t = await getTranslations("invite");
 
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">toard 초대</CardTitle>
+          <CardTitle className="text-xl">{t("title")}</CardTitle>
           <CardDescription>
             {invite
-              ? `${invite.email} 로 초대되었습니다. 비밀번호를 설정해 가입하세요.`
-              : "유효하지 않거나 만료된 초대 링크입니다. 관리자에게 다시 요청하세요."}
+              ? t("descriptionValid", { email: invite.email })
+              : t("descriptionInvalid")}
           </CardDescription>
         </CardHeader>
         {invite ? (

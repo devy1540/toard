@@ -153,7 +153,10 @@ export function OnboardingPanel({
         <p className="text-muted-foreground text-xs">
           바이너리 설치 + <code>~/.toard/credentials</code> + PATH 를 자동 설정합니다. endpoint{" "}
           <code>{endpoint}</code> 는 자동 주입. 설치 후 <code>claude</code>/<code>codex</code> 를
-          평소처럼 쓰면 사용량이 전송됩니다.
+          평소처럼 쓰면 사용량이 전송됩니다. Claude Desktop·IDE 확장 사용분까지 수집되도록{" "}
+          <code>~/.claude/settings.json</code> 에 텔레메트리 env 도 주입합니다(
+          <code>claude-env</code>, 새 세션부터 적용 — 실행 중인 앱은 재시작 필요. 끄려면{" "}
+          <code>toard-shim claude-env off</code>).
         </p>
       </div>
 
@@ -185,8 +188,9 @@ export function OnboardingPanel({
         </div>
         <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{`curl -fsSL ${baseUrl}/uninstall.sh | sh`}</pre>
         <p className="text-muted-foreground text-xs">
-          shim · 자격증명 · PATH 설정 · codex <code>[otel]</code> 블록을 되돌립니다(각 파일 백업 남김).
-          진짜 <code>claude</code>/<code>codex</code> 는 건드리지 않습니다.
+          shim · 자격증명 · PATH 설정 · claude-env(<code>settings.json</code>) · codex{" "}
+          <code>[otel]</code> 블록을 되돌립니다(각 파일 백업 남김). 진짜 <code>claude</code>/
+          <code>codex</code> 는 건드리지 않습니다.
         </p>
       </div>
     </div>

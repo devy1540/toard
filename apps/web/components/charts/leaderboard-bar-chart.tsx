@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { LeaderRow } from "@toard/core";
 
@@ -12,6 +13,7 @@ const tooltipStyle = {
 } as const;
 
 export function LeaderboardBarChart({ data }: { data: LeaderRow[] }) {
+  const t = useTranslations("dashboard");
   const chartData = data.slice(0, 8).map((d) => ({ name: d.label, cost: Number(d.costUsd.toFixed(4)) }));
 
   return (
@@ -28,7 +30,7 @@ export function LeaderboardBarChart({ data }: { data: LeaderRow[] }) {
           fontSize={12}
           stroke="var(--color-muted-foreground)"
         />
-        <Tooltip cursor={{ fill: "var(--color-muted)" }} contentStyle={tooltipStyle} formatter={(v: number) => [`$${v}`, "비용"]} />
+        <Tooltip cursor={{ fill: "var(--color-muted)" }} contentStyle={tooltipStyle} formatter={(v: number) => [`$${v}`, t("chart.cost")]} />
         <Bar dataKey="cost" fill="var(--color-chart-1)" radius={[0, 4, 4, 0]} />
       </BarChart>
     </ResponsiveContainer>

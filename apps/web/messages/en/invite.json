@@ -1,0 +1,18 @@
+{
+  "title": "toard invitation",
+  "descriptionValid": "You have been invited as {email}. Set a password to sign up.",
+  "descriptionInvalid": "This invitation link is invalid or has expired. Please request a new one from your administrator.",
+  "emailLabel": "Email",
+  "nameLabel": "Name (optional)",
+  "passwordLabel": "Password",
+  "passwordPlaceholder": "8 characters or more",
+  "confirmLabel": "Confirm password",
+  "submit": "Sign up and start",
+  "submitting": "Signing up…",
+  "errors": {
+    "invalidInvite": "This invitation is invalid or has expired.",
+    "passwordMismatch": "The passwords do not match.",
+    "acceptFailed": "Failed to accept the invitation (it expired or the email is already registered).",
+    "autoLoginFailed": "Sign-up succeeded, but automatic sign-in failed. Please sign in from the sign-in page."
+  }
+}

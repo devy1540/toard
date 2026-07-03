@@ -1,0 +1,87 @@
+{
+  "title": "관리",
+  "description": "멤버·팀과 수집 연결 상태를 관리합니다",
+  "tabs": {
+    "members": "멤버",
+    "teams": "팀",
+    "invites": "초대",
+    "system": "시스템"
+  },
+  "members": {
+    "cardTitle": "멤버 ({count})",
+    "cardDescription": "팀 변경은 이후 수집분부터 반영됩니다(과거 이벤트는 당시 팀 귀속 유지). 마지막 수신이 비어 있으면 shim 미설치 또는 수집 미연결 상태입니다.",
+    "colMember": "멤버",
+    "colRole": "역할",
+    "colTeam": "팀",
+    "colLastReceived": "마지막 수신",
+    "colJoined": "가입일"
+  },
+  "teams": {
+    "cardTitle": "팀 ({count})",
+    "cardDescription": "팀을 만들고 멤버 탭에서 배정하세요. 순위·비교는 전체 현황의 팀 탭에 반영됩니다.",
+    "createPlaceholder": "새 팀 이름",
+    "addSubmit": "추가",
+    "adding": "추가 중…",
+    "empty": "아직 팀이 없습니다. 아래에서 추가하세요.",
+    "memberCount": "· {count}명",
+    "deleteTitle": "팀 삭제",
+    "cannotDeleteHasMembers": "소속 멤버가 있어 삭제할 수 없습니다",
+    "cannotDeleteHasEvents": "수집 이력이 귀속되어 삭제할 수 없습니다",
+    "deleteConfirmTitle": "\"{name}\" 팀을 삭제할까요?",
+    "deleteConfirmDescription": "소속 멤버와 수집 이력이 없는 팀만 삭제되며, 되돌릴 수 없습니다.",
+    "cancel": "취소",
+    "delete": "삭제",
+    "createdToast": "팀을 추가했습니다.",
+    "deletedToast": "\"{name}\" 팀을 삭제했습니다."
+  },
+  "teamSelect": {
+    "none": "팀 없음",
+    "assignedToast": "\"{name}\" 팀으로 배정했습니다.",
+    "unassignedToast": "팀 배정을 해제했습니다."
+  },
+  "invites": {
+    "cardTitle": "멤버 초대",
+    "cardDescription": "초대 링크를 만들어 전달하면, 받은 사람이 비밀번호를 설정해 가입하고 설치까지 이어집니다.",
+    "emailLabel": "초대할 이메일",
+    "roleLabel": "역할",
+    "generating": "생성 중…",
+    "generateSubmit": "초대 링크 생성",
+    "linkCreatedToast": "{email} 초대 링크를 만들었습니다 — 복사해 전달하세요.",
+    "linkHeading": "{email} 초대 링크 — 전달하세요",
+    "linkCopied": "초대 링크를 복사했습니다.",
+    "linkExpiry": "7일 후 만료 · 1회용.",
+    "pendingHeading": "대기 중 초대",
+    "pendingExpires": "만료 {date}"
+  },
+  "system": {
+    "pricingTitle": "가격 동기화",
+    "pricingDescription": "LiteLLM 모델 가격을 받아 비용 계산에 사용합니다. 가격이 없으면 비용이 $0 으로 계산되므로, cron(sync-pricing) 등록과 별개로 여기서 수동 실행할 수 있습니다.",
+    "modelsCount": "{count}개 모델",
+    "lastSync": "· 마지막 동기화 {day}",
+    "noPricing": "동기화된 가격이 없습니다 — 수집되는 비용이 $0 으로 계산됩니다.",
+    "syncing": "동기화 중…",
+    "syncNow": "지금 동기화",
+    "syncedWithDay": "동기화 완료 — {count}개 모델 반영 ({day})",
+    "synced": "동기화 완료 — {count}개 모델 반영",
+    "contentTitle": "본문 수집",
+    "contentBadgeOn": "활성",
+    "contentBadgeOff": "비활성",
+    "contentDescription": "프롬프트·응답 본문 저장 여부. 서버 암호화 키(KEK)가 있어야 켜지며, 켜지면 사용자가 설치 시 본문 수집을 opt-in 할 수 있습니다.",
+    "contentEnabledBody": "본문은 서버에서 봉투 암호화되어 저장되고, 각 사용자는 <code>/history</code> 에서 본인 것만 조회합니다.",
+    "contentSetupHint": "서버 env 에 아래를 설정하고 재시작하면 켜집니다.",
+    "contentSetupNote": "RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고. 키를 잃으면 기존 본문은 복호화 불가."
+  },
+  "errors": {
+    "onlyAdminInvite": "관리자만 초대할 수 있습니다.",
+    "invalidEmail": "올바른 이메일 형식이 아닙니다.",
+    "emailAlreadyExists": "이미 가입된 이메일입니다.",
+    "onlyAdmin": "관리자만 가능합니다.",
+    "teamNameRequired": "팀 이름을 입력하세요.",
+    "teamNameTooLong": "팀 이름은 50자 이내로 입력하세요.",
+    "teamNameExists": "이미 있는 팀 이름입니다.",
+    "teamHasMembers": "소속 멤버가 있는 팀은 삭제할 수 없습니다.",
+    "teamHasEvents": "수집 이력이 귀속된 팀은 삭제할 수 없습니다.",
+    "pricingDownloadKept": "가격 다운로드에 실패해 기존 스냅샷을 유지했습니다 — {error}",
+    "pricingSyncFailed": "동기화 실패 — {error}"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "appName": "toard",
+  "appDescription": "Lightweight multi-provider AI usage dashboard",
+  "changeLanguage": "Change language",
+  "toggleTheme": "Toggle theme",
+  "signIn": "Sign in",
+  "signOut": "Sign out",
+  "copy": "Copy",
+  "copiedToClipboard": "Copied to clipboard.",
+  "copyFailed": "Couldn't copy — check your browser's clipboard permissions."
+}

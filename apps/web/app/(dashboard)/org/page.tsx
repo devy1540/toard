@@ -1,3 +1,4 @@
+import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { Activity, ArrowUpDown, DollarSign, Inbox, Users } from "lucide-react";
 import { LeaderboardBarChart } from "@/components/charts/leaderboard-bar-chart";
@@ -42,6 +43,7 @@ export default async function OrgPage({
   searchParams: Promise<OrgSearchParams>;
 }) {
   const sp = await searchParams;
+  const t = await getTranslations("org");
   const tab = sp.tab === "ranking" ? "ranking" : "overview";
   const period = parseFilters(sp);
   const providers = await getEnabledProviders();
@@ -49,8 +51,8 @@ export default async function OrgPage({
   return (
     <div className="space-y-6">
       <PageHeader
-        title="전체 현황"
-        description="전체 사용량·비용"
+        title={t("title")}
+        description={t("description")}
         actions={
           <>
             <DashboardFilters providers={providers} />
@@ -64,8 +66,8 @@ export default async function OrgPage({
       <LinkTabs
         active={tab}
         tabs={[
-          { value: "overview", label: "개요", href: hrefWith(sp, { tab: "overview" }) },
-          { value: "ranking", label: "순위", href: hrefWith(sp, { tab: "ranking" }) },
+          { value: "overview", label: t("tabOverview"), href: hrefWith(sp, { tab: "overview" }) },
+          { value: "ranking", label: t("tabRanking"), href: hrefWith(sp, { tab: "ranking" }) },
         ]}
       />
 
@@ -81,6 +83,7 @@ async function OverviewTab({
   sp: OrgSearchParams;
   period: ReturnType<typeof parseFilters>;
 }) {
+  const t = await getTranslations("org");
   const storage = getStorage();
   const [overview, daily, topUsers] = await Promise.all([
     storage.getOverview(period),
@@ -91,13 +94,13 @@ async function OverviewTab({
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label="총 비용" value={fmtUsd(overview.totalCostUsd)} icon={<DollarSign className="size-4" />} />
-        <StatCard label="세션" value={fmtNum(overview.totalSessions)} icon={<Activity className="size-4" />} />
-        <StatCard label="활성 사용자" value={fmtNum(overview.activeUsers)} icon={<Users className="size-4" />} />
+        <StatCard label={t("totalCost")} value={fmtUsd(overview.totalCostUsd)} icon={<DollarSign className="size-4" />} />
+        <StatCard label={t("sessions")} value={fmtNum(overview.totalSessions)} icon={<Activity className="size-4" />} />
+        <StatCard label={t("activeUsers")} value={fmtNum(overview.activeUsers)} icon={<Users className="size-4" />} />
         <StatCard
-          label="총 토큰"
+          label={t("totalTokens")}
           value={fmtCompact(overview.totalInputTokens + overview.totalOutputTokens)}
-          hint={`입력 ${fmtCompact(overview.totalInputTokens)} · 출력 ${fmtCompact(overview.totalOutputTokens)}`}
+          hint={t("tokenHint", { in: fmtCompact(overview.totalInputTokens), out: fmtCompact(overview.totalOutputTokens) })}
           icon={<ArrowUpDown className="size-4" />}
         />
       </div>
@@ -105,7 +108,7 @@ async function OverviewTab({
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>일별 비용</CardTitle>
+            <CardTitle>{t("dailyCost")}</CardTitle>
           </CardHeader>
           <CardContent>
             {daily.length > 0 ? (
@@ -116,8 +119,8 @@ async function OverviewTab({
                   <EmptyMedia variant="icon">
                     <Inbox />
                   </EmptyMedia>
-                  <EmptyTitle>데이터가 없습니다</EmptyTitle>
-                  <EmptyDescription>선택한 기간·도구에 수집된 사용량이 없습니다.</EmptyDescription>
+                  <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
+                  <EmptyDescription>{t("noCollectedUsageDescription")}</EmptyDescription>
                 </EmptyHeader>
               </Empty>
             )}
@@ -126,9 +129,9 @@ async function OverviewTab({
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>상위 사용자</CardTitle>
+            <CardTitle>{t("topUsers")}</CardTitle>
             <Button asChild variant="ghost" size="sm" className="text-muted-foreground -my-1">
-              <Link href={hrefWith(sp, { tab: "ranking" })}>전체 순위 →</Link>
+              <Link href={hrefWith(sp, { tab: "ranking" })}>{t("viewAllRanking")}</Link>
             </Button>
           </CardHeader>
           <CardContent>
@@ -136,8 +139,8 @@ async function OverviewTab({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>사용자</TableHead>
-                    <TableHead className="text-right">비용</TableHead>
+                    <TableHead>{t("user")}</TableHead>
+                    <TableHead className="text-right">{t("cost")}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -155,7 +158,7 @@ async function OverviewTab({
                   <EmptyMedia variant="icon">
                     <Inbox />
                   </EmptyMedia>
-                  <EmptyTitle>사용자 없음</EmptyTitle>
+                  <EmptyTitle>{t("noUsersTitle")}</EmptyTitle>
                 </EmptyHeader>
               </Empty>
             )}
@@ -173,24 +176,25 @@ async function RankingTab({
   sp: OrgSearchParams;
   period: ReturnType<typeof parseFilters>;
 }) {
+  const t = await getTranslations("org");
   const scope = sp.scope === "team" || sp.scope === "department" ? "team" : "user"; // department 는 구 URL 호환
-  const scopeLabel = scope === "team" ? "팀" : "개인";
+  const scopeLabel = scope === "team" ? t("scope.team") : t("scope.user");
   const rows = await getStorage().getLeaderboard({ ...period, scope });
 
   return (
     <div className="space-y-6">
       <div className="flex justify-end gap-1">
         <Button asChild variant={scope === "user" ? "default" : "outline"} size="sm">
-          <Link href={hrefWith(sp, { tab: "ranking", scope: "user" })}>개인</Link>
+          <Link href={hrefWith(sp, { tab: "ranking", scope: "user" })}>{t("scope.user")}</Link>
         </Button>
         <Button asChild variant={scope === "team" ? "default" : "outline"} size="sm">
-          <Link href={hrefWith(sp, { tab: "ranking", scope: "team" })}>팀</Link>
+          <Link href={hrefWith(sp, { tab: "ranking", scope: "team" })}>{t("scope.team")}</Link>
         </Button>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>비용 상위 {scopeLabel}</CardTitle>
+          <CardTitle>{t("topByCost", { scope: scopeLabel })}</CardTitle>
         </CardHeader>
         <CardContent>
           {rows.length > 0 ? (
@@ -201,8 +205,8 @@ async function RankingTab({
                 <EmptyMedia variant="icon">
                   <Inbox />
                 </EmptyMedia>
-                <EmptyTitle>데이터가 없습니다</EmptyTitle>
-                <EmptyDescription>{`선택한 기간·도구에 ${scopeLabel} 사용량이 없습니다.`}</EmptyDescription>
+                <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
+                <EmptyDescription>{t("noScopeUsageDescription", { scope: scopeLabel })}</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
@@ -212,7 +216,7 @@ async function RankingTab({
       {rows.length > 0 ? (
         <Card>
           <CardHeader>
-            <CardTitle>{scopeLabel} 순위</CardTitle>
+            <CardTitle>{t("rankingTitle", { scope: scopeLabel })}</CardTitle>
           </CardHeader>
           <CardContent>
             <Table>
@@ -220,9 +224,9 @@ async function RankingTab({
                 <TableRow>
                   <TableHead className="w-10">#</TableHead>
                   <TableHead>{scopeLabel}</TableHead>
-                  <TableHead className="text-right">세션</TableHead>
-                  <TableHead className="text-right">토큰</TableHead>
-                  <TableHead className="text-right">비용</TableHead>
+                  <TableHead className="text-right">{t("sessionsCol")}</TableHead>
+                  <TableHead className="text-right">{t("tokensCol")}</TableHead>
+                  <TableHead className="text-right">{t("cost")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>

@@ -73,8 +73,7 @@ pub fn merge_resource_attrs(existing: Option<&str>, tool: &str) -> Option<String
 pub fn inject_env(tool: &str, endpoint: &str, token: &str) {
     set_if_empty("CLAUDE_CODE_ENABLE_TELEMETRY", "1");
     set_if_empty("OTEL_LOGS_EXPORTER", "otlp");
-    // Claude Code 2.x 는 토큰/비용을 metrics 로 보낸다 — none 이면 사용량 수집 불가(toard /v1/metrics 수신).
-    set_if_empty("OTEL_METRICS_EXPORTER", "otlp");
+    set_if_empty("OTEL_METRICS_EXPORTER", "none");
     set_if_empty("OTEL_EXPORTER_OTLP_PROTOCOL", "http/json");
 
     if !set_if_empty("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint) {

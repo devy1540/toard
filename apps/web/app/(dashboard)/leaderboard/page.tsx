@@ -4,12 +4,14 @@ import { redirect } from "next/navigation";
 export default async function LeaderboardRedirect({
   searchParams,
 }: {
-  searchParams: Promise<{ period?: string; provider?: string; scope?: string }>;
+  searchParams: Promise<{ period?: string; provider?: string; scope?: string; from?: string; to?: string }>;
 }): Promise<never> {
   const sp = await searchParams;
   const q = new URLSearchParams({ tab: "ranking" });
   if (sp.period) q.set("period", sp.period);
   if (sp.provider) q.set("provider", sp.provider);
   if (sp.scope) q.set("scope", sp.scope);
+  if (sp.from) q.set("from", sp.from);
+  if (sp.to) q.set("to", sp.to);
   redirect(`/org?${q.toString()}`);
 }

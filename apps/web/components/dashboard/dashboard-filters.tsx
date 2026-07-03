@@ -1,45 +1,100 @@
 "use client";
 
+import { useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { DEFAULT_PERIOD } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
 
 const PERIODS = [
+  { v: "today", l: "오늘" },
   { v: "7", l: "7일" },
   { v: "30", l: "30일" },
   { v: "90", l: "90일" },
 ];
 
-/** 기간(세그먼트)·도구(셀렉트) 필터 — 페이지 헤더 우측에 배치(순위 개인/팀 토글과 동일 패턴). */
+/** 기간(세그먼트+직접 선택)·도구(셀렉트) 필터 — 페이지 헤더 우측에 배치. */
 export function DashboardFilters({ providers }: { providers: ProviderOption[] }) {
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
-  const period = sp.get("period") ?? "30";
+  const period = sp.get("period") ?? DEFAULT_PERIOD;
   const provider = sp.get("provider") ?? "all";
+  const isCustom = period === "custom";
 
-  const update = (key: string, value: string) => {
+  const [showCustom, setShowCustom] = useState(isCustom);
+  const [from, setFrom] = useState(sp.get("from") ?? "");
+  const [to, setTo] = useState(sp.get("to") ?? "");
+
+  const push = (params: Record<string, string | null>) => {
     const next = new URLSearchParams(sp.toString());
-    next.set(key, value);
+    for (const [k, v] of Object.entries(params)) {
+      if (v === null) next.delete(k);
+      else next.set(k, v);
+    }
     router.push(`${pathname}?${next.toString()}`);
+  };
+
+  const selectPreset = (v: string) => {
+    setShowCustom(false);
+    push({ period: v, from: null, to: null });
+  };
+
+  const applyCustom = () => {
+    if (!from || !to) return;
+    push({ period: "custom", from, to });
   };
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="flex gap-1">
+      <div className="flex flex-wrap gap-1">
         {PERIODS.map((p) => (
           <Button
             key={p.v}
             size="sm"
-            variant={period === p.v ? "default" : "outline"}
-            onClick={() => update("period", p.v)}
+            variant={!isCustom && period === p.v ? "default" : "outline"}
+            onClick={() => selectPreset(p.v)}
           >
             {p.l}
           </Button>
         ))}
+        <Button
+          size="sm"
+          variant={isCustom || showCustom ? "default" : "outline"}
+          onClick={() => setShowCustom((s) => !s)}
+        >
+          직접 선택
+        </Button>
       </div>
-      <Select value={provider} onValueChange={(v) => update("provider", v)}>
+
+      {showCustom && (
+        <div className="flex items-center gap-1">
+          <Input
+            type="date"
+            value={from}
+            max={to || undefined}
+            onChange={(e) => setFrom(e.target.value)}
+            className="h-8 w-auto"
+            aria-label="시작일"
+          />
+          <span className="text-muted-foreground text-sm">~</span>
+          <Input
+            type="date"
+            value={to}
+            min={from || undefined}
+            onChange={(e) => setTo(e.target.value)}
+            className="h-8 w-auto"
+            aria-label="종료일"
+          />
+          <Button size="sm" onClick={applyCustom} disabled={!from || !to}>
+            적용
+          </Button>
+        </div>
+      )}
+
+      <Select value={provider} onValueChange={(v) => push({ provider: v })}>
         <SelectTrigger className="w-36">
           <SelectValue />
         </SelectTrigger>

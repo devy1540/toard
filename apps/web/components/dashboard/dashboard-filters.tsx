@@ -6,6 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { ProviderOption } from "@/lib/providers";
 
 const PERIODS = [
+  { v: "today", l: "오늘" },
   { v: "7", l: "7일" },
   { v: "30", l: "30일" },
   { v: "90", l: "90일" },

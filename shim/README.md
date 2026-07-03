@@ -31,7 +31,7 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 - **실행 모델**: 데몬 없음. `claude`/`codex` wrap 실행에 편승해 10분 스로틀(double-spawn 분리)로 백그라운드 수집. `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절, `toard-shim collect` 즉시 실행.
 
 ## 본문 수집 (opt-in — 기본 off)
-`TOARD_SHIM_COLLECT_CONTENT=1` 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
+`TOARD_SHIM_COLLECT_CONTENT=1`(env) 또는 `~/.toard/credentials` 의 `collect_content=true`(설치 시 `install.sh` 가 기록) 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. env 가 명시되면 env 가 우선(`0`/`off` 로 강제 해제 가능). usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
 - **신뢰경계**: shim 은 본문을 **평문 TLS** 로 보내되 키를 쥐지 않는다 — **봉투 암호화(at-rest)·소유자 전용(RLS)은 서버 몫**. shim 의 "본문 안 읽음" 기본값을 여는 스위치라 명시적 opt-in.
 - **서버측 게이트**: 서버에 본문 수집 KEK 가 없으면 `/v1/prompts` 가 503 → shim 은 실패로 보지 않고 조용히 건너뛴다.
 - **범위 주의**: 텍스트 필드는 `text`/`content` 를 시도한다. qwen 등 실로그의 본문 키가 다르면 빈 결과(안전)가 되므로, 프로덕션 활성화 전 실로그 검증이 필요하다.

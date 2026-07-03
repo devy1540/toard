@@ -4,6 +4,7 @@ import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { listPendingInvites } from "@/lib/invites";
 import { getPricingStatus } from "@/lib/pricing";
@@ -170,6 +171,7 @@ async function TeamsTab() {
 
 async function SystemTab() {
   const pricing = await getPricingStatus();
+  const contentEnabled = contentCollectionEnabled();
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
@@ -183,6 +185,44 @@ async function SystemTab() {
         </CardHeader>
         <CardContent>
           <PricingSyncPanel models={pricing.models} lastDay={pricing.lastDay} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            본문 수집
+            {contentEnabled ? (
+              <Badge variant="secondary">활성</Badge>
+            ) : (
+              <Badge variant="outline">비활성</Badge>
+            )}
+          </CardTitle>
+          <CardDescription>
+            프롬프트·응답 본문 저장 여부. 서버 암호화 키(KEK)가 있어야 켜지며, 켜지면 사용자가 설치
+            시 본문 수집을 opt-in 할 수 있습니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {contentEnabled ? (
+            <p className="text-muted-foreground">
+              본문은 서버에서 봉투 암호화되어 저장되고, 각 사용자는 <code>/history</code> 에서 본인
+              것만 조회합니다.
+            </p>
+          ) : (
+            <>
+              <p className="text-muted-foreground">
+                서버 env 에 아래를 설정하고 재시작하면 켜집니다.
+              </p>
+              <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs">
+                TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)
+              </pre>
+              <p className="text-muted-foreground text-xs">
+                RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고.
+                키를 잃으면 기존 본문은 복호화 불가.
+              </p>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>

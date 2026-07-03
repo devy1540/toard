@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   AlertDialog,
@@ -22,18 +22,20 @@ const INITIAL: TokenState = {};
 const ISSUE_FORM_ID = "issue-token-form";
 
 /** 한 줄 설치 — toard 가 서빙하는 install.sh 에 토큰을 env 로 넘김(바이너리+자격+PATH 자동). */
-function oneLiner(token: string, baseUrl: string): string {
-  return `curl -fsSL ${baseUrl}/install.sh | TOARD_INGEST_TOKEN=${token} sh`;
+function oneLiner(token: string, baseUrl: string, collectContent: boolean): string {
+  const content = collectContent ? " TOARD_SHIM_COLLECT_CONTENT=1" : "";
+  return `curl -fsSL ${baseUrl}/install.sh | TOARD_INGEST_TOKEN=${token}${content} sh`;
 }
 
 /** 수동(고급) — 릴리스 install.sh + 직접 자격/PATH 설정. */
-function manualSnippet(token: string, endpoint: string): string {
+function manualSnippet(token: string, endpoint: string, collectContent: boolean): string {
   return [
     `curl -fsSL ${RELEASE_INSTALL} | sh`,
     "mkdir -p ~/.toard && chmod 700 ~/.toard",
     "cat > ~/.toard/credentials <<'EOF'",
     `agent_key=${token}`,
     `endpoint=${endpoint}`,
+    ...(collectContent ? ["collect_content=true"] : []),
     "EOF",
     "chmod 600 ~/.toard/credentials",
     'export PATH="$HOME/.toard/bin:$PATH"   # ~/.zshrc 에 추가',
@@ -46,18 +48,21 @@ export function OnboardingPanel({
   hasToken,
   createdAt,
   lastUsedAt,
+  contentEnabled,
 }: {
   baseUrl: string;
   endpoint: string;
   hasToken: boolean;
   createdAt: string | null;
   lastUsedAt: string | null;
+  contentEnabled: boolean;
 }) {
   const [state, action, pending] = useActionState(issueTokenAction, INITIAL);
+  const [collectContent, setCollectContent] = useState(false);
   const token = state.token;
   const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : "—");
   const placeholder = "<발급으로 토큰 받기>";
-  const one = oneLiner(token ?? placeholder, baseUrl);
+  const one = oneLiner(token ?? placeholder, baseUrl, collectContent);
   // 발급 결과 토스트 — 같은 토큰으로 중복 발화 방지
   const toastedToken = useRef<string | null>(null);
 
@@ -149,6 +154,30 @@ export function OnboardingPanel({
             위에서 <b>발급</b> 하면 아래 명령에 내 토큰이 채워집니다.
           </p>
         ) : null}
+        {contentEnabled ? (
+          <label className="flex items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={collectContent}
+              onChange={(e) => setCollectContent(e.target.checked)}
+            />
+            <span>
+              본문도 수집{" "}
+              <span className="text-muted-foreground">
+                (opt-in) — 프롬프트·응답을 암호화 저장,{" "}
+                <a className="text-primary underline-offset-4 hover:underline" href="/history">
+                  내 히스토리
+                </a>
+                에서 본인만 조회합니다.
+              </span>
+            </span>
+          </label>
+        ) : (
+          <p className="text-muted-foreground text-xs">
+            본문 수집은 관리자가 서버에서 켜야 사용할 수 있습니다.
+          </p>
+        )}
         <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{one}</pre>
         <p className="text-muted-foreground text-xs">
           바이너리 설치 + <code>~/.toard/credentials</code> + PATH 를 자동 설정합니다. endpoint{" "}
@@ -167,12 +196,12 @@ export function OnboardingPanel({
         </summary>
         <div className="mt-2 flex items-center justify-end">
           <CopyButton
-            text={manualSnippet(token ?? placeholder, endpoint)}
+            text={manualSnippet(token ?? placeholder, endpoint, collectContent)}
             message="수동 설정 명령을 복사했습니다."
           />
         </div>
         <pre className="bg-muted mt-1 overflow-x-auto rounded-md p-3 text-xs leading-relaxed">
-          {manualSnippet(token ?? placeholder, endpoint)}
+          {manualSnippet(token ?? placeholder, endpoint, collectContent)}
         </pre>
       </details>
 

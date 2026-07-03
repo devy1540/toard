@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getActiveTokenMeta } from "@/lib/tokens";
@@ -77,6 +78,7 @@ async function InstallTab({ userId }: { userId: string }) {
     getIngestEndpoint(),
     getPublicBaseUrl(),
   ]);
+  const contentEnabled = contentCollectionEnabled();
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-3">
@@ -86,8 +88,17 @@ async function InstallTab({ userId }: { userId: string }) {
           <CardDescription>
             내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를
             설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다.{" "}
-            <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용 등 사용량
-            메타데이터만 전송됩니다.
+            {contentEnabled ? (
+              <>
+                기본은 <b>프롬프트·코드 내용을 수집하지 않고</b> 사용량 메타데이터만 보냅니다 —
+                아래에서 본문 수집을 켤 수 있습니다.
+              </>
+            ) : (
+              <>
+                <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용 등 사용량
+                메타데이터만 전송됩니다.
+              </>
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -97,6 +108,7 @@ async function InstallTab({ userId }: { userId: string }) {
             hasToken={Boolean(meta)}
             createdAt={meta?.createdAt.toISOString() ?? null}
             lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+            contentEnabled={contentEnabled}
           />
         </CardContent>
       </Card>

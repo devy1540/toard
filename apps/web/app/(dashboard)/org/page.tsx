@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Activity, ArrowUpDown, DollarSign, Inbox, Users } from "lucide-react";
 import { LeaderboardBarChart } from "@/components/charts/leaderboard-bar-chart";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
+import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -50,7 +51,12 @@ export default async function OrgPage({
       <PageHeader
         title="전체 현황"
         description="전체 사용량·비용"
-        actions={<DashboardFilters providers={providers} />}
+        actions={
+          <>
+            <DashboardFilters providers={providers} />
+            <AutoRefresh />
+          </>
+        }
       />
 
       <PricingNotice />

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Activity, ArrowUpDown, DollarSign, Inbox } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
+import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
@@ -53,7 +54,12 @@ export default async function MyUsagePage({
       <PageHeader
         title="내 사용량"
         description="내 AI 도구 사용량·비용"
-        actions={<DashboardFilters providers={providers} />}
+        actions={
+          <>
+            <DashboardFilters providers={providers} />
+            <AutoRefresh />
+          </>
+        }
       />
 
       <PricingNotice />

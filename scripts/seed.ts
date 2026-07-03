@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   await pool.query(
     `INSERT INTO providers (key, display_name, service_name_patterns, collection_method, enabled)
      VALUES
-       ('claude_code', 'Claude Code', ARRAY['claude-code'], 'otel', true),
+       ('claude_code', 'Claude Code', ARRAY['claude-code','claude-code-desktop'], 'otel', true),
        ('codex', 'Codex', ARRAY['codex','codex_cli_rs','codex_exec'], 'otel', true),
        ('gemini', 'Gemini CLI', ARRAY[]::text[], 'logfile', true),
        ('qwen', 'Qwen Code', ARRAY[]::text[], 'logfile', true)

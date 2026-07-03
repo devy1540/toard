@@ -94,13 +94,6 @@ export interface StorageBackend {
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
   saveUsageEvents(events: UsageEvent[]): Promise<SaveResult>;
-  /**
-   * metrics 경로 저장(upsert). 이벤트는 (session, model)당 **세션 누적** 스냅샷이며,
-   * dedup_key 충돌 시 각 토큰/비용을 GREATEST(기존, 신규)로 갱신한다 — Claude Code 2.x 가
-   * export 마다 누적값을 반복 전송해도 과다집계되지 않게 최신 누적으로 수렴. `inserted` 는
-   * 신규 행 수, `deduped` 는 기존 행 갱신 수.
-   */
-  saveMetricUsageEvents(events: UsageEvent[]): Promise<SaveResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
 

@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
+import { LogoMark } from "@/components/logo-mark";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getValidInvite } from "@/lib/invites";
 import { AcceptForm } from "./accept-form";
@@ -18,6 +19,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
     <div className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          <LogoMark size={32} className="mb-1" />
           <CardTitle className="text-xl">toard 초대</CardTitle>
           <CardDescription>
             {invite

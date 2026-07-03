@@ -1,0 +1,11 @@
+{
+  "appName": "toard",
+  "appDescription": "경량 멀티 프로바이더 AI 사용량 대시보드",
+  "changeLanguage": "언어 변경",
+  "toggleTheme": "테마 전환",
+  "signIn": "로그인",
+  "signOut": "로그아웃",
+  "copy": "복사",
+  "copiedToClipboard": "클립보드에 복사했습니다.",
+  "copyFailed": "복사하지 못했습니다 — 브라우저 클립보드 권한을 확인하세요."
+}

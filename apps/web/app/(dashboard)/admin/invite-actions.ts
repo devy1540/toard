@@ -1,5 +1,6 @@
 "use server";
 
+import { getTranslations } from "next-intl/server";
 import { isValidEmail } from "@/lib/auth-policy";
 import { createInvite } from "@/lib/invites";
 import { getSessionUser } from "@/lib/session-user";
@@ -11,16 +12,17 @@ export async function createInviteAction(
   _prev: InviteState,
   formData: FormData,
 ): Promise<InviteState> {
+  const t = await getTranslations("admin");
   const me = await getSessionUser();
-  if (me?.role !== "admin") return { error: "관리자만 초대할 수 있습니다." };
+  if (me?.role !== "admin") return { error: t("errors.onlyAdminInvite") };
 
   const email = String(formData.get("email") ?? "")
     .toLowerCase()
     .trim();
   const role = String(formData.get("role") ?? "member");
-  if (!isValidEmail(email)) return { error: "올바른 이메일 형식이 아닙니다." };
+  if (!isValidEmail(email)) return { error: t("errors.invalidEmail") };
 
   const token = await createInvite(email, role, me.id);
-  if (!token) return { error: "이미 가입된 이메일입니다." };
+  if (!token) return { error: t("errors.emailAlreadyExists") };
   return { token, email };
 }

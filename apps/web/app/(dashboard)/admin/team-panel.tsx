@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState, useEffect, useRef, useTransition } from "react";
+import { useTranslations } from "next-intl";
 import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
@@ -29,6 +30,7 @@ export interface TeamRow {
 
 /** 팀 목록·생성·삭제. 삭제는 소속 멤버 0명 + 수집 이력 0건일 때만 활성(서버 액션이 재검증). */
 export function TeamPanel({ teams }: { teams: TeamRow[] }) {
+  const t = useTranslations("admin");
   const [createState, createAction, creating] = useActionState(createTeamAction, INITIAL);
   const [pending, startTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
@@ -38,16 +40,16 @@ export function TeamPanel({ teams }: { teams: TeamRow[] }) {
     if (createState === prevCreateState.current) return;
     prevCreateState.current = createState;
     if (createState.ok) {
-      toast.success("팀을 추가했습니다.");
+      toast.success(t("teams.createdToast"));
       formRef.current?.reset();
     }
-  }, [createState]);
+  }, [createState, t]);
 
   const onDelete = (team: TeamRow) => {
     startTransition(async () => {
       const r = await deleteTeamAction(team.id);
       if (r.error) toast.error(r.error);
-      else toast.success(`"${team.name}" 팀을 삭제했습니다.`);
+      else toast.success(t("teams.deletedToast", { name: team.name }));
     });
   };
 
@@ -60,7 +62,10 @@ export function TeamPanel({ teams }: { teams: TeamRow[] }) {
             return (
               <li key={d.id} className="flex items-center justify-between gap-2">
                 <span>
-                  {d.name} <span className="text-muted-foreground">· {d.memberCount}명</span>
+                  {d.name}{" "}
+                  <span className="text-muted-foreground">
+                    {t("teams.memberCount", { count: d.memberCount })}
+                  </span>
                 </span>
                 <AlertDialog>
                   <AlertDialogTrigger asChild>
@@ -72,10 +77,10 @@ export function TeamPanel({ teams }: { teams: TeamRow[] }) {
                       disabled={!deletable || pending}
                       title={
                         deletable
-                          ? "팀 삭제"
+                          ? t("teams.deleteTitle")
                           : d.memberCount > 0
-                            ? "소속 멤버가 있어 삭제할 수 없습니다"
-                            : "수집 이력이 귀속되어 삭제할 수 없습니다"
+                            ? t("teams.cannotDeleteHasMembers")
+                            : t("teams.cannotDeleteHasEvents")
                       }
                     >
                       <Trash2 className="size-3.5" />
@@ -83,15 +88,17 @@ export function TeamPanel({ teams }: { teams: TeamRow[] }) {
                   </AlertDialogTrigger>
                   <AlertDialogContent>
                     <AlertDialogHeader>
-                      <AlertDialogTitle>&quot;{d.name}&quot; 팀을 삭제할까요?</AlertDialogTitle>
+                      <AlertDialogTitle>
+                        {t("teams.deleteConfirmTitle", { name: d.name })}
+                      </AlertDialogTitle>
                       <AlertDialogDescription>
-                        소속 멤버와 수집 이력이 없는 팀만 삭제되며, 되돌릴 수 없습니다.
+                        {t("teams.deleteConfirmDescription")}
                       </AlertDialogDescription>
                     </AlertDialogHeader>
                     <AlertDialogFooter>
-                      <AlertDialogCancel>취소</AlertDialogCancel>
+                      <AlertDialogCancel>{t("teams.cancel")}</AlertDialogCancel>
                       <AlertDialogAction variant="destructive" onClick={() => onDelete(d)}>
-                        삭제
+                        {t("teams.delete")}
                       </AlertDialogAction>
                     </AlertDialogFooter>
                   </AlertDialogContent>
@@ -101,13 +108,13 @@ export function TeamPanel({ teams }: { teams: TeamRow[] }) {
           })}
         </ul>
       ) : (
-        <p className="text-muted-foreground text-sm">아직 팀이 없습니다. 아래에서 추가하세요.</p>
+        <p className="text-muted-foreground text-sm">{t("teams.empty")}</p>
       )}
 
       <form ref={formRef} action={createAction} className="flex gap-2">
-        <Input name="name" placeholder="새 팀 이름" maxLength={50} className="h-8" />
+        <Input name="name" placeholder={t("teams.createPlaceholder")} maxLength={50} className="h-8" />
         <Button type="submit" size="sm" disabled={creating}>
-          {creating ? "추가 중…" : "추가"}
+          {creating ? t("teams.adding") : t("teams.addSubmit")}
         </Button>
       </form>
       {createState.error ? <p className="text-destructive text-xs">{createState.error}</p> : null}

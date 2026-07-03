@@ -1,18 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const OPTIONS = [
-  { v: "off", l: "자동 새로고침 끔", ms: 0 },
-  { v: "10", l: "10초", ms: 10_000 },
-  { v: "30", l: "30초", ms: 30_000 },
-  { v: "60", l: "1분", ms: 60_000 },
-  { v: "300", l: "5분", ms: 300_000 },
-];
+  { v: "off", key: "autoRefresh.off", ms: 0 },
+  { v: "10", key: "autoRefresh.sec10", ms: 10_000 },
+  { v: "30", key: "autoRefresh.sec30", ms: 30_000 },
+  { v: "60", key: "autoRefresh.min1", ms: 60_000 },
+  { v: "300", key: "autoRefresh.min5", ms: 300_000 },
+] as const;
 
 const STORAGE_KEY = "toard:auto-refresh";
 
@@ -20,6 +21,7 @@ const STORAGE_KEY = "toard:auto-refresh";
  *  force-dynamic 페이지에서 router.refresh() 로 RSC 데이터만 갱신(스크롤·필터 상태 유지).
  *  수동 버튼 + 주기 선택(localStorage 저장), 탭이 백그라운드면 주기 새로고침을 건너뜀. */
 export function AutoRefresh() {
+  const t = useTranslations("dashboard");
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [value, setValue] = useState("off");
@@ -63,18 +65,24 @@ export function AutoRefresh() {
     if (lastAt === null) return;
     const tick = () => {
       const s = Math.max(0, Math.round((Date.now() - lastAt) / 1000));
-      setAgo(s < 5 ? "방금" : s < 60 ? `${s}초 전` : `${Math.floor(s / 60)}분 전`);
+      setAgo(
+        s < 5
+          ? t("autoRefresh.justNow")
+          : s < 60
+            ? t("autoRefresh.secondsAgo", { n: s })
+            : t("autoRefresh.minutesAgo", { n: Math.floor(s / 60) }),
+      );
     };
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [lastAt]);
+  }, [lastAt, t]);
 
   return (
     <div className="flex items-center gap-1">
       {ago ? (
         <span className="text-muted-foreground mr-1 hidden text-xs tabular-nums sm:inline">
-          {ago} 업데이트
+          {t("autoRefresh.updated", { ago })}
         </span>
       ) : null}
       <Button
@@ -82,19 +90,19 @@ export function AutoRefresh() {
         size="sm"
         onClick={refresh}
         disabled={isPending}
-        aria-label="지금 새로고침"
-        title="지금 새로고침"
+        aria-label={t("autoRefresh.refreshNow")}
+        title={t("autoRefresh.refreshNow")}
       >
         <RefreshCw className={`size-4 ${isPending ? "animate-spin" : ""}`} />
       </Button>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-32" aria-label="자동 새로고침 주기">
+        <SelectTrigger className="w-32" aria-label={t("autoRefresh.intervalLabel")}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
           {OPTIONS.map((o) => (
             <SelectItem key={o.v} value={o.v}>
-              {o.l}
+              {t(o.key)}
             </SelectItem>
           ))}
         </SelectContent>

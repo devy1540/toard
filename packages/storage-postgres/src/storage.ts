@@ -103,6 +103,56 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
+  async saveMetricUsageEvents(events: UsageEvent[]): Promise<SaveResult> {
+    if (events.length === 0) return { inserted: 0, deduped: 0 };
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const deptMap = await this.teamMap(
+        client,
+        events.map((e) => e.userId).filter((x): x is string => !!x),
+      );
+      let inserted = 0;
+      let updated = 0;
+      for (const e of events) {
+        // 누적 스냅샷 upsert: 충돌 시 각 컬럼을 GREATEST 로 갱신(누적은 단조증가 — 순서/재전송 안전).
+        // xmax=0 → 신규 INSERT, 아니면 UPDATE. ts 는 최초값 유지(세션 시작 일자 고정).
+        const r = await client.query<{ inserted: boolean }>(
+          `INSERT INTO usage_events
+             (dedup_key, provider_key, user_id, team_id, session_id, model, ts,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+              log_adapter)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           ON CONFLICT (dedup_key) DO UPDATE SET
+             input_tokens          = GREATEST(usage_events.input_tokens, EXCLUDED.input_tokens),
+             output_tokens         = GREATEST(usage_events.output_tokens, EXCLUDED.output_tokens),
+             cache_read_tokens     = GREATEST(usage_events.cache_read_tokens, EXCLUDED.cache_read_tokens),
+             cache_creation_tokens = GREATEST(usage_events.cache_creation_tokens, EXCLUDED.cache_creation_tokens),
+             cost_usd              = GREATEST(usage_events.cost_usd, EXCLUDED.cost_usd)
+           RETURNING (xmax = 0) AS inserted`,
+          [
+            e.dedupKey, e.providerKey, e.userId,
+            e.userId ? (deptMap.get(e.userId) ?? null) : null,
+            e.sessionId, e.model, e.ts,
+            e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
+            e.logAdapter ?? null,
+          ],
+        );
+        if (r.rows[0]?.inserted) inserted++;
+        else updated++;
+      }
+      await client.query("COMMIT");
+      // Mart(usage_daily_*)는 1차 서빙 미사용(§4.4) — 대시보드는 usage_events 직접 집계.
+      // 누적 갱신은 Mart 증분과 맞지 않아 여기선 Mart 를 건드리지 않는다(추후 recomputeDaily 로 정합).
+      return { inserted, deduped: updated };
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /** user_id → 현재 team_id (없으면 제외) */
   private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
     if (userIds.length === 0) return new Map();

@@ -14,7 +14,9 @@ fn managed_keys(endpoint: &str, token: &str) -> Vec<(String, String)> {
     vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY".into(), "1".into()),
         ("OTEL_LOGS_EXPORTER".into(), "otlp".into()),
-        ("OTEL_METRICS_EXPORTER".into(), "none".into()),
+        // Claude Code 2.x 는 토큰/비용을 metrics(claude_code.token.usage·cost.usage)로 보낸다.
+        // none 이면 사용량이 전혀 수집되지 않으므로 otlp 필수 (toard /v1/metrics 수신).
+        ("OTEL_METRICS_EXPORTER".into(), "otlp".into()),
         ("OTEL_EXPORTER_OTLP_PROTOCOL".into(), "http/json".into()),
         ("OTEL_EXPORTER_OTLP_ENDPOINT".into(), endpoint.to_string()),
         (

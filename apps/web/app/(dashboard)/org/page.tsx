@@ -5,6 +5,7 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,6 +50,8 @@ export default async function OrgPage({
         description="전체 사용량·비용"
         actions={<DashboardFilters providers={providers} />}
       />
+
+      <PricingNotice />
 
       <LinkTabs
         active={tab}

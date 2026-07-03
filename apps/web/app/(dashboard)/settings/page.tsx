@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { getPool } from "@/lib/db";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getActiveTokenMeta } from "@/lib/tokens";
+import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
 
@@ -84,7 +85,9 @@ async function InstallTab({ userId }: { userId: string }) {
           <CardTitle>내 토큰 발급 · 설치</CardTitle>
           <CardDescription>
             내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를
-            설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다.
+            설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다.{" "}
+            <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용 등 사용량
+            메타데이터만 전송됩니다.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -100,18 +103,24 @@ async function InstallTab({ userId }: { userId: string }) {
 
       <Card>
         <CardHeader>
-          <CardTitle>확인</CardTitle>
-          <CardDescription>설치가 되었는지 점검합니다.</CardDescription>
+          <CardTitle>연결 확인</CardTitle>
+          <CardDescription>설치 후 데이터가 실제로 수신되는지 확인합니다.</CardDescription>
         </CardHeader>
-        <CardContent className="text-muted-foreground space-y-1 text-sm">
-          <p>
-            • <code>which claude</code> → <code>~/.toard/bin/claude</code> 가 먼저 잡혀야 합니다(shim
-            우선).
-          </p>
-          <p>
-            • 이후 <code>claude</code> 사용 시 <a className="text-primary underline-offset-4 hover:underline" href="/">내 사용량</a> 에 쌓입니다.
-          </p>
-          <p>• 전제: 실제 Claude Code/Codex 가 설치되어 있어야 하며, 그 CLI 의 텔레메트리를 수집합니다.</p>
+        <CardContent className="space-y-4">
+          <ConnectionCheck
+            initialHasToken={Boolean(meta)}
+            initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+          />
+          <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
+            <p>
+              • <code>which claude</code> → <code>~/.toard/bin/claude</code> 가 먼저 잡혀야
+              합니다(shim 우선).
+            </p>
+            <p>
+              • 이후 <code>claude</code> 사용 시 <a className="text-primary underline-offset-4 hover:underline" href="/">내 사용량</a> 에 쌓입니다.
+            </p>
+            <p>• 전제: 실제 Claude Code/Codex 가 설치되어 있어야 하며, 그 CLI 의 텔레메트리를 수집합니다.</p>
+          </div>
         </CardContent>
       </Card>
     </div>

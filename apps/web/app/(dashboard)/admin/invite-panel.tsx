@@ -1,6 +1,8 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useEffect, useRef } from "react";
+import { toast } from "sonner";
+import { CopyButton } from "@/components/dashboard/copy-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,31 +11,18 @@ import { createInviteAction, type InviteState } from "./invite-actions";
 const INITIAL: InviteState = {};
 type Pending = { email: string; role: string; expiresAt: string };
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      size="sm"
-      onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
-          setCopied(true);
-          setTimeout(() => setCopied(false), 1500);
-        } catch {
-          /* 무시 */
-        }
-      }}
-    >
-      {copied ? "복사됨" : "복사"}
-    </Button>
-  );
-}
-
 export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pending[] }) {
   const [state, action, isPending] = useActionState(createInviteAction, INITIAL);
   const link = state.token ? `${baseUrl}/invite/${state.token}` : null;
+  // 생성 결과 토스트 — 같은 토큰으로 중복 발화 방지
+  const toastedToken = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (state.token && toastedToken.current !== state.token) {
+      toastedToken.current = state.token;
+      toast.success(`${state.email} 초대 링크를 만들었습니다 — 복사해 전달하세요.`);
+    }
+  }, [state.token, state.email]);
 
   return (
     <div className="space-y-4">
@@ -70,7 +59,7 @@ export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pe
           <p className="font-medium">{state.email} 초대 링크 — 전달하세요</p>
           <div className="mt-2 flex items-center gap-2">
             <code className="bg-muted overflow-x-auto rounded px-2 py-1 text-xs">{link}</code>
-            <CopyButton text={link} />
+            <CopyButton text={link} message="초대 링크를 복사했습니다." />
           </div>
           <p className="text-muted-foreground mt-1 text-xs">7일 후 만료 · 1회용.</p>
         </div>
@@ -85,7 +74,8 @@ export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pe
                 <span>
                   {p.email} <span className="text-muted-foreground">({p.role})</span>
                 </span>
-                <span className="text-muted-foreground text-xs">
+                {/* 로캘 의존 포맷 — SSR 과 달라질 수 있어 클라이언트 값 유지 */}
+                <span className="text-muted-foreground text-xs" suppressHydrationWarning>
                   만료 {new Date(p.expiresAt).toLocaleDateString()}
                 </span>
               </li>

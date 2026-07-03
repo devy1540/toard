@@ -49,6 +49,12 @@ function installScript(endpoint: string): string {
     '    echo "PATH 에 $BIN_DIR 추가됨(새 셸부터 적용)."',
     "    ;;",
     "esac",
+    "",
+    "# 4) 진단 — 구 릴리스 install.sh 가 toard-shim 링크를 안 만들었으면 보완 후 doctor 실행",
+    '[ -e "$BIN_DIR/toard-shim" ] || ln -sf "$BIN_DIR/claude" "$BIN_DIR/toard-shim" 2>/dev/null || true',
+    'if [ -x "$BIN_DIR/toard-shim" ]; then',
+    '  PATH="$BIN_DIR:$PATH" "$BIN_DIR/toard-shim" doctor || true',
+    "fi",
     "echo \"완료 — 새 셸에서 'which claude' 가 \\$BIN_DIR/claude 이면 성공.\"",
     "",
   ].join("\n");

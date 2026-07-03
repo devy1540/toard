@@ -56,11 +56,12 @@ if [ "$expected" != "$actual" ]; then
 fi
 rm -f "$sums"
 
-chmod +x "$tmp"
+chmod 755 "$tmp"
 mv "$tmp" "$BIN_DIR/claude"
 ln -sf "$BIN_DIR/claude" "$BIN_DIR/codex"
+ln -sf "$BIN_DIR/claude" "$BIN_DIR/toard-shim"
 
-echo "설치 완료: $BIN_DIR/{claude,codex}"
+echo "설치 완료: $BIN_DIR/{claude,codex,toard-shim}"
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)
@@ -73,3 +74,5 @@ echo ""
 echo "자격 증명 설정 → ~/.toard/credentials:"
 echo "  agent_key=<ingest_token>"
 echo "  endpoint=https://toard.example.com/api"
+echo ""
+echo "설정 후 진단: toard-shim doctor"

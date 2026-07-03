@@ -6,15 +6,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getPool } from "@/lib/db";
 import { listPendingInvites } from "@/lib/invites";
+import { getPricingStatus } from "@/lib/pricing";
 import { getPublicBaseUrl } from "@/lib/public-url";
 import { getSessionUser } from "@/lib/session-user";
+import { PricingSyncPanel } from "./pricing-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
 import { InvitePanel } from "./invite-panel";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "members" | "teams" | "invites";
+type Tab = "members" | "teams" | "invites" | "system";
 
 interface MemberRow {
   id: string;
@@ -73,7 +75,8 @@ export default async function AdminPage({
   if (user.role !== "admin") redirect("/");
 
   const raw = (await searchParams).tab;
-  const tab: Tab = raw === "teams" ? "teams" : raw === "invites" ? "invites" : "members";
+  const tab: Tab =
+    raw === "teams" ? "teams" : raw === "invites" ? "invites" : raw === "system" ? "system" : "members";
 
   return (
     <div className="space-y-6">
@@ -85,12 +88,14 @@ export default async function AdminPage({
           { value: "members", label: "멤버", href: "/admin?tab=members" },
           { value: "teams", label: "팀", href: "/admin?tab=teams" },
           { value: "invites", label: "초대", href: "/admin?tab=invites" },
+          { value: "system", label: "시스템", href: "/admin?tab=system" },
         ]}
       />
 
       {tab === "members" ? <MembersTab /> : null}
       {tab === "teams" ? <TeamsTab /> : null}
       {tab === "invites" ? <InvitesTab /> : null}
+      {tab === "system" ? <SystemTab /> : null}
     </div>
   );
 }
@@ -157,6 +162,27 @@ async function TeamsTab() {
         </CardHeader>
         <CardContent>
           <TeamPanel teams={teams} />
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+async function SystemTab() {
+  const pricing = await getPricingStatus();
+
+  return (
+    <div className="grid items-start gap-4 lg:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>가격 동기화</CardTitle>
+          <CardDescription>
+            LiteLLM 모델 가격을 받아 비용 계산에 사용합니다. 가격이 없으면 비용이 $0 으로
+            계산되므로, cron(sync-pricing) 등록과 별개로 여기서 수동 실행할 수 있습니다.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PricingSyncPanel models={pricing.models} lastDay={pricing.lastDay} />
         </CardContent>
       </Card>
     </div>

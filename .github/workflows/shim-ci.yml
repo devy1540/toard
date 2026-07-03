@@ -1,10 +1,21 @@
 name: shim-ci
 
-# shim(Rust) 변경 시에만 도는 PR 검증 — clippy(-D warnings) + build.
-# 릴리스 빌드(4-플랫폼)는 shim-release.yml 이 v* 태그에서 수행한다.
+# shim 변경 PR/push 검증 — 릴리스 빌드(4-플랫폼)는 shim-release.yml 이 v* 태그에서 수행.
+# fmt·clippy(-D warnings)·test·release build 와 설치 스크립트 문법 검사를 미리 잡는다.
 on:
   pull_request:
-    paths: ["shim/rust/**"]
+    paths:
+      - "shim/**"
+      - "npm/**"
+      - "fixtures/usage-event.golden.json" # UsageEvent 계약 미러 테스트 (§5.6)
+      - ".github/workflows/shim-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "shim/**"
+      - "npm/**"
+      - "fixtures/usage-event.golden.json"
+      - ".github/workflows/shim-ci.yml"
 
 permissions:
   contents: read
@@ -19,9 +30,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: shim/rust
-      - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo build
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test
+      - name: build (release)
+        run: cargo build --release
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck install.sh
+        run: |
+          sh -n shim/install.sh
+          sh -n shim/fake-claude.sh
+      - name: node syntax check
+        run: node --check npm/bin/toard.mjs

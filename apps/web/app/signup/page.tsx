@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth, credentialsEnabled } from "@/auth";
+import { LogoMark } from "@/components/logo-mark";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { allowedDomains } from "@/lib/auth-policy";
 import { SignupForm } from "./signup-form";
@@ -15,6 +16,7 @@ export default async function SignupPage() {
     <div className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          <LogoMark size={32} className="mb-1" />
           <CardTitle className="text-xl">toard 가입</CardTitle>
           <CardDescription>
             {allowedDomains.length > 0

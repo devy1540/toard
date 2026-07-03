@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { LogoMark } from "@/components/logo-mark";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { hasAnyUser } from "@/lib/setup";
 import { SetupForm } from "./setup-form";
@@ -13,6 +14,7 @@ export default async function SetupPage() {
     <div className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          <LogoMark size={32} className="mb-1" />
           <CardTitle className="text-xl">toard 초기 설정</CardTitle>
           <CardDescription>
             첫 관리자 계정을 만듭니다. 이 계정이 대시보드를 운영합니다.

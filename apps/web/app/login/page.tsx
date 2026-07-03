@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth, credentialsEnabled, oauthProviders, signIn } from "@/auth";
+import { LogoMark } from "@/components/logo-mark";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { hasAnyUser } from "@/lib/setup";
@@ -20,6 +21,7 @@ export default async function LoginPage() {
     <div className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
+          <LogoMark size={32} className="mb-1" />
           <CardTitle className="text-xl">toard 로그인</CardTitle>
           <CardDescription>AI 사용량 대시보드</CardDescription>
         </CardHeader>

@@ -4,7 +4,10 @@
 // total 토큰 폴백. 파싱 의미는 upstream 과 동일하게 유지한다.
 
 use serde::{Deserialize, Deserializer};
-use serde_json::Value;
+use serde_json::{Map, Value};
+
+use super::RawContent;
+use crate::iso::iso_to_epoch_ms;
 
 /// upstream utils::non_empty_json_string — 문자열이 아니거나 trim 후 비면 None.
 pub fn non_empty_json_string(value: Option<&Value>) -> Option<String> {
@@ -68,6 +71,66 @@ pub fn apply_total_token_fallback(
     } else {
         (output, extra_total.saturating_add(missing))
     }
+}
+
+// ── 본문(프롬프트/응답) 추출 — opt-in 콘텐츠 수집 공용 헬퍼 ──
+// gemini/qwen 로그의 메시지 객체에서 role + 텍스트를 뽑는다. 토큰 파서와 별개로,
+// 텍스트를 담은 user/assistant 메시지만 본다. 알 수 없는 형태는 빈 결과(안전 쪽).
+
+/// 메시지 본문 문자열 — "text" 우선, 없으면 "content"(문자열일 때). trim 후 비면 None.
+pub fn message_text(obj: &Map<String, Value>) -> Option<String> {
+    for key in ["text", "content"] {
+        if let Some(s) = obj.get(key).and_then(Value::as_str) {
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 메시지 type → 역할. gemini/model/assistant = assistant, user = user, 그 외는 None(스킵).
+pub fn content_role(obj: &Map<String, Value>) -> Option<&'static str> {
+    match obj.get("type").and_then(Value::as_str)? {
+        "user" => Some("user"),
+        "gemini" | "assistant" | "model" => Some("assistant"),
+        _ => None,
+    }
+}
+
+/// sessionId(camel) 우선, 다음 session_id — 토큰 파서와 동일 조회 순서.
+pub fn session_id_of(obj: &Map<String, Value>) -> Option<String> {
+    non_empty_json_string(obj.get("sessionId"))
+        .or_else(|| non_empty_json_string(obj.get("session_id")))
+}
+
+/// 메시지 객체 하나 → RawContent. role·텍스트가 모두 있어야 한다.
+/// ts 는 timestamp/created_at → 폴백. id 는 dedup 1차 키(있으면).
+pub fn content_from_message(
+    obj: &Map<String, Value>,
+    session_id: &str,
+    fallback_ts: i64,
+) -> Option<RawContent> {
+    let role = content_role(obj)?;
+    let text = message_text(obj)?;
+    let ts_ms = obj
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(iso_to_epoch_ms)
+        .or_else(|| {
+            obj.get("created_at")
+                .and_then(Value::as_str)
+                .and_then(iso_to_epoch_ms)
+        })
+        .unwrap_or(fallback_ts);
+    Some(RawContent {
+        ts_ms,
+        session_id: Some(session_id.to_string()),
+        message_id: non_empty_json_string(obj.get("id")),
+        role,
+        text,
+    })
 }
 
 /// 테스트 픽스처·env var 직렬화 공용 유틸 (gemini/qwen 테스트가 공유).

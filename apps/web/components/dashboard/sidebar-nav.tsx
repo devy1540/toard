@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ChartBar, Settings, ShieldCheck, User } from "lucide-react";
+import { ChartBar, MessageSquare, Settings, ShieldCheck, User } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "내 사용량", icon: User },
+  { href: "/history", label: "내 히스토리", icon: MessageSquare },
   { href: "/org", label: "전체 현황", icon: ChartBar },
   { href: "/settings", label: "설정", icon: Settings },
 ];

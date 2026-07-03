@@ -63,12 +63,29 @@ pub struct RawUsage {
     pub cache_creation_tokens: u64,
 }
 
+/// 어댑터가 로그에서 뽑는 원시 본문 레코드 (프롬프트/응답 텍스트).
+/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집되며, 암호화는 서버 몫(shim 은 평문 전송).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawContent {
+    pub ts_ms: i64,
+    pub session_id: Option<String>,
+    /// 로그 상 메시지 고유 id — dedup 1차 키 (있으면)
+    pub message_id: Option<String>,
+    /// "user" | "assistant"
+    pub role: &'static str,
+    pub text: String,
+}
+
 pub trait LogAdapter {
     /// provider_key 이자 log_adapter 식별자
     fn key(&self) -> &'static str;
     fn discover_files(&self) -> Vec<PathBuf>;
     /// 파일 하나 → 사용 레코드들. 손상 파일은 빈 벡터(수집 전체를 중단시키지 않음).
     fn parse_file(&self, path: &Path) -> Vec<RawUsage>;
+    /// 파일 하나 → 본문 레코드들. 기본은 없음(본문 미지원 어댑터). 손상 파일은 빈 벡터.
+    fn parse_content(&self, _path: &Path) -> Vec<RawContent> {
+        Vec::new()
+    }
 }
 
 pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
@@ -143,6 +160,46 @@ fn to_usage_event(adapter: &str, r: &RawUsage) -> UsageEvent {
         cost_usd: 0.0,
         log_adapter: Some(adapter.to_string()),
     }
+}
+
+/// 본문 수집 opt-in — 기본 off. 이게 켜져야 shim 이 프롬프트/응답 본문을 담는다.
+/// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
+pub fn content_enabled() -> bool {
+    matches!(
+        std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref(),
+        Some("1" | "true" | "on")
+    )
+}
+
+/// 본문 dedup_key — usage 키와 네임스페이스 분리("content"). 텍스트를 포함해
+/// 같은 메시지는 같은 키(멱등), 내용이 바뀌면 다른 키. id 있으면 함께 섞는다.
+fn content_dedup_key(adapter: &str, r: &RawContent) -> String {
+    sha256_hex(&format!(
+        "{adapter}:content:{}:{}:{}:{}:{}",
+        r.message_id.as_deref().unwrap_or(""),
+        r.session_id.as_deref().unwrap_or(""),
+        r.ts_ms,
+        r.role,
+        r.text,
+    ))
+}
+
+/// RawContent[] → POST /api/v1/prompts 본문(PromptRecord[] JSON).
+fn to_prompts_body(adapter: &str, records: &[RawContent]) -> String {
+    let arr: Vec<serde_json::Value> = records
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "dedupKey": content_dedup_key(adapter, r),
+                "providerKey": adapter,
+                "sessionId": r.session_id,
+                "turnRole": r.role,
+                "ts": iso::epoch_ms_to_iso(r.ts_ms),
+                "text": r.text,
+            })
+        })
+        .collect();
+    serde_json::Value::Array(arr).to_string()
 }
 
 const CHUNK: usize = 1000;
@@ -246,6 +303,19 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
         cursor::save(key, &cur);
     }
 
+    // 본문 수집(opt-in) — usage 경로와 완전 분리된 커서·엔드포인트. usage 루프는 무영향.
+    if content_enabled() {
+        for adapter in adapters() {
+            let key = adapter.key();
+            if only.is_some_and(|o| o != key) {
+                continue;
+            }
+            if collect_content_for(adapter.as_ref(), &endpoint, token.as_deref(), dry_run) {
+                failed = true;
+            }
+        }
+    }
+
     if !matched {
         eprintln!(
             "toard-shim: 어댑터를 찾을 수 없습니다: {}",
@@ -254,6 +324,83 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
         return 2;
     }
     i32::from(failed)
+}
+
+/// 한 어댑터의 본문 수집: 별도 커서(`{key}-content`)로 변한 파일만 재파싱 →
+/// 봉투 전 평문을 /v1/prompts 로 전송. 반환은 "실패 여부"(true 면 커서 미갱신·재시도).
+fn collect_content_for(
+    adapter: &dyn LogAdapter,
+    endpoint: &str,
+    token: Option<&str>,
+    dry_run: bool,
+) -> bool {
+    let key = adapter.key();
+    let cursor_key = format!("{key}-content");
+    let files = adapter.discover_files();
+    let mut cur = cursor::load(&cursor_key);
+
+    let mut changed: Vec<(PathBuf, cursor::FileStamp)> = Vec::new();
+    for file in &files {
+        let Some(stamp) = cursor::stamp(file) else {
+            continue;
+        };
+        if cur.files.get(&file.display().to_string()) != Some(&stamp) {
+            changed.push((file.clone(), stamp));
+        }
+    }
+
+    let mut records: Vec<RawContent> = Vec::new();
+    for (file, _) in &changed {
+        records.extend(adapter.parse_content(file));
+    }
+
+    if dry_run {
+        println!(
+            "{key} 본문: 파일 {}개 (변경 {}개) → 레코드 {}건 [dry-run]",
+            files.len(),
+            changed.len(),
+            records.len()
+        );
+        return false;
+    }
+
+    if records.is_empty() {
+        println!("{key} 본문: 새 레코드 없음 (변경 {}개)", changed.len());
+    } else {
+        let token = token.expect("dry_run 아니면 토큰 존재");
+        let (mut inserted, mut deduped) = (0u64, 0u64);
+        for chunk in records.chunks(CHUNK) {
+            match post::post_prompts(endpoint, token, &to_prompts_body(key, chunk)) {
+                Ok(Some(r)) => {
+                    inserted += r.inserted;
+                    deduped += r.deduped;
+                }
+                Ok(None) => {
+                    // 서버에서 본문 수집이 비활성(503) — 실패 아님. 커서 미갱신하고 종료(추후 활성 시 재전송)
+                    println!("{key} 본문: 서버에서 비활성(503) — 건너뜀");
+                    return false;
+                }
+                Err(e) => {
+                    eprintln!("toard-shim: {key} 본문 전송 실패 — {e}");
+                    // 커서를 갱신하지 않음 → 다음 실행에서 재시도 (dedup 이 중복 흡수)
+                    return true;
+                }
+            }
+        }
+        println!(
+            "{key} 본문: {}건 전송 (신규 {inserted} · 중복 {deduped})",
+            records.len()
+        );
+    }
+
+    for (file, stamp) in changed {
+        cur.files.insert(file.display().to_string(), stamp);
+    }
+    let alive: std::collections::HashSet<String> =
+        files.iter().map(|f| f.display().to_string()).collect();
+    cur.files.retain(|k, _| alive.contains(k));
+    cursor::save(&cursor_key, &cur);
+    false
 }
 
 #[cfg(test)]
@@ -304,5 +451,83 @@ mod tests {
         assert_eq!(e.ts, "2026-07-01T12:00:00.000Z");
         assert_eq!(e.log_adapter.as_deref(), Some("gemini"));
         assert_eq!(e.provider_key, "gemini");
+    }
+
+    fn sample_content() -> RawContent {
+        RawContent {
+            ts_ms: 1_782_907_200_000,
+            session_id: Some("s".into()),
+            message_id: Some("m1".into()),
+            role: "user",
+            text: "hi".into(),
+        }
+    }
+
+    #[test]
+    fn content_dedup_key_stable_text_sensitive_and_namespaced() {
+        let base = sample_content();
+        let k = content_dedup_key("gemini", &base);
+        assert_eq!(k, content_dedup_key("gemini", &base), "동일 입력 → 동일 키");
+
+        let mut edited = base.clone();
+        edited.text = "hello".into();
+        assert_ne!(
+            k,
+            content_dedup_key("gemini", &edited),
+            "텍스트 변경 → 다른 키"
+        );
+
+        let mut asst = base.clone();
+        asst.role = "assistant";
+        assert_ne!(k, content_dedup_key("gemini", &asst), "role 변경 → 다른 키");
+
+        assert_ne!(k, content_dedup_key("qwen", &base), "어댑터 격리");
+
+        // usage 키(dedup_key)와 네임스페이스 분리 — 같은 재료라도 충돌하지 않는다
+        let usage = RawUsage {
+            ts_ms: base.ts_ms,
+            session_id: base.session_id.clone(),
+            model: None,
+            message_id: base.message_id.clone(),
+            ..Default::default()
+        };
+        assert_ne!(k, dedup_key("gemini", &usage), "usage 와 content 키 분리");
+    }
+
+    #[test]
+    fn to_prompts_body_wire_shape() {
+        let r = RawContent {
+            session_id: None,
+            message_id: None,
+            role: "assistant",
+            text: "응답".into(),
+            ..sample_content()
+        };
+        let body = to_prompts_body("gemini", std::slice::from_ref(&r));
+        let v: crate::json::Value = crate::json::parse(&body).expect("유효한 JSON");
+        let crate::json::Value::Array(arr) = v else {
+            panic!("배열이어야 함")
+        };
+        assert_eq!(arr.len(), 1);
+        let o = &arr[0];
+        assert_eq!(
+            o.get("providerKey").and_then(|v| v.as_str()),
+            Some("gemini")
+        );
+        assert_eq!(
+            o.get("turnRole").and_then(|v| v.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(
+            o.get("ts").and_then(|v| v.as_str()),
+            Some("2026-07-01T12:00:00.000Z")
+        );
+        assert_eq!(o.get("text").and_then(|v| v.as_str()), Some("응답"));
+        assert!(matches!(o.get("sessionId"), Some(crate::json::Value::Null)));
+        assert_eq!(
+            o.get("dedupKey").and_then(|v| v.as_str()).map(str::len),
+            Some(64),
+            "sha256 hex"
+        );
     }
 }

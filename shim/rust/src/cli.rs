@@ -50,6 +50,8 @@ fn print_usage() {
                                (IDE 등 PATH 를 거치지 않는 실행까지 수집)
   collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
           [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
+                               본문 수집은 opt-in(기본 off): TOARD_SHIM_COLLECT_CONTENT=1
+                               — 프롬프트/응답 텍스트를 /v1/prompts 로 전송(서버가 암호화)
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 24h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력

@@ -20,11 +20,13 @@ export const dynamic = "force-dynamic";
 
 type OrgSearchParams = DashboardSearchParams & { tab?: string; scope?: string };
 
-/** 필터(period·provider)를 유지한 채 tab/scope 만 바꾼 href 생성 */
+/** 필터(period·provider·커스텀 범위)를 유지한 채 tab/scope 만 바꾼 href 생성 */
 function hrefWith(sp: OrgSearchParams, next: { tab?: string; scope?: string }): string {
   const q = new URLSearchParams();
   if (sp.period) q.set("period", sp.period);
   if (sp.provider) q.set("provider", sp.provider);
+  if (sp.from) q.set("from", sp.from);
+  if (sp.to) q.set("to", sp.to);
   const tab = next.tab ?? sp.tab;
   if (tab && tab !== "overview") q.set("tab", tab);
   if (next.scope) q.set("scope", next.scope);

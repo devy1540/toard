@@ -61,6 +61,13 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://local
 
 `AUTH_SECRET` 미설정 시 즉시 에러로 실패한다(안전한 기본값 없음). 게시 이미지는 amd64·arm64 멀티아치. 소스에서 직접 빌드하려면 `--build`를 붙이고, 특정 버전 고정은 `TOARD_TAG=v…`. 팀 전체에 실제로 배포하는 절차는 [팀에 배포하기](#-팀에-배포하기) 참조.
 
+### 🤖 AI 로 설치하기
+
+Claude Code 등 AI 에이전트에게 아래처럼 요청하면 설치부터 검증까지 자동으로 진행된다 — 에이전트는 [AGENTS.md](AGENTS.md) 런북(비대화형 설치 · 성공 기준 · 실패 대응)을 따른다:
+
+> https://github.com/devy1540/toard 의 AGENTS.md 를 따라 toard 를 설치하고 검증까지 해줘.
+> 관리자 이메일은 me@corp.com, 비밀번호는 내가 직접 입력할게.
+
 ### 로컬 개발
 
 ```bash

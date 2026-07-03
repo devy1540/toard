@@ -471,7 +471,11 @@ mod tests {
 
         let mut edited = base.clone();
         edited.text = "hello".into();
-        assert_ne!(k, content_dedup_key("gemini", &edited), "텍스트 변경 → 다른 키");
+        assert_ne!(
+            k,
+            content_dedup_key("gemini", &edited),
+            "텍스트 변경 → 다른 키"
+        );
 
         let mut asst = base.clone();
         asst.role = "assistant";
@@ -506,9 +510,18 @@ mod tests {
         };
         assert_eq!(arr.len(), 1);
         let o = &arr[0];
-        assert_eq!(o.get("providerKey").and_then(|v| v.as_str()), Some("gemini"));
-        assert_eq!(o.get("turnRole").and_then(|v| v.as_str()), Some("assistant"));
-        assert_eq!(o.get("ts").and_then(|v| v.as_str()), Some("2026-07-01T12:00:00.000Z"));
+        assert_eq!(
+            o.get("providerKey").and_then(|v| v.as_str()),
+            Some("gemini")
+        );
+        assert_eq!(
+            o.get("turnRole").and_then(|v| v.as_str()),
+            Some("assistant")
+        );
+        assert_eq!(
+            o.get("ts").and_then(|v| v.as_str()),
+            Some("2026-07-01T12:00:00.000Z")
+        );
         assert_eq!(o.get("text").and_then(|v| v.as_str()), Some("응답"));
         assert!(matches!(o.get("sessionId"), Some(crate::json::Value::Null)));
         assert_eq!(

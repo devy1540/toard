@@ -101,7 +101,8 @@ pub fn content_role(obj: &Map<String, Value>) -> Option<&'static str> {
 
 /// sessionId(camel) 우선, 다음 session_id — 토큰 파서와 동일 조회 순서.
 pub fn session_id_of(obj: &Map<String, Value>) -> Option<String> {
-    non_empty_json_string(obj.get("sessionId")).or_else(|| non_empty_json_string(obj.get("session_id")))
+    non_empty_json_string(obj.get("sessionId"))
+        .or_else(|| non_empty_json_string(obj.get("session_id")))
 }
 
 /// 메시지 객체 하나 → RawContent. role·텍스트가 모두 있어야 한다.

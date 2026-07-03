@@ -770,13 +770,19 @@ mod tests {
         assert_eq!(u.text, "안녕 프롬프트");
         assert_eq!(u.session_id.as_deref(), Some("sess-1"));
         assert_eq!(u.message_id, None);
-        assert_eq!(u.ts_ms, iso_to_epoch_ms("2026-05-17T11:07:10.000Z").unwrap());
+        assert_eq!(
+            u.ts_ms,
+            iso_to_epoch_ms("2026-05-17T11:07:10.000Z").unwrap()
+        );
 
         let a = &items[1];
         assert_eq!(a.role, "assistant");
         assert_eq!(a.text, "응답이야");
         assert_eq!(a.message_id.as_deref(), Some("m1"));
-        assert_eq!(a.ts_ms, iso_to_epoch_ms("2026-05-17T11:07:32.000Z").unwrap());
+        assert_eq!(
+            a.ts_ms,
+            iso_to_epoch_ms("2026-05-17T11:07:32.000Z").unwrap()
+        );
     }
 
     // ⑧ 본문(JSONL): 세션 승계 + 같은 id 교체 + ts 없으면 mtime 폴백

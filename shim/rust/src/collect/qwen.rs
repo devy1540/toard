@@ -403,7 +403,10 @@ mod tests {
         assert_eq!(items[0].role, "user");
         assert_eq!(items[0].text, "질문");
         assert_eq!(items[0].session_id.as_deref(), Some("s"));
-        assert_eq!(items[0].ts_ms, iso_to_epoch_ms("2026-02-23T14:24:56.857Z").unwrap());
+        assert_eq!(
+            items[0].ts_ms,
+            iso_to_epoch_ms("2026-02-23T14:24:56.857Z").unwrap()
+        );
         assert_eq!(items[1].role, "assistant");
         assert_eq!(items[1].text, "답변");
         assert_eq!(items[1].session_id.as_deref(), Some("s"), "세션 승계");

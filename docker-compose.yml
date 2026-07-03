@@ -1,10 +1,13 @@
-# toard 올인원 배포 (프로덕션). 한 방 실행:
-#   AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build
+# toard 올인원 배포 (프로덕션). 한 방 실행 — GHCR 프리빌트 이미지를 받아 기동:
+#   AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
+# 소스에서 직접 빌드(미게시 변경 확인 등): 위 명령에 --build 추가
+# 이미지 태그 고정(선택): TOARD_TAG=v1.2.3 (기본 latest = main 최신)
+# AUTH_SECRET 는 compose 파싱 시 필수(기본값 없음) — down/logs 등에도 필요하니 .env 에 넣어두면 편함.
 # 최초 admin id/pw 부트스트랩(선택):
 #   BOOTSTRAP_ADMIN_EMAIL=you@corp.com BOOTSTRAP_ADMIN_PASSWORD=... \
 #     docker compose --profile seed run --rm seed
 # ClickHouse 모드(선택): STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 \
-#     docker compose --profile clickhouse up -d --build
+#     docker compose --profile clickhouse up -d
 name: toard
 
 x-db-url: &db-url
@@ -30,6 +33,8 @@ services:
   # 관리자는 여기서 만들지 않는다 → 첫 실행 시 /setup 에서 직접 생성.
   # (BOOTSTRAP_ADMIN_EMAIL/PASSWORD 를 주면 seed 가 admin 도 선생성 — headless 대안)
   migrate:
+    image: ghcr.io/devy1540/toard-migrate:${TOARD_TAG:-latest}
+    pull_policy: missing
     build:
       context: .
       target: migrator
@@ -44,12 +49,14 @@ services:
     restart: "no"
 
   app:
+    image: ghcr.io/devy1540/toard:${TOARD_TAG:-latest}
+    pull_policy: missing
     build:
       context: .
       target: runner
     environment:
       <<: *db-url
-      AUTH_SECRET: ${AUTH_SECRET:-CHANGE_ME_openssl_rand_base64_33_in_production}
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET 필수 — openssl rand -base64 33 으로 생성해 env 또는 .env 로 전달}
       AUTH_TRUST_HOST: "true"
       AUTH_MODE: ${AUTH_MODE:-oauth}
       AUTH_CREDENTIALS_ENABLED: ${AUTH_CREDENTIALS_ENABLED:-true}
@@ -75,6 +82,8 @@ services:
 
   # 선택(profile=seed): providers·admin·비번 시드. `docker compose --profile seed run --rm seed`
   seed:
+    image: ghcr.io/devy1540/toard-migrate:${TOARD_TAG:-latest}
+    pull_policy: missing
     build:
       context: .
       target: migrator

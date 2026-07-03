@@ -7,7 +7,7 @@
 
 # toard
 
-**조직의 AI 코딩 도구 사용량·비용을 한곳에서** — 오픈소스 · 셀프호스팅 · 멀티 프로바이더
+**여러 AI 코딩 도구의 사용량·비용을 한곳에서** — 오픈소스 · 셀프호스팅 · 멀티 프로바이더
 
 *Track AI coding-tool usage & cost across your org — Claude Code, Codex, and beyond.*
 

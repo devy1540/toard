@@ -41,6 +41,8 @@ export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "
           stroke="var(--color-chart-1)"
           strokeWidth={2}
           fill="url(#fillUsage)"
+          // 데이터가 하루뿐이면(오늘 필터) 선·면이 그려지지 않아 점으로 표시
+          dot={chartData.length < 2 ? { r: 4, fill: "var(--color-chart-1)", strokeWidth: 0 } : false}
         />
       </AreaChart>
     </ResponsiveContainer>

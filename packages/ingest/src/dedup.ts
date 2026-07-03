@@ -31,12 +31,3 @@ export function dedupKey(a: DedupArgs): string {
   }
   return h.digest("hex");
 }
-
-/**
- * metrics 경로 dedup_key — (session, model) 고정.
- * Claude Code 2.x 는 세션 누적 카운터를 export 마다 반복 전송하므로, 같은 (session, model)은
- * 하나의 행으로 수렴시켜 upsert(최신 누적)한다. request 단위 키(위 dedupKey)와 달리 값은 넣지 않는다.
- */
-export function metricDedupKey(sessionId: string | null, model: string | null): string {
-  return createHash("sha256").update(`metric|${sessionId ?? ""}|${model ?? ""}`).digest("hex");
-}

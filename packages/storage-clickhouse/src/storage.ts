@@ -134,40 +134,6 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: fresh.length, deduped: events.length - fresh.length };
   }
 
-  async saveMetricUsageEvents(events: UsageEvent[]): Promise<SaveResult> {
-    if (events.length === 0) return { inserted: 0, deduped: 0 };
-    // 누적 스냅샷 upsert: ReplacingMergeTree(inserted_at)+ORDER BY dedup_key 라 같은 dedup_key 를
-    // 다시 INSERT 하면 FINAL 읽기에서 최신 inserted_at 행(=최신 누적)이 이긴다. 그래서 존재 여부와
-    // 무관하게 전량 INSERT 한다. inserted=신규 키 수, deduped=기존 키 갱신 수.
-    // 주의: 순서 역전(늦게 도착한 낮은 누적)은 최신 inserted_at 이 이겨 값이 낮아질 수 있으나,
-    // 누적은 단조증가이고 export 는 대체로 순서대로라 실무상 무시 가능.
-    const existing = await this.existingKeys(events.map((e) => e.dedupKey));
-    const deptMap = await this.teamMap(
-      events.map((e) => e.userId).filter((x): x is string => !!x),
-    );
-    await this.ch.insert({
-      table: "usage_events",
-      values: events.map((e) => ({
-        dedup_key: e.dedupKey,
-        provider_key: e.providerKey,
-        user_id: e.userId ?? "",
-        team_id: e.userId ? (deptMap.get(e.userId) ?? "") : "",
-        session_id: e.sessionId ?? "",
-        model: e.model ?? "",
-        ts: chTs(e.ts),
-        input_tokens: e.inputTokens,
-        output_tokens: e.outputTokens,
-        cache_read_tokens: e.cacheReadTokens,
-        cache_creation_tokens: e.cacheCreationTokens,
-        cost_usd: e.costUsd,
-        log_adapter: e.logAdapter ?? "",
-      })),
-      format: "JSONEachRow",
-    });
-    const insertedCount = events.filter((e) => !existing.has(e.dedupKey)).length;
-    return { inserted: insertedCount, deduped: events.length - insertedCount };
-  }
-
   private async existingKeys(keys: string[]): Promise<Set<string>> {
     const rows = await this.queryJson<{ dedup_key: string }>(
       "SELECT DISTINCT dedup_key FROM usage_events WHERE dedup_key IN {keys:Array(String)}",

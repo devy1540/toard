@@ -1,5 +1,5 @@
 import type { PeriodQuery } from "@toard/core";
-import { orgDate, orgDayStartUtc } from "./org-time";
+import { orgDayStartUtc, startOfOrgToday } from "./org-time";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -17,7 +17,7 @@ export function recentPeriod(days: number): { from: Date; to: Date } {
 
 /** 오늘 — 조직 타임존 자정부터 현재까지. */
 export function todayPeriod(): { from: Date; to: Date } {
-  return { from: orgDayStartUtc(orgDate()), to: new Date() };
+  return { from: startOfOrgToday(), to: new Date() };
 }
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;

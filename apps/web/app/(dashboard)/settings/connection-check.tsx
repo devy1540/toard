@@ -113,14 +113,15 @@ export function ConnectionCheck({
 
       {phase === "polling" ? (
         <p className="text-muted-foreground text-xs">
-          다른 터미널에서 <code>claude</code> 를 한 번 실행해 보세요. 수신되면 자동으로 표시됩니다
-          (최대 2분 대기).
+          다른 터미널에서 <code>claude</code> 를 한 번 실행해 보세요. Claude Desktop·IDE 확장은 앱을
+          재시작해 새 세션을 시작해야 잡힙니다. 수신되면 자동으로 표시됩니다(최대 2분 대기).
         </p>
       ) : null}
       {phase === "timeout" ? (
         <p className="text-destructive text-xs">
           2분 안에 수신되지 않았습니다. shim 설치와 PATH(<code>which claude</code>), 토큰 설정을
-          확인한 뒤 다시 시도하세요.
+          확인한 뒤 다시 시도하세요. Claude Desktop·IDE 확장만 쓴다면{" "}
+          <code>toard-shim claude-env on</code> 실행 후 앱을 재시작해야 합니다.
         </p>
       ) : null}
     </div>

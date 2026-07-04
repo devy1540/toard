@@ -3,8 +3,12 @@ import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getPool } from "@/lib/db";
+import { fmtNum } from "@/lib/format";
+import { getOrgTimezone } from "@/lib/org-time";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
+import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
 import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
@@ -72,22 +76,24 @@ function AccountTab({ hasPassword }: { hasPassword: boolean }) {
 }
 
 async function InstallTab({ userId }: { userId: string }) {
-  const [meta, endpoint, baseUrl] = await Promise.all([
+  const [meta, endpoint, baseUrl, devices] = await Promise.all([
     getActiveTokenMeta(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
+    getStorage().getUserHosts(userId),
   ]);
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-3">
+    <div className="space-y-4">
+      <div className="grid items-start gap-4 lg:grid-cols-3">
       <Card className="lg:col-span-2">
         <CardHeader>
           <CardTitle>내 토큰 발급 · 설치</CardTitle>
           <CardDescription>
             내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를
             설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다.{" "}
-            <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용 등 사용량
-            메타데이터만 전송됩니다.
+            <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용·<b>기기명(호스트)</b>{" "}
+            등 사용량 메타데이터만 전송됩니다.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -123,6 +129,64 @@ async function InstallTab({ userId }: { userId: string }) {
           </div>
         </CardContent>
       </Card>
+      </div>
+
+      <DeviceList devices={devices} />
     </div>
+  );
+}
+
+function DeviceList({
+  devices,
+}: {
+  devices: Array<{ host: string | null; lastSeenAt: Date; eventCount: number }>;
+}) {
+  const fmtWhen = new Intl.DateTimeFormat("ko-KR", {
+    timeZone: getOrgTimezone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>내 기기</CardTitle>
+        <CardDescription>
+          같은 계정을 여러 컴퓨터에서 써도 <b>기기별</b>로 사용량이 구분됩니다. 기기명 전송을 끄려면
+          <code>TOARD_DISABLE_HOST=1</code>, 다른 이름으로 표시하려면{" "}
+          <code>TOARD_HOST_LABEL=별칭</code> 을 설정하세요.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {devices.length > 0 ? (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>컴퓨터</TableHead>
+                <TableHead className="text-right">이벤트</TableHead>
+                <TableHead className="text-right">마지막 수신</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {devices.map((d) => (
+                <TableRow key={d.host ?? "__unknown__"}>
+                  <TableCell className={d.host ? "font-medium" : "text-muted-foreground"}>
+                    {d.host ?? "(알 수 없음)"}
+                  </TableCell>
+                  <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
+                  <TableCell className="text-muted-foreground text-right">
+                    {fmtWhen.format(d.lastSeenAt)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            아직 수집된 기기가 없습니다. shim 설치 후 <code>claude</code>/<code>codex</code> 를 쓰면
+            여기에 기기가 나타납니다.
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

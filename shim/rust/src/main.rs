@@ -13,6 +13,7 @@ mod codex;
 mod collect;
 mod credentials;
 mod fsx;
+mod host;
 mod iso;
 mod json;
 mod otel;

@@ -25,6 +25,9 @@ pub struct UsageEvent {
     pub cost_usd: f64,
     /// logfile 경로 전용: 어떤 벤더 어댑터로 읽었는지 (§4.2). otel 경로는 None
     pub log_adapter: Option<String>,
+    /// 발생 컴퓨터(호스트) 라벨 — 자동 hostname 또는 TOARD_HOST_LABEL (§design-host-breakdown).
+    /// 비활성(TOARD_DISABLE_HOST)·취득 실패 시 None.
+    pub host: Option<String>,
 }
 
 fn opt_string(v: Option<&Value>, field: &str) -> Result<Option<String>, String> {
@@ -78,6 +81,7 @@ impl UsageEvent {
             )?,
             cost_usd,
             log_adapter: opt_string(v.get("logAdapter"), "logAdapter")?,
+            host: opt_string(v.get("host"), "host")?,
         })
     }
 
@@ -120,6 +124,7 @@ impl UsageEvent {
             ),
             ("costUsd".into(), Value::Number(cost)),
             ("logAdapter".into(), opt(&self.log_adapter)),
+            ("host".into(), opt(&self.host)),
         ])
     }
 }
@@ -172,10 +177,12 @@ mod tests {
         assert_eq!(full.input_tokens, 1200);
         assert_eq!(full.cache_read_tokens, 500);
         assert_eq!(full.log_adapter.as_deref(), Some("gemini"));
+        assert_eq!(full.host.as_deref(), Some("alice-macbook"), "host 값");
         let minimal = UsageEvent::from_json(&items[1]).unwrap();
         assert_eq!(minimal.session_id, None);
         assert_eq!(minimal.model, None);
         assert_eq!(minimal.log_adapter, None, "logAdapter 는 선택적");
+        assert_eq!(minimal.host, None, "host 는 선택적 — 없으면 None");
     }
 
     #[test]

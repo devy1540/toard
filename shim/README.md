@@ -30,6 +30,13 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 - **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).
 - **실행 모델**: 데몬 없음. `claude`/`codex` wrap 실행에 편승해 10분 스로틀(double-spawn 분리)로 백그라운드 수집. `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절, `toard-shim collect` 즉시 실행.
 
+## 컴퓨터별 구분 (host — 기본 on)
+같은 계정을 여러 컴퓨터에서 써도 사용량을 **컴퓨터별로 구분**해 볼 수 있게, shim 이 발생 기기의 라벨(호스트명)을 함께 보낸다. push 경로는 OTEL resource attribute `toard.host`, pull 경로는 `UsageEvent.host` 로 전송된다. 표시는 **본인 화면 한정**(내 사용량 · 설정 › 내 기기).
+- **기본값**: 자동으로 `hostname` 을 `trim`+소문자화해 전송(대소문자·공백 차이로 버킷이 갈리지 않게).
+- `TOARD_DISABLE_HOST=1`: 기기명 전송 끄기 → 서버에서 "(알 수 없음)" 으로 집계.
+- `TOARD_HOST_LABEL=<별칭>`: 호스트명 대신 지정한 별칭 전송(대소문자 존중). 사내 기기명이 실명/직책을 담는 경우 대비.
+- **Codex 주의**: Codex 는 `config.toml` 우선이라 env resource attribute 존중 여부가 도구 버전에 따라 다를 수 있다(미존중 시 Codex 사용량 host 는 "(알 수 없음)"). Claude Code(env)·pull 경로는 영향 없음.
+
 ## 본문 수집 (opt-in — 기본 off)
 `TOARD_SHIM_COLLECT_CONTENT=1` 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
 - **신뢰경계**: shim 은 본문을 **평문 TLS** 로 보내되 키를 쥐지 않는다 — **봉투 암호화(at-rest)·소유자 전용(RLS)은 서버 몫**. shim 의 "본문 안 읽음" 기본값을 여는 스위치라 명시적 opt-in.

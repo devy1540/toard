@@ -9,7 +9,7 @@ import { resolveCost } from "@toard/pricing";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingMap } from "@/lib/pricing";
 import { getStorage } from "@/lib/storage";
-import { sanitizeAttrs } from "@/lib/sanitize";
+import { hostFromResourceAttrs, sanitizeAttrs } from "@/lib/sanitize";
 
 // OTLP/JSON 수신 (ADR-001). shim 의 OTEL_EXPORTER_OTLP_ENDPOINT=<base>/api 가 /v1/logs 로 도달.
 export async function POST(req: Request): Promise<Response> {
@@ -55,6 +55,11 @@ export async function POST(req: Request): Promise<Response> {
       const normalizer = normalizers[providerKey];
       if (!normalizer) continue;
 
+      // 컴퓨터별 구분(§design-host-breakdown): normalize 후엔 원본 레코드 연결이 끊기므로
+      // 여기서 그룹 recs 의 resourceAttrs(toard.host / host.name)를 읽어 이벤트에 부착.
+      // 한 provider 그룹 = 한 머신(한 POST=한 머신, ADR-001)이라 그룹 대표값이 곧 host.
+      const host = hostFromResourceAttrs(recs);
+
       // 4. 정규화 → 5. 비용 (정규화와 비용은 별도 단계 — §5.5)
       const normalized = normalizer.normalize(recs, { userId });
       const events: UsageEvent[] = normalized.map((u) => ({
@@ -68,6 +73,7 @@ export async function POST(req: Request): Promise<Response> {
         outputTokens: u.outputTokens,
         cacheReadTokens: u.cacheReadTokens,
         cacheCreationTokens: u.cacheCreationTokens,
+        host,
         costUsd: resolveCost({
           model: u.model,
           inputTokens: u.inputTokens,

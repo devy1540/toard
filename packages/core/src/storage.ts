@@ -37,6 +37,9 @@ export interface UsageEvent {
   costUsd: number;
   /** logfile 경로 전용(§5.6): shim 벤더 어댑터 식별자. otel 경로는 없음/ null */
   logAdapter?: string | null;
+  /** 발생 컴퓨터(호스트) 라벨 — shim 이 채움(자동 hostname 또는 TOARD_HOST_LABEL).
+   *  신뢰경계 밖 서술 메타데이터(검증 대상 아님). 미상/비활성 시 없음/null. */
+  host?: string | null;
 }
 
 export interface OverviewStats {
@@ -64,6 +67,23 @@ export interface ModelBreakdown {
   sessions: number;
 }
 
+/** 컴퓨터(호스트)별 사용량 분해 — 기간-스코프. host=null 은 "(알 수 없음)"(라벨링은 UI). */
+export interface HostBreakdown {
+  host: string | null;
+  costUsd: number;
+  totalTokens: number;
+  sessions: number;
+}
+
+/** 내 기기 목록 1행 — 기간 무관(유휴 기기도 노출). host=null 은 "(알 수 없음)". */
+export interface DeviceInfo {
+  host: string | null;
+  /** 마지막 수신 시각 (UTC) */
+  lastSeenAt: Date;
+  /** 전체 이력의 이벤트 수 */
+  eventCount: number;
+}
+
 export interface LeaderRow {
   /** userId 또는 teamId */
   key: string;
@@ -86,6 +106,8 @@ export interface UserUsage {
   overview: OverviewStats;
   daily: DailyPoint[];
   byModel: ModelBreakdown[];
+  /** 컴퓨터(호스트)별 분해 — 기간-스코프 (§design-host-breakdown) */
+  byHost: HostBreakdown[];
 }
 
 export interface StorageBackend {
@@ -104,4 +126,6 @@ export interface StorageBackend {
   ): Promise<DailyPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage>;
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;
+  /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
+  getUserHosts(userId: string): Promise<DeviceInfo[]>;
 }

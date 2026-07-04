@@ -21,6 +21,10 @@ test("골든 fixture 전체가 파싱된다", () => {
   assert.equal(minimal!.model, null);
   assert.equal(minimal!.logAdapter, null, "logAdapter 는 선택적 — 없으면 null");
   assert.equal(cached!.cacheCreationTokens, 4096);
+  // host — 값 / 부재(→null) / 명시적 null 세 케이스 (§design-host-breakdown)
+  assert.equal(full!.host, "alice-macbook", "host 값 파싱");
+  assert.equal(minimal!.host, null, "host 는 선택적 — 없으면 null");
+  assert.equal(cached!.host, null, "host 명시적 null");
   // shim 은 cost 를 계산하지 않는다 — 서버 권위 (§5.6)
   for (const e of events) assert.equal(e.costUsd, 0);
 });

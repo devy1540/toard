@@ -1,5 +1,7 @@
 import type {
   DailyPoint,
+  DeviceInfo,
+  HostBreakdown,
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
@@ -77,15 +79,15 @@ export class PostgresStorage implements StorageBackend {
           `INSERT INTO usage_events
              (dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+              log_adapter, host)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
             e.userId ? (deptMap.get(e.userId) ?? null) : null,
             e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
-            e.logAdapter ?? null,
+            e.logAdapter ?? null, e.host ?? null,
           ],
         );
         if (r.rowCount === 1) {
@@ -247,6 +249,24 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
+  // 컴퓨터(호스트)별 분해 — modelBreakdown 과 동형(GROUP BY host). periodWhere 재사용으로
+  // providerKey 필터 자동 미러. host 는 raw 반환(NULL 보존) — "(알 수 없음)" 라벨은 UI 몫.
+  private async hostBreakdown(q: ScopedQuery): Promise<HostBreakdown[]> {
+    const { where, params } = this.periodWhere(q);
+    const res = await this.pool.query(
+      `SELECT host,
+              COALESCE(SUM(cost_usd),0)   AS cost,
+              COALESCE(SUM(input_tokens + output_tokens),0) AS tokens,
+              COUNT(DISTINCT session_id)  AS sessions
+       FROM usage_events ${where}
+       GROUP BY host ORDER BY cost DESC`,
+      params,
+    );
+    return res.rows.map((r) => ({
+      host: r.host ?? null, costUsd: n(r.cost), totalTokens: n(r.tokens), sessions: n(r.sessions),
+    }));
+  }
+
   getOverview(q: PeriodQuery): Promise<OverviewStats> {
     return this.overviewQuery(q);
   }
@@ -260,12 +280,29 @@ export class PostgresStorage implements StorageBackend {
 
   async getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage> {
     const scoped: ScopedQuery = { ...q, userId };
-    const [overview, daily, byModel] = await Promise.all([
+    const [overview, daily, byModel, byHost] = await Promise.all([
       this.overviewQuery(scoped),
       this.dailyQuery(scoped),
       this.modelBreakdown(scoped),
+      this.hostBreakdown(scoped),
     ]);
-    return { overview, daily, byModel };
+    return { overview, daily, byModel, byHost };
+  }
+
+  // 내 기기 목록 — 기간·provider 무관 전체 이력(유휴 기기도 노출). host 는 raw(NULL 보존).
+  async getUserHosts(userId: string): Promise<DeviceInfo[]> {
+    const res = await this.pool.query(
+      `SELECT host, MAX(ts) AS last_seen_at, COUNT(*) AS event_count
+       FROM usage_events
+       WHERE user_id = $1
+       GROUP BY host ORDER BY last_seen_at DESC`,
+      [userId],
+    );
+    return res.rows.map((r) => ({
+      host: r.host ?? null,
+      lastSeenAt: new Date(r.last_seen_at),
+      eventCount: n(r.event_count),
+    }));
   }
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]> {

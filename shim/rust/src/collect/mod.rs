@@ -326,6 +326,27 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
     i32::from(failed)
 }
 
+/// 본문 전송용 endpoint 안전성 — https 또는 로컬(localhost/127.0.0.1/[::1])만 허용.
+/// 평문 http 로 원격에 프롬프트 본문을 보내지 않기 위한 가드(토큰 카운트 usage 경로는 무관).
+fn endpoint_is_secure(endpoint: &str) -> bool {
+    let e = endpoint.trim();
+    if e.starts_with("https://") {
+        return true;
+    }
+    match e.strip_prefix("http://") {
+        Some(rest) => {
+            let authority = rest.split('/').next().unwrap_or("");
+            let authority = authority.rsplit('@').next().unwrap_or(authority);
+            if authority.starts_with("[::1]") {
+                return true;
+            }
+            let host = authority.split(':').next().unwrap_or(authority);
+            host == "localhost" || host == "127.0.0.1"
+        }
+        None => false,
+    }
+}
+
 /// 한 어댑터의 본문 수집: 별도 커서(`{key}-content`)로 변한 파일만 재파싱 →
 /// 봉투 전 평문을 /v1/prompts 로 전송. 반환은 "실패 여부"(true 면 커서 미갱신·재시도).
 fn collect_content_for(
@@ -335,6 +356,14 @@ fn collect_content_for(
     dry_run: bool,
 ) -> bool {
     let key = adapter.key();
+    // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
+    let secure = endpoint_is_secure(endpoint);
+    if !dry_run && !secure {
+        eprintln!(
+            "toard-shim: {key} 본문 수집 건너뜀 — 안전하지 않은 endpoint({endpoint}). 평문 HTTP 로는 본문을 전송하지 않습니다(https 또는 localhost 필요)."
+        );
+        return false;
+    }
     let cursor_key = format!("{key}-content");
     let files = adapter.discover_files();
     let mut cur = cursor::load(&cursor_key);
@@ -361,6 +390,11 @@ fn collect_content_for(
             changed.len(),
             records.len()
         );
+        if !secure {
+            println!(
+                "  (주의: endpoint 가 https/localhost 아님 — 실제 실행 시 본문 전송은 차단됩니다)"
+            );
+        }
         return false;
     }
 
@@ -529,5 +563,22 @@ mod tests {
             Some(64),
             "sha256 hex"
         );
+    }
+
+    #[test]
+    fn endpoint_secure_allows_https_and_localhost_only() {
+        // https 는 어떤 호스트든 허용
+        assert!(endpoint_is_secure("https://toard.corp.com/api"));
+        // http 는 로컬만 허용 (dev)
+        assert!(endpoint_is_secure("http://localhost:3000/api"));
+        assert!(endpoint_is_secure("http://127.0.0.1:3000/api"));
+        assert!(endpoint_is_secure("http://[::1]:3000/api"));
+        // http 원격은 차단 — 평문 본문 전송 방지
+        assert!(!endpoint_is_secure("http://toard.corp.com/api"));
+        // localhost 로 시작하는 위장 호스트도 차단
+        assert!(!endpoint_is_secure("http://localhost.evil.com/api"));
+        // 스킴 없음/빈 값 → 안전하지 않음
+        assert!(!endpoint_is_secure("toard.corp.com/api"));
+        assert!(!endpoint_is_secure(""));
     }
 }

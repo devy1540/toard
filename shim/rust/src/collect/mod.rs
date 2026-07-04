@@ -163,12 +163,15 @@ fn to_usage_event(adapter: &str, r: &RawUsage) -> UsageEvent {
 }
 
 /// 본문 수집 opt-in — 기본 off. 이게 켜져야 shim 이 프롬프트/응답 본문을 담는다.
+/// env(TOARD_SHIM_COLLECT_CONTENT)가 명시되면 그 값이 우선하고, 미설정이면
+/// `~/.toard/credentials` 의 `collect_content` 플래그(install.sh 가 기록)를 따른다.
 /// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
 pub fn content_enabled() -> bool {
-    matches!(
-        std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref(),
-        Some("1" | "true" | "on")
-    )
+    match std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref() {
+        Some("1" | "true" | "on") => true,
+        Some("0" | "false" | "off") => false,
+        _ => read_credentials().collect_content,
+    }
 }
 
 /// 본문 dedup_key — usage 키와 네임스페이스 분리("content"). 텍스트를 포함해
@@ -563,6 +566,20 @@ mod tests {
             Some(64),
             "sha256 hex"
         );
+    }
+
+    #[test]
+    fn content_enabled_env_overrides_credentials() {
+        use crate::collect::gemini_family::testutil::EnvGuard;
+        use std::ffi::OsStr;
+        {
+            let _g = EnvGuard::set("TOARD_SHIM_COLLECT_CONTENT", OsStr::new("1"));
+            assert!(content_enabled(), "env 1 → 켜짐");
+        }
+        {
+            let _g = EnvGuard::set("TOARD_SHIM_COLLECT_CONTENT", OsStr::new("off"));
+            assert!(!content_enabled(), "env off → 꺼짐(credentials 무시)");
+        }
     }
 
     #[test]

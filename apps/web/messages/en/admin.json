@@ -62,7 +62,14 @@
     "syncing": "Syncing…",
     "syncNow": "Sync now",
     "syncedWithDay": "Sync complete — {count} models applied ({day})",
-    "synced": "Sync complete — {count} models applied"
+    "synced": "Sync complete — {count} models applied",
+    "contentTitle": "Prompt content",
+    "contentBadgeOn": "Enabled",
+    "contentBadgeOff": "Disabled",
+    "contentDescription": "Whether prompt and response content is stored. Requires a server encryption key (KEK); once on, users can opt in to content collection during install.",
+    "contentEnabledBody": "Content is envelope-encrypted on the server, and each user views only their own in <code>/history</code>.",
+    "contentSetupHint": "Set the following in the server env and restart to enable.",
+    "contentSetupNote": "See <code>docs/DEPLOY.md</code> for switching to the app role (<code>toard_app</code>) that enforces RLS. If the key is lost, existing content cannot be decrypted."
   },
   "errors": {
     "onlyAdminInvite": "Only administrators can send invitations.",

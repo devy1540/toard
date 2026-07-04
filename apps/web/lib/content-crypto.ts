@@ -19,6 +19,16 @@ const DEK_BYTES = 32; // AES-256
 const IV_BYTES = 12; // GCM 표준 nonce
 const TAG_BYTES = 16; // GCM 인증태그
 
+/** 서버에서 본문 수집이 활성인지 = 유효한 KEK(base64 32바이트)가 설정됐는지. UI 게이트용. */
+export function contentCollectionEnabled(): boolean {
+  try {
+    loadKek();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** env 에서 32바이트 KEK 로드. 미설정/길이 불일치는 조용히 넘기지 않고 즉시 실패. */
 export function loadKek(): Buffer {
   const b64 = process.env.TOARD_CONTENT_KEK_B64;

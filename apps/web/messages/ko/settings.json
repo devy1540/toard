@@ -11,6 +11,7 @@
   "install": {
     "issueTitle": "내 토큰 발급 · 설치",
     "issueDescription": "내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를 설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용 등 사용량 메타데이터만 전송됩니다.",
+    "issueDescriptionWithContent": "내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를 설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. 기본은 <b>프롬프트·코드 내용을 수집하지 않고</b> 사용량 메타데이터만 보냅니다 — 아래에서 본문 수집을 켤 수 있습니다.",
     "checkTitle": "연결 확인",
     "checkDescription": "설치 후 데이터가 실제로 수신되는지 확인합니다.",
     "hintWhich": "• <code>which claude</code> → <code>~/.toard/bin/claude</code> 가 먼저 잡혀야 합니다(shim 우선).",
@@ -48,6 +49,8 @@
     "copyCommandLabel": "명령 복사",
     "oneLinerCopied": "설치 명령을 복사했습니다.",
     "issueHint": "위에서 <b>발급</b> 하면 아래 명령에 내 토큰이 채워집니다.",
+    "collectContentLabel": "본문도 수집 <muted>(opt-in) — 프롬프트·응답을 암호화 저장, <link>내 히스토리</link>에서 본인만 조회합니다.</muted>",
+    "collectContentGated": "본문 수집은 관리자가 서버에서 켜야 사용할 수 있습니다.",
     "oneLinerDescription": "바이너리 설치 + <code>~/.toard/credentials</code> + PATH 를 자동 설정합니다. endpoint <code>{endpoint}</code> 는 자동 주입. 설치 후 <code>claude</code>/<code>codex</code> 를 평소처럼 쓰면 사용량이 전송됩니다. Claude Desktop·IDE 확장 사용분까지 수집되도록 <code>~/.claude/settings.json</code> 에 텔레메트리 env 도 주입합니다(<code>claude-env</code>, 새 세션부터 적용 — 실행 중인 앱은 재시작 필요. 끄려면 <code>toard-shim claude-env off</code>).",
     "manualSummary": "직접 설정 (고급)",
     "manualCopied": "수동 설정 명령을 복사했습니다.",

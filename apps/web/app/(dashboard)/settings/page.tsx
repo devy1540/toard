@@ -5,6 +5,7 @@ import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getActiveTokenMeta } from "@/lib/tokens";
@@ -84,6 +85,7 @@ async function InstallTab({ userId }: { userId: string }) {
     getIngestEndpoint(),
     getPublicBaseUrl(),
   ]);
+  const contentEnabled = contentCollectionEnabled();
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-3">
@@ -91,10 +93,13 @@ async function InstallTab({ userId }: { userId: string }) {
         <CardHeader>
           <CardTitle>{t("install.issueTitle")}</CardTitle>
           <CardDescription>
-            {t.rich("install.issueDescription", {
-              code: (chunks) => <code>{chunks}</code>,
-              b: (chunks) => <b>{chunks}</b>,
-            })}
+            {t.rich(
+              contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription",
+              {
+                code: (chunks) => <code>{chunks}</code>,
+                b: (chunks) => <b>{chunks}</b>,
+              },
+            )}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -104,6 +109,7 @@ async function InstallTab({ userId }: { userId: string }) {
             hasToken={Boolean(meta)}
             createdAt={meta?.createdAt.toISOString() ?? null}
             lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+            contentEnabled={contentEnabled}
           />
         </CardContent>
       </Card>

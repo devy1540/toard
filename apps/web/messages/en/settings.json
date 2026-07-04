@@ -11,6 +11,7 @@
   "install": {
     "issueTitle": "Issue my token · Install",
     "issueDescription": "Install the <code>claude</code>/<code>codex</code> wrapper (shim) so your usage is sent to toard. The token is tied to you, so usage is attributed to <b>your account</b>. <b>Prompt and code content are not collected</b> — only usage metadata such as token counts, model, and cost is sent.",
+    "issueDescriptionWithContent": "Install the <code>claude</code>/<code>codex</code> wrapper (shim) so your usage is sent to toard. The token is tied to you, so usage is attributed to <b>your account</b>. By default <b>prompt and code content are not collected</b> — only usage metadata is sent; you can turn on content collection below.",
     "checkTitle": "Connection check",
     "checkDescription": "Verify that data is actually being received after installation.",
     "hintWhich": "• <code>which claude</code> → <code>~/.toard/bin/claude</code> must resolve first (shim takes precedence).",
@@ -48,6 +49,8 @@
     "copyCommandLabel": "Copy command",
     "oneLinerCopied": "Copied the install command.",
     "issueHint": "<b>Issue</b> above and your token is filled into the command below.",
+    "collectContentLabel": "Also collect content <muted>(opt-in) — prompts and responses are stored encrypted; only you can view them in <link>My history</link>.</muted>",
+    "collectContentGated": "Content collection must be enabled by an administrator on the server.",
     "oneLinerDescription": "Installs the binary + <code>~/.toard/credentials</code> + PATH automatically. The endpoint <code>{endpoint}</code> is injected automatically. After installing, use <code>claude</code>/<code>codex</code> as usual and your usage is sent. To also collect Claude Desktop and IDE extension usage, it injects telemetry env into <code>~/.claude/settings.json</code> (<code>claude-env</code>, applied from new sessions — restart any running app; to turn it off run <code>toard-shim claude-env off</code>).",
     "manualSummary": "Manual setup (advanced)",
     "manualCopied": "Copied the manual setup command.",

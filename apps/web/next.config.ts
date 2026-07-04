@@ -1,6 +1,7 @@
 import path from "node:path";
 import { config as loadRootEnv } from "dotenv";
 import type { NextConfig } from "next";
+import createNextIntlPlugin from "next-intl/plugin";
 
 // 모노레포 루트의 .env 를 로드 — README 의 `cp .env.example .env`(루트) 절차와 정합.
 // 이미 설정된 셸/플랫폼 env·apps/web/.env* 가 우선(dotenv 는 기존 키를 덮지 않음)하므로
@@ -26,4 +27,7 @@ const config: NextConfig = {
   output: "standalone",
 };
 
-export default config;
+// 쿠키 기반 i18n(URL 접두사 없음). 로케일·메시지 해석은 i18n/request.ts 담당.
+const withNextIntl = createNextIntlPlugin("./i18n/request.ts");
+
+export default withNextIntl(config);

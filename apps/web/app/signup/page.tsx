@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { auth, credentialsEnabled } from "@/auth";
+import { LogoMark } from "@/components/logo-mark";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { allowedDomains } from "@/lib/auth-policy";
 import { SignupForm } from "./signup-form";
@@ -11,23 +13,26 @@ export default async function SignupPage() {
   // 비번 가입이 꺼져 있으면 로그인 페이지로.
   if (!credentialsEnabled) redirect("/login");
 
+  const t = await getTranslations("auth");
+
   return (
     <div className="flex min-h-screen items-center justify-center p-6">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-xl">toard 가입</CardTitle>
+          <LogoMark size={32} className="mb-1" />
+          <CardTitle className="text-xl">{t("signup.title")}</CardTitle>
           <CardDescription>
             {allowedDomains.length > 0
-              ? `${allowedDomains.join(", ")} 도메인 이메일로 가입할 수 있습니다.`
-              : "이메일과 비밀번호로 가입합니다."}
+              ? t("signup.descriptionWithDomains", { domains: allowedDomains.join(", ") })
+              : t("signup.descriptionNoDomains")}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <SignupForm />
           <p className="text-muted-foreground text-center text-sm">
-            이미 계정이 있나요?{" "}
+            {t("signup.haveAccount")}{" "}
             <Link href="/login" className="text-primary underline-offset-4 hover:underline">
-              로그인
+              {t("signup.loginLink")}
             </Link>
           </p>
         </CardContent>

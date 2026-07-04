@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,20 +10,21 @@ import { acceptInviteAction, type AcceptState } from "./actions";
 const INITIAL: AcceptState = {};
 
 export function AcceptForm({ token, email }: { token: string; email: string }) {
+  const t = useTranslations("invite");
   const [state, action, pending] = useActionState(acceptInviteAction, INITIAL);
   return (
     <form action={action} className="flex flex-col gap-4">
       <input type="hidden" name="token" value={token} />
       <div className="flex flex-col gap-2">
-        <Label>이메일</Label>
+        <Label>{t("emailLabel")}</Label>
         <Input value={email} disabled readOnly />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="name">이름 (선택)</Label>
+        <Label htmlFor="name">{t("nameLabel")}</Label>
         <Input id="name" name="name" type="text" autoComplete="name" />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="password">비밀번호</Label>
+        <Label htmlFor="password">{t("passwordLabel")}</Label>
         <Input
           id="password"
           name="password"
@@ -30,16 +32,16 @@ export function AcceptForm({ token, email }: { token: string; email: string }) {
           autoComplete="new-password"
           required
           minLength={8}
-          placeholder="8자 이상"
+          placeholder={t("passwordPlaceholder")}
         />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="confirm">비밀번호 확인</Label>
+        <Label htmlFor="confirm">{t("confirmLabel")}</Label>
         <Input id="confirm" name="confirm" type="password" autoComplete="new-password" required />
       </div>
       {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
       <Button type="submit" disabled={pending}>
-        {pending ? "가입 중…" : "가입하고 시작"}
+        {pending ? t("submitting") : t("submit")}
       </Button>
     </form>
   );

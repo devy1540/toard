@@ -1,6 +1,7 @@
 "use client";
 
 import { useTransition } from "react";
+import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { assignTeamAction } from "./team-actions";
@@ -17,14 +18,18 @@ export function TeamSelect({
   current: string | null;
   teams: Array<{ id: string; name: string }>;
 }) {
+  const t = useTranslations("admin");
   const [pending, startTransition] = useTransition();
 
   const onChange = (value: string) => {
-    const name = value === NONE ? null : teams.find((t) => t.id === value)?.name;
+    const name = value === NONE ? null : teams.find((team) => team.id === value)?.name;
     startTransition(async () => {
       const r = await assignTeamAction(userId, value === NONE ? null : value);
       if (r.error) toast.error(r.error);
-      else toast.success(name ? `"${name}" 팀으로 배정했습니다.` : "팀 배정을 해제했습니다.");
+      else
+        toast.success(
+          name ? t("teamSelect.assignedToast", { name }) : t("teamSelect.unassignedToast"),
+        );
     });
   };
 
@@ -34,7 +39,7 @@ export function TeamSelect({
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={NONE}>팀 없음</SelectItem>
+        <SelectItem value={NONE}>{t("teamSelect.none")}</SelectItem>
         {teams.map((d) => (
           <SelectItem key={d.id} value={d.id}>
             {d.name}

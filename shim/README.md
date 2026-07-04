@@ -38,9 +38,10 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 - **Codex 주의**: Codex 는 `config.toml` 우선이라 env resource attribute 존중 여부가 도구 버전에 따라 다를 수 있다(미존중 시 Codex 사용량 host 는 "(알 수 없음)"). Claude Code(env)·pull 경로는 영향 없음.
 
 ## 본문 수집 (opt-in — 기본 off)
-`TOARD_SHIM_COLLECT_CONTENT=1` 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
+`TOARD_SHIM_COLLECT_CONTENT=1`(env) 또는 `~/.toard/credentials` 의 `collect_content=true`(설치 시 `install.sh` 가 기록) 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. env 가 명시되면 env 가 우선(`0`/`off` 로 강제 해제 가능). usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
 - **신뢰경계**: shim 은 본문을 **평문 TLS** 로 보내되 키를 쥐지 않는다 — **봉투 암호화(at-rest)·소유자 전용(RLS)은 서버 몫**. shim 의 "본문 안 읽음" 기본값을 여는 스위치라 명시적 opt-in.
 - **서버측 게이트**: 서버에 본문 수집 KEK 가 없으면 `/v1/prompts` 가 503 → shim 은 실패로 보지 않고 조용히 건너뛴다.
+- **전송 안전(https 강제)**: 본문은 `https://`(또는 로컬 `localhost`/`127.0.0.1`) endpoint 로만 보낸다. 원격 `http://` 면 평문 노출 위험이라 **본문 수집을 건너뛴다**(경고 출력). 토큰 카운트 usage 경로는 이 제약과 무관.
 - **범위 주의**: 텍스트 필드는 `text`/`content` 를 시도한다. qwen 등 실로그의 본문 키가 다르면 빈 결과(안전)가 되므로, 프로덕션 활성화 전 실로그 검증이 필요하다.
 
 ## 자동 업데이트 (ADR-006)

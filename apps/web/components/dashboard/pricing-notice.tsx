@@ -1,3 +1,4 @@
+import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
 import { getPricingStatus } from "@/lib/pricing";
@@ -11,6 +12,7 @@ export async function PricingNotice() {
   const status = await getPricingStatus();
   if (status.models > 0) return null;
 
+  const t = await getTranslations("dashboard");
   const user = await getSessionUser();
   const isAdmin = user?.role === "admin";
 
@@ -18,22 +20,20 @@ export async function PricingNotice() {
     <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
       <div>
-        <p className="font-medium">모델 가격이 동기화되지 않아 비용이 $0 으로 표시됩니다.</p>
+        <p className="font-medium">{t("pricingNotice.title")}</p>
         <p className="text-muted-foreground mt-0.5 text-xs">
-          {isAdmin ? (
-            <>
-              <Link
-                href="/admin?tab=system"
-                className="text-primary underline-offset-4 hover:underline"
-              >
-                관리 → 시스템
-              </Link>
-              에서 가격 동기화를 실행하세요. 일 단위 자동 갱신은 sync-pricing cron 등록이
-              필요합니다(README 스케줄러 절).
-            </>
-          ) : (
-            "관리자에게 가격 동기화(sync-pricing) 실행을 요청하세요."
-          )}
+          {isAdmin
+            ? t.rich("pricingNotice.adminAction", {
+                link: (chunks) => (
+                  <Link
+                    href="/admin?tab=system"
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    {chunks}
+                  </Link>
+                ),
+              })
+            : t("pricingNotice.memberAction")}
         </p>
       </div>
     </div>

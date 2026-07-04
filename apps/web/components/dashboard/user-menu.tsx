@@ -1,5 +1,6 @@
 import { type ReactNode } from "react";
 import Link from "next/link";
+import { getTranslations } from "next-intl/server";
 import { LogIn, LogOut } from "lucide-react";
 import { auth, credentialsEnabled, oauthConfigured, signOut } from "@/auth";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import { Button } from "@/components/ui/button";
 export async function UserMenu({ trailing }: { trailing?: ReactNode }) {
   const session = await auth();
   const email = session?.user?.email;
+  const t = await getTranslations("common");
 
   if (email) {
     return (
@@ -31,7 +33,7 @@ export async function UserMenu({ trailing }: { trailing?: ReactNode }) {
           >
             <Button type="submit" variant="outline" size="sm" className="w-full justify-start">
               <LogOut className="size-4" />
-              로그아웃
+              {t("signOut")}
             </Button>
           </form>
           {trailing}
@@ -49,7 +51,7 @@ export async function UserMenu({ trailing }: { trailing?: ReactNode }) {
       <Button asChild variant="outline" size="sm" className="flex-1 justify-start">
         <Link href="/login">
           <LogIn className="size-4" />
-          로그인
+          {t("signIn")}
         </Link>
       </Button>
       {trailing}

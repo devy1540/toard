@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { checkIngestStatusAction, type IngestStatus } from "./connection-actions";
 
@@ -8,15 +9,6 @@ const POLL_MS = 3_000;
 const MAX_POLLS = 40; // 2분
 
 type Phase = "idle" | "polling" | "confirmed" | "timeout";
-
-function rel(iso: string): string {
-  const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  if (diffMin < 1) return "방금";
-  if (diffMin < 60) return `${diffMin}분 전`;
-  const h = Math.floor(diffMin / 60);
-  if (h < 24) return `${h}시간 전`;
-  return new Date(iso).toLocaleString();
-}
 
 /**
  * 설치 후 "실제로 데이터가 들어오는지" 를 본인이 즉시 확인하는 컴포넌트.
@@ -29,12 +21,22 @@ export function ConnectionCheck({
   initialHasToken: boolean;
   initialLastUsedAt: string | null;
 }) {
+  const t = useTranslations("settings");
   const [status, setStatus] = useState<IngestStatus>({
     hasToken: initialHasToken,
     lastUsedAt: initialLastUsedAt,
   });
   const [phase, setPhase] = useState<Phase>("idle");
   const runId = useRef(0);
+
+  const rel = (iso: string): string => {
+    const diffMin = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+    if (diffMin < 1) return t("connection.justNow");
+    if (diffMin < 60) return t("connection.minutesAgo", { n: diffMin });
+    const h = Math.floor(diffMin / 60);
+    if (h < 24) return t("connection.hoursAgo", { h });
+    return new Date(iso).toLocaleString();
+  };
 
   useEffect(() => {
     // 언마운트 시 진행 중인 폴링 루프 중단
@@ -83,44 +85,42 @@ export function ConnectionCheck({
         <div className="flex items-center gap-2 text-sm">
           <span className={`size-2 shrink-0 rounded-full ${dot}`} />
           {phase === "confirmed" ? (
-            <span className="font-medium">연결 확인됨 — 방금 수신했습니다.</span>
+            <span className="font-medium">{t("connection.confirmed")}</span>
           ) : phase === "polling" ? (
-            <span className="text-muted-foreground">수신 대기 중…</span>
+            <span className="text-muted-foreground">{t("connection.waiting")}</span>
           ) : !status.hasToken ? (
-            <span className="text-muted-foreground">토큰 미발급 — 먼저 토큰을 발급하세요.</span>
+            <span className="text-muted-foreground">{t("connection.noToken")}</span>
           ) : status.lastUsedAt ? (
             <span>
-              연결됨{" "}
+              {t("connection.connected")}{" "}
               {/* 상대 시각은 렌더 시점 의존 — SSR 과 달라질 수 있어 클라이언트 값 유지 */}
               <span className="text-muted-foreground" suppressHydrationWarning>
-                · 마지막 수신 {rel(status.lastUsedAt)}
+                {t("connection.lastReceived", { rel: rel(status.lastUsedAt) })}
               </span>
             </span>
           ) : (
-            <span className="text-muted-foreground">아직 수신된 데이터가 없습니다.</span>
+            <span className="text-muted-foreground">{t("connection.noData")}</span>
           )}
         </div>
         {phase === "polling" ? (
           <Button type="button" variant="outline" size="sm" onClick={stop}>
-            중단
+            {t("connection.stop")}
           </Button>
         ) : (
           <Button type="button" variant="outline" size="sm" onClick={start}>
-            연결 확인
+            {t("connection.check")}
           </Button>
         )}
       </div>
 
       {phase === "polling" ? (
         <p className="text-muted-foreground text-xs">
-          다른 터미널에서 <code>claude</code> 를 한 번 실행해 보세요. 수신되면 자동으로 표시됩니다
-          (최대 2분 대기).
+          {t.rich("connection.pollingHint", { code: (chunks) => <code>{chunks}</code> })}
         </p>
       ) : null}
       {phase === "timeout" ? (
         <p className="text-destructive text-xs">
-          2분 안에 수신되지 않았습니다. shim 설치와 PATH(<code>which claude</code>), 토큰 설정을
-          확인한 뒤 다시 시도하세요.
+          {t.rich("connection.timeoutHint", { code: (chunks) => <code>{chunks}</code> })}
         </p>
       ) : null}
     </div>

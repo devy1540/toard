@@ -1,0 +1,28 @@
+{
+  "title": "Overview",
+  "description": "Total usage and cost",
+  "tabOverview": "Overview",
+  "tabRanking": "Ranking",
+  "totalCost": "Total cost",
+  "sessions": "Sessions",
+  "activeUsers": "Active users",
+  "totalTokens": "Total tokens",
+  "tokenHint": "Input {in} · Output {out}",
+  "dailyCost": "Daily cost",
+  "noDataTitle": "No data",
+  "noCollectedUsageDescription": "No usage collected for the selected period and tool.",
+  "topUsers": "Top users",
+  "viewAllRanking": "Full ranking →",
+  "user": "User",
+  "cost": "Cost",
+  "noUsersTitle": "No users",
+  "scope": {
+    "user": "Individual",
+    "team": "Team"
+  },
+  "topByCost": "Top {scope} by cost",
+  "rankingTitle": "{scope} ranking",
+  "noScopeUsageDescription": "No {scope} usage for the selected period and tool.",
+  "sessionsCol": "Sessions",
+  "tokensCol": "Tokens"
+}

@@ -1,0 +1,80 @@
+{
+  "title": "Admin",
+  "description": "Manage members, teams, and collection connection status",
+  "tabs": {
+    "members": "Members",
+    "teams": "Teams",
+    "invites": "Invites",
+    "system": "System"
+  },
+  "members": {
+    "cardTitle": "Members ({count})",
+    "cardDescription": "Team changes apply from the next collection onward (past events keep the team they were attributed to at the time). If Last received is empty, the shim is not installed or collection is not connected.",
+    "colMember": "Member",
+    "colRole": "Role",
+    "colTeam": "Team",
+    "colLastReceived": "Last received",
+    "colJoined": "Joined"
+  },
+  "teams": {
+    "cardTitle": "Teams ({count})",
+    "cardDescription": "Create teams and assign them from the Members tab. Rankings and comparisons are reflected in the Teams tab of the overview.",
+    "createPlaceholder": "New team name",
+    "addSubmit": "Add",
+    "adding": "Adding…",
+    "empty": "No teams yet. Add one below.",
+    "memberCount": "· {count} members",
+    "deleteTitle": "Delete team",
+    "cannotDeleteHasMembers": "Cannot delete because it has members",
+    "cannotDeleteHasEvents": "Cannot delete because collection history is attributed to it",
+    "deleteConfirmTitle": "Delete the \"{name}\" team?",
+    "deleteConfirmDescription": "Only teams with no members and no collection history can be deleted, and this cannot be undone.",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "createdToast": "Team added.",
+    "deletedToast": "Deleted the \"{name}\" team."
+  },
+  "teamSelect": {
+    "none": "No team",
+    "assignedToast": "Assigned to the \"{name}\" team.",
+    "unassignedToast": "Team assignment removed."
+  },
+  "invites": {
+    "cardTitle": "Invite members",
+    "cardDescription": "Create an invitation link and share it — the recipient sets a password to sign up and continues through installation.",
+    "emailLabel": "Email to invite",
+    "roleLabel": "Role",
+    "generating": "Generating…",
+    "generateSubmit": "Create invitation link",
+    "linkCreatedToast": "Created an invitation link for {email} — copy and share it.",
+    "linkHeading": "Invitation link for {email} — share it",
+    "linkCopied": "Copied the invitation link.",
+    "linkExpiry": "Expires in 7 days · single use.",
+    "pendingHeading": "Pending invites",
+    "pendingExpires": "Expires {date}"
+  },
+  "system": {
+    "pricingTitle": "Pricing sync",
+    "pricingDescription": "Fetches LiteLLM model pricing for cost calculation. Without pricing, costs are calculated as $0, so you can run it manually here separately from registering the cron (sync-pricing).",
+    "modelsCount": "{count} models",
+    "lastSync": "· Last synced {day}",
+    "noPricing": "No pricing has been synced — collected costs are calculated as $0.",
+    "syncing": "Syncing…",
+    "syncNow": "Sync now",
+    "syncedWithDay": "Sync complete — {count} models applied ({day})",
+    "synced": "Sync complete — {count} models applied"
+  },
+  "errors": {
+    "onlyAdminInvite": "Only administrators can send invitations.",
+    "invalidEmail": "This is not a valid email format.",
+    "emailAlreadyExists": "This email is already registered.",
+    "onlyAdmin": "Only administrators are allowed.",
+    "teamNameRequired": "Please enter a team name.",
+    "teamNameTooLong": "Team names must be 50 characters or fewer.",
+    "teamNameExists": "That team name already exists.",
+    "teamHasMembers": "A team with members cannot be deleted.",
+    "teamHasEvents": "A team with attributed collection history cannot be deleted.",
+    "pricingDownloadKept": "Pricing download failed, so the existing snapshot was kept — {error}",
+    "pricingSyncFailed": "Sync failed — {error}"
+  }
+}

@@ -1,8 +1,13 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.svg">
+  <img src="docs/brand/logo-light.svg" alt="toard logo" width="72" height="72">
+</picture>
+
 # toard
 
-**조직의 AI 코딩 도구 사용량·비용을 한곳에서** — 오픈소스 · 셀프호스팅 · 멀티 프로바이더
+**여러 AI 코딩 도구의 사용량·비용을 한곳에서** — 오픈소스 · 셀프호스팅 · 멀티 프로바이더
 
 *Track AI coding-tool usage & cost across your org — Claude Code, Codex, and beyond.*
 
@@ -13,7 +18,7 @@
 ![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[빠른 시작](#-빠른-시작) · [동작 방식](#-동작-방식) · [설계 문서](docs/ARCHITECTURE.md) · [배포 가이드](docs/DEPLOY.md) · [기여하기](CONTRIBUTING.md)
+[빠른 시작](#-빠른-시작) · [팀에 배포하기](#-팀에-배포하기) · [동작 방식](#-동작-방식) · [설계 문서](docs/ARCHITECTURE.md) · [배포 가이드](docs/DEPLOY.md) · [기여하기](CONTRIBUTING.md)
 
 </div>
 
@@ -53,11 +58,20 @@ flowchart LR
 
 ## 🚀 빠른 시작
 
-가장 빠른 체험은 올인원 Docker Compose(app + Postgres + 마이그레이션):
+가장 빠른 체험은 올인원 Docker Compose(app + Postgres + 마이그레이션) — GHCR 프리빌트 이미지를 받아 바로 기동한다:
 
 ```bash
-AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build   # → http://localhost:3000
+AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000
 ```
+
+`AUTH_SECRET` 미설정 시 즉시 에러로 실패한다(안전한 기본값 없음). 게시 이미지는 amd64·arm64 멀티아치. 소스에서 직접 빌드하려면 `--build`를 붙이고, 특정 버전 고정은 `TOARD_TAG=v…`. 팀 전체에 실제로 배포하는 절차는 [팀에 배포하기](#-팀에-배포하기) 참조.
+
+### 🤖 AI 로 설치하기
+
+Claude Code 등 AI 에이전트에게 아래처럼 요청하면 설치부터 검증까지 자동으로 진행된다 — 에이전트는 [AGENTS.md](AGENTS.md) 런북(비대화형 설치 · 성공 기준 · 실패 대응)을 따른다:
+
+> https://github.com/devy1540/toard 의 AGENTS.md 를 따라 toard 를 설치하고 검증까지 해줘.
+> 관리자 이메일은 me@corp.com, 비밀번호는 내가 직접 입력할게.
 
 ### 로컬 개발
 
@@ -76,6 +90,16 @@ pnpm dev                      # http://localhost:3000
 pnpm typecheck     # 전 패키지
 pnpm test          # pricing 단위 테스트 (resolveCost)
 ```
+
+## 🏢 팀에 배포하기
+
+toard 는 **서버 1대 + 각 개발자 머신의 shim** 구조다. 수집은 push 방식이라 서버가 개발자 머신에 접속할 일이 없고, **개발자 → 서버 방향 HTTPS 하나만 열려 있으면** 네트워크가 달라도 된다.
+
+1. **서버 배포** — [빠른 시작](#-빠른-시작)의 compose 를 개발자들이 접근 가능한 주소(사내 DNS/IP)로 올린다. 첫 접속 시 `/setup` 에서 관리자 생성. K8s/Helm 등 상세는 [배포 가이드](docs/DEPLOY.md).
+2. **링크 공유** — 관리자는 toard 주소만 팀에 공유하면 끝.
+3. **셀프 온보딩** — 각자 로그인 → **설정 → 설치 · 토큰 탭**에서 토큰 발급 + 한 줄 설치 → **"연결 확인"** 으로 수신 즉시 점검. 사용량은 본인 계정에 귀속된다([shim 설치](#-shim-설치-사용량-수집) 참조).
+
+토큰이 Bearer 로 전송되므로 공개망은 TLS 권장. 프록시 뒤라 브라우징 URL 과 수집 URL 이 다를 때만 `TOARD_PUBLIC_URL` 로 설치 스니펫에 들어갈 공개 URL 을 지정한다(미설정 시 요청 host 자동 유추).
 
 ## 📁 구조 (pnpm 모노레포)
 
@@ -113,19 +137,17 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 ## 🔗 shim 설치 (사용량 수집)
 
-개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지). **프롬프트·코드 내용은 수집하지 않는다** — 토큰 수·모델·비용 등 사용량 메타데이터만 전송된다. 설치 후에는 **설정 → 설치 · 토큰 탭의 "연결 확인"** 으로 실제 수신 여부를 즉시 점검할 수 있다.
+개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지). **프롬프트·코드 내용은 수집하지 않는다** — 토큰 수·모델·비용 등 사용량 메타데이터만 전송된다.
 
-**사용자(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 본인 토큰 + 설치 스니펫을 복사한다. 관리자는 toard 링크만 공유하면 각 사용자가 자기 토큰으로 셀프 온보딩한다(사용량이 본인 계정에 귀속).
-
-**수동**:
+**한 줄 설치(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 토큰을 발급하면 아래 명령이 내 토큰으로 채워진다. toard 가 서빙하는 `install.sh` 가 바이너리 설치(SHA 검증) + `~/.toard/credentials`(토큰·endpoint 자동 주입) + PATH 설정 + `claude-env`(**Claude Desktop·IDE 확장 사용분까지 수집**하도록 `~/.claude/settings.json` env 주입 — 새 세션부터 적용, 건너뛰려면 `TOARD_CLAUDE_ENV=0`)까지 처리하고, 같은 탭의 **"연결 확인"** 으로 실제 수신 여부를 즉시 점검한다:
 
 ```bash
-curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh
+curl -fsSL <toard 주소>/install.sh | TOARD_INGEST_TOKEN=<내 토큰> sh
 ```
 
-설치 후 `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 두고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 설정. `v*` 태그 push → GitHub Actions 가 4-플랫폼 빌드 후 Release 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정).
+**직접 설정(고급)** — 바이너리만 [GitHub 릴리스 install.sh](https://github.com/devy1540/toard/releases/latest/download/install.sh) 로 설치하고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 를 직접 작성 + `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 둔다. Desktop·IDE 확장까지 수집하려면 `toard-shim claude-env on`. 릴리스는 `v*` 태그 push 시 GitHub Actions 가 4-플랫폼 빌드 후 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정).
 
-**제거** — `curl -fsSL <toard>/uninstall.sh | sh` (shim·자격증명·PATH·codex `[otel]` 블록을 백업 남기고 되돌림. 진짜 claude/codex 는 그대로).
+**제거** — `curl -fsSL <toard>/uninstall.sh | sh` (shim·자격증명·PATH·claude-env(`settings.json`)·codex `[otel]` 블록을 백업 남기고 되돌림. 진짜 claude/codex 는 그대로).
 
 ## 🧊 ClickHouse 모드 (옵트인)
 

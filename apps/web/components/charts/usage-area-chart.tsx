@@ -1,5 +1,6 @@
 "use client";
 
+import { useTranslations } from "next-intl";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { DailyPoint } from "@toard/core";
 
@@ -12,6 +13,7 @@ const tooltipStyle = {
 } as const;
 
 export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "cost" | "tokens" }) {
+  const t = useTranslations("dashboard");
   const chartData = data.map((d) => ({
     day: d.day.slice(5),
     cost: Number(d.costUsd.toFixed(4)),
@@ -33,7 +35,7 @@ export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "
         <YAxis tickLine={false} axisLine={false} width={52} fontSize={12} stroke="var(--color-muted-foreground)" />
         <Tooltip
           contentStyle={tooltipStyle}
-          formatter={(v: number) => (isCost ? [`$${v}`, "비용"] : [v.toLocaleString(), "토큰"])}
+          formatter={(v: number) => (isCost ? [`$${v}`, t("chart.cost")] : [v.toLocaleString(), t("chart.tokens")])}
         />
         <Area
           type="monotone"
@@ -41,6 +43,8 @@ export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "
           stroke="var(--color-chart-1)"
           strokeWidth={2}
           fill="url(#fillUsage)"
+          // 데이터가 하루뿐이면(오늘 필터) 선·면이 그려지지 않아 점으로 표시
+          dot={chartData.length < 2 ? { r: 4, fill: "var(--color-chart-1)", strokeWidth: 0 } : false}
         />
       </AreaChart>
     </ResponsiveContainer>

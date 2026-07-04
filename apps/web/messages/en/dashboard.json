@@ -1,0 +1,67 @@
+{
+  "myUsageTitle": "My Usage",
+  "myUsageDescription": "My AI tool usage and cost",
+  "loginRequiredTitle": "Login required",
+  "loginRequiredDescription": "Sign in to view your usage.",
+  "myCost": "My cost",
+  "mySessions": "My sessions",
+  "myTokens": "My tokens",
+  "dailyTokens": "Daily tokens",
+  "noCollectedUsageTitle": "No usage collected yet",
+  "noCollectedUsageDescription": "Install the shim to automatically collect claude/codex usage.",
+  "installShim": "Install shim",
+  "noDataTitle": "No data",
+  "noMyUsageDescription": "No usage for the selected period and tool.",
+  "byModelTitle": "Breakdown by model",
+  "model": "Model",
+  "sessions": "Sessions",
+  "tokens": "Tokens",
+  "cost": "Cost",
+  "noModelDataTitle": "No model data",
+  "filters": {
+    "periodToday": "Today",
+    "period7": "7 days",
+    "period30": "30 days",
+    "period90": "90 days",
+    "customRange": "Custom",
+    "startDate": "Start date",
+    "endDate": "End date",
+    "apply": "Apply",
+    "allTools": "All tools"
+  },
+  "pricingNotice": {
+    "title": "Model pricing is not synced, so costs show as $0.",
+    "adminAction": "Run pricing sync from <link>Admin → System</link>. Daily auto-refresh requires registering the sync-pricing cron (see the scheduler section in the README).",
+    "memberAction": "Ask an administrator to run pricing sync (sync-pricing)."
+  },
+  "chart": {
+    "cost": "Cost",
+    "tokens": "Tokens"
+  },
+  "autoRefresh": {
+    "off": "Auto-refresh off",
+    "sec10": "10s",
+    "sec30": "30s",
+    "min1": "1m",
+    "min5": "5m",
+    "justNow": "just now",
+    "secondsAgo": "{n}s ago",
+    "minutesAgo": "{n}m ago",
+    "updated": "Updated {ago}",
+    "refreshNow": "Refresh now",
+    "intervalLabel": "Auto-refresh interval"
+  },
+  "history": {
+    "title": "My history",
+    "description": "My prompts and responses — only you can see them",
+    "loginRequiredTitle": "Login required",
+    "loginRequiredDescription": "Sign in to view your history.",
+    "disabledTitle": "Content collection is disabled",
+    "disabledDescription": "Prompts and responses are stored once the server has a content encryption key (TOARD_CONTENT_KEK_B64).",
+    "emptyTitle": "No history saved yet",
+    "emptyDescription": "Turn on content collection in the shim (TOARD_SHIM_COLLECT_CONTENT=1) to see it here.",
+    "privacyNote": "Only you can see this — administrators and other users cannot view this content.",
+    "rolePrompt": "Prompt",
+    "roleResponse": "Response"
+  }
+}

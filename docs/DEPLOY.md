@@ -3,6 +3,11 @@
 toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리는 방법. 수집(OTLP)을 앱이
 직수신하므로 무중단 롤링 배포를 전제로 설계했다(ADR-001).
 
+**분리 배치(서버 ↔ 개발자 머신)** — 수집은 push 구조: 각 개발자 머신의 shim 이 서버로 전송하므로
+서버는 개발자들이 접근 가능한 주소로 서빙하기만 하면 된다(개발자 → 서버 단방향 HTTPS, 역방향 접속
+없음). 토큰이 Bearer 로 전송되므로 공개망은 TLS 필수. 프록시 뒤라 브라우징 URL ≠ 수집 URL 이면
+`TOARD_PUBLIC_URL` 로 설치 스니펫용 공개 URL 을 지정한다(미설정 시 요청 host 자동 유추).
+
 ## 이미지
 
 멀티 타깃 `Dockerfile` — 두 이미지:
@@ -11,6 +16,8 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 |---|---|---|
 | `runner` | Next.js standalone 앱 | `node apps/web/server.js` |
 | `migrator` | 마이그레이션·시드 | `pnpm migrate` / `pnpm seed` |
+
+CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`·`ghcr.io/devy1540/toard-migrate`를 자동 게시한다(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
 
 ```bash
 docker build --target runner   -t REG/toard:TAG .
@@ -25,14 +32,16 @@ docker push REG/toard:TAG && docker push REG/toard-migrate:TAG
 앱 + Postgres + 마이그레이션을 한 번에. `.env` 없이 환경변수만으로도 기동:
 
 ```bash
-AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d --build
+AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 # → http://localhost:3000  (PORT 로 변경 가능)
 ```
 
+- **이미지**: 기본은 GHCR 프리빌트(`ghcr.io/devy1540/toard{,-migrate}`, amd64·arm64 멀티아치)를 pull. `TOARD_TAG` 로 버전 고정(기본 `latest` = main 최신). 소스에서 직접 빌드(미게시 변경 확인 등)는 `--build` 추가.
+- **`AUTH_SECRET` 필수**: 미설정 시 compose 가 파싱 단계에서 즉시 에러(안전하지 않은 기본값 없음). `down`/`logs` 등 다른 compose 명령에도 값이 필요하니 `.env` 에 넣어두면 편하다.
 - `migrate` 서비스가 Postgres 준비 후 스키마 + baseline(providers·pricing) 을 맞추고(멱등) 종료 → `app` 기동.
 - **최초 관리자**: 배포 후 브라우저로 열면 사용자가 0명이라 **`/setup`** 으로 유도된다 → 이메일·비번 직접 입력해 admin 생성(첫 사용자만 admin, 이후 잠김). **노출 전 즉시 설정**할 것.
   - headless(사전 프로비저닝) 대안: `BOOTSTRAP_ADMIN_EMAIL`·`BOOTSTRAP_ADMIN_PASSWORD` env 설정 시 `migrate` 가 admin 도 선생성 → `/setup` 창이 열리지 않음.
-- **ClickHouse 모드**(선택): `STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 docker compose --profile clickhouse up -d --build`
+- **ClickHouse 모드**(선택): `STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 docker compose --profile clickhouse up -d`
 - **외부 DB**: `postgres` 서비스를 빼고 `DATABASE_URL` 을 외부 DB 로 지정.
 
 주요 변수: `AUTH_SECRET`(필수) · `POSTGRES_PASSWORD` · `AUTH_MODE`(oauth|open) · `ALLOWED_EMAIL_DOMAINS` · `AUTH_GITHUB_ID/SECRET` · `CRON_SECRET` · `PORT`.

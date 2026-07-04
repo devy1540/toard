@@ -1,8 +1,9 @@
 name: docker-publish
 
-# main push 또는 v* 태그(릴리스) 시 서버 이미지 2종을 GHCR 에 빌드·푸시.
+# main push 또는 v* 태그(릴리스) 시 서버 이미지 2종을 GHCR 에 멀티아치(amd64·arm64)로 빌드·푸시.
 #   ghcr.io/<owner>/toard          (runner  — Next.js standalone)
 #   ghcr.io/<owner>/toard-migrate  (migrator — 마이그레이션·시드)
+# arch 별 네이티브 러너에서 분리 빌드(digest push) 후 manifest 병합 — QEMU 에뮬레이션 없음.
 on:
   push:
     branches: ["main"]
@@ -14,7 +15,71 @@ permissions:
   packages: write
 
 jobs:
-  build-push:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        target: [runner, migrator]
+        platform: [linux/amd64, linux/arm64]
+        include:
+          - target: runner
+            image: toard
+          - target: migrator
+            image: toard-migrate
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: GHCR 로그인
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 라벨 메타
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
+
+      - name: 빌드·digest 푸시 (${{ matrix.target }} · ${{ matrix.platform }})
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 태그 없이 digest 로만 푸시 — merge job 이 arch manifest 를 태그로 병합
+          outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+      - name: digest 내보내기
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: digest 업로드
+        uses: actions/upload-artifact@v4
+        with:
+          # target 명(runner|migrator)으로 구분 — image 명은 toard 가 toard-migrate 의 접두사라 패턴 충돌
+          name: digests-${{ matrix.target }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: build
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -24,7 +89,12 @@ jobs:
           - target: migrator
             image: toard-migrate
     steps:
-      - uses: actions/checkout@v4
+      - name: digest 다운로드
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.target }}-*
+          merge-multiple: true
 
       - uses: docker/setup-buildx-action@v3
 
@@ -47,17 +117,12 @@ jobs:
             type=sha,format=short
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: 빌드·푸시 (${{ matrix.target }})
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: ${{ matrix.target }}
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          platforms: linux/amd64
-          # arm64 도 필요하면: platforms 에 linux/arm64 추가 + 아래를 checkout 다음에 삽입
-          #   - uses: docker/setup-qemu-action@v3
-          # (에뮬레이션은 느림 — 빠르게 하려면 ubuntu-24.04-arm 러너로 arch 분리 빌드)
+      - name: manifest 병합·태그 푸시
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}@sha256:%s ' *)
+
+      - name: manifest 검사
+        run: docker buildx imagetools inspect ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:${{ steps.meta.outputs.version }}

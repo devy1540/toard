@@ -145,7 +145,7 @@ fn dedup_key(adapter: &str, r: &RawUsage) -> String {
     }
 }
 
-fn to_usage_event(adapter: &str, r: &RawUsage) -> UsageEvent {
+fn to_usage_event(adapter: &str, r: &RawUsage, host: Option<&str>) -> UsageEvent {
     UsageEvent {
         dedup_key: dedup_key(adapter, r),
         provider_key: adapter.to_string(),
@@ -159,6 +159,7 @@ fn to_usage_event(adapter: &str, r: &RawUsage) -> UsageEvent {
         cache_creation_tokens: r.cache_creation_tokens,
         cost_usd: 0.0,
         log_adapter: Some(adapter.to_string()),
+        host: host.map(String::from),
     }
 }
 
@@ -224,6 +225,9 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
         }
     };
 
+    // host 라벨은 수집 실행당 1회만 계산(hostname 명령 fork 최소화 — 컴퓨터별 구분, §design-host-breakdown)
+    let host = crate::host::host_label();
+
     let mut failed = false;
     let mut matched = false;
     for adapter in adapters() {
@@ -248,7 +252,7 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
         let mut events: Vec<UsageEvent> = Vec::new();
         for (file, _) in &changed {
             for raw in adapter.parse_file(file) {
-                events.push(to_usage_event(key, &raw));
+                events.push(to_usage_event(key, &raw, host.as_deref()));
             }
         }
 
@@ -482,12 +486,15 @@ mod tests {
             output_tokens: 2,
             ..Default::default()
         };
-        let e = to_usage_event("gemini", &r);
+        let e = to_usage_event("gemini", &r, Some("box-7"));
         assert_eq!(e.user_id, None);
         assert_eq!(e.cost_usd, 0.0);
         assert_eq!(e.ts, "2026-07-01T12:00:00.000Z");
         assert_eq!(e.log_adapter.as_deref(), Some("gemini"));
         assert_eq!(e.provider_key, "gemini");
+        assert_eq!(e.host.as_deref(), Some("box-7"), "host 부착");
+        // host 미상(None)도 안전
+        assert_eq!(to_usage_event("gemini", &r, None).host, None);
     }
 
     fn sample_content() -> RawContent {

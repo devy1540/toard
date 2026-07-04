@@ -11,7 +11,8 @@
     "cacheReadTokens": 500,
     "cacheCreationTokens": 0,
     "costUsd": 0,
-    "logAdapter": "gemini"
+    "logAdapter": "gemini",
+    "host": "alice-macbook"
   },
   {
     "dedupKey": "min-fields-0000000000000000000000000000000000000000000000000000",
@@ -37,6 +38,7 @@
     "outputTokens": 12456,
     "cacheReadTokens": 0,
     "cacheCreationTokens": 4096,
-    "costUsd": 0
+    "costUsd": 0,
+    "host": null
   }
 ]

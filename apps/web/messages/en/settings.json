@@ -10,13 +10,20 @@
   },
   "install": {
     "issueTitle": "Issue my token · Install",
-    "issueDescription": "Install the <code>claude</code>/<code>codex</code> wrapper (shim) so your usage is sent to toard. The token is tied to you, so usage is attributed to <b>your account</b>. <b>Prompt and code content are not collected</b> — only usage metadata such as token counts, model, and cost is sent.",
+    "issueDescription": "Install the <code>claude</code>/<code>codex</code> wrapper (shim) so your usage is sent to toard. The token is tied to you, so usage is attributed to <b>your account</b>. <b>Prompt and code content are not collected</b> — only usage metadata such as token counts, model, cost, and <b>computer name (host)</b> is sent.",
     "issueDescriptionWithContent": "Install the <code>claude</code>/<code>codex</code> wrapper (shim) so your usage is sent to toard. The token is tied to you, so usage is attributed to <b>your account</b>. By default <b>prompt and code content are not collected</b> — only usage metadata is sent; you can turn on content collection below.",
     "checkTitle": "Connection check",
     "checkDescription": "Verify that data is actually being received after installation.",
     "hintWhich": "• <code>which claude</code> → <code>~/.toard/bin/claude</code> must resolve first (shim takes precedence).",
     "hintUsage": "• After that, using <code>claude</code> adds to <link>My usage</link>.",
-    "hintPrereq": "• Prerequisite: the real Claude Code/Codex must be installed; we collect that CLI's telemetry."
+    "hintPrereq": "• Prerequisite: the real Claude Code/Codex must be installed; we collect that CLI's telemetry.",
+    "devicesTitle": "My devices",
+    "devicesDescription": "Even when you use the same account on multiple computers, usage is broken down <b>per device</b>. To stop sending the device name set <code>TOARD_DISABLE_HOST=1</code>; to show a different name set <code>TOARD_HOST_LABEL=alias</code>.",
+    "deviceComputer": "Computer",
+    "deviceEvents": "Events",
+    "deviceLastSeen": "Last seen",
+    "unknownHost": "(unknown)",
+    "noDevices": "No devices yet. After installing the shim, using <code>claude</code>/<code>codex</code> will make devices appear here."
   },
   "password": {
     "currentLabel": "Current password",

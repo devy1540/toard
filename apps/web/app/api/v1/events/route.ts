@@ -3,6 +3,7 @@ import { parseUsageEventsBody, WireParseError } from "@toard/core";
 import { resolveCost } from "@toard/pricing";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingMap } from "@/lib/pricing";
+import { sanitizeHost } from "@/lib/sanitize";
 import { getStorage } from "@/lib/storage";
 
 // 정규화 UsageEvent[] 수신 — shim 로컬 로그 pull 경로 (설계 §5.6, ADR-002).
@@ -45,6 +46,8 @@ export async function POST(req: Request): Promise<Response> {
   const finalized: UsageEvent[] = events.map((e) => ({
     ...e,
     userId,
+    // host 는 클라이언트 제공값이라 저장 전 살균(제어문자·255자, §design-host-breakdown)
+    host: sanitizeHost(e.host),
     costUsd: resolveCost({
       model: e.model,
       inputTokens: e.inputTokens,

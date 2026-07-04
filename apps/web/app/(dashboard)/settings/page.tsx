@@ -1,14 +1,19 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
-import { getTranslations } from "next-intl/server";
+import { getLocale, getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
+import { fmtNum } from "@/lib/format";
+import { getOrgTimezone } from "@/lib/org-time";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
+import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
+import type { DeviceInfo } from "@toard/core";
 import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
@@ -80,66 +85,124 @@ async function AccountTab({ hasPassword }: { hasPassword: boolean }) {
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [meta, endpoint, baseUrl] = await Promise.all([
+  const [meta, endpoint, baseUrl, devices] = await Promise.all([
     getActiveTokenMeta(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
+    getStorage().getUserHosts(userId),
   ]);
   const contentEnabled = contentCollectionEnabled();
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-3">
-      <Card className="lg:col-span-2">
-        <CardHeader>
-          <CardTitle>{t("install.issueTitle")}</CardTitle>
-          <CardDescription>
-            {t.rich(
-              contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription",
-              {
-                code: (chunks) => <code>{chunks}</code>,
-                b: (chunks) => <b>{chunks}</b>,
-              },
-            )}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <OnboardingPanel
-            baseUrl={baseUrl}
-            endpoint={endpoint}
-            hasToken={Boolean(meta)}
-            createdAt={meta?.createdAt.toISOString() ?? null}
-            lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
-            contentEnabled={contentEnabled}
-          />
-        </CardContent>
-      </Card>
+    <div className="space-y-4">
+      <div className="grid items-start gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>{t("install.issueTitle")}</CardTitle>
+            <CardDescription>
+              {t.rich(
+                contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription",
+                {
+                  code: (chunks) => <code>{chunks}</code>,
+                  b: (chunks) => <b>{chunks}</b>,
+                },
+              )}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OnboardingPanel
+              baseUrl={baseUrl}
+              endpoint={endpoint}
+              hasToken={Boolean(meta)}
+              createdAt={meta?.createdAt.toISOString() ?? null}
+              lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+              contentEnabled={contentEnabled}
+            />
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("install.checkTitle")}</CardTitle>
-          <CardDescription>{t("install.checkDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <ConnectionCheck
-            initialHasToken={Boolean(meta)}
-            initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
-          />
-          <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
-            <p>{t.rich("install.hintWhich", { code: (chunks) => <code>{chunks}</code> })}</p>
-            <p>
-              {t.rich("install.hintUsage", {
-                code: (chunks) => <code>{chunks}</code>,
-                link: (chunks) => (
-                  <Link className="text-primary underline-offset-4 hover:underline" href="/">
-                    {chunks}
-                  </Link>
-                ),
-              })}
-            </p>
-            <p>{t("install.hintPrereq")}</p>
-          </div>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("install.checkTitle")}</CardTitle>
+            <CardDescription>{t("install.checkDescription")}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <ConnectionCheck
+              initialHasToken={Boolean(meta)}
+              initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+            />
+            <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
+              <p>{t.rich("install.hintWhich", { code: (chunks) => <code>{chunks}</code> })}</p>
+              <p>
+                {t.rich("install.hintUsage", {
+                  code: (chunks) => <code>{chunks}</code>,
+                  link: (chunks) => (
+                    <Link className="text-primary underline-offset-4 hover:underline" href="/">
+                      {chunks}
+                    </Link>
+                  ),
+                })}
+              </p>
+              <p>{t("install.hintPrereq")}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <DeviceList devices={devices} />
     </div>
+  );
+}
+
+async function DeviceList({ devices }: { devices: DeviceInfo[] }) {
+  const t = await getTranslations("settings");
+  const locale = await getLocale();
+  const fmtWhen = new Intl.DateTimeFormat(locale, {
+    timeZone: getOrgTimezone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("install.devicesTitle")}</CardTitle>
+        <CardDescription>
+          {t.rich("install.devicesDescription", {
+            code: (chunks) => <code>{chunks}</code>,
+            b: (chunks) => <b>{chunks}</b>,
+          })}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {devices.length > 0 ? (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("install.deviceComputer")}</TableHead>
+                <TableHead className="text-right">{t("install.deviceEvents")}</TableHead>
+                <TableHead className="text-right">{t("install.deviceLastSeen")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {devices.map((d) => (
+                <TableRow key={d.host ?? "__unknown__"}>
+                  <TableCell className={d.host ? "font-medium" : "text-muted-foreground"}>
+                    {d.host ?? t("install.unknownHost")}
+                  </TableCell>
+                  <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
+                  <TableCell className="text-muted-foreground text-right">
+                    {fmtWhen.format(d.lastSeenAt)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            {t.rich("install.noDevices", { code: (chunks) => <code>{chunks}</code> })}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

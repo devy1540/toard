@@ -43,7 +43,7 @@ export default async function MyUsagePage({
   }
 
   const period = parseFilters(await searchParams);
-  const [{ overview, daily, byModel }, providers, tokenMeta] = await Promise.all([
+  const [{ overview, daily, byModel, byHost }, providers, tokenMeta] = await Promise.all([
     getStorage().getUserUsage(userId, period),
     getEnabledProviders(),
     getActiveTokenMeta(userId),
@@ -152,6 +152,38 @@ export default async function MyUsagePage({
           )}
         </CardContent>
       </Card>
+
+      {byHost.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("byHostTitle")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("computer")}</TableHead>
+                  <TableHead className="text-right">{t("sessions")}</TableHead>
+                  <TableHead className="text-right">{t("tokens")}</TableHead>
+                  <TableHead className="text-right">{t("cost")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {byHost.map((h) => (
+                  <TableRow key={h.host ?? "__unknown__"}>
+                    <TableCell className={h.host ? "font-medium" : "text-muted-foreground"}>
+                      {h.host ?? t("unknownHost")}
+                    </TableCell>
+                    <TableCell className="text-right">{fmtNum(h.sessions)}</TableCell>
+                    <TableCell className="text-right">{fmtCompact(h.totalTokens)}</TableCell>
+                    <TableCell className="text-right">{fmtUsd(h.costUsd)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

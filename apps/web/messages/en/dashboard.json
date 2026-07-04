@@ -18,6 +18,9 @@
   "tokens": "Tokens",
   "cost": "Cost",
   "noModelDataTitle": "No model data",
+  "byHostTitle": "Breakdown by computer",
+  "computer": "Computer",
+  "unknownHost": "(unknown)",
   "filters": {
     "periodToday": "Today",
     "period7": "7 days",

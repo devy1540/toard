@@ -51,16 +51,9 @@ export default async function MyUsagePage({
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="내 사용량"
-        description="내 AI 도구 사용량·비용"
-        actions={
-          <>
-            <DashboardFilters providers={providers} />
-            <AutoRefresh />
-          </>
-        }
-      />
+      <PageHeader title="내 사용량" description="내 AI 도구 사용량·비용" actions={<AutoRefresh />} />
+
+      <DashboardFilters providers={providers} />
 
       <PricingNotice />
 

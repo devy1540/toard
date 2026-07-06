@@ -293,19 +293,24 @@ fn doctor() -> i32 {
         }
     }
 
-    // 4. codex config.toml 상태
+    // 4. codex config.toml 상태 — OTLP 는 experimental 로 강등(기본은 트랜스크립트 pull 로 수집)
     if let Some(home) = env::var_os("HOME") {
         let cfg = PathBuf::from(home).join(".codex").join("config.toml");
         if let Ok(existing) = std::fs::read_to_string(&cfg) {
             let base = codex::strip_toard_block(&existing);
-            if codex::has_user_otel(&base) {
-                warn(
-                    "~/.codex/config.toml 에 사용자 [otel] 이 있어 codex 자동 주입이 비활성입니다",
-                );
-            } else if base != existing {
-                ok("codex: config.toml 에 toard [otel] 블록 주입됨");
+            let has_toard_block = base != existing;
+            if crate::otel::experimental_otlp_enabled() {
+                if codex::has_user_otel(&base) {
+                    warn("~/.codex/config.toml 에 사용자 [otel] 이 있어 codex 자동 주입이 비활성입니다");
+                } else if has_toard_block {
+                    ok("codex: config.toml 에 toard [otel] 블록 주입됨 (experimental OTLP)");
+                } else {
+                    info("codex: 다음 실행 시 [otel] 블록이 주입됩니다 (experimental OTLP)");
+                }
+            } else if has_toard_block {
+                info("codex: config.toml 에 옛 toard [otel] 블록 잔존 — OTLP 강등됨(사용량은 pull 로 수집, 서버가 OTLP 드롭). 정리하려면 수동 제거");
             } else {
-                info("codex: 다음 실행 시 [otel] 블록이 주입됩니다");
+                ok("codex: OTLP 주입 안 함 — 사용량은 pull 로 수집 (experimental 은 TOARD_EXPERIMENTAL_OTLP)");
             }
         }
     }

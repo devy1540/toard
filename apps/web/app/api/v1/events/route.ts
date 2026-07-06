@@ -1,6 +1,7 @@
 import type { UsageEvent } from "@toard/core";
-import { parseUsageEventsBody, WireParseError } from "@toard/core";
+import { parseShimUserAgent, parseUsageEventsBody, WireParseError } from "@toard/core";
 import { resolveCost } from "@toard/pricing";
+import { recordShimVersions } from "@/lib/host-shims";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingMap } from "@/lib/pricing";
 import { sanitizeHost } from "@/lib/sanitize";
@@ -76,5 +77,17 @@ export async function POST(req: Request): Promise<Response> {
 
   // 5. 멱등 저장 + 당일 Mart 증분 — dedupKey 는 shim 생성 값 신뢰(멱등이라 무해, §4.4)
   const res = await getStorage().saveUsageEvents(finalized);
+
+  // 6. 부수 기록: User-Agent 의 shim 버전을 기기별로 남김(host_shims, 버전 관측).
+  // 한 배치는 한 기기에서 오므로 배치 내 host 전부에 귀속. 실패해도 수집 응답엔 영향 없음.
+  const shimVersion = parseShimUserAgent(req.headers.get("user-agent"));
+  if (shimVersion) {
+    try {
+      await recordShimVersions(userId, shimVersion, finalized.map((e) => e.host));
+    } catch {
+      // 관측 부가 경로 — 수집을 막지 않는다
+    }
+  }
+
   return Response.json(res);
 }

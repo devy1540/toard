@@ -14,7 +14,11 @@
     "colRole": "역할",
     "colTeam": "팀",
     "colLastReceived": "마지막 수신",
-    "colJoined": "가입일"
+    "colJoined": "가입일",
+    "colShim": "shim 버전",
+    "shimUnreported": "미보고 (구 shim)",
+    "shimOutdated": "업데이트 필요",
+    "outdatedBanner": "구버전 shim 기기 {count}대 — 자동 업데이트가 멈춰 있을 수 있습니다"
   },
   "teams": {
     "cardTitle": "팀 ({count})",
@@ -69,7 +73,10 @@
     "contentDescription": "프롬프트·응답 본문 저장 여부. 서버 암호화 키(KEK)가 있어야 켜지며, 켜지면 사용자가 설치 시 본문 수집을 opt-in 할 수 있습니다.",
     "contentEnabledBody": "본문은 서버에서 봉투 암호화되어 저장되고, 각 사용자는 <code>/history</code> 에서 본인 것만 조회합니다.",
     "contentSetupHint": "서버 env 에 아래를 설정하고 재시작하면 켜집니다.",
-    "contentSetupNote": "RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고. 키를 잃으면 기존 본문은 복호화 불가."
+    "contentSetupNote": "RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고. 키를 잃으면 기존 본문은 복호화 불가.",
+    "serverTitle": "서버",
+    "serverDescription": "실행 중인 toard 서버 정보입니다. 배포 후 버전이 바뀌었는지 여기서 확인하세요.",
+    "serverVersion": "버전"
   },
   "errors": {
     "onlyAdminInvite": "관리자만 초대할 수 있습니다.",

@@ -8,6 +8,8 @@ import type {
   OverviewStats,
   PeriodQuery,
   SaveResult,
+  SessionUsageEventRow,
+  SessionUsageSummary,
   StorageBackend,
   TimeseriesScope,
   UsageEvent,
@@ -302,6 +304,59 @@ export class PostgresStorage implements StorageBackend {
       host: r.host ?? null,
       lastSeenAt: new Date(r.last_seen_at),
       eventCount: n(r.event_count),
+    }));
+  }
+
+  // 세션별 사용량 요약 — 히스토리 목록의 앱레벨 조인(본문=PG 고정, 사용량=백엔드 가변).
+  // user_id 를 함께 조건에 걸어 타인 세션 id 를 넘겨도 아무것도 새지 않는다.
+  async getSessionUsageSummaries(userId: string, sessionIds: string[]): Promise<SessionUsageSummary[]> {
+    if (sessionIds.length === 0) return [];
+    const res = await this.pool.query(
+      `SELECT session_id,
+              COALESCE(array_agg(DISTINCT model) FILTER (WHERE model IS NOT NULL), '{}') AS models,
+              COALESCE(array_agg(DISTINCT host)  FILTER (WHERE host  IS NOT NULL), '{}') AS hosts,
+              COALESCE(SUM(input_tokens),0)          AS input,
+              COALESCE(SUM(output_tokens),0)         AS output,
+              COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
+              COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
+              COALESCE(SUM(cost_usd),0)              AS cost,
+              COUNT(*)                               AS events
+       FROM usage_events
+       WHERE user_id = $1 AND session_id = ANY($2)
+       GROUP BY session_id`,
+      [userId, sessionIds],
+    );
+    return res.rows.map((r) => ({
+      sessionId: r.session_id,
+      models: r.models,
+      hosts: r.hosts,
+      inputTokens: n(r.input),
+      outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read),
+      cacheCreationTokens: n(r.cache_creation),
+      costUsd: n(r.cost),
+      eventCount: n(r.events),
+    }));
+  }
+
+  // 한 세션의 사용 이벤트(ts ASC) — 히스토리 상세에서 assistant 턴과 ts 근접 매칭.
+  async getSessionUsageEvents(userId: string, sessionId: string): Promise<SessionUsageEventRow[]> {
+    const res = await this.pool.query(
+      `SELECT ts, model, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cost_usd
+       FROM usage_events
+       WHERE user_id = $1 AND session_id = $2
+       ORDER BY ts ASC`,
+      [userId, sessionId],
+    );
+    return res.rows.map((r) => ({
+      ts: new Date(r.ts),
+      model: r.model ?? null,
+      inputTokens: n(r.input_tokens),
+      outputTokens: n(r.output_tokens),
+      cacheReadTokens: n(r.cache_read_tokens),
+      cacheCreationTokens: n(r.cache_creation_tokens),
+      costUsd: n(r.cost_usd),
     }));
   }
 

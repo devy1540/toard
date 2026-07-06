@@ -23,8 +23,10 @@ export function TurnText({
   if (!isLong(text)) {
     return <p className="text-sm break-words whitespace-pre-wrap">{text}</p>;
   }
+  // display 유틸은 라벨별로만 지정 — 공용 문자열에 inline-block 을 두면 hidden 과
+  // 같은 우선순위로 충돌해 두 라벨이 동시에 보인다.
   const link =
-    "text-muted-foreground hover:text-foreground mt-1 inline-block cursor-pointer text-xs font-medium select-none";
+    "text-muted-foreground hover:text-foreground mt-1 cursor-pointer text-xs font-medium select-none";
   return (
     <div>
       <input type="checkbox" id={id} className="peer sr-only" />
@@ -32,10 +34,10 @@ export function TurnText({
         {text}
       </p>
       {/* 두 label 모두 input 의 형제 → peer-checked 로 교차 토글 */}
-      <label htmlFor={id} className={`${link} peer-checked:hidden`}>
+      <label htmlFor={id} className={`${link} inline-block peer-checked:hidden`}>
         {more}
       </label>
-      <label htmlFor={id} className={`${link} hidden peer-checked:inline`}>
+      <label htmlFor={id} className={`${link} hidden peer-checked:inline-block`}>
         {less}
       </label>
     </div>

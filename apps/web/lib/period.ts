@@ -50,14 +50,22 @@ export interface DashboardSearchParams {
   to?: string;
 }
 
-/** URL searchParams → PeriodQuery (기간·프로바이더 필터). 기본 = 오늘. */
-export function parseFilters(sp: DashboardSearchParams): PeriodQuery {
+/** 전체 기간 — epoch 부터 현재까지 (히스토리처럼 "기본 = 전체"가 자연스러운 화면용). */
+export function allPeriod(): { from: Date; to: Date } {
+  return { from: new Date(0), to: new Date() };
+}
+
+/** URL searchParams → PeriodQuery (기간·프로바이더 필터). 기본 프리셋은 화면별로 주입 가능. */
+export function parseFilters(sp: DashboardSearchParams, defaultPeriod = DEFAULT_PERIOD): PeriodQuery {
   const providerKey = sp.provider && sp.provider !== "all" ? sp.provider : undefined;
-  const rollingDays = sp.period ? ROLLING[sp.period] : undefined;
+  const period = sp.period ?? defaultPeriod;
+  const rollingDays = ROLLING[period];
 
   let range: { from: Date; to: Date };
-  if (sp.period === "custom") {
+  if (period === "custom") {
     range = customPeriod(sp.from, sp.to) ?? todayPeriod();
+  } else if (period === "all") {
+    range = allPeriod();
   } else if (rollingDays != null) {
     range = recentPeriod(rollingDays);
   } else {

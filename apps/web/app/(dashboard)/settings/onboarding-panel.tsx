@@ -50,6 +50,7 @@ export function OnboardingPanel({
   createdAt,
   lastUsedAt,
   contentEnabled,
+  contentDefaultOn = false,
 }: {
   baseUrl: string;
   endpoint: string;
@@ -57,10 +58,12 @@ export function OnboardingPanel({
   createdAt: string | null;
   lastUsedAt: string | null;
   contentEnabled: boolean;
+  contentDefaultOn?: boolean;
 }) {
   const t = useTranslations("settings");
   const [state, action, pending] = useActionState(issueTokenAction, INITIAL);
-  const [collectContent, setCollectContent] = useState(false);
+  // 운영자 정책이 opt-out(CONTENT_COLLECTION_DEFAULT=on)이면 기본 체크.
+  const [collectContent, setCollectContent] = useState(contentDefaultOn);
   const token = state.token;
   const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : "—");
   const placeholder = t("onboarding.tokenPlaceholder");

@@ -29,6 +29,18 @@ export function contentCollectionEnabled(): boolean {
   }
 }
 
+/**
+ * 본문 수집을 **설치 기본값 on(opt-out)** 으로 할지 = 운영자 정책.
+ * KEK 가 있고(=수집 가능) `CONTENT_COLLECTION_DEFAULT` 가 on/1/true 일 때만 true.
+ * true 면 install.sh 가 `collect_content=true` 를 기본 주입하고 설정 토글도 기본 체크된다.
+ * (기본 off = 기존 per-user opt-in. 본문은 본인 전용이므로 운영자가 opt-out 을 선택 가능.)
+ */
+export function contentCollectionDefaultOn(): boolean {
+  if (!contentCollectionEnabled()) return false;
+  const v = process.env.CONTENT_COLLECTION_DEFAULT?.trim().toLowerCase();
+  return v === "on" || v === "1" || v === "true" || v === "yes";
+}
+
 /** env 에서 32바이트 KEK 로드. 미설정/길이 불일치는 조용히 넘기지 않고 즉시 실패. */
 export function loadKek(): Buffer {
   const b64 = process.env.TOARD_CONTENT_KEK_B64;

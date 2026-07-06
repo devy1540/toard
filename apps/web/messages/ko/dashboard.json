@@ -65,6 +65,8 @@
     "emptyDescription": "shim 에서 본문 수집(TOARD_SHIM_COLLECT_CONTENT=1)을 켜면 여기에 쌓입니다.",
     "privacyNote": "나만 볼 수 있습니다 — 관리자·다른 사용자는 이 내용을 조회할 수 없습니다.",
     "rolePrompt": "프롬프트",
-    "roleResponse": "응답"
+    "roleResponse": "응답",
+    "showMore": "더보기",
+    "showLess": "접기"
   }
 }

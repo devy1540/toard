@@ -1,7 +1,10 @@
 import { getLocale, getTranslations } from "next-intl/server";
-import { Inbox, Lock, Sparkles, User } from "lucide-react";
+import Link from "next/link";
+import { ChevronLeft, ChevronRight, Inbox, Lock } from "lucide-react";
+import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { PageHeader } from "@/components/dashboard/page-header";
-import { TurnText } from "@/components/dashboard/turn-text";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Empty,
@@ -11,24 +14,50 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
-import { groupBySession } from "@/lib/history-grouping";
+import { fmtCompact, fmtUsd } from "@/lib/format";
 import { getOrgTimezone } from "@/lib/org-time";
-import { getMyPromptHistory } from "@/lib/prompt-history";
+import { parseFilters, type DashboardSearchParams } from "@/lib/period";
+import { getMyHistorySessions } from "@/lib/prompt-history";
+import { getEnabledProviders } from "@/lib/providers";
+import { getStorage } from "@/lib/storage";
+import { SessionDetail } from "./session-detail";
 
 export const dynamic = "force-dynamic";
 
-/** 내 히스토리 — 본인 프롬프트·응답만. 관리자·타 사용자는 조회 불가(RLS + at-rest 암호화).
- *  대화(세션) 단위로 묶어 프롬프트→응답 시간순으로 보여준다. */
-export default async function HistoryPage() {
-  const t = await getTranslations("dashboard");
-  const locale = await getLocale();
-  const fmtTs = (ts: Date): string =>
-    new Intl.DateTimeFormat(locale, {
-      timeZone: getOrgTimezone(),
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(ts);
+const PAGE_SIZE = 20;
+/** 목록 배지로 노출할 모델 수 상한 — 넘치면 "+N" 로 접는다 */
+const MODEL_BADGE_MAX = 2;
 
+interface HistorySearchParams extends DashboardSearchParams {
+  /** 열린 세션(그룹) 키 — 있으면 상세 뷰 */
+  session?: string;
+  /** 1-기반 페이지 번호 */
+  page?: string;
+}
+
+/** 현재 필터를 보존한 /history URL — overrides 로 일부만 바꾼다(null = 제거). */
+function historyHref(sp: HistorySearchParams, overrides: Record<string, string | null>): string {
+  const p = new URLSearchParams();
+  for (const k of ["period", "provider", "from", "to", "page", "session"] as const) {
+    const v = sp[k];
+    if (v) p.set(k, v);
+  }
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === null) p.delete(k);
+    else p.set(k, v);
+  }
+  const s = p.toString();
+  return s ? `/history?${s}` : "/history";
+}
+
+/** 내 히스토리 — 본인 프롬프트·응답만. 관리자·타 사용자는 조회 불가(RLS + at-rest 암호화).
+ *  목록(세션 요약 + usage 조인) ↔ 상세(?session=, 턴 전체) 두 뷰로 나뉜다. */
+export default async function HistoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<HistorySearchParams>;
+}) {
+  const t = await getTranslations("dashboard");
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -44,14 +73,47 @@ export default async function HistoryPage() {
     );
   }
 
-  const { enabled, items } = await getMyPromptHistory(userId);
-  const sessions = groupBySession(items);
+  const sp = await searchParams;
+  const providers = await getEnabledProviders();
+  const providerLabel = (key: string): string => providers.find((p) => p.key === key)?.label ?? key;
 
-  return (
-    <div className="space-y-6">
-      <PageHeader title={t("history.title")} description={t("history.description")} />
+  // ── 상세 뷰 ──
+  if (sp.session) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title={t("history.title")} description={t("history.description")} />
+        <SessionDetail
+          userId={userId}
+          sessionKey={sp.session}
+          backHref={historyHref(sp, { session: null })}
+          providerLabel={providerLabel}
+        />
+      </div>
+    );
+  }
 
-      {!enabled ? (
+  // ── 목록 뷰 ──
+  const locale = await getLocale();
+  const fmtTs = (ts: Date): string =>
+    new Intl.DateTimeFormat(locale, {
+      timeZone: getOrgTimezone(),
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(ts);
+
+  const filter = parseFilters(sp, "all");
+  const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
+  const { enabled, sessions, totalSessions } = await getMyHistorySessions(
+    userId,
+    filter,
+    page,
+    PAGE_SIZE,
+  );
+
+  if (!enabled) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title={t("history.title")} description={t("history.description")} />
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -61,68 +123,138 @@ export default async function HistoryPage() {
             <EmptyDescription>{t("history.disabledDescription")}</EmptyDescription>
           </EmptyHeader>
         </Empty>
-      ) : items.length === 0 ? (
+      </div>
+    );
+  }
+
+  // usage 조인 — 이 페이지에 노출되는 세션만 (solo 턴은 session_id 없음 → 스킵)
+  const sessionKeys = sessions.filter((s) => s.isSession).map((s) => s.key);
+  const summaries =
+    sessionKeys.length > 0 ? await getStorage().getSessionUsageSummaries(userId, sessionKeys) : [];
+  const usageByKey = new Map(summaries.map((s) => [s.sessionId, s]));
+
+  const totalPages = Math.max(1, Math.ceil(totalSessions / PAGE_SIZE));
+  // page 파라미터는 1-기반 표시 번호 — 첫 페이지는 파라미터 제거로 URL 을 깔끔하게
+  const prevHref = historyHref(sp, { page: page <= 1 ? null : String(page) });
+  const nextHref = historyHref(sp, { page: String(page + 2) });
+  // 기본 필터(전체 기간·전체 도구) 그대로인데 0건 = 수집 자체가 없는 것
+  const noFilter = (!sp.period || sp.period === "all") && (!sp.provider || sp.provider === "all");
+
+  return (
+    <div className="space-y-6">
+      <PageHeader title={t("history.title")} description={t("history.description")} />
+
+      <DashboardFilters
+        providers={providers}
+        defaultPeriod="all"
+        showAllPreset
+        resetKeys={["page", "session"]}
+      />
+
+      <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
+        <Lock className="size-3.5" />
+        {t("history.privacyNote")}
+      </p>
+
+      {totalSessions === 0 ? (
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
               <Inbox />
             </EmptyMedia>
-            <EmptyTitle>{t("history.emptyTitle")}</EmptyTitle>
-            <EmptyDescription>{t("history.emptyDescription")}</EmptyDescription>
+            <EmptyTitle>{noFilter ? t("history.emptyTitle") : t("history.noMatchTitle")}</EmptyTitle>
+            <EmptyDescription>
+              {noFilter ? t("history.emptyDescription") : t("history.noMatchDescription")}
+            </EmptyDescription>
           </EmptyHeader>
         </Empty>
       ) : (
         <>
-          <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
-            <Lock className="size-3.5" />
-            {t("history.privacyNote")}
-          </p>
-          <div className="space-y-4">
-            {sessions.map((s, si) => (
-              <Card key={s.key} className="overflow-hidden py-0">
-                <CardContent className="p-0">
-                  {/* 세션 헤더 — provider · 짧은 세션 id · 시각 */}
-                  <div className="text-muted-foreground bg-muted/40 flex items-center gap-2 border-b px-4 py-2 text-xs">
-                    <span className="text-foreground font-medium">{s.provider}</span>
-                    {s.shortId ? <span className="font-mono">#{s.shortId}</span> : null}
-                    <span className="ml-auto">{fmtTs(s.latest)}</span>
-                  </div>
-                  {/* 턴 — 프롬프트→응답 시간순 */}
-                  <div className="divide-y">
-                    {s.turns.map((turn, ti) => {
-                      const isUser = turn.role === "user";
-                      return (
-                        <div
-                          key={turn.dedupKey}
-                          className={`flex gap-3 px-4 py-3 ${isUser ? "" : "bg-muted/30"}`}
-                        >
-                          <div
-                            className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${
-                              isUser
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted text-muted-foreground border"
-                            }`}
-                          >
-                            {isUser ? <User className="size-3.5" /> : <Sparkles className="size-3.5" />}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <div className="text-muted-foreground mb-1 text-xs font-medium">
-                              {isUser ? t("history.rolePrompt") : t("history.roleResponse")}
-                            </div>
-                            <TurnText
-                              id={`tt-${si}-${ti}`}
-                              text={turn.text}
-                              more={t("history.showMore")}
-                              less={t("history.showLess")}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+          <Card className="overflow-hidden py-0">
+            <CardContent className="p-0">
+              <div className="divide-y">
+                {sessions.map((s) => {
+                  const usage = usageByKey.get(s.key);
+                  const models = usage?.models ?? [];
+                  return (
+                    <Link
+                      key={s.key}
+                      href={historyHref(sp, { session: s.key })}
+                      className="hover:bg-muted/40 block px-4 py-3 transition-colors"
+                    >
+                      <div className="flex items-baseline gap-3">
+                        <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                          {s.preview}
+                        </span>
+                        {usage ? (
+                          <span className="shrink-0 text-sm tabular-nums">
+                            {fmtUsd(usage.costUsd)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                        <Badge variant="secondary" className="text-[11px]">
+                          {providerLabel(s.providerKey)}
+                        </Badge>
+                        {models.slice(0, MODEL_BADGE_MAX).map((m) => (
+                          <Badge key={m} variant="outline" className="font-mono text-[11px]">
+                            {m}
+                          </Badge>
+                        ))}
+                        {models.length > MODEL_BADGE_MAX ? (
+                          <span>+{models.length - MODEL_BADGE_MAX}</span>
+                        ) : null}
+                        <span>{t("history.turns", { count: s.turnCount })}</span>
+                        {usage ? (
+                          <span>{fmtCompact(usage.inputTokens + usage.outputTokens)} {t("tokens")}</span>
+                        ) : null}
+                        {usage && usage.hosts.length > 0 ? <span>{usage.hosts.join(", ")}</span> : null}
+                        <span className="ml-auto tabular-nums">{fmtTs(s.latestTs)}</span>
+                      </div>
+                    </Link>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-muted-foreground text-sm">
+              {t("history.listTotal", { count: totalSessions })}
+            </span>
+            {totalPages > 1 ? (
+              <div className="flex items-center gap-2">
+                {page > 0 ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Link href={prevHref}>
+                      <ChevronLeft className="size-4" />
+                      {t("history.prev")}
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" disabled>
+                    <ChevronLeft className="size-4" />
+                    {t("history.prev")}
+                  </Button>
+                )}
+                <span className="text-muted-foreground text-sm tabular-nums">
+                  {t("history.pageInfo", { page: page + 1, totalPages })}
+                </span>
+                {page + 1 < totalPages ? (
+                  <Button asChild variant="outline" size="sm">
+                    <Link href={nextHref}>
+                      {t("history.next")}
+                      <ChevronRight className="size-4" />
+                    </Link>
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" disabled>
+                    {t("history.next")}
+                    <ChevronRight className="size-4" />
+                  </Button>
+                )}
+              </div>
+            ) : null}
           </div>
         </>
       )}

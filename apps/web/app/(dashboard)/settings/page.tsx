@@ -6,7 +6,7 @@ import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { contentCollectionEnabled } from "@/lib/content-crypto";
+import { contentCollectionDefaultOn, contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getOrgTimezone } from "@/lib/org-time";
@@ -92,6 +92,7 @@ async function InstallTab({ userId }: { userId: string }) {
     getStorage().getUserHosts(userId),
   ]);
   const contentEnabled = contentCollectionEnabled();
+  const contentDefaultOn = contentCollectionDefaultOn();
 
   return (
     <div className="space-y-4">
@@ -117,6 +118,7 @@ async function InstallTab({ userId }: { userId: string }) {
               createdAt={meta?.createdAt.toISOString() ?? null}
               lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
               contentEnabled={contentEnabled}
+              contentDefaultOn={contentDefaultOn}
             />
           </CardContent>
         </Card>

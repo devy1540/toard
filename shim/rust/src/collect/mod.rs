@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::bg;
 use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
+use crate::fsx;
 use crate::iso;
 use crate::usage_event::{to_events_body, UsageEvent};
 
@@ -187,6 +188,48 @@ pub fn content_enabled() -> bool {
     }
 }
 
+fn now_epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// "YYYY-MM-DD"(날짜만) 또는 ISO 8601 → epoch ms. 날짜만이면 그날 00:00 UTC.
+fn parse_since(s: &str) -> Option<i64> {
+    iso::iso_to_epoch_ms(s).or_else(|| iso::iso_to_epoch_ms(&format!("{s}T00:00:00Z")))
+}
+
+/// 본문 백필 컷오프(epoch ms). 이 시점 이후 턴만 수집한다.
+///   `all`/`0`      → 0 (전량 백필)
+///   ISO/날짜       → 그 시점부터
+///   미설정         → "지금부터" = 최초 활성화 시각을 state(`content-since`)에 기록해 안정적으로 사용
+///                    (dry_run 이면 기록하지 않고 현재 시각으로 미리보기)
+fn content_since_ms(since_cfg: Option<&str>, dry_run: bool) -> i64 {
+    match since_cfg.map(str::trim) {
+        Some("all") | Some("0") => 0,
+        Some(s) if !s.is_empty() => parse_since(s).unwrap_or_else(|| default_since_ms(dry_run)),
+        _ => default_since_ms(dry_run),
+    }
+}
+
+/// 미설정 기본 = 최초 활성화 시각(state 파일에 지속). 없으면 now 를 기록하고 반환.
+fn default_since_ms(dry_run: bool) -> i64 {
+    let now = now_epoch_ms();
+    let Some(path) = fsx::state_dir().map(|d| d.join("content-since")) else {
+        return now;
+    };
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        if let Ok(ms) = s.trim().parse::<i64>() {
+            return ms;
+        }
+    }
+    if !dry_run {
+        let _ = fsx::write_atomic(&path, &now.to_string(), 0o600);
+    }
+    now
+}
+
 /// 본문 dedup_key — usage 키와 네임스페이스 분리("content"). 텍스트를 포함해
 /// 같은 메시지는 같은 키(멱등), 내용이 바뀌면 다른 키. id 있으면 함께 섞는다.
 fn content_dedup_key(adapter: &str, r: &RawContent) -> String {
@@ -329,12 +372,20 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
 
     // 본문 수집(opt-in) — usage 경로와 완전 분리된 커서·엔드포인트. usage 루프는 무영향.
     if content_enabled() {
+        // 백필 컷오프: 미설정=지금부터(최초 활성화 시각 기록), 날짜/all 지정 시 과거 포함.
+        let since_ms = content_since_ms(creds.collect_content_since.as_deref(), dry_run);
         for adapter in adapters() {
             let key = adapter.key();
             if only.is_some_and(|o| o != key) {
                 continue;
             }
-            if collect_content_for(adapter.as_ref(), &endpoint, token.as_deref(), dry_run) {
+            if collect_content_for(
+                adapter.as_ref(),
+                &endpoint,
+                token.as_deref(),
+                dry_run,
+                since_ms,
+            ) {
                 failed = true;
             }
         }
@@ -378,6 +429,7 @@ fn collect_content_for(
     endpoint: &str,
     token: Option<&str>,
     dry_run: bool,
+    since_ms: i64,
 ) -> bool {
     let key = adapter.key();
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
@@ -406,13 +458,20 @@ fn collect_content_for(
     for (file, _) in &changed {
         records.extend(adapter.parse_content(file));
     }
+    // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
+    records.retain(|r| r.ts_ms >= since_ms);
 
     if dry_run {
         println!(
-            "{key} 본문: 파일 {}개 (변경 {}개) → 레코드 {}건 [dry-run]",
+            "{key} 본문: 파일 {}개 (변경 {}개) → 레코드 {}건 (since {}) [dry-run]",
             files.len(),
             changed.len(),
-            records.len()
+            records.len(),
+            if since_ms <= 0 {
+                "전체".to_string()
+            } else {
+                iso::epoch_ms_to_iso(since_ms)
+            }
         );
         if !secure {
             println!(
@@ -464,6 +523,36 @@ fn collect_content_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_since_accepts_date_and_iso() {
+        // 날짜만 → 그날 00:00 UTC
+        assert_eq!(
+            parse_since("2026-07-01"),
+            iso::iso_to_epoch_ms("2026-07-01T00:00:00Z")
+        );
+        // 완전한 ISO
+        assert_eq!(
+            parse_since("2026-07-01T12:00:00Z"),
+            iso::iso_to_epoch_ms("2026-07-01T12:00:00Z")
+        );
+        assert_eq!(parse_since("nonsense"), None);
+    }
+
+    #[test]
+    fn content_since_cutoff_resolution() {
+        // all/0 → 전량 백필(컷오프 0)
+        assert_eq!(content_since_ms(Some("all"), true), 0);
+        assert_eq!(content_since_ms(Some(" 0 "), true), 0);
+        // 날짜 지정 → 그 시점
+        assert_eq!(
+            content_since_ms(Some("2026-06-01"), true),
+            parse_since("2026-06-01").unwrap()
+        );
+        // 미설정·잘못된 값 → 기본(지금부터). dry_run 이라 state 미기록, 양수 타임스탬프.
+        assert!(content_since_ms(None, true) > 0);
+        assert!(content_since_ms(Some("bad-date"), true) > 0);
+    }
 
     #[test]
     fn dedup_key_prefers_message_id_and_is_stable() {

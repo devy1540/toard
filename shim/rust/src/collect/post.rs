@@ -40,11 +40,15 @@ fn post_batch(
         return Outcome::Err(format!("임시 파일 쓰기 실패: {e}"));
     }
 
+    // User-Agent 로 shim 버전을 알린다 — 서버가 기기별 버전을 기록(구버전 식별)
+    let ua = format!("toard-shim/{}", crate::cli::version());
     let out = Command::new("curl")
         .args([
             "-sS",
             "--max-time",
             "60",
+            "-A",
+            &ua,
             "-X",
             "POST",
             "-H",

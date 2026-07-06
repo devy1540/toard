@@ -58,6 +58,9 @@ jobs:
           target: ${{ matrix.target }}
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          # 릴리스 버전 임베드(runner 의 APP_VERSION) — 태그 push 는 semver, main push 는 "main"
+          build-args: |
+            TOARD_VERSION=${{ steps.meta.outputs.version }}
           # 태그 없이 digest 로만 푸시 — merge job 이 arch manifest 를 태그로 병합
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}

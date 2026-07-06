@@ -2,7 +2,8 @@
 
 import { useTranslations } from "next-intl";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import type { DailyPoint } from "@toard/core";
+import type { DailyPoint, TimeBucket } from "@toard/core";
+import { fmtCompact } from "@/lib/format";
 
 const tooltipStyle = {
   background: "var(--color-popover)",
@@ -12,10 +13,19 @@ const tooltipStyle = {
   color: "var(--color-popover-foreground)",
 } as const;
 
-export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "cost" | "tokens" }) {
+export function UsageAreaChart({
+  data,
+  metric,
+  bucket = "day",
+}: {
+  data: DailyPoint[];
+  metric: "cost" | "tokens";
+  bucket?: TimeBucket;
+}) {
   const t = useTranslations("dashboard");
   const chartData = data.map((d) => ({
-    day: d.day.slice(5),
+    // 버킷 키 'YYYY-MM-DD'/'YYYY-MM-DD HH:00' → 축 라벨 'MM-DD'/'HH:00'
+    day: bucket === "hour" ? d.day.slice(11) : d.day.slice(5),
     cost: Number(d.costUsd.toFixed(4)),
     tokens: d.inputTokens + d.outputTokens,
   }));
@@ -32,7 +42,15 @@ export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "
         </defs>
         <CartesianGrid vertical={false} stroke="var(--color-border)" />
         <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} fontSize={12} stroke="var(--color-muted-foreground)" />
-        <YAxis tickLine={false} axisLine={false} width={52} fontSize={12} stroke="var(--color-muted-foreground)" />
+        {/* 압축 표기(1.5M)로 눈금 라벨이 width 를 넘겨 잘리는 것 방지 */}
+        <YAxis
+          tickLine={false}
+          axisLine={false}
+          width={52}
+          fontSize={12}
+          stroke="var(--color-muted-foreground)"
+          tickFormatter={(v: number) => (isCost ? `$${fmtCompact(v)}` : fmtCompact(v))}
+        />
         <Tooltip
           contentStyle={tooltipStyle}
           formatter={(v: number) => (isCost ? [`$${v}`, t("chart.cost")] : [v.toLocaleString(), t("chart.tokens")])}
@@ -43,7 +61,10 @@ export function UsageAreaChart({ data, metric }: { data: DailyPoint[]; metric: "
           stroke="var(--color-chart-1)"
           strokeWidth={2}
           fill="url(#fillUsage)"
-          // 데이터가 하루뿐이면(오늘 필터) 선·면이 그려지지 않아 점으로 표시
+          // 마운트 직후 컨테이너 폭이 바뀌면 애니메이션 상태가 곡선 경로 재계산을 막아
+          // 축만 넓어지고 선이 왼쪽에 눌린 채 남는다(recharts 2.15) — 애니메이션 비활성으로 회피
+          isAnimationActive={false}
+          // 포인트가 하나뿐이면(자정 직후 등) 선·면이 그려지지 않아 점으로 표시
           dot={chartData.length < 2 ? { r: 4, fill: "var(--color-chart-1)", strokeWidth: 0 } : false}
         />
       </AreaChart>

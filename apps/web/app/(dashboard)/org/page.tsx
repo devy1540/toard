@@ -6,6 +6,7 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
+import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { StatCard } from "@/components/dashboard/stat-card";
@@ -14,7 +15,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
-import { parseFilters, type DashboardSearchParams } from "@/lib/period";
+import { fillSeriesGaps, parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
 
@@ -29,6 +30,7 @@ function hrefWith(sp: OrgSearchParams, next: { tab?: string; scope?: string }): 
   if (sp.provider) q.set("provider", sp.provider);
   if (sp.from) q.set("from", sp.from);
   if (sp.to) q.set("to", sp.to);
+  if (sp.metric) q.set("metric", sp.metric);
   const tab = next.tab ?? sp.tab;
   if (tab && tab !== "overview") q.set("tab", tab);
   if (next.scope) q.set("scope", next.scope);
@@ -84,6 +86,7 @@ async function OverviewTab({
   period: ReturnType<typeof parseFilters>;
 }) {
   const t = await getTranslations("org");
+  const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
   const storage = getStorage();
   const [overview, daily, topUsers] = await Promise.all([
     storage.getOverview(period),
@@ -107,12 +110,13 @@ async function OverviewTab({
 
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
-          <CardHeader>
-            <CardTitle>{t("dailyCost")}</CardTitle>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
+            <MetricToggle value={metric} />
           </CardHeader>
           <CardContent>
             {daily.length > 0 ? (
-              <UsageAreaChart data={daily} metric="cost" />
+              <UsageAreaChart data={fillSeriesGaps(daily, period)} metric={metric} bucket={period.bucket} />
             ) : (
               <Empty>
                 <EmptyHeader>

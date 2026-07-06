@@ -2,6 +2,8 @@
 // 비-OTEL 도구의 로컬 로그를 어댑터로 파싱해 UsageEvent[] 로 정규화하고
 // POST /api/v1/events 로 보낸다. 토큰 카운트까지만 — user/cost 는 서버 권위.
 
+pub mod claude;
+pub mod codex;
 pub mod cursor;
 pub mod gemini;
 pub mod gemini_family;
@@ -79,6 +81,11 @@ pub struct RawContent {
 pub trait LogAdapter {
     /// provider_key 이자 log_adapter 식별자
     fn key(&self) -> &'static str;
+    /// 이 어댑터가 사용량(usage)도 수집하는가. 본문 전용 어댑터(claude/codex — 사용량은 OTLP)는
+    /// false 를 반환해 usage 루프에서 건너뛴다(불필요한 파일 순회·이중집계 방지).
+    fn collects_usage(&self) -> bool {
+        true
+    }
     fn discover_files(&self) -> Vec<PathBuf>;
     /// 파일 하나 → 사용 레코드들. 손상 파일은 빈 벡터(수집 전체를 중단시키지 않음).
     fn parse_file(&self, path: &Path) -> Vec<RawUsage>;
@@ -89,7 +96,12 @@ pub trait LogAdapter {
 }
 
 pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
-    vec![Box::new(gemini::Gemini), Box::new(qwen::Qwen)]
+    vec![
+        Box::new(gemini::Gemini),
+        Box::new(qwen::Qwen),
+        Box::new(claude::Claude),
+        Box::new(codex::Codex),
+    ]
 }
 
 /// 디렉토리를 재귀 순회하며 확장자가 일치하는 파일 수집 (심링크 루프 방지 깊이 캡).
@@ -236,6 +248,11 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
             continue;
         }
         matched = true;
+        // 본문 전용 어댑터(claude/codex)는 사용량을 OTLP 로 보내므로 usage 루프는 건너뛴다.
+        // 본문 수집은 아래 content 루프에서 수행된다.
+        if !adapter.collects_usage() {
+            continue;
+        }
 
         let files = adapter.discover_files();
         let mut cur = cursor::load(key);

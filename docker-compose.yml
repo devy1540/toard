@@ -71,6 +71,8 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-toard}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-toard}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-toard}
+      ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}
+      TOARD_CONTENT_KEK_B64: ${TOARD_CONTENT_KEK_B64:-}   # 설정 시 본문 수집 활성(암호화 KEK, base64 32B)
     ports:
       - "${PORT:-3000}:3000"
     depends_on:

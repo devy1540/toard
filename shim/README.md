@@ -38,7 +38,11 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 - **Codex 주의**: Codex 는 `config.toml` 우선이라 env resource attribute 존중 여부가 도구 버전에 따라 다를 수 있다(미존중 시 Codex 사용량 host 는 "(알 수 없음)"). Claude Code(env)·pull 경로는 영향 없음.
 
 ## 본문 수집 (opt-in — 기본 off)
-`TOARD_SHIM_COLLECT_CONTENT=1`(env) 또는 `~/.toard/credentials` 의 `collect_content=true`(설치 시 `install.sh` 가 기록) 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. env 가 명시되면 env 가 우선(`0`/`off` 로 강제 해제 가능). usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
+`TOARD_SHIM_COLLECT_CONTENT=1`(env) 또는 `~/.toard/credentials` 의 `collect_content=true`(설치 시 `install.sh` 가 기록) 이면 **claude·codex·gemini·qwen** 로컬 세션 파일의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. env 가 명시되면 env 가 우선(`0`/`off` 로 강제 해제 가능). usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
+
+- **본문은 pull 로 일원화(설계 확정)**: OTLP 로는 응답을 얻을 수 없어(Codex 는 응답 이벤트 자체가 없고 — 실측·소스 확정) 본문은 전 도구가 로컬 세션 파일에서 pull 한다. 사용량은 지금처럼 OTLP(claude/codex)·pull(gemini/qwen) 유지 — 본문 어댑터는 content-only 라 사용량 이중집계 없음.
+  - claude: `~/.claude/projects/**/*.jsonl` (Desktop 사용분 포함). codex: `~/.codex/sessions/**/*.jsonl`(CODEX_HOME 존중). 각 도구가 프롬프트+응답을 전문으로 남긴다.
+  - 첫 실행은 기존 세션까지 **백필**(커서 이후 증분) — 옵트인 시 과거 대화가 한 번에 전송될 수 있음.
 - **신뢰경계**: shim 은 본문을 **평문 TLS** 로 보내되 키를 쥐지 않는다 — **봉투 암호화(at-rest)·소유자 전용(RLS)은 서버 몫**. shim 의 "본문 안 읽음" 기본값을 여는 스위치라 명시적 opt-in.
 - **서버측 게이트**: 서버에 본문 수집 KEK 가 없으면 `/v1/prompts` 가 503 → shim 은 실패로 보지 않고 조용히 건너뛴다.
 - **전송 안전(https 강제)**: 본문은 `https://`(또는 로컬 `localhost`/`127.0.0.1`) endpoint 로만 보낸다. 원격 `http://` 면 평문 노출 위험이라 **본문 수집을 건너뛴다**(경고 출력). 토큰 카운트 usage 경로는 이 제약과 무관.

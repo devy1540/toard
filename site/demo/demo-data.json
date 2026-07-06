@@ -1,0 +1,124 @@
+{
+  "meta": {
+    "source": "seed:demo (scripts/seed-demo.ts) 재현 — 합성 데이터",
+    "teams": 3,
+    "members": 4,
+    "days": 5,
+    "provider": "claude_code",
+    "models": [
+      "claude-sonnet-4-5",
+      "claude-opus-4-5"
+    ]
+  },
+  "overview": {
+    "totalSessions": 20,
+    "activeUsers": 4,
+    "totalCostUsd": 5.724432,
+    "totalInputTokens": 274652,
+    "totalOutputTokens": 74116
+  },
+  "daily": [
+    {
+      "dayOffset": 0,
+      "sessions": 4,
+      "costUsd": 0.6052320000000001,
+      "inputTokens": 32660,
+      "outputTokens": 7180
+    },
+    {
+      "dayOffset": 1,
+      "sessions": 4,
+      "costUsd": 1.2936,
+      "inputTokens": 53100,
+      "outputTokens": 12900
+    },
+    {
+      "dayOffset": 2,
+      "sessions": 4,
+      "costUsd": 1.6827839999999998,
+      "inputTokens": 78472,
+      "outputTokens": 21176
+    },
+    {
+      "dayOffset": 3,
+      "sessions": 4,
+      "costUsd": 0.947664,
+      "inputTokens": 42524,
+      "outputTokens": 12292
+    },
+    {
+      "dayOffset": 4,
+      "sessions": 4,
+      "costUsd": 1.1951520000000002,
+      "inputTokens": 67896,
+      "outputTokens": 20568
+    }
+  ],
+  "leaderboardUser": [
+    {
+      "key": "design-dave@example.com",
+      "label": "Dave",
+      "costUsd": 2.10294,
+      "totalTokens": 134344,
+      "sessions": 5
+    },
+    {
+      "key": "eng-bob@example.com",
+      "label": "Bob",
+      "costUsd": 1.627164,
+      "totalTokens": 80808,
+      "sessions": 5
+    },
+    {
+      "key": "pm-carol@example.com",
+      "label": "Carol",
+      "costUsd": 1.235052,
+      "totalTokens": 93576,
+      "sessions": 5
+    },
+    {
+      "key": "eng-alice@example.com",
+      "label": "Alice",
+      "costUsd": 0.759276,
+      "totalTokens": 40040,
+      "sessions": 5
+    }
+  ],
+  "leaderboardTeam": [
+    {
+      "key": "엔지니어링",
+      "label": "엔지니어링",
+      "costUsd": 2.3864399999999995,
+      "totalTokens": 120848,
+      "sessions": 10
+    },
+    {
+      "key": "디자인",
+      "label": "디자인",
+      "costUsd": 2.10294,
+      "totalTokens": 134344,
+      "sessions": 5
+    },
+    {
+      "key": "프로덕트",
+      "label": "프로덕트",
+      "costUsd": 1.235052,
+      "totalTokens": 93576,
+      "sessions": 5
+    }
+  ],
+  "byModel": [
+    {
+      "model": "claude-opus-4-5",
+      "costUsd": 4.73592,
+      "totalTokens": 171472,
+      "sessions": 20
+    },
+    {
+      "model": "claude-sonnet-4-5",
+      "costUsd": 0.9885120000000001,
+      "totalTokens": 177296,
+      "sessions": 20
+    }
+  ]
+}

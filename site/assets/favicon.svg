@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    path, circle { stroke: #1a1a17; }
+    circle { fill: #1a1a17; }
+    @media (prefers-color-scheme: dark) {
+      path, circle { stroke: #ededea; }
+      circle { fill: #ededea; }
+    }
+  </style>
+  <g fill="none" stroke-width="2.4" stroke-linecap="round">
+    <path d="M4 8 C 15 8, 16 16, 26 16"/>
+    <path d="M4 16 H 24"/>
+    <path d="M4 24 C 15 24, 16 16, 26 16"/>
+    <circle cx="27" cy="16" r="2.6" stroke="none"/>
+  </g>
+</svg>

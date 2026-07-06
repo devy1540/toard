@@ -9,6 +9,7 @@ import type {
   PeriodQuery,
   SaveResult,
   StorageBackend,
+  TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UserUsage,
@@ -200,7 +201,9 @@ export class PostgresStorage implements StorageBackend {
               COUNT(DISTINCT user_id)    AS active_users,
               COALESCE(SUM(cost_usd),0)  AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
-              COALESCE(SUM(output_tokens),0) AS output
+              COALESCE(SUM(output_tokens),0) AS output,
+              COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
+              COALESCE(SUM(cache_creation_tokens),0) AS cache_creation
        FROM usage_events ${where}`,
       params,
     );
@@ -211,14 +214,21 @@ export class PostgresStorage implements StorageBackend {
       totalCostUsd: n(r.cost),
       totalInputTokens: n(r.input),
       totalOutputTokens: n(r.output),
+      totalCacheReadTokens: n(r.cache_read),
+      totalCacheCreationTokens: n(r.cache_creation),
     };
   }
 
-  private async dailyQuery(q: ScopedQuery): Promise<DailyPoint[]> {
+  private async dailyQuery(q: ScopedQuery & { bucket?: TimeBucket }): Promise<DailyPoint[]> {
     const { where, params } = this.periodWhere(q);
     params.push(this.tz);
+    // bucket='hour' 는 분 이하를 자른 포맷으로 그룹핑 — 키 'YYYY-MM-DD HH:00' (storage 계약 참조)
+    const bucketExpr =
+      q.bucket === "hour"
+        ? `to_char(ts AT TIME ZONE $${params.length}, 'YYYY-MM-DD HH24:00')`
+        : `to_char((ts AT TIME ZONE $${params.length})::date, 'YYYY-MM-DD')`;
     const res = await this.pool.query(
-      `SELECT to_char((ts AT TIME ZONE $${params.length})::date, 'YYYY-MM-DD') AS day,
+      `SELECT ${bucketExpr} AS day,
               COUNT(DISTINCT session_id) AS sessions,
               COALESCE(SUM(cost_usd),0)  AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
@@ -267,19 +277,19 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
-  getOverview(q: PeriodQuery): Promise<OverviewStats> {
+  getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats> {
     return this.overviewQuery(q);
   }
 
   // scope='team' + teamId 는 periodWhere 가 비정규화 team_id 로 필터.
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string },
+    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string; bucket?: TimeBucket },
   ): Promise<DailyPoint[]> {
     return this.dailyQuery(q);
   }
 
-  async getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage> {
-    const scoped: ScopedQuery = { ...q, userId };
+  async getUserUsage(userId: string, q: PeriodQuery & { bucket?: TimeBucket }): Promise<UserUsage> {
+    const scoped = { ...q, userId }; // bucket 은 dailyQuery 만 소비, 나머지 쿼리는 무시
     const [overview, daily, byModel, byHost] = await Promise.all([
       this.overviewQuery(scoped),
       this.dailyQuery(scoped),

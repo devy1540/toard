@@ -10,6 +10,7 @@ import type {
   PeriodQuery,
   SaveResult,
   StorageBackend,
+  TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UserUsage,
@@ -42,6 +43,8 @@ interface AggRow {
   cost?: string;
   input?: string;
   output?: string;
+  cache_read?: string;
+  cache_creation?: string;
 }
 
 /**
@@ -168,7 +171,9 @@ export class ClickHouseStorage implements StorageBackend {
               uniqExactIf(user_id, user_id != '')       AS active_users,
               sum(cost_usd)     AS cost,
               sum(input_tokens) AS input,
-              sum(output_tokens) AS output
+              sum(output_tokens) AS output,
+              sum(cache_read_tokens)     AS cache_read,
+              sum(cache_creation_tokens) AS cache_creation
        FROM usage_events FINAL ${where}`,
       params,
     );
@@ -179,13 +184,20 @@ export class ClickHouseStorage implements StorageBackend {
       totalCostUsd: n(r?.cost),
       totalInputTokens: n(r?.input),
       totalOutputTokens: n(r?.output),
+      totalCacheReadTokens: n(r?.cache_read),
+      totalCacheCreationTokens: n(r?.cache_creation),
     };
   }
 
-  private async dailyQuery(q: ScopedQuery): Promise<DailyPoint[]> {
+  private async dailyQuery(q: ScopedQuery & { bucket?: TimeBucket }): Promise<DailyPoint[]> {
     const { where, params } = this.periodWhere(q);
+    // bucket='hour' 는 분 이하를 자른 포맷으로 그룹핑 — 키 'YYYY-MM-DD HH:00' (storage 계약 참조)
+    const bucketExpr =
+      q.bucket === "hour"
+        ? `formatDateTime(ts, '%Y-%m-%d %H:00', '${this.tz}')`
+        : `toString(toDate(ts, '${this.tz}'))`;
     const rows = await this.queryJson<{ day: string } & AggRow>(
-      `SELECT toString(toDate(ts, '${this.tz}'))              AS day,
+      `SELECT ${bucketExpr}                                   AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
               sum(cost_usd)     AS cost,
               sum(input_tokens) AS input,
@@ -243,18 +255,18 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  getOverview(q: PeriodQuery): Promise<OverviewStats> {
+  getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats> {
     return this.overviewQuery(q);
   }
 
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string },
+    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string; bucket?: TimeBucket },
   ): Promise<DailyPoint[]> {
     return this.dailyQuery(q);
   }
 
-  async getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage> {
-    const scoped: ScopedQuery = { ...q, userId };
+  async getUserUsage(userId: string, q: PeriodQuery & { bucket?: TimeBucket }): Promise<UserUsage> {
+    const scoped = { ...q, userId }; // bucket 은 dailyQuery 만 소비, 나머지 쿼리는 무시
     const [overview, daily, byModel, byHost] = await Promise.all([
       this.overviewQuery(scoped),
       this.dailyQuery(scoped),

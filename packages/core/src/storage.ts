@@ -53,10 +53,19 @@ export interface OverviewStats {
   totalCostUsd: number;
   totalInputTokens: number;
   totalOutputTokens: number;
+  /** 캐시 토큰 — input/output 과 별개 합계. 토큰 카드의 "토큰 대비 비용" 힌트용. */
+  totalCacheReadTokens: number;
+  totalCacheCreationTokens: number;
 }
 
+/** 시계열 버킷 단위 — 'today' 등 하루짜리 기간은 시간 단위로 내려 점 하나 대신 곡선을 그린다. */
+export type TimeBucket = "day" | "hour";
+
 export interface DailyPoint {
-  /** 'YYYY-MM-DD' — 조직 타임존(ORG_TIMEZONE, 기본 UTC) 기준 일자 (ADR-008) */
+  /**
+   * 버킷 키 — 조직 타임존(ORG_TIMEZONE, 기본 UTC) 기준 (ADR-008).
+   * bucket='day'(기본) 은 'YYYY-MM-DD', bucket='hour' 는 'YYYY-MM-DD HH:00'.
+   */
   day: string;
   sessions: number;
   costUsd: number;
@@ -124,11 +133,12 @@ export interface StorageBackend {
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
 
   // ── 읽기 (대시보드) ──
-  getOverview(q: PeriodQuery): Promise<OverviewStats>;
+  /** userId 지정 시 해당 사용자 스코프(내 사용량 직전 기간 비교 등). */
+  getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats>;
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string },
+    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string; bucket?: TimeBucket },
   ): Promise<DailyPoint[]>;
-  getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage>;
+  getUserUsage(userId: string, q: PeriodQuery & { bucket?: TimeBucket }): Promise<UserUsage>;
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;

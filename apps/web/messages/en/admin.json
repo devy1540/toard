@@ -14,7 +14,11 @@
     "colRole": "Role",
     "colTeam": "Team",
     "colLastReceived": "Last received",
-    "colJoined": "Joined"
+    "colJoined": "Joined",
+    "colShim": "Shim version",
+    "shimUnreported": "Not reported (old shim)",
+    "shimOutdated": "Update needed",
+    "outdatedBanner": "{count, plural, one {# device runs} other {# devices run}} an outdated shim — auto-update may be stalled"
   },
   "teams": {
     "cardTitle": "Teams ({count})",
@@ -69,7 +73,10 @@
     "contentDescription": "Whether prompt and response content is stored. Requires a server encryption key (KEK); once on, users can opt in to content collection during install.",
     "contentEnabledBody": "Content is envelope-encrypted on the server, and each user views only their own in <code>/history</code>.",
     "contentSetupHint": "Set the following in the server env and restart to enable.",
-    "contentSetupNote": "See <code>docs/DEPLOY.md</code> for switching to the app role (<code>toard_app</code>) that enforces RLS. If the key is lost, existing content cannot be decrypted."
+    "contentSetupNote": "See <code>docs/DEPLOY.md</code> for switching to the app role (<code>toard_app</code>) that enforces RLS. If the key is lost, existing content cannot be decrypted.",
+    "serverTitle": "Server",
+    "serverDescription": "Information about the running toard server. Check here after a deploy to confirm the version changed.",
+    "serverVersion": "Version"
   },
   "errors": {
     "onlyAdminInvite": "Only administrators can send invitations.",

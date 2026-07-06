@@ -4,16 +4,20 @@ import { getLocale, getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionDefaultOn, contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getOrgTimezone } from "@/lib/org-time";
+import { getHostShims, getLatestShimVersion } from "@/lib/host-shims";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
+import { getServerVersion } from "@/lib/version";
 import type { DeviceInfo } from "@toard/core";
+import { formatVersion, isShimOutdated } from "@toard/core";
 import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
@@ -85,12 +89,15 @@ async function AccountTab({ hasPassword }: { hasPassword: boolean }) {
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [meta, endpoint, baseUrl, devices] = await Promise.all([
+  const [meta, endpoint, baseUrl, devices, shims, latestShim] = await Promise.all([
     getActiveTokenMeta(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
     getStorage().getUserHosts(userId),
+    getHostShims(userId),
+    getLatestShimVersion(userId),
   ]);
+  const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
   const contentDefaultOn = contentCollectionDefaultOn();
 
@@ -132,6 +139,8 @@ async function InstallTab({ userId }: { userId: string }) {
             <ConnectionCheck
               initialHasToken={Boolean(meta)}
               initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+              initialShimVersion={latestShim}
+              serverVersion={serverVersion}
             />
             <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
               <p>{t.rich("install.hintWhich", { code: (chunks) => <code>{chunks}</code> })}</p>
@@ -151,12 +160,20 @@ async function InstallTab({ userId }: { userId: string }) {
         </Card>
       </div>
 
-      <DeviceList devices={devices} />
+      <DeviceList devices={devices} shims={shims} serverVersion={serverVersion} />
     </div>
   );
 }
 
-async function DeviceList({ devices }: { devices: DeviceInfo[] }) {
+async function DeviceList({
+  devices,
+  shims,
+  serverVersion,
+}: {
+  devices: DeviceInfo[];
+  shims: Map<string, { version: string; lastSeenAt: Date }>;
+  serverVersion: string;
+}) {
   const t = await getTranslations("settings");
   const locale = await getLocale();
   const fmtWhen = new Intl.DateTimeFormat(locale, {
@@ -182,21 +199,44 @@ async function DeviceList({ devices }: { devices: DeviceInfo[] }) {
               <TableRow>
                 <TableHead>{t("install.deviceComputer")}</TableHead>
                 <TableHead className="text-right">{t("install.deviceEvents")}</TableHead>
+                <TableHead>{t("install.deviceShim")}</TableHead>
                 <TableHead className="text-right">{t("install.deviceLastSeen")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {devices.map((d) => (
-                <TableRow key={d.host ?? "__unknown__"}>
-                  <TableCell className={d.host ? "font-medium" : "text-muted-foreground"}>
-                    {d.host ?? t("install.unknownHost")}
-                  </TableCell>
-                  <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
-                  <TableCell className="text-muted-foreground text-right">
-                    {fmtWhen.format(d.lastSeenAt)}
-                  </TableCell>
-                </TableRow>
-              ))}
+              {devices.map((d) => {
+                const shim = d.host ? shims.get(d.host) : undefined;
+                return (
+                  <TableRow key={d.host ?? "__unknown__"}>
+                    <TableCell className={d.host ? "font-medium" : "text-muted-foreground"}>
+                      {d.host ?? t("install.unknownHost")}
+                    </TableCell>
+                    <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
+                    <TableCell>
+                      {shim ? (
+                        <span className="flex items-center gap-2">
+                          <span className="font-mono text-xs">{formatVersion(shim.version)}</span>
+                          {isShimOutdated(shim.version, serverVersion) ? (
+                            <Badge
+                              variant="outline"
+                              className="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-500"
+                            >
+                              {t("install.shimOutdated")}
+                            </Badge>
+                          ) : null}
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">
+                          {t("install.shimUnreported")}
+                        </span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-right">
+                      {fmtWhen.format(d.lastSeenAt)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         ) : (

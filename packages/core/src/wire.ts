@@ -40,6 +40,12 @@ function tokenCount(v: unknown, field: string): number {
   return v;
 }
 
+/** 선택적 토큰 카운트 — 없거나 null 이면 0 (구 클라/OTLP 호환 필드). */
+function optTokenCount(v: unknown, field: string): number {
+  if (v === undefined || v === null) return 0;
+  return tokenCount(v, field);
+}
+
 /** 와이어 JSON(unknown) 1건 → UsageEvent. 실패 시 WireParseError. */
 export function parseUsageEventWire(v: unknown): UsageEvent {
   if (!isRecord(v)) throw new WireParseError("이벤트는 객체여야 합니다");
@@ -67,6 +73,7 @@ export function parseUsageEventWire(v: unknown): UsageEvent {
     outputTokens: tokenCount(v.outputTokens, "outputTokens"),
     cacheReadTokens: tokenCount(v.cacheReadTokens, "cacheReadTokens"),
     cacheCreationTokens: tokenCount(v.cacheCreationTokens, "cacheCreationTokens"),
+    cacheCreation1hTokens: optTokenCount(v.cacheCreation1hTokens, "cacheCreation1hTokens"),
     costUsd,
     logAdapter: nullableString(v.logAdapter, "logAdapter"),
     host: nullableString(v.host, "host"),

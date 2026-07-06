@@ -1,7 +1,8 @@
-// Claude Code 본문 수집 어댑터 (content pull 일원화 — 설계 확정).
-// Claude Code 는 사용량을 OTLP push 로 보내므로(ADR-001) 이 어댑터는 **본문만** 수집한다
-// (collects_usage=false, parse_file 빈 벡터 → 사용량 이중집계 없음).
-// 전문(프롬프트+응답)은 트랜스크립트 ~/.claude/projects/**/*.jsonl 에 있다(Desktop 사용분 포함 — 실측 확인).
+// Claude Code 사용량 + 본문 수집 어댑터 (트랜스크립트 pull — docs/design-usage-pull).
+// 사용량·본문 모두 ~/.claude/projects/**/*.jsonl 트랜스크립트에서 읽는다(Desktop 사용분 포함 — 실측 확인).
+//   - parse_file    : type=="assistant" 라인의 message.usage → RawUsage (사용량, /v1/events)
+//   - parse_content : user/assistant 본문 → RawContent (opt-in, /v1/prompts)
+// 사용량을 OTLP push 가 아니라 여기서 pull 하므로 재시작·env 주입이 불필요하고 host 가 자동으로 붙는다(§4.5).
 
 use std::path::{Path, PathBuf};
 
@@ -17,11 +18,6 @@ impl LogAdapter for Claude {
         "claude_code"
     }
 
-    /// 사용량은 OTLP 로 오므로 본문 전용.
-    fn collects_usage(&self) -> bool {
-        false
-    }
-
     /// ~/.claude/projects 아래 트랜스크립트(*.jsonl) 재귀 수집.
     fn discover_files(&self) -> Vec<PathBuf> {
         let mut files = Vec::new();
@@ -33,13 +29,85 @@ impl LogAdapter for Claude {
         files
     }
 
-    fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
-        Vec::new() // 사용량 없음 — OTLP 경로가 담당
+    fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
+        parse_transcript_usage(path)
     }
 
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
         parse_transcript(path)
     }
+}
+
+/// 트랜스크립트 jsonl → 사용량 레코드 (§4.2 필드 매핑).
+/// type=="assistant" 라인의 message.usage 만 집계한다.
+fn parse_transcript_usage(path: &Path) -> Vec<RawUsage> {
+    let fallback = file_mtime_ms(path);
+    let Ok(bytes) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in bytes.split(|b| *b == b'\n') {
+        let Ok(v) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let Some(obj) = v.as_object() else {
+            continue;
+        };
+        // assistant 라인만 사용량을 담는다. **isSidechain 은 스킵하지 않는다**(§4.2): 서브에이전트
+        // 턴도 고유 message.id 로 실제 토큰을 쓰므로 스킵하면 누락된다. 파일 재작성 리플레이
+        // 중복은 message.id 기반 dedup_key(§4.3)가 흡수한다.
+        if obj.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(msg) = obj.get("message").and_then(Value::as_object) else {
+            continue;
+        };
+        let Some(usage) = msg.get("usage").and_then(Value::as_object) else {
+            continue;
+        };
+        let tok = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
+        // input_tokens 는 Claude 가 이미 캐시 제외로 기록(cache_read/creation 별도) → UsageEvent 불변식과 일치.
+        let input_tokens = tok("input_tokens");
+        let output_tokens = tok("output_tokens");
+        let cache_read_tokens = tok("cache_read_input_tokens");
+        // 상위 cache_creation_input_tokens 는 5m+1h 합(실측).
+        let cache_creation_tokens = tok("cache_creation_input_tokens");
+        // 1h TTL 분량은 usage.cache_creation.ephemeral_1h_input_tokens 에 별도로 있다. 서버가
+        // 1h=input×2, 5m=input×1.25 로 차등 가격하도록 힌트로 전달(§리스크 B — 실측상 1h 비중이 큼).
+        let cache_creation_1h_tokens = usage
+            .get("cache_creation")
+            .and_then(Value::as_object)
+            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        // 토큰이 전부 0 이면(빈 usage) 스킵 — 비용 0 이벤트로 dedup 공간만 낭비.
+        if input_tokens == 0
+            && output_tokens == 0
+            && cache_read_tokens == 0
+            && cache_creation_tokens == 0
+        {
+            continue;
+        }
+        out.push(RawUsage {
+            ts_ms: obj
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .and_then(iso_to_epoch_ms)
+                .unwrap_or(fallback),
+            session_id: obj
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            model: msg.get("model").and_then(Value::as_str).map(str::to_string),
+            message_id: msg.get("id").and_then(Value::as_str).map(str::to_string),
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_creation_tokens,
+            cache_creation_1h_tokens,
+        });
+    }
+    out
 }
 
 fn projects_dir() -> Option<PathBuf> {
@@ -161,17 +229,53 @@ mod tests {
     }
 
     #[test]
-    fn is_content_only_no_usage() {
+    fn parses_assistant_usage_including_sidechain() {
         let tmp = TempDir::new("claude-usage");
+        // 실 트랜스크립트 구조 기반 골든: 일반 assistant + 서브에이전트(isSidechain) + usage 없는 라인.
         let path = tmp.write(
             "projects/p/s.jsonl",
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"}]}}"#,
+            &[
+                // 사용자/summary/usage-없는 assistant 는 제외
+                r#"{"type":"user","sessionId":"s1","message":{"role":"user","content":"hi"}}"#,
+                r#"{"type":"assistant","sessionId":"s1","message":{"id":"m0","model":"claude-opus-4-8","content":[{"type":"text","text":"no usage"}]}}"#,
+                // 일반 assistant 사용량 (cache_creation 은 5m+1h 로 분리 — 1h 힌트 검증)
+                r#"{"type":"assistant","sessionId":"s1","isSidechain":false,"timestamp":"2026-06-26T07:57:48.385Z","requestId":"req_1","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":28947,"output_tokens":17543,"cache_read_input_tokens":19441,"cache_creation_input_tokens":111174,"cache_creation":{"ephemeral_5m_input_tokens":174,"ephemeral_1h_input_tokens":111000}}}}"#,
+                // 서브에이전트 턴(isSidechain=true) — 고유 message.id, 스킵되면 안 됨
+                r#"{"type":"assistant","sessionId":"s1","isSidechain":true,"timestamp":"2026-06-26T07:58:00.000Z","message":{"id":"m2","model":"claude-sonnet-4-5","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+                // 토큰 전부 0 → 스킵
+                r#"{"type":"assistant","sessionId":"s1","message":{"id":"m3","usage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
+            ]
+            .join("\n"),
         );
-        assert!(
-            Claude.parse_file(&path).is_empty(),
-            "사용량은 OTLP — parse_file 은 빈 벡터"
+        let recs = Claude.parse_file(&path);
+        assert_eq!(
+            recs.len(),
+            2,
+            "일반 + 서브에이전트 사용량만 (usage 없음·전부0 제외)"
         );
-        assert!(!Claude.collects_usage());
+        assert!(Claude.collects_usage(), "이제 사용량도 수집");
         assert_eq!(Claude.key(), "claude_code");
+
+        let a = &recs[0];
+        assert_eq!(a.input_tokens, 28947, "input 은 캐시 제외 원값 그대로");
+        assert_eq!(a.output_tokens, 17543);
+        assert_eq!(a.cache_read_tokens, 19441);
+        assert_eq!(a.cache_creation_tokens, 111174);
+        assert_eq!(
+            a.cache_creation_1h_tokens, 111000,
+            "1h 힌트=ephemeral_1h_input_tokens"
+        );
+        assert_eq!(a.model.as_deref(), Some("claude-opus-4-8"));
+        assert_eq!(a.message_id.as_deref(), Some("m1"), "message.id 로 dedup");
+        assert_eq!(a.session_id.as_deref(), Some("s1"));
+        assert_eq!(
+            a.ts_ms,
+            iso_to_epoch_ms("2026-06-26T07:57:48.385Z").unwrap()
+        );
+
+        let sc = &recs[1];
+        assert_eq!(sc.message_id.as_deref(), Some("m2"), "서브에이전트 턴 보존");
+        assert_eq!(sc.input_tokens, 10);
+        assert_eq!(sc.output_tokens, 20);
     }
 }

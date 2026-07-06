@@ -40,5 +40,21 @@
     "cacheCreationTokens": 4096,
     "costUsd": 0,
     "host": null
+  },
+  {
+    "dedupKey": "c1a7d3e5b9f02468ace013579bdf02468ace013579bdf02468ace013579bdf00",
+    "providerKey": "claude_code",
+    "userId": null,
+    "sessionId": "sess-claude-1h",
+    "model": "claude-opus-4-8",
+    "ts": "2026-07-03T10:00:00.000Z",
+    "inputTokens": 100,
+    "outputTokens": 200,
+    "cacheReadTokens": 19441,
+    "cacheCreationTokens": 111174,
+    "cacheCreation1hTokens": 111000,
+    "costUsd": 0,
+    "logAdapter": "claude_code",
+    "host": "dev-box"
   }
 ]

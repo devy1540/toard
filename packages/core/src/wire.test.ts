@@ -11,8 +11,8 @@ const golden = JSON.parse(
 
 test("골든 fixture 전체가 파싱된다", () => {
   const events = parseUsageEventsBody(golden);
-  assert.equal(events.length, 3);
-  const [full, minimal, cached] = events;
+  assert.equal(events.length, 4);
+  const [full, minimal, cached, claude1h] = events;
   assert.equal(full!.providerKey, "gemini");
   assert.equal(full!.ts.toISOString(), "2026-07-01T12:00:00.000Z");
   assert.equal(full!.cacheReadTokens, 500);
@@ -20,7 +20,11 @@ test("골든 fixture 전체가 파싱된다", () => {
   assert.equal(minimal!.sessionId, null);
   assert.equal(minimal!.model, null);
   assert.equal(minimal!.logAdapter, null, "logAdapter 는 선택적 — 없으면 null");
+  assert.equal(minimal!.cacheCreation1hTokens, 0, "cacheCreation1hTokens 는 선택적 — 없으면 0");
   assert.equal(cached!.cacheCreationTokens, 4096);
+  // 캐시생성 1h 힌트(§리스크 B) — 서버가 input×2 로 차등 가격
+  assert.equal(claude1h!.cacheCreationTokens, 111174);
+  assert.equal(claude1h!.cacheCreation1hTokens, 111000, "1h TTL 분량 힌트 파싱");
   // host — 값 / 부재(→null) / 명시적 null 세 케이스 (§design-host-breakdown)
   assert.equal(full!.host, "alice-macbook", "host 값 파싱");
   assert.equal(minimal!.host, null, "host 는 선택적 — 없으면 null");

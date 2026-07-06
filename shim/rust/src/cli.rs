@@ -103,6 +103,10 @@ fn claude_env_cmd(args: &[String]) -> i32 {
 
     match args.first().map(String::as_str) {
         Some("on") => {
+            // 사용량은 이제 트랜스크립트 pull 로 수집한다(docs/design-usage-pull) — Desktop·IDE 도
+            // 파일만 있으면 재시작·env 주입 없이 수집된다. claude-env(=settings.json OTEL 주입)는
+            // experimental OTLP(TOARD_EXPERIMENTAL_OTLP + 서버 collection_method='otel')용으로만 남는다.
+            warn("claude-env 는 experimental OTLP 전용으로 강등됐습니다 — 일반 사용량 수집엔 불필요(트랜스크립트 pull 로 자동 수집).");
             let creds = read_credentials();
             let Some(token) = creds.token else {
                 eprintln!("toard-shim: 자격 증명이 없습니다 — ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정 후 재시도");

@@ -63,12 +63,9 @@ ln -sf "$BIN_DIR/claude" "$BIN_DIR/toard-shim"
 
 echo "설치 완료: $BIN_DIR/{claude,codex,toard-shim}"
 
-# Claude Desktop·IDE 사용분까지 수집하려면 텔레메트리 env 가 필요한데, 이 앱들은 shim(PATH)을
-# 거치지 않는다. 자격증명이 이미 있으면 ~/.claude/settings.json 에 멱등 주입(재설치로도 on 유지).
-#   건너뛰기 TOARD_CLAUDE_ENV=0 · 되돌리기 toard-shim claude-env off
-if [ -f "$HOME/.toard/credentials" ] && [ "${TOARD_CLAUDE_ENV:-1}" != "0" ]; then
-  "$BIN_DIR/toard-shim" claude-env on || echo "※ claude-env 주입 실패 — 나중에 toard-shim claude-env on 으로 재시도" >&2
-fi
+# 사용량 수집은 트랜스크립트 pull(toard-shim collect)로 자동 — Desktop·IDE·CLI 구분 없이 파일만
+# 있으면 재시작·env 주입 없이 수집된다(docs/design-usage-pull). OTLP push 는 experimental 로 강등돼
+# claude-env(settings.json OTEL 주입)는 더 이상 설치 시 자동 실행하지 않는다.
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;

@@ -63,17 +63,20 @@ fn main() {
 
     let creds = read_credentials();
 
-    // 토큰이 없으면 주입하지 않고 순수 패스스루 — 죽은 endpoint 로의 전송(유실+재시도 노이즈)을 만들지 않는다.
+    // 사용량은 트랜스크립트 pull(collect, 아래 maybe_spawn_background)로 수집한다(docs/design-usage-pull).
+    // OTLP push 주입은 experimental(TOARD_EXPERIMENTAL_OTLP)로만 — 기본은 env/config 주입 없이 순수 패스스루라
+    // 재시작·env 주입 dance 가 불필요하다. 토큰이 없으면 collect 도 전송 불가라 그대로 패스스루.
     match &creds.token {
-        Some(token) => {
+        Some(token) if otel::experimental_otlp_enabled() => {
             let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
             otel::inject_env(&tool, endpoint, token);
             if tool == "codex" {
                 codex::inject_config(endpoint, token);
             }
         }
+        Some(_) => {} // 기본 경로: 주입 없음(pull 로 수집)
         None => notice(
-            "자격 증명이 없어 텔레메트리 주입 없이 실행합니다 — ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정",
+            "자격 증명이 없어 실행합니다 — 수집하려면 ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정",
         ),
     }
 

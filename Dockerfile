@@ -35,10 +35,13 @@ RUN pnpm --filter @toard/web build
 # ---- runner: 최소 런타임 (standalone) ----
 FROM node:${NODE_VERSION} AS runner
 WORKDIR /app
+# 릴리스 버전 임베드 — docker-publish 가 태그를 주입, /api/v1/version·사이드바가 노출. 미주입=dev(0.0.0)
+ARG TOARD_VERSION=""
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \
     PORT=3000 \
-    HOSTNAME=0.0.0.0
+    HOSTNAME=0.0.0.0 \
+    APP_VERSION=${TOARD_VERSION}
 # 비루트 실행
 RUN addgroup -g 1001 -S nodejs && adduser -S nextjs -u 1001
 # outputFileTracingRoot=저장소 루트 → standalone 은 apps/web/server.js 및 node_modules 를 루트 기준으로 담음

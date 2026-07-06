@@ -1,5 +1,7 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { AlertTriangle } from "lucide-react";
+import { formatVersion, isShimOutdated } from "@toard/core";
 import { Badge } from "@/components/ui/badge";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -7,10 +9,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
+import { listAllHostShims, worstShimByUser } from "@/lib/host-shims";
 import { listPendingInvites } from "@/lib/invites";
 import { getPricingStatus } from "@/lib/pricing";
 import { getPublicBaseUrl } from "@/lib/public-url";
 import { getSessionUser } from "@/lib/session-user";
+import { getServerVersion } from "@/lib/version";
 import { PricingSyncPanel } from "./pricing-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
@@ -105,51 +109,91 @@ export default async function AdminPage({
 }
 
 async function MembersTab() {
-  const [members, teams, t] = await Promise.all([
+  const [members, teams, shimRows, t] = await Promise.all([
     listMembers(),
     listTeams(),
+    listAllHostShims(),
     getTranslations("admin"),
   ]);
   const deptOptions = teams.map((d) => ({ id: d.id, name: d.name }));
+  const serverVersion = getServerVersion();
+  // 멤버 행에는 그 멤버 기기들 중 가장 뒤처진 버전을 표시 (기기별 상세는 본인 설정 화면)
+  const worst = worstShimByUser(shimRows);
+  const outdatedDevices = shimRows.filter((r) =>
+    isShimOutdated(r.shimVersion, serverVersion),
+  ).length;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>{t("members.cardTitle", { count: members.length })}</CardTitle>
-        <CardDescription>{t("members.cardDescription")}</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>{t("members.colMember")}</TableHead>
-              <TableHead>{t("members.colRole")}</TableHead>
-              <TableHead>{t("members.colTeam")}</TableHead>
-              <TableHead className="text-right">{t("members.colLastReceived")}</TableHead>
-              <TableHead className="text-right">{t("members.colJoined")}</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {members.map((m) => (
-              <TableRow key={m.id}>
-                <TableCell>
-                  <div className="font-medium">{m.name ?? m.email}</div>
-                  {m.name ? <div className="text-muted-foreground text-xs">{m.email}</div> : null}
-                </TableCell>
-                <TableCell>
-                  {m.role === "admin" ? <Badge variant="secondary">admin</Badge> : <span className="text-muted-foreground">member</span>}
-                </TableCell>
-                <TableCell>
-                  <TeamSelect userId={m.id} current={m.team_id} teams={deptOptions} />
-                </TableCell>
-                <TableCell className="text-muted-foreground text-right">{fmtDate(m.last_used_at)}</TableCell>
-                <TableCell className="text-muted-foreground text-right">{fmtDate(m.created_at)}</TableCell>
+    <div className="space-y-4">
+      {outdatedDevices > 0 ? (
+        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+          <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+          <span>{t("members.outdatedBanner", { count: outdatedDevices })}</span>
+        </div>
+      ) : null}
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("members.cardTitle", { count: members.length })}</CardTitle>
+          <CardDescription>{t("members.cardDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("members.colMember")}</TableHead>
+                <TableHead>{t("members.colRole")}</TableHead>
+                <TableHead>{t("members.colTeam")}</TableHead>
+                <TableHead>{t("members.colShim")}</TableHead>
+                <TableHead className="text-right">{t("members.colLastReceived")}</TableHead>
+                <TableHead className="text-right">{t("members.colJoined")}</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </CardContent>
-    </Card>
+            </TableHeader>
+            <TableBody>
+              {members.map((m) => {
+                const v = worst.get(m.id);
+                return (
+                  <TableRow key={m.id}>
+                    <TableCell>
+                      <div className="font-medium">{m.name ?? m.email}</div>
+                      {m.name ? <div className="text-muted-foreground text-xs">{m.email}</div> : null}
+                    </TableCell>
+                    <TableCell>
+                      {m.role === "admin" ? <Badge variant="secondary">admin</Badge> : <span className="text-muted-foreground">member</span>}
+                    </TableCell>
+                    <TableCell>
+                      <TeamSelect userId={m.id} current={m.team_id} teams={deptOptions} />
+                    </TableCell>
+                    <TableCell>
+                      {v ? (
+                        <span className="flex items-center gap-2">
+                          <span className="font-mono text-xs">{formatVersion(v)}</span>
+                          {isShimOutdated(v, serverVersion) ? (
+                            <Badge
+                              variant="outline"
+                              className="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-500"
+                            >
+                              {t("members.shimOutdated")}
+                            </Badge>
+                          ) : null}
+                        </span>
+                      ) : m.last_used_at ? (
+                        // 수신 이력은 있는데 버전 미보고 = User-Agent 를 안 보내는 구 shim
+                        <span className="text-muted-foreground">{t("members.shimUnreported")}</span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground text-right">{fmtDate(m.last_used_at)}</TableCell>
+                    <TableCell className="text-muted-foreground text-right">{fmtDate(m.created_at)}</TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
@@ -177,6 +221,19 @@ async function SystemTab() {
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("system.serverTitle")}</CardTitle>
+          <CardDescription>{t("system.serverDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent className="text-sm">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">{t("system.serverVersion")}</span>
+            <span className="font-mono">{formatVersion(getServerVersion())}</span>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader>
           <CardTitle>{t("system.pricingTitle")}</CardTitle>

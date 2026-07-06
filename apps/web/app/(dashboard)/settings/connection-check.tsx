@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
+import { formatVersion, isShimOutdated } from "@toard/core";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { checkIngestStatusAction, type IngestStatus } from "./connection-actions";
 
@@ -17,14 +19,19 @@ type Phase = "idle" | "polling" | "confirmed" | "timeout";
 export function ConnectionCheck({
   initialHasToken,
   initialLastUsedAt,
+  initialShimVersion,
+  serverVersion,
 }: {
   initialHasToken: boolean;
   initialLastUsedAt: string | null;
+  initialShimVersion: string | null;
+  serverVersion: string;
 }) {
   const t = useTranslations("settings");
   const [status, setStatus] = useState<IngestStatus>({
     hasToken: initialHasToken,
     lastUsedAt: initialLastUsedAt,
+    shimVersion: initialShimVersion,
   });
   const [phase, setPhase] = useState<Phase>("idle");
   const runId = useRef(0);
@@ -112,6 +119,23 @@ export function ConnectionCheck({
           </Button>
         )}
       </div>
+
+      {/* 마지막으로 수신한 기기의 shim 버전 — 구버전이면 배지로 경고 */}
+      {status.shimVersion ? (
+        <p className="text-muted-foreground flex items-center gap-2 text-xs">
+          <span>
+            shim <span className="font-mono">{formatVersion(status.shimVersion)}</span>
+          </span>
+          {isShimOutdated(status.shimVersion, serverVersion) ? (
+            <Badge
+              variant="outline"
+              className="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-500"
+            >
+              {t("install.shimOutdated")}
+            </Badge>
+          ) : null}
+        </p>
+      ) : null}
 
       {phase === "polling" ? (
         <p className="text-muted-foreground text-xs">

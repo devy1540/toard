@@ -52,31 +52,41 @@ export interface DashboardSearchParams {
   metric?: string;
 }
 
+/** 전체 기간 — epoch 부터 현재까지 (히스토리처럼 "기본 = 전체"가 자연스러운 화면용). */
+export function allPeriod(): { from: Date; to: Date } {
+  return { from: new Date(0), to: new Date() };
+}
+
 /** 기간 프리셋 식별자 — 카드 라벨("오늘 비용")·델타 문구가 기간을 알아야 해서 노출 */
-export type PeriodPreset = "today" | "7" | "30" | "90" | "custom";
+export type PeriodPreset = "today" | "7" | "30" | "90" | "custom" | "all";
 
 export type DashboardPeriod = PeriodQuery & { bucket: TimeBucket; preset: PeriodPreset };
 
 /**
- * URL searchParams → 기간·프로바이더 필터 + 시계열 버킷. 기본 = 오늘.
+ * URL searchParams → 기간·프로바이더 필터 + 시계열 버킷. 기본 프리셋은 화면별로 주입 가능.
  * 하루짜리 기간(오늘·단일 일자 커스텀)은 일별로 점 하나만 나오므로 시간 버킷으로 내린다.
  */
-export function parseFilters(sp: DashboardSearchParams): DashboardPeriod {
+export function parseFilters(sp: DashboardSearchParams, defaultPeriod = DEFAULT_PERIOD): DashboardPeriod {
   const providerKey = sp.provider && sp.provider !== "all" ? sp.provider : undefined;
-  const rollingDays = sp.period ? ROLLING[sp.period] : undefined;
+  const period = sp.period ?? defaultPeriod;
+  const rollingDays = ROLLING[period];
 
   let range: { from: Date; to: Date };
   let bucket: TimeBucket;
   let preset: PeriodPreset;
-  if (sp.period === "custom") {
+  if (period === "custom") {
     const custom = customPeriod(sp.from, sp.to);
     range = custom ?? todayPeriod();
     bucket = !custom || sp.from === sp.to ? "hour" : "day";
     preset = custom ? "custom" : "today";
+  } else if (period === "all") {
+    range = allPeriod();
+    bucket = "day";
+    preset = "all";
   } else if (rollingDays != null) {
     range = recentPeriod(rollingDays);
     bucket = "day";
-    preset = sp.period as PeriodPreset;
+    preset = period as PeriodPreset;
   } else {
     range = todayPeriod();
     bucket = "hour";

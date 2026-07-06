@@ -23,7 +23,10 @@
     "deviceEvents": "Events",
     "deviceLastSeen": "Last seen",
     "unknownHost": "(unknown)",
-    "noDevices": "No devices yet. After installing the shim, using <code>claude</code>/<code>codex</code> will make devices appear here."
+    "noDevices": "No devices yet. After installing the shim, using <code>claude</code>/<code>codex</code> will make devices appear here.",
+    "deviceShim": "Shim version",
+    "shimUnreported": "Not reported (old shim)",
+    "shimOutdated": "Update needed"
   },
   "password": {
     "currentLabel": "Current password",

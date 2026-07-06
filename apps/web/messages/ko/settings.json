@@ -23,7 +23,10 @@
     "deviceEvents": "이벤트",
     "deviceLastSeen": "마지막 수신",
     "unknownHost": "(알 수 없음)",
-    "noDevices": "아직 수집된 기기가 없습니다. shim 설치 후 <code>claude</code>/<code>codex</code> 를 쓰면 여기에 기기가 나타납니다."
+    "noDevices": "아직 수집된 기기가 없습니다. shim 설치 후 <code>claude</code>/<code>codex</code> 를 쓰면 여기에 기기가 나타납니다.",
+    "deviceShim": "shim 버전",
+    "shimUnreported": "미보고 (구 shim)",
+    "shimOutdated": "업데이트 필요"
   },
   "password": {
     "currentLabel": "현재 비밀번호",

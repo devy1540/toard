@@ -9,6 +9,8 @@ import type {
   OverviewStats,
   PeriodQuery,
   SaveResult,
+  SessionUsageEventRow,
+  SessionUsageSummary,
   StorageBackend,
   TimeBucket,
   TimeseriesScope,
@@ -292,6 +294,82 @@ export class ClickHouseStorage implements StorageBackend {
       // CH DateTime64 'YYYY-MM-DD HH:mm:ss.SSS'(UTC) → 유효 ISO 로 변환
       lastSeenAt: new Date(`${r.last_seen_at.replace(" ", "T")}Z`),
       eventCount: n(r.event_count),
+    }));
+  }
+
+  // 세션별 사용량 요약 — 히스토리 목록의 앱레벨 조인. user_id 동시 조건으로 타인 세션 차단.
+  async getSessionUsageSummaries(userId: string, sessionIds: string[]): Promise<SessionUsageSummary[]> {
+    if (sessionIds.length === 0) return [];
+    const rows = await this.queryJson<{
+      session_id: string;
+      models: string[];
+      hosts: string[];
+      input?: string;
+      output?: string;
+      cache_read?: string;
+      cache_creation?: string;
+      cost?: string;
+      events?: string;
+    }>(
+      `SELECT session_id,
+              groupUniqArrayIf(model, model != '') AS models,
+              groupUniqArrayIf(host,  host  != '') AS hosts,
+              sum(input_tokens)          AS input,
+              sum(output_tokens)         AS output,
+              sum(cache_read_tokens)     AS cache_read,
+              sum(cache_creation_tokens) AS cache_creation,
+              sum(cost_usd)              AS cost,
+              count()                    AS events
+       FROM usage_events FINAL
+       WHERE user_id = {uid:String} AND session_id IN {sids:Array(String)}
+       GROUP BY session_id`,
+      { uid: userId, sids: sessionIds },
+    );
+    return rows.map((r) => ({
+      sessionId: r.session_id,
+      models: r.models,
+      hosts: r.hosts,
+      inputTokens: n(r.input),
+      outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read),
+      cacheCreationTokens: n(r.cache_creation),
+      costUsd: n(r.cost),
+      eventCount: n(r.events),
+    }));
+  }
+
+  // 한 세션의 사용 이벤트(ts ASC) — 히스토리 상세의 턴별 매칭용.
+  async getSessionUsageEvents(userId: string, sessionId: string): Promise<SessionUsageEventRow[]> {
+    const rows = await this.queryJson<{
+      ts: string;
+      model: string | null;
+      input?: string;
+      output?: string;
+      cache_read?: string;
+      cache_creation?: string;
+      cost?: string;
+    }>(
+      `SELECT ts,
+              nullIf(model, '')          AS model,
+              input_tokens               AS input,
+              output_tokens              AS output,
+              cache_read_tokens          AS cache_read,
+              cache_creation_tokens      AS cache_creation,
+              cost_usd                   AS cost
+       FROM usage_events FINAL
+       WHERE user_id = {uid:String} AND session_id = {sid:String}
+       ORDER BY ts ASC`,
+      { uid: userId, sid: sessionId },
+    );
+    return rows.map((r) => ({
+      // CH DateTime64 'YYYY-MM-DD HH:mm:ss.SSS'(UTC) → 유효 ISO 로 변환
+      ts: new Date(`${r.ts.replace(" ", "T")}Z`),
+      model: r.model ?? null,
+      inputTokens: n(r.input),
+      outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read),
+      cacheCreationTokens: n(r.cache_creation),
+      costUsd: n(r.cost),
     }));
   }
 

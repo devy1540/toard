@@ -97,6 +97,34 @@ export interface DeviceInfo {
   eventCount: number;
 }
 
+/** 세션별 사용량 요약 — 내 히스토리 목록의 앱레벨 조인용.
+ *  본문(prompt_records)은 항상 PG, 사용량은 백엔드 가변(PG/CH)이라 SQL 조인 대신
+ *  이 메서드로 세션 id 묶음을 조회해 앱에서 합친다(§design-prompt-content). */
+export interface SessionUsageSummary {
+  sessionId: string;
+  /** DISTINCT 모델 (빈 값 제외) */
+  models: string[];
+  /** DISTINCT 호스트 (빈 값 제외) */
+  hosts: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+  eventCount: number;
+}
+
+/** 세션 내 개별 사용 이벤트 — 히스토리 상세의 턴별(ts 근접) 매칭용 최소 필드. */
+export interface SessionUsageEventRow {
+  ts: Date;
+  model: string | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  costUsd: number;
+}
+
 export interface LeaderRow {
   /** userId 또는 teamId */
   key: string;
@@ -142,4 +170,8 @@ export interface StorageBackend {
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;
+  /** 내 세션들의 사용량 요약 — 히스토리 목록의 앱레벨 조인. sessionIds 는 페이지 단위 소량 전제. */
+  getSessionUsageSummaries(userId: string, sessionIds: string[]): Promise<SessionUsageSummary[]>;
+  /** 한 세션의 사용 이벤트 목록(ts ASC) — 히스토리 상세의 턴별 매칭용. */
+  getSessionUsageEvents(userId: string, sessionId: string): Promise<SessionUsageEventRow[]>;
 }

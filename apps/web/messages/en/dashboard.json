@@ -8,7 +8,8 @@
     "7": "Last 7 days cost",
     "30": "Last 30 days cost",
     "90": "Last 90 days cost",
-    "custom": "Selected period cost"
+    "custom": "Selected period cost",
+    "all": "All-time cost"
   },
   "costDeltaToday": "{pct} vs yesterday",
   "costDeltaPrev": "{pct} vs previous period",
@@ -37,6 +38,7 @@
     "period7": "7 days",
     "period30": "30 days",
     "period90": "90 days",
+    "periodAll": "All",
     "customRange": "Custom",
     "startDate": "Start date",
     "endDate": "End date",
@@ -78,6 +80,25 @@
     "rolePrompt": "Prompt",
     "roleResponse": "Response",
     "showMore": "Show more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "listTotal": "{count} conversations",
+    "turns": "{count} turns",
+    "noMatchTitle": "No conversations match the filters",
+    "noMatchDescription": "Try adjusting the period or tool filter.",
+    "prev": "Previous",
+    "next": "Next",
+    "pageInfo": "Page {page} of {totalPages}",
+    "backToList": "Back to list",
+    "notFoundTitle": "Conversation not found",
+    "notFoundDescription": "It may have been removed or is not accessible.",
+    "sessionLabel": "Session",
+    "startedAt": "Started",
+    "endedAt": "Last activity",
+    "turnCount": "Turns",
+    "inputShort": "Input",
+    "outputShort": "Output",
+    "cacheShort": "Cache",
+    "noUsage": "No usage data",
+    "truncatedNote": "Long conversation — showing the first {limit} turns."
   }
 }

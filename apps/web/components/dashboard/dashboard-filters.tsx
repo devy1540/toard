@@ -16,16 +16,31 @@ const PERIODS = [
   { v: "90", key: "filters.period90" },
 ] as const;
 
+const ALL_PERIOD = { v: "all", key: "filters.periodAll" } as const;
+
 /** 기간(세그먼트+직접 선택)·도구(셀렉트) 필터 바 — 제목 줄 아래 별도 행에 배치.
- *  직접 선택을 켜면 프리셋 하이라이트 해제(상호배타), 날짜 입력은 아래 줄로 분리해 도구 위치를 고정. */
-export function DashboardFilters({ providers }: { providers: ProviderOption[] }) {
+ *  직접 선택을 켜면 프리셋 하이라이트 해제(상호배타), 날짜 입력은 아래 줄로 분리해 도구 위치를 고정.
+ *  showAllPreset/defaultPeriod: 히스토리처럼 "기본 = 전체"인 화면용.
+ *  resetKeys: 필터가 바뀌면 함께 지울 파라미터(페이지 번호·열린 세션 등). */
+export function DashboardFilters({
+  providers,
+  defaultPeriod = DEFAULT_PERIOD,
+  showAllPreset = false,
+  resetKeys = [],
+}: {
+  providers: ProviderOption[];
+  defaultPeriod?: string;
+  showAllPreset?: boolean;
+  resetKeys?: string[];
+}) {
   const t = useTranslations("dashboard");
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
-  const period = sp.get("period") ?? DEFAULT_PERIOD;
+  const period = sp.get("period") ?? defaultPeriod;
   const provider = sp.get("provider") ?? "all";
   const isCustom = period === "custom";
+  const periods = showAllPreset ? [ALL_PERIOD, ...PERIODS] : PERIODS;
 
   const [showCustom, setShowCustom] = useState(isCustom);
   const [from, setFrom] = useState(sp.get("from") ?? "");
@@ -33,6 +48,7 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
 
   const push = (params: Record<string, string | null>) => {
     const next = new URLSearchParams(sp.toString());
+    for (const k of resetKeys) next.delete(k);
     for (const [k, v] of Object.entries(params)) {
       if (v === null) next.delete(k);
       else next.set(k, v);
@@ -54,7 +70,7 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex flex-wrap gap-1">
-          {PERIODS.map((p) => (
+          {periods.map((p) => (
             <Button
               key={p.v}
               size="sm"

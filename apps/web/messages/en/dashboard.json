@@ -65,6 +65,8 @@
     "emptyDescription": "Turn on content collection in the shim (TOARD_SHIM_COLLECT_CONTENT=1) to see it here.",
     "privacyNote": "Only you can see this — administrators and other users cannot view this content.",
     "rolePrompt": "Prompt",
-    "roleResponse": "Response"
+    "roleResponse": "Response",
+    "showMore": "Show more",
+    "showLess": "Show less"
   }
 }

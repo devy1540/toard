@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>toard — AI 코딩 사용량을 하나의 대시보드로</title>
+<meta name="description" content="Claude Code · Codex 등이 내보내는 OTLP를 경량으로 수집해 팀·조직 단위 사용량과 비용을 보여주는 오픈소스 셀프호스팅 대시보드." />
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="assets/app.css" />
+<meta property="og:title" content="toard — AI 코딩 사용량 대시보드" />
+<meta property="og:description" content="OTLP를 수렴해 팀·조직 사용량과 비용을 보여주는 오픈소스 셀프호스팅 대시보드." />
+<meta property="og:type" content="website" />
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <g id="i-merge" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></g>
+    <g id="i-download" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></g>
+    <g id="i-dollar" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></g>
+    <g id="i-users" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></g>
+    <g id="i-database" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></g>
+    <g id="i-lock" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></g>
+    <g id="i-server" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></g>
+    <g id="i-globe" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></g>
+    <g id="i-github" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></g>
+    <g id="i-arrow-down" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></g>
+    <g id="i-arrow-right" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></g>
+    <g id="i-zap" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></g>
+    <g id="i-terminal" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></g>
+    <g id="i-repeat" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></g>
+    <g id="i-chart" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></g>
+  </defs>
+</svg>
+
+<header class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M4 8 C 15 8, 16 16, 26 16"/><path d="M4 16 H 24"/><path d="M4 24 C 15 24, 16 16, 26 16"/><circle cx="27" cy="16" r="2.6" fill="currentColor" stroke="none"/></svg>
+      toard
+    </a>
+    <nav class="nav-links">
+      <a class="hide-sm" href="#features">특징</a>
+      <a class="hide-sm" href="#how">동작 방식</a>
+      <a href="demo/">라이브 데모</a>
+      <a class="nav-ghost" href="https://github.com/devy1540/toard" target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24"><use href="#i-github"/></svg>GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero wrap">
+    <span class="pill"><svg viewBox="0 0 24 24" width="14" height="14"><use href="#i-zap"/></svg>오픈소스 · 셀프호스팅</span>
+    <h1>AI 코딩 사용량, 하나의 대시보드로 수렴</h1>
+    <p>Claude Code · Codex 등이 내보내는 OTLP를 경량으로 수집해 팀·조직 단위 사용량과 비용을 보여주는 셀프호스팅 대시보드.</p>
+    <div class="hero-cta">
+      <a class="btn btn-primary" href="demo/"><svg viewBox="0 0 24 24"><use href="#i-chart"/></svg>라이브 데모 보기</a>
+      <a class="btn" href="https://github.com/devy1540/toard" target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24"><use href="#i-github"/></svg>GitHub에서 보기</a>
+    </div>
+  </section>
+
+  <section id="features" class="section wrap">
+    <h2 class="section-title">필요한 건 다 있고, 무거운 건 없다</h2>
+    <p class="section-sub">수집·비용·조직 뷰까지 — Collector 없이 앱 하나로.</p>
+    <div class="features">
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-merge"/></svg></div><h3>멀티 프로바이더</h3><p>Claude Code · Codex 등 OTLP를 내보내는 도구를 하나의 대시보드로 수렴.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg></div><h3>경량 수집</h3><p>Collector·별도 파이프라인 없이 앱이 OTLP/JSON을 직접 수신. 멱등 dedup 내장.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-dollar"/></svg></div><h3>정확한 비용</h3><p>LiteLLM 가격 기반 비용 엔진 — tiered·캐시·fast 요금까지, 일 단위 자동 동기화.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-users"/></svg></div><h3>조직 뷰</h3><p>조직·팀 집계 · 리더보드 · 개인 대시보드 · 관리자 패널 · 초대 기반 온보딩.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-database"/></svg></div><h3>확장 가능한 저장소</h3><p>기본은 Postgres 단일, 중규모 이상은 ClickHouse 옵트인.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-lock"/></svg></div><h3>유연한 인증</h3><p>OAuth(GitHub/Google) · id/pw · open 모드를 조직 환경에 맞게 선택.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-server"/></svg></div><h3>셀프호스팅</h3><p>Docker Compose 한 줄부터 Kubernetes/Helm 무중단 배포까지.</p></div>
+      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-globe"/></svg></div><h3>타임존 지원</h3><p>ORG_TIMEZONE 기준 일별 집계 — 어느 조직 시간대든 "하루"가 정확.</p></div>
+    </div>
+  </section>
+
+  <section id="how" class="section band">
+    <div class="wrap">
+      <h2 class="section-title">동작 방식</h2>
+      <p class="section-sub">shim이 CLI를 투명하게 래핑 → OTLP 전송 → 정규화·비용 계산 → 대시보드.</p>
+      <div class="flow">
+        <span class="flow-node"><svg viewBox="0 0 24 24"><use href="#i-terminal"/></svg>claude / codex</span>
+        <span class="flow-arrow"><svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-arrow-right"/></svg></span>
+        <span class="flow-node"><svg viewBox="0 0 24 24"><use href="#i-repeat"/></svg>toard shim</span>
+        <span class="flow-arrow"><svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-arrow-right"/></svg></span>
+        <span class="flow-node accent"><svg viewBox="0 0 24 24"><use href="#i-chart"/></svg>toard 대시보드</span>
+      </div>
+    </div>
+  </section>
+
+  <section class="section wrap">
+    <h2 class="section-title">한 줄로 시작</h2>
+    <p class="section-sub">Docker Compose로 띄우고, CLI로 붙이면 끝.</p>
+    <div class="code">
+      <div class="code-head"><span>bash</span><span>toard up</span></div>
+      <div class="code-body">
+        <div><span class="c">$</span> docker compose up -d</div>
+        <div><span class="c">$</span> npx <span class="p">@toard/cli</span> up</div>
+        <div class="c"># → http://localhost:3000 에서 대시보드 확인</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section band">
+    <div class="wrap" style="text-align:center;">
+      <h2 class="section-title">직접 눌러보기</h2>
+      <p class="section-sub"><code>seed:demo</code> 합성 데이터로 채운 실제 대시보드 화면 — 로그인 없이 바로.</p>
+      <a class="btn btn-primary" href="demo/"><svg viewBox="0 0 24 24"><use href="#i-chart"/></svg>라이브 데모 열기</a>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap foot-inner">
+    <span class="brand" style="font-size:15px;">
+      <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M4 8 C 15 8, 16 16, 26 16"/><path d="M4 16 H 24"/><path d="M4 24 C 15 24, 16 16, 26 16"/><circle cx="27" cy="16" r="2.6" fill="currentColor" stroke="none"/></svg>
+      toard · MIT License
+    </span>
+    <span class="foot-links">
+      <a href="https://github.com/devy1540/toard" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="https://github.com/devy1540/toard/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">기여</a>
+      <a href="https://github.com/devy1540/toard/blob/main/SECURITY.md" target="_blank" rel="noreferrer">보안</a>
+    </span>
+  </div>
+</footer>
+
+</body>
+</html>

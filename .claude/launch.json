@@ -7,6 +7,12 @@
       "runtimeArgs": ["--filter", "@toard/web", "dev"],
       "port": 3000,
       "autoPort": true
+    },
+    {
+      "name": "site",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["-m", "http.server", "4321", "--directory", "site"],
+      "port": 4321
     }
   ]
 }

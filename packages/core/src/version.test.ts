@@ -4,6 +4,7 @@ import {
   compareSemver,
   formatVersion,
   isShimOutdated,
+  normalizeVersion,
   parseShimUserAgent,
 } from "./version";
 
@@ -32,6 +33,13 @@ test("isShimOutdated — shim < server 일 때만, dev(0.0.0)·비 semver 는 �
   assert.equal(isShimOutdated("0.0.0", "0.5.0"), false);
   assert.equal(isShimOutdated("0.4.1", "0.0.0"), false);
   assert.equal(isShimOutdated("0.4.1", "main"), false);
+});
+
+test("normalizeVersion — v 접두 semver 만 벗기고 나머지는 원문", () => {
+  assert.equal(normalizeVersion("v0.5.0"), "0.5.0");
+  assert.equal(normalizeVersion("0.5.0"), "0.5.0");
+  assert.equal(normalizeVersion("main"), "main");
+  assert.equal(normalizeVersion("v2beta"), "v2beta");
 });
 
 test("formatVersion — semver 는 v 접두, dev·원문 유지", () => {

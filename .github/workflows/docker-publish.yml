@@ -50,6 +50,12 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}
 
+      # 임베드용 버전 — 태그 push 는 v 접두를 벗긴 semver(0.5.0), main push 는 "main".
+      # (build job 의 meta 는 tags 설정이 없어 outputs.version 이 "v0.5.0" 그대로 나온다)
+      - name: 버전 계산
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: 빌드·digest 푸시 (${{ matrix.target }} · ${{ matrix.platform }})
         id: build
         uses: docker/build-push-action@v6
@@ -60,7 +66,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           # 릴리스 버전 임베드(runner 의 APP_VERSION) — 태그 push 는 semver, main push 는 "main"
           build-args: |
-            TOARD_VERSION=${{ steps.meta.outputs.version }}
+            TOARD_VERSION=${{ steps.ver.outputs.version }}
           # 태그 없이 digest 로만 푸시 — merge job 이 arch manifest 를 태그로 병합
           outputs: type=image,name=ghcr.io/${{ github.repository_owner }}/${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
           cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}

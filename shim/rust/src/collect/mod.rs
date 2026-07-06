@@ -64,6 +64,9 @@ pub struct RawUsage {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// cache_creation_tokens 중 1시간 TTL 분량(subset). 서버가 1h=input×2, 5m=input×1.25 로
+    /// 차등 가격하기 위한 pricing 힌트(§design-usage-pull 리스크 B). Claude 만 채우고 나머지는 0.
+    pub cache_creation_1h_tokens: u64,
 }
 
 /// 어댑터가 로그에서 뽑는 원시 본문 레코드 (프롬프트/응답 텍스트).
@@ -170,6 +173,7 @@ fn to_usage_event(adapter: &str, r: &RawUsage, host: Option<&str>) -> UsageEvent
         output_tokens: r.output_tokens,
         cache_read_tokens: r.cache_read_tokens,
         cache_creation_tokens: r.cache_creation_tokens,
+        cache_creation_1h_tokens: r.cache_creation_1h_tokens,
         cost_usd: 0.0,
         log_adapter: Some(adapter.to_string()),
         host: host.map(String::from),
@@ -590,6 +594,8 @@ mod tests {
             model: Some("m".into()),
             input_tokens: 1,
             output_tokens: 2,
+            cache_creation_tokens: 10,
+            cache_creation_1h_tokens: 4,
             ..Default::default()
         };
         let e = to_usage_event("gemini", &r, Some("box-7"));
@@ -598,6 +604,10 @@ mod tests {
         assert_eq!(e.ts, "2026-07-01T12:00:00.000Z");
         assert_eq!(e.log_adapter.as_deref(), Some("gemini"));
         assert_eq!(e.provider_key, "gemini");
+        assert_eq!(
+            e.cache_creation_1h_tokens, 4,
+            "1h 힌트가 UsageEvent 로 전달"
+        );
         assert_eq!(e.host.as_deref(), Some("box-7"), "host 부착");
         // host 미상(None)도 안전
         assert_eq!(to_usage_event("gemini", &r, None).host, None);

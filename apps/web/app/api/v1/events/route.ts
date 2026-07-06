@@ -67,6 +67,8 @@ export async function POST(req: Request): Promise<Response> {
       outputTokens: e.outputTokens,
       cacheReadTokens: e.cacheReadTokens,
       cacheCreationTokens: e.cacheCreationTokens,
+      // 캐시생성 1h 분량(§리스크 B) — pull(claude) 경로만 채움. 1h=input×2 차등 가격.
+      cacheCreation1hTokens: e.cacheCreation1hTokens,
       pricing,
       mode: "calculate",
     }),

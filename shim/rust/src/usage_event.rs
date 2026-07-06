@@ -21,6 +21,9 @@ pub struct UsageEvent {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+    /// cache_creation_tokens 중 1시간 TTL 분량(subset). 서버가 1h=input×2 로 차등 가격하기 위한
+    /// pricing 힌트. 선택 필드(없으면 0 — 구 클라/OTLP 호환). §design-usage-pull 리스크 B.
+    pub cache_creation_1h_tokens: u64,
     /// 서버가 pricing 으로 확정 — shim 은 항상 0 (§5.6)
     pub cost_usd: f64,
     /// logfile 경로 전용: 어떤 벤더 어댑터로 읽었는지 (§4.2). otel 경로는 None
@@ -54,6 +57,14 @@ fn token_count(v: Option<&Value>, field: &str) -> Result<u64, String> {
     }
 }
 
+/// 선택적 토큰 카운트 — 없거나 null 이면 0 (구 클라/OTLP 호환용 필드에 사용).
+fn opt_token_count(v: Option<&Value>, field: &str) -> Result<u64, String> {
+    match v {
+        None | Some(Value::Null) => Ok(0),
+        _ => token_count(v, field),
+    }
+}
+
 impl UsageEvent {
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let cost_usd = match v.get("costUsd") {
@@ -78,6 +89,10 @@ impl UsageEvent {
             cache_creation_tokens: token_count(
                 v.get("cacheCreationTokens"),
                 "cacheCreationTokens",
+            )?,
+            cache_creation_1h_tokens: opt_token_count(
+                v.get("cacheCreation1hTokens"),
+                "cacheCreation1hTokens",
             )?,
             cost_usd,
             log_adapter: opt_string(v.get("logAdapter"), "logAdapter")?,
@@ -122,6 +137,10 @@ impl UsageEvent {
                 "cacheCreationTokens".into(),
                 Value::Number(self.cache_creation_tokens.to_string()),
             ),
+            (
+                "cacheCreation1hTokens".into(),
+                Value::Number(self.cache_creation_1h_tokens.to_string()),
+            ),
             ("costUsd".into(), Value::Number(cost)),
             ("logAdapter".into(), opt(&self.log_adapter)),
             ("host".into(), opt(&self.host)),
@@ -154,7 +173,7 @@ mod tests {
         let Value::Array(items) = golden() else {
             panic!("fixture 는 배열이어야 함")
         };
-        assert_eq!(items.len(), 3);
+        assert_eq!(items.len(), 4);
         for item in &items {
             let ev = UsageEvent::from_json(item).expect("모든 골든 이벤트가 파싱돼야 함");
             // 미러 왕복: to_json → from_json 이 동일 구조체
@@ -183,6 +202,14 @@ mod tests {
         assert_eq!(minimal.model, None);
         assert_eq!(minimal.log_adapter, None, "logAdapter 는 선택적");
         assert_eq!(minimal.host, None, "host 는 선택적 — 없으면 None");
+        assert_eq!(
+            minimal.cache_creation_1h_tokens, 0,
+            "cacheCreation1hTokens 는 선택적 — 없으면 0"
+        );
+        // 캐시생성 1h 힌트(§리스크 B) — 비영값 파싱·왕복
+        let claude1h = UsageEvent::from_json(&items[3]).unwrap();
+        assert_eq!(claude1h.cache_creation_tokens, 111174);
+        assert_eq!(claude1h.cache_creation_1h_tokens, 111000, "1h TTL 힌트");
     }
 
     #[test]
@@ -214,6 +241,6 @@ mod tests {
         let Value::Array(back) = reparsed else {
             panic!()
         };
-        assert_eq!(back.len(), 3);
+        assert_eq!(back.len(), 4);
     }
 }

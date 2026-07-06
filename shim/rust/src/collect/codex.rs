@@ -141,6 +141,7 @@ fn parse_rollout_usage(path: &Path) -> Vec<RawUsage> {
             cache_read_tokens: cached,
             // Codex 는 캐시 생성 개념 없음 → 0.
             cache_creation_tokens: 0,
+            cache_creation_1h_tokens: 0,
         });
     }
     out

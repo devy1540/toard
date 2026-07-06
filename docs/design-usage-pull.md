@@ -94,7 +94,7 @@ payload.info.total_token_usage = { … }   # 누적(사용 안 함)
 
 ### 4.4 비용 — 서버 권위(변경 없음)
 - shim 은 토큰만(costUsd=0, userId=null) 전송. 서버 `/v1/events` 가 `resolveCost(mode:"calculate")` 로 확정(§7 재사용). `resolveCost` 는 이미 ccusage 이식판: input/output 200k tiered, 캐시생성=`cacheCreatePerM ?? input×1.25`, 캐시읽기=`cacheReadPerM ?? input×0.1`, fast 배수, LiteLLM/models.dev 가격.
-- **미세 차이(선택 개선)**: ccusage 는 캐시생성을 5m(@cache_create)·1h(@input×2)로 분리하나 toard 는 단일 `cacheCreatePerM`. 정확도를 맞추려면 `cache_creation.ephemeral_1h_input_tokens` 를 분리 전송·가산하는 확장이 필요(후속). 대부분 5m 라 영향 작음.
+- **캐시생성 5m/1h 차등(구현 완료 — 리스크 B 재평가)**: ccusage 처럼 5m=`cacheCreatePerM`(≈input×1.25)·1h=input×2 로 분리 가격한다. shim 이 `cache_creation.ephemeral_1h_input_tokens` 를 `cacheCreation1hTokens` 힌트로 전송(claude 만; 미제공=0=전량 5m, 구 클라·OTLP 하위호환). `resolveCost` 가 1h 를 input×2 로 가산. **실측 반증**: 초안 가정("대부분 5m")과 달리 실데이터의 캐시생성 토큰 **86.8% 가 1h** → 단일 요율은 캐시생성 34.3%·**총비용 15.3% 과소계상**(§8.2). DB 미영속(cost 는 인제스트 시 확정·저장, 재계산 경로 없음).
 - **`mode` 주의**: pull 은 `calculate` 강제(OTLP 의 `auto`+providedCostUsd 와 달리). Claude 트랜스크립트의 `costUSD` 를 신뢰하지 않고 서버 LiteLLM 으로 재계산 → 가격 정책 일원화·신뢰경계 유지.
 
 ### 4.5 host — 자동 획득(핵심 이득)
@@ -166,7 +166,7 @@ OTLP dedup_key(`req|…`, `packages/ingest/src/dedup.ts`)와 pull dedup_key(`{ad
 - **결정 1 — 백필 범위 = 전량**: claude/codex usage 첫 수집(커서 없음) 시 **과거 전량 백필**(토큰 카운트라 민감정보 아님, 히스토리 가치↑). `TOARD_SHIM_USAGE_SINCE`(날짜) 컷오프 env 는 안전판으로 제공하되 기본은 전량. (2026-07-06 확정)
 - **결정 2 — 수집 방식 = poll (hook 아님)**: 근거는 §4.6 — ① Codex 는 hook 부재로 어차피 poll·스케줄러 필요, ② hook 도 `settings.json` 주입이라 OTLP 취약성 재도입, ③ poll 은 자가치유(놓쳐도 따라잡음), ④ 사용량/비용은 초 단위 신선도 불필요. 실시간성은 launchd 주기 실행(content 와 공유)으로 보완. hook 은 후속 여지로만(§10). (2026-07-06 확정)
 - **리스크 A — Codex 포맷 변동·null**: `token_count`/`last_token_usage` 스키마는 Codex 버전 의존. 골든 픽스처로 드리프트 검증 필요(§9). 모델명이 `session_meta` 에만 있어 누락 시 `model=None`(비용 0, 경고). **실측 robustness**: `info==null` 인 `token_count` 이벤트 존재(18,995개 중 4개) → 파서가 스킵 안 하면 크래시. `input − cached` 는 실측상 항상 ≥0(18,995개 중 위반 0)이나 **saturating sub** 로 방어.
-- **리스크 B — 캐시생성 5m/1h 정밀도**: §4.4 미세 오차(대개 작음). 후속 개선.
+- **리스크 B — 캐시생성 5m/1h 정밀도(해소됨)**: 초안은 "대개 작음"으로 후속으로 미뤘으나 **실측 반증** — 캐시생성 토큰 1h 비중 86.8%, 단일 요율 시 총비용 15.3% 과소계상. 5m/1h 차등 가격을 구현(§4.4·§8.2). shim 힌트(`cacheCreation1hTokens`)+`resolveCost`(1h=input×2), 하위호환(미제공=전량 5m).
 - **리스크 C — 컷오버 이중집계**: §5.3 — 서버 게이트 선배포로 완화.
 - **리스크 D — 대량 파일**: 966개+ jsonl 전량 스캔(백필). 커서 이후엔 변한 파일만. 초기 1회 비용은 수용 가능(실측 dry-run 133레코드/966파일 수 초).
 
@@ -181,7 +181,8 @@ OTLP dedup_key(`req|…`, `packages/ingest/src/dedup.ts`)와 pull dedup_key(`{ad
 구현 착수 시 실 세션 파일을 다시 파싱해 초안의 Codex 가정 2개가 틀렸음을 확인·정정:
 1. **Codex 모델 위치 (틀림)**: 초안은 "`session_meta` 의 모델"이라 했으나 실측상 `session_meta.payload` 엔 `model_provider`(예 `openai`)만 있고 **모델명은 `turn_context.payload.model`**(예 `gpt-5.5`)에 있다(이벤트 순서: session_meta → turn_context → token_count). 어댑터는 `turn_context` 의 모델을 승계해 이후 `token_count` 에 부여한다.
 2. **Codex `token_count` 중복 방출 (치명)**: 일부 버전(예 2025-11 세션)이 **같은 턴의 `token_count` 를 2~3회 방출**한다(`last_token_usage`·`total_token_usage` 값 동일, `timestamp` 만 다름). 초안의 "`last_token_usage` 델타 단순 합산"은 이런 세션을 **2~3배 과금**한다(실측: 한 세션 sum(last.output)=231708 vs 실제 total.output=115112, 정확히 2×). 정정 규칙 = **`total_token_usage`(input,output)가 직전 이벤트와 다를 때만 그 이벤트의 `last_token_usage` 를 billing**(재방출은 스킵). 이 규칙이 authoritative total 을 정확히 재구성함을 dup/clean/reset(컴팩션) 세션 전부에서 확인(`input_excl+cache_read=total.input`, `output=total.output`).
-- **구현 후 검증(실측)**: shim `collect --dry-run` 이벤트 수 == 독립 Python(정정 규칙) 재현치 — **codex 33,665=33,665 정확 일치**, **claude 84,139=84,139 정확 일치**(동시 측정; 라이브 append 로 시점 차만큼만 증감). Codex 대량 세션(621MB·8,657 token_count 포함) 165파일 파싱 2.7초. 마이그레이션 up/down 실 DB(트랜잭션·롤백) 검증. `identifyProvider` 게이트 단위테스트 5건.
+3. **캐시생성 5m/1h "minor" 가정 (틀림 — 리스크 B)**: 초안 리스크 B 는 5m/1h 단일요율 오차를 "대개 작음"으로 미뤘으나, 실측상 Claude 캐시생성 토큰의 **86.8% 가 1h**(5m 13.2%)라 단일요율은 캐시생성 34.3%·**총비용 15.3% 과소계상**(opus 대표가). 정정: shim 이 `ephemeral_1h_input_tokens` 를 `cacheCreation1hTokens` 힌트로 전송하고 `resolveCost` 가 1h=input×2 로 차등 가격(§4.4). 선재 이슈(OTLP 경로에도 있던 가격 근사)라 push/pull 과 독립.
+- **구현 후 검증(실측)**: shim `collect --dry-run` 이벤트 수 == 독립 Python(정정 규칙) 재현치 — **codex 33,665=33,665 정확 일치**, **claude 84,139=84,139 정확 일치**(동시 측정; 라이브 append 로 시점 차만큼만 증감). Codex 대량 세션(621MB·8,657 token_count 포함) 165파일 파싱 2.7초. 마이그레이션 up/down 실 DB(트랜잭션·롤백) 검증. `identifyProvider` 게이트 단위테스트 5건. 캐시 5m/1h 차등 가격 단위테스트(pricing 8건)·와이어 골든(1h 힌트 4번째 fixture, TS·Rust 양측).
 
 ## 9. 구현 계획 (단계)
 

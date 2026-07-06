@@ -70,8 +70,16 @@ fn parse_transcript_usage(path: &Path) -> Vec<RawUsage> {
         let input_tokens = tok("input_tokens");
         let output_tokens = tok("output_tokens");
         let cache_read_tokens = tok("cache_read_input_tokens");
-        // 상위 cache_creation_input_tokens 는 5m+1h 합(실측). 캐시생성 5m/1h 분리 정밀도는 후속(리스크 B).
+        // 상위 cache_creation_input_tokens 는 5m+1h 합(실측).
         let cache_creation_tokens = tok("cache_creation_input_tokens");
+        // 1h TTL 분량은 usage.cache_creation.ephemeral_1h_input_tokens 에 별도로 있다. 서버가
+        // 1h=input×2, 5m=input×1.25 로 차등 가격하도록 힌트로 전달(§리스크 B — 실측상 1h 비중이 큼).
+        let cache_creation_1h_tokens = usage
+            .get("cache_creation")
+            .and_then(Value::as_object)
+            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
         // 토큰이 전부 0 이면(빈 usage) 스킵 — 비용 0 이벤트로 dedup 공간만 낭비.
         if input_tokens == 0
             && output_tokens == 0
@@ -96,6 +104,7 @@ fn parse_transcript_usage(path: &Path) -> Vec<RawUsage> {
             output_tokens,
             cache_read_tokens,
             cache_creation_tokens,
+            cache_creation_1h_tokens,
         });
     }
     out
@@ -229,8 +238,8 @@ mod tests {
                 // 사용자/summary/usage-없는 assistant 는 제외
                 r#"{"type":"user","sessionId":"s1","message":{"role":"user","content":"hi"}}"#,
                 r#"{"type":"assistant","sessionId":"s1","message":{"id":"m0","model":"claude-opus-4-8","content":[{"type":"text","text":"no usage"}]}}"#,
-                // 일반 assistant 사용량
-                r#"{"type":"assistant","sessionId":"s1","isSidechain":false,"timestamp":"2026-06-26T07:57:48.385Z","requestId":"req_1","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":28947,"output_tokens":17543,"cache_read_input_tokens":19441,"cache_creation_input_tokens":111174}}}"#,
+                // 일반 assistant 사용량 (cache_creation 은 5m+1h 로 분리 — 1h 힌트 검증)
+                r#"{"type":"assistant","sessionId":"s1","isSidechain":false,"timestamp":"2026-06-26T07:57:48.385Z","requestId":"req_1","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":28947,"output_tokens":17543,"cache_read_input_tokens":19441,"cache_creation_input_tokens":111174,"cache_creation":{"ephemeral_5m_input_tokens":174,"ephemeral_1h_input_tokens":111000}}}}"#,
                 // 서브에이전트 턴(isSidechain=true) — 고유 message.id, 스킵되면 안 됨
                 r#"{"type":"assistant","sessionId":"s1","isSidechain":true,"timestamp":"2026-06-26T07:58:00.000Z","message":{"id":"m2","model":"claude-sonnet-4-5","usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}"#,
                 // 토큰 전부 0 → 스킵
@@ -252,6 +261,10 @@ mod tests {
         assert_eq!(a.output_tokens, 17543);
         assert_eq!(a.cache_read_tokens, 19441);
         assert_eq!(a.cache_creation_tokens, 111174);
+        assert_eq!(
+            a.cache_creation_1h_tokens, 111000,
+            "1h 힌트=ephemeral_1h_input_tokens"
+        );
         assert_eq!(a.model.as_deref(), Some("claude-opus-4-8"));
         assert_eq!(a.message_id.as_deref(), Some("m1"), "message.id 로 dedup");
         assert_eq!(a.session_id.as_deref(), Some("s1"));

@@ -244,6 +244,7 @@ fn parse_line(file: &Path, fallback_timestamp: i64, record: &QwenLine) -> Option
         output_tokens: output_tokens.saturating_add(extra_total_tokens),
         cache_read_tokens,
         cache_creation_tokens: 0,
+        cache_creation_1h_tokens: 0,
     })
 }
 

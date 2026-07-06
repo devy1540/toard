@@ -33,6 +33,10 @@ export interface UsageEvent {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
+  /** cacheCreationTokens 중 1시간 TTL 분량(subset). pricing 전용 힌트 — 서버가 1h=input×2,
+   *  5m=input×1.25 로 차등 가격(§design-usage-pull 리스크 B). pull(claude) 경로만 채움,
+   *  없으면 0(전량 5m 로 취급). DB 미영속(cost 는 인제스트 시 확정·저장). */
+  cacheCreation1hTokens?: number;
   /** pricing 엔진이 채움 */
   costUsd: number;
   /** logfile 경로 전용(§5.6): shim 벤더 어댑터 식별자. otel 경로는 없음/ null */

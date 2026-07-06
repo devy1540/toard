@@ -445,6 +445,7 @@ fn build_event(
         output_tokens: output_tokens.saturating_add(reasoning_tokens),
         cache_read_tokens,
         cache_creation_tokens: 0,
+        cache_creation_1h_tokens: 0,
     })
 }
 

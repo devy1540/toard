@@ -16,6 +16,15 @@ export function isSemver(v: string): boolean {
   return SEMVER_RE.test(v);
 }
 
+/**
+ * "v0.5.0" → "0.5.0" 정규화. semver 가 아니게 되는 입력(예: "main", "v2beta")은 원문 유지.
+ * docker metadata-action 등 태그명을 그대로 넘기는 경로가 있어도 비교가 깨지지 않게 방어.
+ */
+export function normalizeVersion(v: string): string {
+  const stripped = v.startsWith("v") ? v.slice(1) : v;
+  return isSemver(stripped) ? stripped : v;
+}
+
 /** 3-부분 semver 수치 비교 (a<b → 음수). 유효 semver 전제 — isSemver 로 먼저 거를 것 */
 export function compareSemver(a: string, b: string): number {
   const pa = a.split(".").map(Number);

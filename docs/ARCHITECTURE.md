@@ -2,6 +2,7 @@
 
 > **상태:** v4 (오픈소스 재포지셔닝) · **최종 수정:** 2026-07-02 · **범위:** 1차 설계
 >
+> v4 수집 정정(2026-07-06): **Claude Code·Codex 사용량을 OTLP push → 로컬 트랜스크립트 pull로 전환**(gemini·qwen과 동일 파이프라인, ccusage 방식). env·재시작·host 주입 dance 제거, Desktop·IDE도 파일만 있으면 자동 수집, 과거 백필. OTLP push는 **experimental**(`TOARD_EXPERIMENTAL_OTLP`)로 강등하되 코드·서버 보존. 서버는 provider `collection_method`(`otel`|`logfile`)를 push(`/v1/logs`)·pull(`/v1/events`) **대칭 게이트**로 삼아 provider당 단일 소스만 저장→이중집계 구조적 차단. 아래 ADR-001/002/006의 "OTLP push 1급" 전제는 **docs/design-usage-pull.md**로 갱신됨.
 > v3 대비: **오픈소스·범용화** — "사내 대시보드" 전제를 제거하고 **어느 조직이든 셀프호스팅하는 오픈소스 프로젝트**로 재정의. 일별 집계 타임존을 KST 고정에서 `ORG_TIMEZONE` 설정(기본 UTC)으로 일반화(**ADR-008 신설**), 조직 고유 예시 값(이메일 도메인·데모 데이터) 중립화, §12 오픈소스 운영 신설. 데이터 모델 구조 무변경(Mart `day` 의미만 "조직 타임존 기준"으로 일반화 — 기존 KST 데이터는 재계산 대상).
 > v2→v3: **수집 범용화** — OTLP push 단일 1급에서 **다중 프론트엔드(OTLP push + 로컬 로그 pull)가 `UsageEvent[]`로 수렴**하는 구조로 재설계. shim을 "범용 수집 에이전트"로 격상(ADR-006 Rust 확정에 ccusage MIT 어댑터 벤더링 추가).
 > v1→v2: dedup 키 교정(`request_id`), shim env 정정, 수집 방식 확정(앱 직접 + JSON only), 인증(Auth.js → AUTH_MODE/JWT), 비용 계산 정확화(tiered/캐시/단위), 보안 강화. 가장 되돌리기 비싼 부분은 **§4 데이터 모델**과 **§5 수집 계약**이다.

@@ -12,6 +12,16 @@ pub fn notice(msg: &str) {
     }
 }
 
+/// experimental: OTLP push 를 되켜는 플래그(기본 off). 사용량은 트랜스크립트 pull 로 수집하므로
+/// (docs/design-usage-pull) 평소엔 OTEL env·config 를 주입하지 않는다. `1`/`true`/`on` 이면
+/// 종전대로 주입한다. 실제 수집되려면 서버 provider 의 collection_method 도 'otel' 이어야 한다(대칭 게이트 §5.2).
+pub fn experimental_otlp_enabled() -> bool {
+    matches!(
+        env::var("TOARD_EXPERIMENTAL_OTLP").ok().as_deref(),
+        Some("1" | "true" | "on")
+    )
+}
+
 /// 값이 없을 때만 설정. 이미 있으면 false.
 fn set_if_empty(key: &str, value: &str) -> bool {
     if env::var_os(key).is_none() {

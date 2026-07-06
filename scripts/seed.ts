@@ -6,12 +6,15 @@ import { Pool } from "pg";
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function main(): Promise<void> {
-  // providers (service.name 매핑 — 설계 §4.4)
+  // providers (service.name 매핑 — 설계 §4.4).
+  // claude_code·codex 는 사용량을 트랜스크립트 pull 로 수집한다(collection_method='logfile',
+  // docs/design-usage-pull). service_name_patterns 는 experimental OTLP(TOARD_EXPERIMENTAL_OTLP)
+  // 되켤 때를 위해 보존한다. OTLP 로 되켜려면 collection_method 를 'otel' 로 바꾸면 된다.
   await pool.query(
     `INSERT INTO providers (key, display_name, service_name_patterns, collection_method, enabled)
      VALUES
-       ('claude_code', 'Claude Code', ARRAY['claude-code','claude-code-desktop'], 'otel', true),
-       ('codex', 'Codex', ARRAY['codex','codex_cli_rs','codex_exec'], 'otel', true),
+       ('claude_code', 'Claude Code', ARRAY['claude-code','claude-code-desktop'], 'logfile', true),
+       ('codex', 'Codex', ARRAY['codex','codex_cli_rs','codex_exec'], 'logfile', true),
        ('gemini', 'Gemini CLI', ARRAY[]::text[], 'logfile', true),
        ('qwen', 'Qwen Code', ARRAY[]::text[], 'logfile', true)
      ON CONFLICT (key) DO NOTHING`,

@@ -291,8 +291,8 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
             continue;
         }
         matched = true;
-        // 본문 전용 어댑터(claude/codex)는 사용량을 OTLP 로 보내므로 usage 루프는 건너뛴다.
-        // 본문 수집은 아래 content 루프에서 수행된다.
+        // 사용량 미수집 어댑터(있다면)는 usage 루프를 건너뛴다 — 본문은 아래 content 루프에서.
+        // (현재 모든 어댑터가 사용량을 수집하지만, 향후 본문 전용 어댑터를 위한 일반 가드로 유지.)
         if !adapter.collects_usage() {
             continue;
         }

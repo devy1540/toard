@@ -41,9 +41,22 @@ export async function POST(req: Request): Promise<Response> {
     return new Response(`등록되지 않은 provider: ${unknown.join(", ")}`, { status: 400 });
   }
 
+  // 3b. 대칭 게이트(design-usage-pull §5.2 ③) — "provider 당 단일 소스".
+  // collection_method='logfile' provider 이벤트만 저장하고, 'otel'(experimental 로 OTLP 를
+  // 되켠 provider)의 pull 이벤트는 드롭한다. /v1/logs 의 identifyProvider 게이트와 대칭이라
+  // 클라가 무엇을 보내든 provider 당 한 소스만 저장돼 이중집계가 구조적으로 불가능하다.
+  // (기본 경로 provider 는 모두 logfile 이라 무영향. 드롭분은 200 으로 응답해 shim 커서가 전진.)
+  const logfile = new Set(
+    providers.filter((p) => p.collectionMethod === "logfile").map((p) => p.key),
+  );
+  const gated = events.filter((e) => logfile.has(e.providerKey));
+  if (gated.length === 0) {
+    return Response.json({ inserted: 0, deduped: 0 });
+  }
+
   // 4. 서버 권위 확정 — userId=토큰, costUsd=pricing 강제 계산(본문 값·제공값 무시, §5.6 신뢰경계)
   const pricing = await getPricingMap();
-  const finalized: UsageEvent[] = events.map((e) => ({
+  const finalized: UsageEvent[] = gated.map((e) => ({
     ...e,
     userId,
     // host 는 클라이언트 제공값이라 저장 전 살균(제어문자·255자, §design-host-breakdown)

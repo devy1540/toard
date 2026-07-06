@@ -12,7 +12,11 @@ export function identifyProvider(
   const svc = record.resourceAttrs["service.name"];
   if (typeof svc !== "string") return null;
   for (const p of providers) {
-    if (!p.enabled) continue;
+    // OTLP(/v1/logs) 는 collection_method='otel' provider 만 인정한다. logfile provider
+    // (claude_code·codex 는 트랜스크립트 pull 로 전환 — design-usage-pull §5.2)의 OTLP 는
+    // 여기서 미식별→드롭돼 pull 과 이중집계되지 않는다. enabled 는 pull(/v1/events)이
+    // 여전히 필요로 하므로 유지(§5.2 자기검토).
+    if (!p.enabled || p.collectionMethod !== "otel") continue;
     if (p.serviceNamePatterns.some((pat) => svc === pat)) {
       return p.key;
     }

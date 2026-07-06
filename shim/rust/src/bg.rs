@@ -45,6 +45,14 @@ pub fn throttle(stamp_name: &str, interval_secs: u64) -> bool {
     true
 }
 
+/// 스탬프를 현재 시각으로 갱신 — 주기 판정 없이 기록만.
+/// 데몬/직접 collect 실행이 wrap 편승 스로틀과 스탬프를 공유해 중복 실행을 막는다.
+pub fn touch(stamp_name: &str) {
+    if let Some(state) = fsx::state_dir() {
+        let _ = fsx::write_atomic(&state.join(stamp_name), &format!("{}\n", now_unix()), 0o644);
+    }
+}
+
 /// 중간 프로세스 실행 + reap (double-spawn 1단계).
 pub fn kick(intermediate_arg: &str) {
     let Ok(exe) = env::current_exe() else { return };

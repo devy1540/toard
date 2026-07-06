@@ -12,6 +12,7 @@ mod cli;
 mod codex;
 mod collect;
 mod credentials;
+mod daemon;
 mod fsx;
 mod host;
 mod iso;

@@ -284,6 +284,12 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
         }
     };
 
+    // 전체 수집(어댑터 필터 없음·실전송)은 편승 스로틀과 스탬프를 공유한다 —
+    // 데몬(daemon.rs)이 방금 돌았으면 wrap 편승이 주기 내 중복 실행하지 않도록.
+    if only.is_none() && !dry_run {
+        bg::touch("last-collect");
+    }
+
     // host 라벨은 수집 실행당 1회만 계산(hostname 명령 fork 최소화 — 컴퓨터별 구분, §design-host-breakdown)
     let host = crate::host::host_label();
 

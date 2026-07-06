@@ -67,6 +67,27 @@ echo "설치 완료: $BIN_DIR/{claude,codex,toard-shim}"
 # 있으면 재시작·env 주입 없이 수집된다(docs/design-usage-pull). OTLP push 는 experimental 로 강등돼
 # claude-env(settings.json OTEL 주입)는 더 이상 설치 시 자동 실행하지 않는다.
 
+# 주기 수집 데몬(opt-in) — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 간격 안에 수집.
+# 등록물: macOS=~/Library/LaunchAgents/dev.toard.collect.plist, Linux=systemd user timer(폴백 crontab).
+# 언제든 `toard-shim daemon uninstall` 로 제거. 자동화: TOARD_INSTALL_DAEMON=1(등록)/0(건너뜀).
+echo ""
+case "${TOARD_INSTALL_DAEMON:-}" in
+  1) "$BIN_DIR/toard-shim" daemon install || true ;;
+  0) echo "주기 수집 데몬 건너뜀 (TOARD_INSTALL_DAEMON=0) — 나중에: toard-shim daemon install" ;;
+  *)
+    printf "주기 수집 데몬을 등록할까요? 5분마다 사용량을 자동 수집합니다 [Y/n] "
+    if read -r ans </dev/tty 2>/dev/null; then
+      case "$ans" in
+        n|N|no|NO) echo "  건너뜀 — 나중에 등록: toard-shim daemon install" ;;
+        *) "$BIN_DIR/toard-shim" daemon install || true ;;
+      esac
+    else
+      echo ""
+      echo "  (비대화형 설치 — 데몬 미등록. 등록: toard-shim daemon install, 자동화: TOARD_INSTALL_DAEMON=1)"
+    fi
+    ;;
+esac
+
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *)

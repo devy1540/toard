@@ -22,6 +22,7 @@ pub fn run(args: &[String]) -> ! {
         Some("doctor") => std::process::exit(doctor()),
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
+        Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
@@ -52,6 +53,10 @@ fn print_usage() {
           [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
                                본문 수집은 opt-in(기본 off): TOARD_SHIM_COLLECT_CONTENT=1
                                — 프롬프트/응답 텍스트를 /v1/prompts 로 전송(서버가 암호화)
+  daemon install|uninstall|status
+                               주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
+                               install --interval <초> (기본 300, 하한 60)
+                               — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 24h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
@@ -315,6 +320,48 @@ fn doctor() -> i32 {
         }
     }
 
+    // 5. 주기 수집 데몬 + 최근 수집 시각 — 수집이 조용히 멈춘 상태를 드러낸다 (#65)
+    let daemon_interval = match crate::daemon::state() {
+        crate::daemon::State::Installed {
+            backend,
+            interval,
+            active: true,
+        } => {
+            ok(&format!(
+                "주기 수집 등록됨 — {backend}, {}",
+                interval
+                    .map(|i| format!("{i}초 간격"))
+                    .unwrap_or_else(|| "간격 미상".into())
+            ));
+            interval
+        }
+        crate::daemon::State::Installed {
+            backend,
+            active: false,
+            ..
+        } => {
+            // 활성 판정은 환경(user bus 부재 등)에 따라 오탐 가능 — ✗ 대신 경고로
+            warn(&format!(
+                "주기 수집({backend}) 파일은 있으나 비활성으로 보입니다 — toard-shim daemon install 로 재등록"
+            ));
+            None
+        }
+        crate::daemon::State::NotInstalled => {
+            info("주기 수집 미등록 — Desktop/IDE 만 쓰는 날은 다음 CLI 실행까지 수집이 지연됩니다 (등록: toard-shim daemon install)");
+            None
+        }
+    };
+    match last_collect_age() {
+        Some(age) => match daemon_interval {
+            Some(i) if age > i.saturating_mul(3) => warn(&format!(
+                "마지막 수집 {} 전 — 데몬 간격({i}초)의 3배 초과, ~/.toard/state/daemon.err.log 확인",
+                human_age(age)
+            )),
+            _ => ok(&format!("마지막 수집 {} 전", human_age(age))),
+        },
+        None => info("수집 실행 기록 없음 — 첫 수집 전이거나 트리거 미발동"),
+    }
+
     println!();
     if d.failed {
         println!("문제가 발견됐습니다 — 위 ✗ 항목을 해결하세요.");
@@ -322,6 +369,27 @@ fn doctor() -> i32 {
     } else {
         println!("모든 점검 통과.");
         0
+    }
+}
+
+/// last-collect 스탬프 나이(초) — 편승·데몬·직접 collect 가 공유하는 스탬프 기준.
+fn last_collect_age() -> Option<u64> {
+    let stamp = fsx::state_dir()?.join("last-collect");
+    let t = std::fs::read_to_string(stamp)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(crate::bg::now_unix().saturating_sub(t))
+}
+
+fn human_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}초")
+    } else if secs < 3600 {
+        format!("{}분", secs / 60)
+    } else {
+        format!("{}시간", secs / 3600)
     }
 }
 

@@ -1,0 +1,18 @@
+{
+  "title": "toard 초대",
+  "descriptionValid": "{email} 로 초대되었습니다. 비밀번호를 설정해 가입하세요.",
+  "descriptionInvalid": "유효하지 않거나 만료된 초대 링크입니다. 관리자에게 다시 요청하세요.",
+  "emailLabel": "이메일",
+  "nameLabel": "이름 (선택)",
+  "passwordLabel": "비밀번호",
+  "passwordPlaceholder": "8자 이상",
+  "confirmLabel": "비밀번호 확인",
+  "submit": "가입하고 시작",
+  "submitting": "가입 중…",
+  "errors": {
+    "invalidInvite": "유효하지 않거나 만료된 초대입니다.",
+    "passwordMismatch": "비밀번호가 일치하지 않습니다.",
+    "acceptFailed": "초대 수락에 실패했습니다(만료됐거나 이미 가입된 이메일).",
+    "autoLoginFailed": "가입은 됐지만 자동 로그인에 실패했습니다. 로그인 페이지에서 로그인하세요."
+  }
+}

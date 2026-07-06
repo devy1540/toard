@@ -1,3 +1,4 @@
+import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { Activity, ArrowUpDown, DollarSign, Inbox } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
@@ -25,6 +26,7 @@ export default async function MyUsagePage({
 }: {
   searchParams: Promise<DashboardSearchParams>;
 }) {
+  const t = await getTranslations("dashboard");
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -33,15 +35,15 @@ export default async function MyUsagePage({
           <EmptyMedia variant="icon">
             <Inbox />
           </EmptyMedia>
-          <EmptyTitle>로그인이 필요합니다</EmptyTitle>
-          <EmptyDescription>사용량을 보려면 로그인하세요.</EmptyDescription>
+          <EmptyTitle>{t("loginRequiredTitle")}</EmptyTitle>
+          <EmptyDescription>{t("loginRequiredDescription")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
   }
 
   const period = parseFilters(await searchParams);
-  const [{ overview, daily, byModel }, providers, tokenMeta] = await Promise.all([
+  const [{ overview, daily, byModel, byHost }, providers, tokenMeta] = await Promise.all([
     getStorage().getUserUsage(userId, period),
     getEnabledProviders(),
     getActiveTokenMeta(userId),
@@ -51,17 +53,17 @@ export default async function MyUsagePage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title="내 사용량" description="내 AI 도구 사용량·비용" actions={<AutoRefresh />} />
+      <PageHeader title={t("myUsageTitle")} description={t("myUsageDescription")} actions={<AutoRefresh />} />
 
       <DashboardFilters providers={providers} />
 
       <PricingNotice />
 
       <div className="grid gap-4 sm:grid-cols-3">
-        <StatCard label="내 비용" value={fmtUsd(overview.totalCostUsd)} icon={<DollarSign className="size-4" />} />
-        <StatCard label="내 세션" value={fmtNum(overview.totalSessions)} icon={<Activity className="size-4" />} />
+        <StatCard label={t("myCost")} value={fmtUsd(overview.totalCostUsd)} icon={<DollarSign className="size-4" />} />
+        <StatCard label={t("mySessions")} value={fmtNum(overview.totalSessions)} icon={<Activity className="size-4" />} />
         <StatCard
-          label="내 토큰"
+          label={t("myTokens")}
           value={fmtCompact(overview.totalInputTokens + overview.totalOutputTokens)}
           icon={<ArrowUpDown className="size-4" />}
         />
@@ -69,7 +71,7 @@ export default async function MyUsagePage({
 
       <Card>
         <CardHeader>
-          <CardTitle>일별 토큰</CardTitle>
+          <CardTitle>{t("dailyTokens")}</CardTitle>
         </CardHeader>
         <CardContent>
           {daily.length > 0 ? (
@@ -80,14 +82,14 @@ export default async function MyUsagePage({
                 <EmptyMedia variant="icon">
                   <Inbox />
                 </EmptyMedia>
-                <EmptyTitle>아직 수집된 사용량이 없습니다</EmptyTitle>
+                <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
                 <EmptyDescription>
-                  shim 을 설치하면 claude/codex 사용량이 자동으로 수집됩니다.
+                  {t("noCollectedUsageDescription")}
                 </EmptyDescription>
               </EmptyHeader>
               <EmptyContent>
                 <Button asChild size="sm">
-                  <Link href="/settings?tab=install">shim 설치하기</Link>
+                  <Link href="/settings?tab=install">{t("installShim")}</Link>
                 </Button>
               </EmptyContent>
             </Empty>
@@ -97,8 +99,8 @@ export default async function MyUsagePage({
                 <EmptyMedia variant="icon">
                   <Inbox />
                 </EmptyMedia>
-                <EmptyTitle>데이터가 없습니다</EmptyTitle>
-                <EmptyDescription>선택한 기간·도구에 내 사용량이 없습니다.</EmptyDescription>
+                <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
+                <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
               </EmptyHeader>
             </Empty>
           )}
@@ -107,17 +109,17 @@ export default async function MyUsagePage({
 
       <Card>
         <CardHeader>
-          <CardTitle>모델별 분해</CardTitle>
+          <CardTitle>{t("byModelTitle")}</CardTitle>
         </CardHeader>
         <CardContent>
           {byModel.length > 0 ? (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>모델</TableHead>
-                  <TableHead className="text-right">세션</TableHead>
-                  <TableHead className="text-right">토큰</TableHead>
-                  <TableHead className="text-right">비용</TableHead>
+                  <TableHead>{t("model")}</TableHead>
+                  <TableHead className="text-right">{t("sessions")}</TableHead>
+                  <TableHead className="text-right">{t("tokens")}</TableHead>
+                  <TableHead className="text-right">{t("cost")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -137,12 +139,44 @@ export default async function MyUsagePage({
                 <EmptyMedia variant="icon">
                   <Inbox />
                 </EmptyMedia>
-                <EmptyTitle>모델 데이터 없음</EmptyTitle>
+                <EmptyTitle>{t("noModelDataTitle")}</EmptyTitle>
               </EmptyHeader>
             </Empty>
           )}
         </CardContent>
       </Card>
+
+      {byHost.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("byHostTitle")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>{t("computer")}</TableHead>
+                  <TableHead className="text-right">{t("sessions")}</TableHead>
+                  <TableHead className="text-right">{t("tokens")}</TableHead>
+                  <TableHead className="text-right">{t("cost")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {byHost.map((h) => (
+                  <TableRow key={h.host ?? "__unknown__"}>
+                    <TableCell className={h.host ? "font-medium" : "text-muted-foreground"}>
+                      {h.host ?? t("unknownHost")}
+                    </TableCell>
+                    <TableCell className="text-right">{fmtNum(h.sessions)}</TableCell>
+                    <TableCell className="text-right">{fmtCompact(h.totalTokens)}</TableCell>
+                    <TableCell className="text-right">{fmtUsd(h.costUsd)}</TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

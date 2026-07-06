@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useTranslations } from "next-intl";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,15 +10,16 @@ import { DEFAULT_PERIOD } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
 
 const PERIODS = [
-  { v: "today", l: "오늘" },
-  { v: "7", l: "7일" },
-  { v: "30", l: "30일" },
-  { v: "90", l: "90일" },
-];
+  { v: "today", key: "filters.periodToday" },
+  { v: "7", key: "filters.period7" },
+  { v: "30", key: "filters.period30" },
+  { v: "90", key: "filters.period90" },
+] as const;
 
 /** 기간(세그먼트+직접 선택)·도구(셀렉트) 필터 바 — 제목 줄 아래 별도 행에 배치.
  *  직접 선택을 켜면 프리셋 하이라이트 해제(상호배타), 날짜 입력은 아래 줄로 분리해 도구 위치를 고정. */
 export function DashboardFilters({ providers }: { providers: ProviderOption[] }) {
+  const t = useTranslations("dashboard");
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
@@ -59,7 +61,7 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
               variant={!isCustom && !showCustom && period === p.v ? "default" : "outline"}
               onClick={() => selectPreset(p.v)}
             >
-              {p.l}
+              {t(p.key)}
             </Button>
           ))}
           <Button
@@ -67,7 +69,7 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
             variant={isCustom || showCustom ? "default" : "outline"}
             onClick={() => setShowCustom((s) => !s)}
           >
-            직접 선택
+            {t("filters.customRange")}
           </Button>
         </div>
 
@@ -76,7 +78,7 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">전체 도구</SelectItem>
+            <SelectItem value="all">{t("filters.allTools")}</SelectItem>
             {providers.map((p) => (
               <SelectItem key={p.key} value={p.key}>
                 {p.label}
@@ -94,7 +96,7 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
             max={to || undefined}
             onChange={(e) => setFrom(e.target.value)}
             className="h-8 w-auto"
-            aria-label="시작일"
+            aria-label={t("filters.startDate")}
           />
           <span className="text-muted-foreground text-sm">~</span>
           <Input
@@ -103,10 +105,10 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
             min={from || undefined}
             onChange={(e) => setTo(e.target.value)}
             className="h-8 w-auto"
-            aria-label="종료일"
+            aria-label={t("filters.endDate")}
           />
           <Button size="sm" onClick={applyCustom} disabled={!from || !to}>
-            적용
+            {t("filters.apply")}
           </Button>
         </div>
       )}

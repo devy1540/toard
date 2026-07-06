@@ -1,9 +1,11 @@
 import { redirect } from "next/navigation";
+import { getTranslations } from "next-intl/server";
 import { Badge } from "@/components/ui/badge";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { listPendingInvites } from "@/lib/invites";
 import { getPricingStatus } from "@/lib/pricing";
@@ -78,17 +80,19 @@ export default async function AdminPage({
   const tab: Tab =
     raw === "teams" ? "teams" : raw === "invites" ? "invites" : raw === "system" ? "system" : "members";
 
+  const t = await getTranslations("admin");
+
   return (
     <div className="space-y-6">
-      <PageHeader title="관리" description="멤버·팀과 수집 연결 상태를 관리합니다" />
+      <PageHeader title={t("title")} description={t("description")} />
 
       <LinkTabs
         active={tab}
         tabs={[
-          { value: "members", label: "멤버", href: "/admin?tab=members" },
-          { value: "teams", label: "팀", href: "/admin?tab=teams" },
-          { value: "invites", label: "초대", href: "/admin?tab=invites" },
-          { value: "system", label: "시스템", href: "/admin?tab=system" },
+          { value: "members", label: t("tabs.members"), href: "/admin?tab=members" },
+          { value: "teams", label: t("tabs.teams"), href: "/admin?tab=teams" },
+          { value: "invites", label: t("tabs.invites"), href: "/admin?tab=invites" },
+          { value: "system", label: t("tabs.system"), href: "/admin?tab=system" },
         ]}
       />
 
@@ -101,27 +105,28 @@ export default async function AdminPage({
 }
 
 async function MembersTab() {
-  const [members, teams] = await Promise.all([listMembers(), listTeams()]);
+  const [members, teams, t] = await Promise.all([
+    listMembers(),
+    listTeams(),
+    getTranslations("admin"),
+  ]);
   const deptOptions = teams.map((d) => ({ id: d.id, name: d.name }));
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>멤버 ({members.length})</CardTitle>
-        <CardDescription>
-          팀 변경은 이후 수집분부터 반영됩니다(과거 이벤트는 당시 팀 귀속 유지). 마지막 수신이
-          비어 있으면 shim 미설치 또는 수집 미연결 상태입니다.
-        </CardDescription>
+        <CardTitle>{t("members.cardTitle", { count: members.length })}</CardTitle>
+        <CardDescription>{t("members.cardDescription")}</CardDescription>
       </CardHeader>
       <CardContent>
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>멤버</TableHead>
-              <TableHead>역할</TableHead>
-              <TableHead>팀</TableHead>
-              <TableHead className="text-right">마지막 수신</TableHead>
-              <TableHead className="text-right">가입일</TableHead>
+              <TableHead>{t("members.colMember")}</TableHead>
+              <TableHead>{t("members.colRole")}</TableHead>
+              <TableHead>{t("members.colTeam")}</TableHead>
+              <TableHead className="text-right">{t("members.colLastReceived")}</TableHead>
+              <TableHead className="text-right">{t("members.colJoined")}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -149,16 +154,14 @@ async function MembersTab() {
 }
 
 async function TeamsTab() {
-  const teams = await listTeams();
+  const [teams, t] = await Promise.all([listTeams(), getTranslations("admin")]);
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
-          <CardTitle>팀 ({teams.length})</CardTitle>
-          <CardDescription>
-            팀을 만들고 멤버 탭에서 배정하세요. 순위·비교는 전체 현황의 팀 탭에 반영됩니다.
-          </CardDescription>
+          <CardTitle>{t("teams.cardTitle", { count: teams.length })}</CardTitle>
+          <CardDescription>{t("teams.cardDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
           <TeamPanel teams={teams} />
@@ -169,20 +172,49 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const pricing = await getPricingStatus();
+  const [pricing, t] = await Promise.all([getPricingStatus(), getTranslations("admin")]);
+  const contentEnabled = contentCollectionEnabled();
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
-          <CardTitle>가격 동기화</CardTitle>
-          <CardDescription>
-            LiteLLM 모델 가격을 받아 비용 계산에 사용합니다. 가격이 없으면 비용이 $0 으로
-            계산되므로, cron(sync-pricing) 등록과 별개로 여기서 수동 실행할 수 있습니다.
-          </CardDescription>
+          <CardTitle>{t("system.pricingTitle")}</CardTitle>
+          <CardDescription>{t("system.pricingDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
           <PricingSyncPanel models={pricing.models} lastDay={pricing.lastDay} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            {t("system.contentTitle")}
+            {contentEnabled ? (
+              <Badge variant="secondary">{t("system.contentBadgeOn")}</Badge>
+            ) : (
+              <Badge variant="outline">{t("system.contentBadgeOff")}</Badge>
+            )}
+          </CardTitle>
+          <CardDescription>{t("system.contentDescription")}</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {contentEnabled ? (
+            <p className="text-muted-foreground">
+              {t.rich("system.contentEnabledBody", { code: (chunks) => <code>{chunks}</code> })}
+            </p>
+          ) : (
+            <>
+              <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>
+              <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs">
+                TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)
+              </pre>
+              <p className="text-muted-foreground text-xs">
+                {t.rich("system.contentSetupNote", { code: (chunks) => <code>{chunks}</code> })}
+              </p>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -190,16 +222,18 @@ async function SystemTab() {
 }
 
 async function InvitesTab() {
-  const [baseUrl, pending] = await Promise.all([getPublicBaseUrl(), listPendingInvites()]);
+  const [baseUrl, pending, t] = await Promise.all([
+    getPublicBaseUrl(),
+    listPendingInvites(),
+    getTranslations("admin"),
+  ]);
 
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
-          <CardTitle>멤버 초대</CardTitle>
-          <CardDescription>
-            초대 링크를 만들어 전달하면, 받은 사람이 비밀번호를 설정해 가입하고 설치까지 이어집니다.
-          </CardDescription>
+          <CardTitle>{t("invites.cardTitle")}</CardTitle>
+          <CardDescription>{t("invites.cardDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
           <InvitePanel

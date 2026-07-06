@@ -1,6 +1,8 @@
 import { type ClickHouseClient, createClient } from "@clickhouse/client";
 import type {
   DailyPoint,
+  DeviceInfo,
+  HostBreakdown,
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
@@ -128,6 +130,7 @@ export class ClickHouseStorage implements StorageBackend {
         cache_creation_tokens: e.cacheCreationTokens,
         cost_usd: e.costUsd,
         log_adapter: e.logAdapter ?? "",
+        host: e.host ?? "",
       })),
       format: "JSONEachRow",
     });
@@ -219,6 +222,27 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
+  // 컴퓨터(호스트)별 분해 — modelBreakdown 동형. 빈 문자열('') 은 nullIf 로 NULL 정규화해
+  // PG 의 NULL 과 동일하게 UI "(알 수 없음)" 버킷으로 접힌다.
+  private async hostBreakdown(q: ScopedQuery): Promise<HostBreakdown[]> {
+    const { where, params } = this.periodWhere(q);
+    const rows = await this.queryJson<{ host: string | null; cost?: string; tokens?: string; sessions?: string }>(
+      `SELECT nullIf(host, '')                                 AS host,
+              sum(cost_usd)                                     AS cost,
+              sum(input_tokens + output_tokens)                 AS tokens,
+              uniqExactIf(session_id, session_id != '')         AS sessions
+       FROM usage_events FINAL ${where}
+       GROUP BY host ORDER BY cost DESC`,
+      params,
+    );
+    return rows.map((r) => ({
+      host: r.host ?? null,
+      costUsd: n(r.cost),
+      totalTokens: n(r.tokens),
+      sessions: n(r.sessions),
+    }));
+  }
+
   getOverview(q: PeriodQuery): Promise<OverviewStats> {
     return this.overviewQuery(q);
   }
@@ -231,12 +255,32 @@ export class ClickHouseStorage implements StorageBackend {
 
   async getUserUsage(userId: string, q: PeriodQuery): Promise<UserUsage> {
     const scoped: ScopedQuery = { ...q, userId };
-    const [overview, daily, byModel] = await Promise.all([
+    const [overview, daily, byModel, byHost] = await Promise.all([
       this.overviewQuery(scoped),
       this.dailyQuery(scoped),
       this.modelBreakdown(scoped),
+      this.hostBreakdown(scoped),
     ]);
-    return { overview, daily, byModel };
+    return { overview, daily, byModel, byHost };
+  }
+
+  // 내 기기 목록 — 기간·provider 무관 전체 이력(유휴 기기도 노출). '' → NULL 정규화.
+  async getUserHosts(userId: string): Promise<DeviceInfo[]> {
+    const rows = await this.queryJson<{ host: string | null; last_seen_at: string; event_count?: string }>(
+      `SELECT nullIf(host, '')  AS host,
+              max(ts)           AS last_seen_at,
+              count()           AS event_count
+       FROM usage_events FINAL
+       WHERE user_id = {uid:String}
+       GROUP BY host ORDER BY last_seen_at DESC`,
+      { uid: userId },
+    );
+    return rows.map((r) => ({
+      host: r.host ?? null,
+      // CH DateTime64 'YYYY-MM-DD HH:mm:ss.SSS'(UTC) → 유효 ISO 로 변환
+      lastSeenAt: new Date(`${r.last_seen_at.replace(" ", "T")}Z`),
+      eventCount: n(r.event_count),
+    }));
   }
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]> {

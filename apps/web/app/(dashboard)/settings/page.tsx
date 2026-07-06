@@ -1,11 +1,19 @@
 import { redirect } from "next/navigation";
+import Link from "next/link";
+import { getLocale, getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { contentCollectionDefaultOn, contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
+import { fmtNum } from "@/lib/format";
+import { getOrgTimezone } from "@/lib/org-time";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
+import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
+import type { DeviceInfo } from "@toard/core";
 import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
@@ -20,6 +28,7 @@ export default async function SettingsPage({
 }: {
   searchParams: Promise<{ tab?: string }>;
 }) {
+  const t = await getTranslations("settings");
   // 실제 세션 필수 — 폴백 신원으로는 접근 불가.
   const session = await auth();
   const userId = session?.user?.id;
@@ -36,31 +45,34 @@ export default async function SettingsPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title="설정" description={email ?? undefined} />
+      <PageHeader title={t("pageTitle")} description={email ?? undefined} />
 
       <LinkTabs
         active={tab}
         tabs={[
-          { value: "account", label: "계정", href: "/settings?tab=account" },
-          { value: "install", label: "설치 · 토큰", href: "/settings?tab=install" },
+          { value: "account", label: t("tabAccount"), href: "/settings?tab=account" },
+          { value: "install", label: t("tabInstall"), href: "/settings?tab=install" },
         ]}
       />
 
-      {tab === "account" ? <AccountTab hasPassword={hasPassword} /> : <InstallTab userId={userId} />}
+      {tab === "account" ? (
+        <AccountTab hasPassword={hasPassword} />
+      ) : (
+        <InstallTab userId={userId} />
+      )}
     </div>
   );
 }
 
-function AccountTab({ hasPassword }: { hasPassword: boolean }) {
+async function AccountTab({ hasPassword }: { hasPassword: boolean }) {
+  const t = await getTranslations("settings");
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
       <Card>
         <CardHeader>
-          <CardTitle>{hasPassword ? "비밀번호 변경" : "비밀번호 설정"}</CardTitle>
+          <CardTitle>{hasPassword ? t("account.changeTitle") : t("account.setTitle")}</CardTitle>
           <CardDescription>
-            {hasPassword
-              ? "현재 비밀번호를 확인한 뒤 새 비밀번호로 변경합니다."
-              : "이 계정에 비밀번호를 설정하면 id/pw 로그인이 가능합니다."}
+            {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -72,57 +84,127 @@ function AccountTab({ hasPassword }: { hasPassword: boolean }) {
 }
 
 async function InstallTab({ userId }: { userId: string }) {
-  const [meta, endpoint, baseUrl] = await Promise.all([
+  const t = await getTranslations("settings");
+  const [meta, endpoint, baseUrl, devices] = await Promise.all([
     getActiveTokenMeta(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
+    getStorage().getUserHosts(userId),
   ]);
+  const contentEnabled = contentCollectionEnabled();
+  const contentDefaultOn = contentCollectionDefaultOn();
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-3">
-      <Card className="lg:col-span-2">
-        <CardHeader>
-          <CardTitle>내 토큰 발급 · 설치</CardTitle>
-          <CardDescription>
-            내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를
-            설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다.{" "}
-            <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용 등 사용량
-            메타데이터만 전송됩니다.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <OnboardingPanel
-            baseUrl={baseUrl}
-            endpoint={endpoint}
-            hasToken={Boolean(meta)}
-            createdAt={meta?.createdAt.toISOString() ?? null}
-            lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
-          />
-        </CardContent>
-      </Card>
+    <div className="space-y-4">
+      <div className="grid items-start gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>{t("install.issueTitle")}</CardTitle>
+            <CardDescription>
+              {t.rich(
+                contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription",
+                {
+                  code: (chunks) => <code>{chunks}</code>,
+                  b: (chunks) => <b>{chunks}</b>,
+                },
+              )}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <OnboardingPanel
+              baseUrl={baseUrl}
+              endpoint={endpoint}
+              hasToken={Boolean(meta)}
+              createdAt={meta?.createdAt.toISOString() ?? null}
+              lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+              contentEnabled={contentEnabled}
+              contentDefaultOn={contentDefaultOn}
+            />
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>연결 확인</CardTitle>
-          <CardDescription>설치 후 데이터가 실제로 수신되는지 확인합니다.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <ConnectionCheck
-            initialHasToken={Boolean(meta)}
-            initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
-          />
-          <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
-            <p>
-              • <code>which claude</code> → <code>~/.toard/bin/claude</code> 가 먼저 잡혀야
-              합니다(shim 우선).
-            </p>
-            <p>
-              • 이후 <code>claude</code> 사용 시 <a className="text-primary underline-offset-4 hover:underline" href="/">내 사용량</a> 에 쌓입니다.
-            </p>
-            <p>• 전제: 실제 Claude Code/Codex 가 설치되어 있어야 하며, 그 CLI 의 텔레메트리를 수집합니다.</p>
-          </div>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("install.checkTitle")}</CardTitle>
+            <CardDescription>{t("install.checkDescription")}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <ConnectionCheck
+              initialHasToken={Boolean(meta)}
+              initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+            />
+            <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
+              <p>{t.rich("install.hintWhich", { code: (chunks) => <code>{chunks}</code> })}</p>
+              <p>
+                {t.rich("install.hintUsage", {
+                  code: (chunks) => <code>{chunks}</code>,
+                  link: (chunks) => (
+                    <Link className="text-primary underline-offset-4 hover:underline" href="/">
+                      {chunks}
+                    </Link>
+                  ),
+                })}
+              </p>
+              <p>{t("install.hintPrereq")}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <DeviceList devices={devices} />
     </div>
+  );
+}
+
+async function DeviceList({ devices }: { devices: DeviceInfo[] }) {
+  const t = await getTranslations("settings");
+  const locale = await getLocale();
+  const fmtWhen = new Intl.DateTimeFormat(locale, {
+    timeZone: getOrgTimezone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{t("install.devicesTitle")}</CardTitle>
+        <CardDescription>
+          {t.rich("install.devicesDescription", {
+            code: (chunks) => <code>{chunks}</code>,
+            b: (chunks) => <b>{chunks}</b>,
+          })}
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        {devices.length > 0 ? (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t("install.deviceComputer")}</TableHead>
+                <TableHead className="text-right">{t("install.deviceEvents")}</TableHead>
+                <TableHead className="text-right">{t("install.deviceLastSeen")}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {devices.map((d) => (
+                <TableRow key={d.host ?? "__unknown__"}>
+                  <TableCell className={d.host ? "font-medium" : "text-muted-foreground"}>
+                    {d.host ?? t("install.unknownHost")}
+                  </TableCell>
+                  <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
+                  <TableCell className="text-muted-foreground text-right">
+                    {fmtWhen.format(d.lastSeenAt)}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="text-muted-foreground text-sm">
+            {t.rich("install.noDevices", { code: (chunks) => <code>{chunks}</code> })}
+          </p>
+        )}
+      </CardContent>
+    </Card>
   );
 }

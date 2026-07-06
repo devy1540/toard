@@ -1,0 +1,72 @@
+{
+  "myUsageTitle": "내 사용량",
+  "myUsageDescription": "내 AI 도구 사용량·비용",
+  "loginRequiredTitle": "로그인이 필요합니다",
+  "loginRequiredDescription": "사용량을 보려면 로그인하세요.",
+  "myCost": "내 비용",
+  "mySessions": "내 세션",
+  "myTokens": "내 토큰",
+  "dailyTokens": "일별 토큰",
+  "noCollectedUsageTitle": "아직 수집된 사용량이 없습니다",
+  "noCollectedUsageDescription": "shim 을 설치하면 claude/codex 사용량이 자동으로 수집됩니다.",
+  "installShim": "shim 설치하기",
+  "noDataTitle": "데이터가 없습니다",
+  "noMyUsageDescription": "선택한 기간·도구에 내 사용량이 없습니다.",
+  "byModelTitle": "모델별 분해",
+  "model": "모델",
+  "sessions": "세션",
+  "tokens": "토큰",
+  "cost": "비용",
+  "noModelDataTitle": "모델 데이터 없음",
+  "byHostTitle": "컴퓨터별 분해",
+  "computer": "컴퓨터",
+  "unknownHost": "(알 수 없음)",
+  "filters": {
+    "periodToday": "오늘",
+    "period7": "7일",
+    "period30": "30일",
+    "period90": "90일",
+    "customRange": "직접 선택",
+    "startDate": "시작일",
+    "endDate": "종료일",
+    "apply": "적용",
+    "allTools": "전체 도구"
+  },
+  "pricingNotice": {
+    "title": "모델 가격이 동기화되지 않아 비용이 $0 으로 표시됩니다.",
+    "adminAction": "<link>관리 → 시스템</link>에서 가격 동기화를 실행하세요. 일 단위 자동 갱신은 sync-pricing cron 등록이 필요합니다(README 스케줄러 절).",
+    "memberAction": "관리자에게 가격 동기화(sync-pricing) 실행을 요청하세요."
+  },
+  "chart": {
+    "cost": "비용",
+    "tokens": "토큰"
+  },
+  "autoRefresh": {
+    "off": "자동 새로고침 끔",
+    "sec10": "10초",
+    "sec30": "30초",
+    "min1": "1분",
+    "min5": "5분",
+    "justNow": "방금",
+    "secondsAgo": "{n}초 전",
+    "minutesAgo": "{n}분 전",
+    "updated": "{ago} 업데이트",
+    "refreshNow": "지금 새로고침",
+    "intervalLabel": "자동 새로고침 주기"
+  },
+  "history": {
+    "title": "내 히스토리",
+    "description": "내 프롬프트·응답 — 나만 볼 수 있습니다",
+    "loginRequiredTitle": "로그인이 필요합니다",
+    "loginRequiredDescription": "내 히스토리를 보려면 로그인하세요.",
+    "disabledTitle": "본문 수집이 비활성화되어 있습니다",
+    "disabledDescription": "서버에 본문 암호화 키(TOARD_CONTENT_KEK_B64)가 설정되면 프롬프트·응답이 저장됩니다.",
+    "emptyTitle": "아직 저장된 히스토리가 없습니다",
+    "emptyDescription": "shim 에서 본문 수집(TOARD_SHIM_COLLECT_CONTENT=1)을 켜면 여기에 쌓입니다.",
+    "privacyNote": "나만 볼 수 있습니다 — 관리자·다른 사용자는 이 내용을 조회할 수 없습니다.",
+    "rolePrompt": "프롬프트",
+    "roleResponse": "응답",
+    "showMore": "더보기",
+    "showLess": "접기"
+  }
+}

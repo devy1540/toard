@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { getTranslations } from "next-intl/server";
 import { runPricingSync } from "@/lib/pricing-sync";
 import { getSessionUser } from "@/lib/session-user";
 
@@ -11,15 +12,16 @@ export async function syncPricingAction(
   _prev: PricingSyncState,
   _formData: FormData,
 ): Promise<PricingSyncState> {
+  const t = await getTranslations("admin");
   const user = await getSessionUser();
-  if (!user || user.role !== "admin") return { error: "관리자만 가능합니다." };
+  if (!user || user.role !== "admin") return { error: t("errors.onlyAdmin") };
 
   const r = await runPricingSync();
   if (!r.ok) {
     return {
       error: r.kept
-        ? `가격 다운로드에 실패해 기존 스냅샷을 유지했습니다 — ${r.error}`
-        : `동기화 실패 — ${r.error}`,
+        ? t("errors.pricingDownloadKept", { error: r.error })
+        : t("errors.pricingSyncFailed", { error: r.error }),
     };
   }
   revalidatePath("/admin");

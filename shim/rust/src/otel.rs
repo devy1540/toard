@@ -50,8 +50,16 @@ pub fn merge_otlp_headers(existing: Option<&str>, token: &str) -> HeaderMerge {
 }
 
 /// 리소스 속성(comma-separated key=value)에 toard 마커 병합. 이미 있으면 None(변경 불필요).
-pub fn merge_resource_attrs(existing: Option<&str>, tool: &str) -> Option<String> {
-    let ours = format!("toard.shim=rust,toard.tool={tool}");
+/// host 는 있으면 같은 마커 문자열에 번들 — 아래 멱등 가드(`toard.tool` 유무)가 host 까지 커버.
+pub fn merge_resource_attrs(
+    existing: Option<&str>,
+    tool: &str,
+    host: Option<&str>,
+) -> Option<String> {
+    let mut ours = format!("toard.shim=rust,toard.tool={tool}");
+    if let Some(h) = host {
+        ours.push_str(&format!(",toard.host={h}"));
+    }
     match existing.map(str::trim).filter(|s| !s.is_empty()) {
         None => Some(ours),
         Some(s) => {
@@ -92,9 +100,14 @@ pub fn inject_env(tool: &str, endpoint: &str, token: &str) {
         ),
     }
 
-    if let Some(v) =
-        merge_resource_attrs(env::var("OTEL_RESOURCE_ATTRIBUTES").ok().as_deref(), tool)
-    {
+    // 컴퓨터별 구분용 host 라벨 주입(§design-host-breakdown). Claude Code 는 이 env 를 존중하고,
+    // Codex 는 config.toml 우선이라 env 미존중일 수 있음(그 경우 Codex host 는 "(알 수 없음)").
+    let host = crate::host::host_label();
+    if let Some(v) = merge_resource_attrs(
+        env::var("OTEL_RESOURCE_ATTRIBUTES").ok().as_deref(),
+        tool,
+        host.as_deref(),
+    ) {
         env::set_var("OTEL_RESOURCE_ATTRIBUTES", v);
     }
 
@@ -146,23 +159,40 @@ mod tests {
     #[test]
     fn attrs_fresh() {
         assert_eq!(
-            merge_resource_attrs(None, "claude").as_deref(),
+            merge_resource_attrs(None, "claude", None).as_deref(),
             Some("toard.shim=rust,toard.tool=claude")
+        );
+    }
+
+    #[test]
+    fn attrs_fresh_with_host() {
+        assert_eq!(
+            merge_resource_attrs(None, "claude", Some("alice-macbook")).as_deref(),
+            Some("toard.shim=rust,toard.tool=claude,toard.host=alice-macbook")
         );
     }
 
     #[test]
     fn attrs_append_preserves_user() {
         assert_eq!(
-            merge_resource_attrs(Some("team=infra"), "codex").as_deref(),
+            merge_resource_attrs(Some("team=infra"), "codex", None).as_deref(),
             Some("team=infra,toard.shim=rust,toard.tool=codex")
         );
     }
 
     #[test]
-    fn attrs_noop_when_marker_present() {
+    fn attrs_append_with_host() {
         assert_eq!(
-            merge_resource_attrs(Some("toard.tool=claude,team=x"), "claude"),
+            merge_resource_attrs(Some("team=infra"), "codex", Some("box1")).as_deref(),
+            Some("team=infra,toard.shim=rust,toard.tool=codex,toard.host=box1")
+        );
+    }
+
+    #[test]
+    fn attrs_noop_when_marker_present() {
+        // host 를 같은 마커 문자열에 번들하므로, toard.tool 이 이미 있으면 host 도 재주입 안 함(멱등).
+        assert_eq!(
+            merge_resource_attrs(Some("toard.tool=claude,team=x"), "claude", Some("h")),
             None
         );
     }

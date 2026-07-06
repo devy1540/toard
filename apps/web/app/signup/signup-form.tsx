@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -9,11 +10,12 @@ import { signupAction, type SignupState } from "./actions";
 const INITIAL: SignupState = {};
 
 export function SignupForm() {
+  const t = useTranslations("auth");
   const [state, action, pending] = useActionState(signupAction, INITIAL);
   return (
     <form action={action} className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
-        <Label htmlFor="email">이메일</Label>
+        <Label htmlFor="email">{t("signup.emailLabel")}</Label>
         <Input
           id="email"
           name="email"
@@ -24,11 +26,11 @@ export function SignupForm() {
         />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="name">이름 (선택)</Label>
+        <Label htmlFor="name">{t("signup.nameLabel")}</Label>
         <Input id="name" name="name" type="text" autoComplete="name" />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="password">비밀번호</Label>
+        <Label htmlFor="password">{t("signup.passwordLabel")}</Label>
         <Input
           id="password"
           name="password"
@@ -36,16 +38,16 @@ export function SignupForm() {
           autoComplete="new-password"
           required
           minLength={8}
-          placeholder="8자 이상"
+          placeholder={t("signup.passwordPlaceholder")}
         />
       </div>
       <div className="flex flex-col gap-2">
-        <Label htmlFor="confirm">비밀번호 확인</Label>
+        <Label htmlFor="confirm">{t("signup.confirmLabel")}</Label>
         <Input id="confirm" name="confirm" type="password" autoComplete="new-password" required />
       </div>
       {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
       <Button type="submit" disabled={pending}>
-        {pending ? "가입 중…" : "가입"}
+        {pending ? t("signup.submitting") : t("signup.submit")}
       </Button>
     </form>
   );

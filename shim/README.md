@@ -30,10 +30,25 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 - **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).
 - **실행 모델**: 데몬 없음. `claude`/`codex` wrap 실행에 편승해 10분 스로틀(double-spawn 분리)로 백그라운드 수집. `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절, `toard-shim collect` 즉시 실행.
 
+## 컴퓨터별 구분 (host — 기본 on)
+같은 계정을 여러 컴퓨터에서 써도 사용량을 **컴퓨터별로 구분**해 볼 수 있게, shim 이 발생 기기의 라벨(호스트명)을 함께 보낸다. push 경로는 OTEL resource attribute `toard.host`, pull 경로는 `UsageEvent.host` 로 전송된다. 표시는 **본인 화면 한정**(내 사용량 · 설정 › 내 기기).
+- **기본값**: 자동으로 `hostname` 을 `trim`+소문자화해 전송(대소문자·공백 차이로 버킷이 갈리지 않게).
+- `TOARD_DISABLE_HOST=1`: 기기명 전송 끄기 → 서버에서 "(알 수 없음)" 으로 집계.
+- `TOARD_HOST_LABEL=<별칭>`: 호스트명 대신 지정한 별칭 전송(대소문자 존중). 사내 기기명이 실명/직책을 담는 경우 대비.
+- **Codex 주의**: Codex 는 `config.toml` 우선이라 env resource attribute 존중 여부가 도구 버전에 따라 다를 수 있다(미존중 시 Codex 사용량 host 는 "(알 수 없음)"). Claude Code(env)·pull 경로는 영향 없음.
+
 ## 본문 수집 (opt-in — 기본 off)
-`TOARD_SHIM_COLLECT_CONTENT=1` 이면 gemini/qwen 로그의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
+`TOARD_SHIM_COLLECT_CONTENT=1`(env) 또는 `~/.toard/credentials` 의 `collect_content=true`(설치 시 `install.sh` 가 기록) 이면 **claude·codex·gemini·qwen** 로컬 세션 파일의 **프롬프트/응답 텍스트**도 함께 수집해 `POST /api/v1/prompts` 로 보낸다. env 가 명시되면 env 가 우선(`0`/`off` 로 강제 해제 가능). usage 경로(`/v1/events`)와 **커서(`{adapter}-content`)·엔드포인트가 완전 분리**되며, usage 수집 동작에는 영향이 없다.
+
+- **본문은 pull 로 일원화(설계 확정)**: OTLP 로는 응답을 얻을 수 없어(Codex 는 응답 이벤트 자체가 없고 — 실측·소스 확정) 본문은 전 도구가 로컬 세션 파일에서 pull 한다. 사용량은 지금처럼 OTLP(claude/codex)·pull(gemini/qwen) 유지 — 본문 어댑터는 content-only 라 사용량 이중집계 없음.
+  - claude: `~/.claude/projects/**/*.jsonl` (Desktop 사용분 포함). codex: `~/.codex/sessions/**/*.jsonl`(CODEX_HOME 존중). 각 도구가 프롬프트+응답을 전문으로 남긴다.
+- **백필 컷오프 `collect_content_since`** (credentials 또는 env `TOARD_SHIM_COLLECT_CONTENT_SINCE`): 이 시점 이후 턴만 수집.
+  - **미설정(기본) = "지금부터"** — 최초 활성화 시각을 `~/.toard/state/content-since` 에 기록해, 켜는 순간 과거 대화가 통째로 전송되지 않는다.
+  - `collect_content_since=2026-06-01`(그 날짜부터) · `collect_content_since=all`(전량 백필). 진행 중 세션이 append 돼도 옛 턴은 컷오프로 제외된다.
+- **설치 기본값(운영자 정책)**: 서버 `CONTENT_COLLECTION_DEFAULT=on` 이면 `install.sh`·설정 토글이 본문 수집을 **기본 on(opt-out)** 으로 준다(사용자는 `TOARD_SHIM_COLLECT_CONTENT=0` 로 끔). 기본은 per-user opt-in.
 - **신뢰경계**: shim 은 본문을 **평문 TLS** 로 보내되 키를 쥐지 않는다 — **봉투 암호화(at-rest)·소유자 전용(RLS)은 서버 몫**. shim 의 "본문 안 읽음" 기본값을 여는 스위치라 명시적 opt-in.
 - **서버측 게이트**: 서버에 본문 수집 KEK 가 없으면 `/v1/prompts` 가 503 → shim 은 실패로 보지 않고 조용히 건너뛴다.
+- **전송 안전(https 강제)**: 본문은 `https://`(또는 로컬 `localhost`/`127.0.0.1`) endpoint 로만 보낸다. 원격 `http://` 면 평문 노출 위험이라 **본문 수집을 건너뛴다**(경고 출력). 토큰 카운트 usage 경로는 이 제약과 무관.
 - **범위 주의**: 텍스트 필드는 `text`/`content` 를 시도한다. qwen 등 실로그의 본문 키가 다르면 빈 결과(안전)가 되므로, 프로덕션 활성화 전 실로그 검증이 필요하다.
 
 ## 자동 업데이트 (ADR-006)

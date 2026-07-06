@@ -1,5 +1,6 @@
 "use server";
 
+import { getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword, verifyPassword } from "@/lib/password";
@@ -16,9 +17,10 @@ export async function changePasswordAction(
   _prev: PasswordState,
   formData: FormData,
 ): Promise<PasswordState> {
+  const t = await getTranslations("settings");
   const session = await auth();
   const userId = session?.user?.id;
-  if (!userId) return { error: "로그인이 필요합니다." };
+  if (!userId) return { error: t("errors.loginRequired") };
 
   const current = String(formData.get("current") ?? "");
   const next = String(formData.get("next") ?? "");
@@ -26,7 +28,7 @@ export async function changePasswordAction(
 
   const pwErr = validatePassword(next);
   if (pwErr) return { error: pwErr };
-  if (next !== confirm) return { error: "새 비밀번호가 일치하지 않습니다." };
+  if (next !== confirm) return { error: t("errors.passwordMismatch") };
 
   const pool = getPool();
   const r = await pool.query<{ password_hash: string | null }>(
@@ -36,7 +38,7 @@ export async function changePasswordAction(
   const currentHash = r.rows[0]?.password_hash ?? null;
   if (currentHash) {
     const ok = await verifyPassword(current, currentHash);
-    if (!ok) return { error: "현재 비밀번호가 올바르지 않습니다." };
+    if (!ok) return { error: t("errors.currentPasswordWrong") };
   }
 
   const hash = await hashPassword(next);

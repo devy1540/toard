@@ -1,3 +1,4 @@
+import { contentCollectionDefaultOn } from "@/lib/content-crypto";
 import { getIngestEndpoint } from "@/lib/public-url";
 
 // toard 가 직접 서빙하는 원클릭 설치 스크립트. endpoint 를 서버가 주입하고, 토큰은 env 로 받는다.
@@ -6,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   const endpoint = await getIngestEndpoint();
-  return new Response(installScript(endpoint), {
+  return new Response(installScript(endpoint, contentCollectionDefaultOn()), {
     headers: {
       "content-type": "text/x-shellscript; charset=utf-8",
       "cache-control": "no-store",
@@ -14,7 +15,10 @@ export async function GET() {
   });
 }
 
-function installScript(endpoint: string): string {
+function installScript(endpoint: string, contentDefaultOn: boolean): string {
+  // 운영자 정책이 opt-out(CONTENT_COLLECTION_DEFAULT=on)이면 본문 수집을 기본 on 으로 주입.
+  // 사용자는 `TOARD_SHIM_COLLECT_CONTENT=0` 으로 끌 수 있다(env 가 항상 우선).
+  const collectDefault = contentDefaultOn ? "1" : "";
   return [
     "#!/bin/sh",
     "# toard shim 원클릭 설치 (toard 서빙). 사용:",
@@ -22,6 +26,7 @@ function installScript(endpoint: string): string {
     "set -e",
     'ENDPOINT="${TOARD_INGEST_ENDPOINT:-' + endpoint + '}"',
     'TOKEN="${TOARD_INGEST_TOKEN:-}"',
+    'COLLECT="${TOARD_SHIM_COLLECT_CONTENT:-' + collectDefault + '}"',
     'BIN_DIR="${TOARD_BIN_DIR:-$HOME/.toard/bin}"',
     "",
     "# 1) 바이너리 설치(다운로드 + SHA 검증)는 릴리스 install.sh 에 위임",
@@ -31,6 +36,9 @@ function installScript(endpoint: string): string {
     'if [ -n "$TOKEN" ]; then',
     '  mkdir -p "$HOME/.toard"; chmod 700 "$HOME/.toard"',
     "  printf 'agent_key=%s\\nendpoint=%s\\n' \"$TOKEN\" \"$ENDPOINT\" > \"$HOME/.toard/credentials\"",
+    "  case \"$COLLECT\" in",
+    "    1|true|on|yes) printf 'collect_content=true\\n' >> \"$HOME/.toard/credentials\"; echo '본문 수집 켜짐 (프롬프트·응답을 암호화해 내 계정에만 저장). 끄려면 재설치 시 TOARD_SHIM_COLLECT_CONTENT=0. 과거 백필 없이 지금부터만 수집됩니다(collect_content_since=날짜 로 과거 지정 가능).' ;;",
+    "  esac",
     '  chmod 600 "$HOME/.toard/credentials"',
     '  echo "자격 증명 작성됨 → ~/.toard/credentials (endpoint=$ENDPOINT)"',
     "else",

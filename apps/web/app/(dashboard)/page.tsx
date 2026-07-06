@@ -53,16 +53,9 @@ export default async function MyUsagePage({
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title={t("myUsageTitle")}
-        description={t("myUsageDescription")}
-        actions={
-          <>
-            <DashboardFilters providers={providers} />
-            <AutoRefresh />
-          </>
-        }
-      />
+      <PageHeader title={t("myUsageTitle")} description={t("myUsageDescription")} actions={<AutoRefresh />} />
+
+      <DashboardFilters providers={providers} />
 
       <PricingNotice />
 

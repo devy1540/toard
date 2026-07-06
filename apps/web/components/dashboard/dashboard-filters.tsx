@@ -16,7 +16,8 @@ const PERIODS = [
   { v: "90", key: "filters.period90" },
 ] as const;
 
-/** 기간(세그먼트+직접 선택)·도구(셀렉트) 필터 — 페이지 헤더 우측에 배치. */
+/** 기간(세그먼트+직접 선택)·도구(셀렉트) 필터 바 — 제목 줄 아래 별도 행에 배치.
+ *  직접 선택을 켜면 프리셋 하이라이트 해제(상호배타), 날짜 입력은 아래 줄로 분리해 도구 위치를 고정. */
 export function DashboardFilters({ providers }: { providers: ProviderOption[] }) {
   const t = useTranslations("dashboard");
   const router = useRouter();
@@ -50,29 +51,45 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <div className="flex flex-wrap gap-1">
-        {PERIODS.map((p) => (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-1">
+          {PERIODS.map((p) => (
+            <Button
+              key={p.v}
+              size="sm"
+              variant={!isCustom && !showCustom && period === p.v ? "default" : "outline"}
+              onClick={() => selectPreset(p.v)}
+            >
+              {t(p.key)}
+            </Button>
+          ))}
           <Button
-            key={p.v}
             size="sm"
-            variant={!isCustom && period === p.v ? "default" : "outline"}
-            onClick={() => selectPreset(p.v)}
+            variant={isCustom || showCustom ? "default" : "outline"}
+            onClick={() => setShowCustom((s) => !s)}
           >
-            {t(p.key)}
+            {t("filters.customRange")}
           </Button>
-        ))}
-        <Button
-          size="sm"
-          variant={isCustom || showCustom ? "default" : "outline"}
-          onClick={() => setShowCustom((s) => !s)}
-        >
-          {t("filters.customRange")}
-        </Button>
+        </div>
+
+        <Select value={provider} onValueChange={(v) => push({ provider: v })}>
+          <SelectTrigger className="h-8 w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("filters.allTools")}</SelectItem>
+            {providers.map((p) => (
+              <SelectItem key={p.key} value={p.key}>
+                {p.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {showCustom && (
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
           <Input
             type="date"
             value={from}
@@ -95,20 +112,6 @@ export function DashboardFilters({ providers }: { providers: ProviderOption[] })
           </Button>
         </div>
       )}
-
-      <Select value={provider} onValueChange={(v) => push({ provider: v })}>
-        <SelectTrigger className="w-36">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">{t("filters.allTools")}</SelectItem>
-          {providers.map((p) => (
-            <SelectItem key={p.key} value={p.key}>
-              {p.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
     </div>
   );
 }

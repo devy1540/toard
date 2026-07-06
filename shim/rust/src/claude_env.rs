@@ -11,6 +11,12 @@ use crate::json::{self, Value};
 
 /// 주입 대상 키 (Claude Code env 기반 텔레메트리 — shim wrap 과 동일 세트)
 fn managed_keys(endpoint: &str, token: &str) -> Vec<(String, String)> {
+    // 컴퓨터별 구분용 host 라벨도 함께 주입 — wrap 경로(inject_env)와 동일 포맷.
+    // Desktop·IDE 는 이 settings.json 경로로만 텔레메트리를 받으므로, 여기서 host 를
+    // 빼면 Desktop 사용량이 전부 "(알 수 없음)" 으로 집계된다(§design-host-breakdown).
+    let host = crate::host::host_label();
+    let resource_attrs = crate::otel::merge_resource_attrs(None, "claude", host.as_deref())
+        .unwrap_or_else(|| "toard.shim=rust,toard.tool=claude".to_string());
     vec![
         ("CLAUDE_CODE_ENABLE_TELEMETRY".into(), "1".into()),
         ("OTEL_LOGS_EXPORTER".into(), "otlp".into()),
@@ -21,10 +27,7 @@ fn managed_keys(endpoint: &str, token: &str) -> Vec<(String, String)> {
             "OTEL_EXPORTER_OTLP_HEADERS".into(),
             format!("Authorization=Bearer {token}"),
         ),
-        (
-            "OTEL_RESOURCE_ATTRIBUTES".into(),
-            "toard.shim=rust,toard.tool=claude".into(),
-        ),
+        ("OTEL_RESOURCE_ATTRIBUTES".into(), resource_attrs),
     ]
 }
 

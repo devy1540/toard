@@ -11,6 +11,9 @@ pub struct Credentials {
     pub endpoint: Option<String>,
     /// 본문 수집 opt-in 지속 플래그 (install.sh 가 기록). env 미설정 시 이 값을 따른다.
     pub collect_content: bool,
+    /// 본문 백필 컷오프. 이 시점 이후 턴만 수집(§collect_content_since).
+    /// ISO 날짜/`all`/미설정. 미설정 = "지금부터"(최초 활성화 시각을 state 에 기록).
+    pub collect_content_since: Option<String>,
 }
 
 pub fn read_credentials() -> Credentials {
@@ -30,6 +33,10 @@ pub fn read_credentials() -> Credentials {
             .and_then(non_empty)
             .or(file.endpoint),
         collect_content: file.collect_content,
+        collect_content_since: env::var("TOARD_SHIM_COLLECT_CONTENT_SINCE")
+            .ok()
+            .and_then(non_empty)
+            .or(file.collect_content_since),
     }
 }
 
@@ -50,6 +57,9 @@ pub fn parse(content: &str) -> Credentials {
                 "endpoint" if creds.endpoint.is_none() => creds.endpoint = Some(v.to_string()),
                 "collect_content" => {
                     creds.collect_content = matches!(v, "1" | "true" | "on" | "yes")
+                }
+                "collect_content_since" if creds.collect_content_since.is_none() => {
+                    creds.collect_content_since = Some(v.to_string())
                 }
                 _ => {}
             }

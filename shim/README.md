@@ -42,7 +42,10 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 
 - **본문은 pull 로 일원화(설계 확정)**: OTLP 로는 응답을 얻을 수 없어(Codex 는 응답 이벤트 자체가 없고 — 실측·소스 확정) 본문은 전 도구가 로컬 세션 파일에서 pull 한다. 사용량은 지금처럼 OTLP(claude/codex)·pull(gemini/qwen) 유지 — 본문 어댑터는 content-only 라 사용량 이중집계 없음.
   - claude: `~/.claude/projects/**/*.jsonl` (Desktop 사용분 포함). codex: `~/.codex/sessions/**/*.jsonl`(CODEX_HOME 존중). 각 도구가 프롬프트+응답을 전문으로 남긴다.
-  - 첫 실행은 기존 세션까지 **백필**(커서 이후 증분) — 옵트인 시 과거 대화가 한 번에 전송될 수 있음.
+- **백필 컷오프 `collect_content_since`** (credentials 또는 env `TOARD_SHIM_COLLECT_CONTENT_SINCE`): 이 시점 이후 턴만 수집.
+  - **미설정(기본) = "지금부터"** — 최초 활성화 시각을 `~/.toard/state/content-since` 에 기록해, 켜는 순간 과거 대화가 통째로 전송되지 않는다.
+  - `collect_content_since=2026-06-01`(그 날짜부터) · `collect_content_since=all`(전량 백필). 진행 중 세션이 append 돼도 옛 턴은 컷오프로 제외된다.
+- **설치 기본값(운영자 정책)**: 서버 `CONTENT_COLLECTION_DEFAULT=on` 이면 `install.sh`·설정 토글이 본문 수집을 **기본 on(opt-out)** 으로 준다(사용자는 `TOARD_SHIM_COLLECT_CONTENT=0` 로 끔). 기본은 per-user opt-in.
 - **신뢰경계**: shim 은 본문을 **평문 TLS** 로 보내되 키를 쥐지 않는다 — **봉투 암호화(at-rest)·소유자 전용(RLS)은 서버 몫**. shim 의 "본문 안 읽음" 기본값을 여는 스위치라 명시적 opt-in.
 - **서버측 게이트**: 서버에 본문 수집 KEK 가 없으면 `/v1/prompts` 가 503 → shim 은 실패로 보지 않고 조용히 건너뛴다.
 - **전송 안전(https 강제)**: 본문은 `https://`(또는 로컬 `localhost`/`127.0.0.1`) endpoint 로만 보낸다. 원격 `http://` 면 평문 노출 위험이라 **본문 수집을 건너뛴다**(경고 출력). 토큰 카운트 usage 경로는 이 제약과 무관.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,8 @@ const ALL_PERIOD = { v: "all", key: "filters.periodAll" } as const;
  *  직접 선택을 켜면 프리셋 하이라이트 해제(상호배타), 날짜 입력은 아래 줄로 분리해 도구 위치를 고정.
  *  showAllPreset/defaultPeriod: 히스토리처럼 "기본 = 전체"인 화면용.
  *  resetKeys: 필터가 바뀌면 함께 지울 파라미터(페이지 번호·열린 세션 등).
- *  timezone: 서버가 해석한 뷰어 타임존 — 기간 경계가 어느 벽시계 기준인지 명시(조용한 타임존 방지). */
+ *  timezone: 서버가 해석한 뷰어 타임존 — 기기 타임존과 다를 때만 표시(조용한 타임존 방지).
+ *  같으면 "내 시간대로 보인다"가 자명해 정보가 0 — 숨겨서 필터 행 노이즈를 줄인다. */
 export function DashboardFilters({
   providers,
   defaultPeriod = DEFAULT_PERIOD,
@@ -48,6 +49,13 @@ export function DashboardFilters({
   const [showCustom, setShowCustom] = useState(isCustom);
   const [from, setFrom] = useState(sp.get("from") ?? "");
   const [to, setTo] = useState(sp.get("to") ?? "");
+
+  // 기기 타임존은 클라이언트에서만 알 수 있다 — SSR 마크업과의 hydration 불일치를 피해 마운트 후 해석
+  const [deviceTz, setDeviceTz] = useState<string | null>(null);
+  useEffect(() => {
+    setDeviceTz(Intl.DateTimeFormat().resolvedOptions().timeZone ?? null);
+  }, []);
+  const tzDiffers = timezone != null && deviceTz != null && timezone !== deviceTz;
 
   const push = (params: Record<string, string | null>) => {
     const next = new URLSearchParams(sp.toString());
@@ -106,7 +114,7 @@ export function DashboardFilters({
           </SelectContent>
         </Select>
 
-        {timezone && (
+        {tzDiffers && (
           <span className="text-muted-foreground text-xs" title={timezone}>
             {t("filters.timezoneNote", { tz: timezone })}
           </span>

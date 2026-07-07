@@ -59,7 +59,7 @@
   },
   "system": {
     "pricingTitle": "Pricing sync",
-    "pricingDescription": "Fetches LiteLLM model pricing for cost calculation. Without pricing, costs are calculated as $0, so you can run it manually here separately from registering the cron (sync-pricing).",
+    "pricingDescription": "Fetches LiteLLM model pricing for cost calculation. Without pricing, costs are calculated as $0 — you can run it manually here, independent of auto sync.",
     "modelsCount": "{count} models",
     "lastSync": "· Last synced {day}",
     "noPricing": "No pricing has been synced — collected costs are calculated as $0.",
@@ -76,7 +76,10 @@
     "contentSetupNote": "See <code>docs/DEPLOY.md</code> for switching to the app role (<code>toard_app</code>) that enforces RLS. If the key is lost, existing content cannot be decrypted.",
     "serverTitle": "Server",
     "serverDescription": "Information about the running toard server. Check here after a deploy to confirm the version changed.",
-    "serverVersion": "Version"
+    "serverVersion": "Version",
+    "autoSyncLabel": "Auto sync (daily)",
+    "autoSyncHint": "When on, the server syncs once a day (org timezone). Changes take effect within an hour, no restart needed.",
+    "autoSyncUnavailable": "The built-in scheduler is inactive in this deployment (Vercel cron or PRICING_AUTO_SYNC=off) — an external scheduler handles syncing."
   },
   "errors": {
     "onlyAdminInvite": "Only administrators can send invitations.",
@@ -89,6 +92,7 @@
     "teamHasMembers": "A team with members cannot be deleted.",
     "teamHasEvents": "A team with attributed collection history cannot be deleted.",
     "pricingDownloadKept": "Pricing download failed, so the existing snapshot was kept — {error}",
-    "pricingSyncFailed": "Sync failed — {error}"
+    "pricingSyncFailed": "Sync failed — {error}",
+    "autoSyncSaveFailed": "Failed to save auto sync setting: {error}"
   }
 }

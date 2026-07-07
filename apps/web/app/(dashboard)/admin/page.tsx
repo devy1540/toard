@@ -12,6 +12,7 @@ import { getPool } from "@/lib/db";
 import { listAllHostShims, worstShimByUser } from "@/lib/host-shims";
 import { listPendingInvites } from "@/lib/invites";
 import { getPricingStatus } from "@/lib/pricing";
+import { isAutoSyncEnabled, schedulerEligible } from "@/lib/pricing-auto-sync";
 import { getPublicBaseUrl } from "@/lib/public-url";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
@@ -216,7 +217,12 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const [pricing, t] = await Promise.all([getPricingStatus(), getTranslations("admin")]);
+  const [pricing, autoSync, t] = await Promise.all([
+    getPricingStatus(),
+    // 마이그레이션 전 등 조회 실패 시 기본값(on)으로 표시 — 시스템 탭이 깨지지 않게
+    isAutoSyncEnabled().catch(() => true),
+    getTranslations("admin"),
+  ]);
   const contentEnabled = contentCollectionEnabled();
 
   return (
@@ -240,7 +246,12 @@ async function SystemTab() {
           <CardDescription>{t("system.pricingDescription")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <PricingSyncPanel models={pricing.models} lastDay={pricing.lastDay} />
+          <PricingSyncPanel
+            models={pricing.models}
+            lastDay={pricing.lastDay}
+            autoSync={autoSync}
+            builtinScheduler={schedulerEligible(process.env)}
+          />
         </CardContent>
       </Card>
 

@@ -59,7 +59,7 @@
   },
   "system": {
     "pricingTitle": "가격 동기화",
-    "pricingDescription": "LiteLLM 모델 가격을 받아 비용 계산에 사용합니다. 가격이 없으면 비용이 $0 으로 계산되므로, cron(sync-pricing) 등록과 별개로 여기서 수동 실행할 수 있습니다.",
+    "pricingDescription": "LiteLLM 모델 가격을 받아 비용 계산에 사용합니다. 가격이 없으면 비용이 $0 으로 계산됩니다 — 자동 동기화와 별개로 여기서 수동 실행할 수 있습니다.",
     "modelsCount": "{count}개 모델",
     "lastSync": "· 마지막 동기화 {day}",
     "noPricing": "동기화된 가격이 없습니다 — 수집되는 비용이 $0 으로 계산됩니다.",
@@ -76,7 +76,10 @@
     "contentSetupNote": "RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고. 키를 잃으면 기존 본문은 복호화 불가.",
     "serverTitle": "서버",
     "serverDescription": "실행 중인 toard 서버 정보입니다. 배포 후 버전이 바뀌었는지 여기서 확인하세요.",
-    "serverVersion": "버전"
+    "serverVersion": "버전",
+    "autoSyncLabel": "자동 동기화 (일 1회)",
+    "autoSyncHint": "켜면 서버가 매일(조직 타임존 기준) 한 번 자동으로 동기화합니다. 변경은 재시작 없이 최대 1시간 안에 반영됩니다.",
+    "autoSyncUnavailable": "이 배포는 내장 스케줄러가 비활성입니다(Vercel cron 또는 PRICING_AUTO_SYNC=off) — 외부 스케줄러가 동기화를 담당합니다."
   },
   "errors": {
     "onlyAdminInvite": "관리자만 초대할 수 있습니다.",
@@ -89,6 +92,7 @@
     "teamHasMembers": "소속 멤버가 있는 팀은 삭제할 수 없습니다.",
     "teamHasEvents": "수집 이력이 귀속된 팀은 삭제할 수 없습니다.",
     "pricingDownloadKept": "가격 다운로드에 실패해 기존 스냅샷을 유지했습니다 — {error}",
-    "pricingSyncFailed": "동기화 실패 — {error}"
+    "pricingSyncFailed": "동기화 실패 — {error}",
+    "autoSyncSaveFailed": "자동 동기화 설정 저장 실패: {error}"
   }
 }

@@ -66,6 +66,7 @@ services:
       AUTH_GOOGLE_ID: ${AUTH_GOOGLE_ID:-}
       AUTH_GOOGLE_SECRET: ${AUTH_GOOGLE_SECRET:-}
       CRON_SECRET: ${CRON_SECRET:-}
+      PRICING_AUTO_SYNC: ${PRICING_AUTO_SYNC:-}   # 내장 가격 자동 동기화(기본 on, 일 1회) — off 로 끔
       STORAGE_BACKEND: ${STORAGE_BACKEND:-postgres}
       CLICKHOUSE_URL: ${CLICKHOUSE_URL:-}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-toard}

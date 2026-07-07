@@ -235,7 +235,9 @@ export class PostgresStorage implements StorageBackend {
               COUNT(DISTINCT session_id) AS sessions,
               COALESCE(SUM(cost_usd),0)  AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
-              COALESCE(SUM(output_tokens),0) AS output
+              COALESCE(SUM(output_tokens),0) AS output,
+              COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
+              COALESCE(SUM(cache_creation_tokens),0) AS cache_creation
        FROM usage_events ${where}
        GROUP BY 1 ORDER BY 1`,
       params,
@@ -243,6 +245,7 @@ export class PostgresStorage implements StorageBackend {
     return res.rows.map((r) => ({
       day: r.day, sessions: n(r.sessions), costUsd: n(r.cost),
       inputTokens: n(r.input), outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read), cacheCreationTokens: n(r.cache_creation),
     }));
   }
 
@@ -251,7 +254,7 @@ export class PostgresStorage implements StorageBackend {
     const res = await this.pool.query(
       `SELECT COALESCE(model,'(unknown)') AS model,
               COALESCE(SUM(cost_usd),0)   AS cost,
-              COALESCE(SUM(input_tokens + output_tokens),0) AS tokens,
+              COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id)  AS sessions
        FROM usage_events ${where}
        GROUP BY 1 ORDER BY cost DESC`,
@@ -269,7 +272,7 @@ export class PostgresStorage implements StorageBackend {
     const res = await this.pool.query(
       `SELECT host,
               COALESCE(SUM(cost_usd),0)   AS cost,
-              COALESCE(SUM(input_tokens + output_tokens),0) AS tokens,
+              COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id)  AS sessions
        FROM usage_events ${where}
        GROUP BY host ORDER BY cost DESC`,
@@ -380,14 +383,14 @@ export class PostgresStorage implements StorageBackend {
       q.scope === "user"
         ? `SELECT u.id AS key, COALESCE(u.name, u.email) AS label,
                   COALESCE(SUM(e.cost_usd),0) AS cost,
-                  COALESCE(SUM(e.input_tokens + e.output_tokens),0) AS tokens,
+                  COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions
            FROM usage_events e JOIN users u ON u.id = e.user_id
            ${ePrefixed}
            GROUP BY u.id, label ORDER BY cost DESC LIMIT 100`
         : `SELECT d.id AS key, d.name AS label,
                   COALESCE(SUM(e.cost_usd),0) AS cost,
-                  COALESCE(SUM(e.input_tokens + e.output_tokens),0) AS tokens,
+                  COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions
            FROM usage_events e JOIN teams d ON d.id = e.team_id
            ${ePrefixed} AND e.team_id IS NOT NULL

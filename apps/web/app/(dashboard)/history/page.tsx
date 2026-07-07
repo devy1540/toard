@@ -208,7 +208,15 @@ export default async function HistoryPage({
                         ) : null}
                         <span>{t("history.turns", { count: s.turnCount })}</span>
                         {usage ? (
-                          <span>{fmtCompact(usage.inputTokens + usage.outputTokens)} {t("tokens")}</span>
+                          <span>
+                            {fmtCompact(
+                              usage.inputTokens +
+                                usage.outputTokens +
+                                usage.cacheReadTokens +
+                                usage.cacheCreationTokens,
+                            )}{" "}
+                            {t("tokens")}
+                          </span>
                         ) : null}
                         {usage && usage.hosts.length > 0 ? <span>{usage.hosts.join(", ")}</span> : null}
                         <span className="ml-auto tabular-nums">{fmtTs(s.latestTs)}</span>

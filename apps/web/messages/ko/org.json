@@ -7,7 +7,7 @@
   "sessions": "세션",
   "activeUsers": "활성 사용자",
   "totalTokens": "총 토큰",
-  "tokenHint": "입력 {in} · 출력 {out}",
+  "tokenHint": "입력 {in} · 출력 {out} · 캐시 {cache}",
   "dailyUsage": "일별 사용량",
   "hourlyUsage": "시간별 사용량",
   "noDataTitle": "데이터가 없습니다",

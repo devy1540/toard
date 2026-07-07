@@ -103,8 +103,17 @@ async function OverviewTab({
         <StatCard label={t("activeUsers")} value={fmtNum(overview.activeUsers)} icon={<Users className="size-4" />} />
         <StatCard
           label={t("totalTokens")}
-          value={fmtCompact(overview.totalInputTokens + overview.totalOutputTokens)}
-          hint={t("tokenHint", { in: fmtCompact(overview.totalInputTokens), out: fmtCompact(overview.totalOutputTokens) })}
+          value={fmtCompact(
+            overview.totalInputTokens +
+              overview.totalOutputTokens +
+              overview.totalCacheReadTokens +
+              overview.totalCacheCreationTokens,
+          )}
+          hint={t("tokenHint", {
+            in: fmtCompact(overview.totalInputTokens),
+            out: fmtCompact(overview.totalOutputTokens),
+            cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
+          })}
           icon={<ArrowUpDown className="size-4" />}
         />
       </div>

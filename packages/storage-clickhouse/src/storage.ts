@@ -205,7 +205,9 @@ export class ClickHouseStorage implements StorageBackend {
               uniqExactIf(session_id, session_id != '')       AS sessions,
               sum(cost_usd)     AS cost,
               sum(input_tokens) AS input,
-              sum(output_tokens) AS output
+              sum(output_tokens) AS output,
+              sum(cache_read_tokens)     AS cache_read,
+              sum(cache_creation_tokens) AS cache_creation
        FROM usage_events FINAL ${where}
        GROUP BY day ORDER BY day`,
       params,
@@ -216,6 +218,8 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       inputTokens: n(r.input),
       outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read),
+      cacheCreationTokens: n(r.cache_creation),
     }));
   }
 
@@ -224,7 +228,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<{ model: string; cost?: string; tokens?: string; sessions?: string }>(
       `SELECT if(model = '', '(unknown)', model)               AS model,
               sum(cost_usd)                                     AS cost,
-              sum(input_tokens + output_tokens)                 AS tokens,
+              sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '')         AS sessions
        FROM usage_events FINAL ${where}
        GROUP BY model ORDER BY cost DESC`,
@@ -245,7 +249,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<{ host: string | null; cost?: string; tokens?: string; sessions?: string }>(
       `SELECT nullIf(host, '')                                 AS host,
               sum(cost_usd)                                     AS cost,
-              sum(input_tokens + output_tokens)                 AS tokens,
+              sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '')         AS sessions
        FROM usage_events FINAL ${where}
        GROUP BY host ORDER BY cost DESC`,
@@ -381,7 +385,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string }>(
       `SELECT ${col} AS key,
               sum(cost_usd)                             AS cost,
-              sum(input_tokens + output_tokens)         AS tokens,
+              sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '') AS sessions
        FROM usage_events FINAL ${where} AND ${col} != ''
        GROUP BY key ORDER BY cost DESC LIMIT 100`,

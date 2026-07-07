@@ -81,11 +81,14 @@ export interface DailyPoint {
   costUsd: number;
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
 }
 
 export interface ModelBreakdown {
   model: string;
   costUsd: number;
+  /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
 }
@@ -94,6 +97,7 @@ export interface ModelBreakdown {
 export interface HostBreakdown {
   host: string | null;
   costUsd: number;
+  /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
 }
@@ -141,6 +145,7 @@ export interface LeaderRow {
   /** 표시 이름 */
   label: string;
   costUsd: number;
+  /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
 }

@@ -27,7 +27,8 @@ export function UsageAreaChart({
     // 버킷 키 'YYYY-MM-DD'/'YYYY-MM-DD HH:00' → 축 라벨 'MM-DD'/'HH:00'
     day: bucket === "hour" ? d.day.slice(11) : d.day.slice(5),
     cost: Number(d.costUsd.toFixed(4)),
-    tokens: d.inputTokens + d.outputTokens,
+    // 총 소모 토큰(입력+출력+캐시) — 토큰 카드·테이블과 동일 정의
+    tokens: d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens,
   }));
   const isCost = metric === "cost";
 

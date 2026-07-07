@@ -9,6 +9,8 @@ const pt = (day: string, tokens = 100): DailyPoint => ({
   costUsd: 1,
   inputTokens: tokens,
   outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
 });
 
 test("hourKey — 타임존 벽시계 기준 'YYYY-MM-DD HH:00'", () => {

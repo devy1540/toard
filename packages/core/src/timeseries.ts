@@ -23,7 +23,15 @@ export function hourKey(at: Date, timezone: string): string {
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:00`;
 }
 
-const zero = (day: string): DailyPoint => ({ day, sessions: 0, costUsd: 0, inputTokens: 0, outputTokens: 0 });
+const zero = (day: string): DailyPoint => ({
+  day,
+  sessions: 0,
+  costUsd: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheCreationTokens: 0,
+});
 
 /**
  * bucket='hour' 시리즈의 [from, to) 구간 빈 시간대를 0 포인트로 채운다.

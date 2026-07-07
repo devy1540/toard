@@ -11,8 +11,8 @@
     "custom": "선택 기간 비용",
     "all": "전체 기간 비용"
   },
-  "costDeltaToday": "전일 대비 {pct}",
-  "costDeltaPrev": "직전 기간 대비 {pct}",
+  "vsPrevToday": "전일 대비",
+  "vsPrevPeriod": "직전 기간 대비",
   "statSessions": "세션",
   "sessionsHint": "CLI 대화(세션) 단위",
   "statTokens": "토큰",
@@ -30,6 +30,9 @@
   "tokens": "토큰",
   "cost": "비용",
   "noModelDataTitle": "모델 데이터 없음",
+  "modelSub": "{tokens} 토큰 · 세션 {sessions}",
+  "moreModels": "외 {n}개 모델",
+  "share": "비중",
   "byHostTitle": "기기별 사용량",
   "computer": "기기",
   "unknownHost": "(알 수 없음)",
@@ -53,7 +56,8 @@
   },
   "chart": {
     "cost": "비용",
-    "tokens": "토큰"
+    "tokens": "토큰",
+    "now": "지금"
   },
   "autoRefresh": {
     "off": "자동 새로고침 끔",

@@ -11,8 +11,8 @@
     "custom": "Selected period cost",
     "all": "All-time cost"
   },
-  "costDeltaToday": "{pct} vs yesterday",
-  "costDeltaPrev": "{pct} vs previous period",
+  "vsPrevToday": "vs yesterday",
+  "vsPrevPeriod": "vs previous period",
   "statSessions": "Sessions",
   "sessionsHint": "Per CLI conversation",
   "statTokens": "Tokens",
@@ -30,6 +30,9 @@
   "tokens": "Tokens",
   "cost": "Cost",
   "noModelDataTitle": "No model data",
+  "modelSub": "{tokens} tokens · {sessions} sessions",
+  "moreModels": "+{n} more models",
+  "share": "Share",
   "byHostTitle": "Usage by device",
   "computer": "Device",
   "unknownHost": "(unknown)",
@@ -53,7 +56,8 @@
   },
   "chart": {
     "cost": "Cost",
-    "tokens": "Tokens"
+    "tokens": "Tokens",
+    "now": "Now"
   },
   "autoRefresh": {
     "off": "Auto-refresh off",

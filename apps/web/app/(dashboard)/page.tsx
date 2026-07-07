@@ -7,7 +7,7 @@ import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { StatCard } from "@/components/dashboard/stat-card";
+import { StatCard, type StatDelta } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -22,6 +22,38 @@ import { getActiveTokenMeta } from "@/lib/tokens";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
+
+/**
+ * 직전 동일 길이 기간 대비 증감 — 비교 기준(0)이 없거나 변화 0이면 배지 생략.
+ * 직전 기간이 극소량이면 수만 % 로 폭주해 오히려 노이즈 — ±999% 로 클램프해 표시.
+ */
+function pctDelta(curr: number, prev: number): Omit<StatDelta, "tone"> | null {
+  if (prev <= 0) return null;
+  const raw = Math.round(((curr - prev) / prev) * 100);
+  if (raw === 0) return null;
+  const clamped = Math.max(-999, Math.min(999, raw));
+  const overflow = raw !== clamped ? ">" : "";
+  return { pct: `${overflow}${clamped >= 0 ? "+" : ""}${clamped}%`, direction: raw > 0 ? "up" : "down" };
+}
+
+/** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */
+function shareOf(cost: number, tokens: number, costSum: number, tokenSum: number): number {
+  if (costSum > 0) return cost / costSum;
+  if (tokenSum > 0) return tokens / tokenSum;
+  return 0;
+}
+
+function ShareBar({ share }: { share: number }) {
+  const pct = share > 0 ? Math.max(2, Math.round(share * 100)) : 0;
+  return (
+    <div className="bg-muted h-1.5 overflow-hidden rounded-full">
+      <div className="bg-chart-1 h-full rounded-full" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/** 사이드 리스트가 세로로 길어지지 않게 상위 N개만 — 나머지는 개수로 요약 */
+const MODELS_SHOWN = 6;
 
 /** 랜딩 = 내 사용량 (역할 축 개편 — 멤버가 매일 보는 건 자기 데이터). 전체 현황은 /org. */
 export default async function MyUsagePage({
@@ -58,15 +90,32 @@ export default async function MyUsagePage({
   // 미설치 추정: 토큰이 없거나 한 번도 수신된 적 없음 → 빈 상태에서 설치 CTA 노출
   const notInstalled = !tokenMeta || !tokenMeta.lastUsedAt;
 
-  // 직전 동일 길이 기간 대비 비용 증감 — 비교 기준(0)이 없으면 힌트 생략.
-  // 직전 기간이 극소량이면 수만 % 로 폭주해 오히려 노이즈 — ±999% 로 클램프해 표시.
-  const rawDelta =
-    prevOverview.totalCostUsd > 0
-      ? Math.round(((overview.totalCostUsd - prevOverview.totalCostUsd) / prevOverview.totalCostUsd) * 100)
-      : null;
-  const costDelta = rawDelta == null ? null : Math.max(-999, Math.min(999, rawDelta));
-  const deltaPct =
-    costDelta == null ? null : `${rawDelta !== costDelta ? ">" : ""}${costDelta >= 0 ? "+" : ""}${costDelta}%`;
+  // 차트·스파크라인이 같은 시리즈를 공유 — 추가 조회 없음
+  const series = fillSeriesGaps(daily, period);
+  const spark = {
+    cost: series.map((d) => d.costUsd),
+    sessions: series.map((d) => d.sessions),
+    // 총 소모 토큰(입력+출력+캐시) — 토큰 카드와 동일 정의
+    tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
+  };
+
+  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
+  const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
+  const tokensDelta = pctDelta(
+    overview.totalInputTokens +
+      overview.totalOutputTokens +
+      overview.totalCacheReadTokens +
+      overview.totalCacheCreationTokens,
+    prevOverview.totalInputTokens +
+      prevOverview.totalOutputTokens +
+      prevOverview.totalCacheReadTokens +
+      prevOverview.totalCacheCreationTokens,
+  );
+
+  const modelCostSum = byModel.reduce((s, m) => s + m.costUsd, 0);
+  const modelTokenSum = byModel.reduce((s, m) => s + m.totalTokens, 0);
+  const hostCostSum = byHost.reduce((s, h) => s + h.costUsd, 0);
+  const hostTokenSum = byHost.reduce((s, h) => s + h.totalTokens, 0);
   // 기기 라벨이 전부 없으면(전부 null) 섹션 자체가 정보 0 — 숨긴다
   const hasNamedHost = byHost.some((h) => h.host != null);
 
@@ -82,17 +131,18 @@ export default async function MyUsagePage({
         <StatCard
           label={t(`costLabel.${period.preset}`)}
           value={fmtUsd(overview.totalCostUsd)}
-          hint={
-            deltaPct != null
-              ? t(period.preset === "today" ? "costDeltaToday" : "costDeltaPrev", { pct: deltaPct })
-              : undefined
-          }
+          delta={costDelta ? { ...costDelta, tone: "colored" } : null}
+          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
+          spark={spark.cost}
+          sparkAccent
           icon={<DollarSign className="size-4" />}
         />
         <StatCard
           label={t("statSessions")}
           value={fmtNum(overview.totalSessions)}
+          delta={sessionsDelta ? { ...sessionsDelta, tone: "neutral" } : null}
           hint={t("sessionsHint")}
+          spark={spark.sessions}
           icon={<Activity className="size-4" />}
         />
         <StatCard
@@ -103,97 +153,105 @@ export default async function MyUsagePage({
               overview.totalCacheReadTokens +
               overview.totalCacheCreationTokens,
           )}
+          delta={tokensDelta ? { ...tokensDelta, tone: "neutral" } : null}
           hint={t("tokensHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),
             cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
           })}
+          spark={spark.tokens}
           icon={<ArrowUpDown className="size-4" />}
         />
       </div>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
-          <MetricToggle value={metric} />
-        </CardHeader>
-        <CardContent>
-          {daily.length > 0 ? (
-            <UsageAreaChart data={fillSeriesGaps(daily, period)} metric={metric} bucket={period.bucket} />
-          ) : notInstalled ? (
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Inbox />
-                </EmptyMedia>
-                <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
-                <EmptyDescription>
-                  {t("noCollectedUsageDescription")}
-                </EmptyDescription>
-              </EmptyHeader>
-              <EmptyContent>
-                <Button asChild size="sm">
-                  <Link href="/settings?tab=install">{t("installShim")}</Link>
-                </Button>
-              </EmptyContent>
-            </Empty>
-          ) : (
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Inbox />
-                </EmptyMedia>
-                <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
-                <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
-          )}
-        </CardContent>
-      </Card>
+      {/* 와이드에서 차트(2/3)+모델(1/3) 나란히 — /org 의 차트+상위 사용자 패널과 밀도 통일 */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        <Card className="lg:col-span-2">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
+            <MetricToggle value={metric} />
+          </CardHeader>
+          <CardContent>
+            {daily.length > 0 ? (
+              <UsageAreaChart
+                data={series}
+                metric={metric}
+                bucket={period.bucket}
+                markNow={period.preset === "today"}
+              />
+            ) : notInstalled ? (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Inbox />
+                  </EmptyMedia>
+                  <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
+                  <EmptyDescription>
+                    {t("noCollectedUsageDescription")}
+                  </EmptyDescription>
+                </EmptyHeader>
+                <EmptyContent>
+                  <Button asChild size="sm">
+                    <Link href="/settings?tab=install">{t("installShim")}</Link>
+                  </Button>
+                </EmptyContent>
+              </Empty>
+            ) : (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Inbox />
+                  </EmptyMedia>
+                  <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
+                  <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
+                </EmptyHeader>
+              </Empty>
+            )}
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("byModelTitle")}</CardTitle>
-        </CardHeader>
-        <CardContent>
-          {byModel.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("model")}</TableHead>
-                  <TableHead className="text-right">{t("sessions")}</TableHead>
-                  <TableHead className="text-right">{t("tokens")}</TableHead>
-                  <TableHead className="text-right">{t("cost")}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {byModel.map((m) => (
-                  <TableRow key={m.model}>
-                    <TableCell className="font-medium">
-                      {formatModelName(m.model) ?? m.model}
-                      {formatModelName(m.model) && (
-                        <div className="text-muted-foreground font-mono text-xs font-normal">{m.model}</div>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">{fmtNum(m.sessions)}</TableCell>
-                    <TableCell className="text-right">{fmtCompact(m.totalTokens)}</TableCell>
-                    <TableCell className="text-right">{fmtUsd(m.costUsd)}</TableCell>
-                  </TableRow>
+        <Card>
+          <CardHeader>
+            <CardTitle>{t("byModelTitle")}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {byModel.length > 0 ? (
+              <div className="space-y-4">
+                {byModel.slice(0, MODELS_SHOWN).map((m) => (
+                  <div key={m.model}>
+                    <div className="flex items-baseline justify-between gap-2 text-sm">
+                      <span className="truncate font-medium" title={m.model}>
+                        {formatModelName(m.model) ?? m.model}
+                      </span>
+                      <span className="shrink-0 font-medium">{fmtUsd(m.costUsd)}</span>
+                    </div>
+                    <div className="text-muted-foreground mt-0.5 text-xs">
+                      {t("modelSub", { tokens: fmtCompact(m.totalTokens), sessions: fmtNum(m.sessions) })}
+                    </div>
+                    <div className="mt-1.5">
+                      <ShareBar share={shareOf(m.costUsd, m.totalTokens, modelCostSum, modelTokenSum)} />
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
-          ) : (
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Inbox />
-                </EmptyMedia>
-                <EmptyTitle>{t("noModelDataTitle")}</EmptyTitle>
-              </EmptyHeader>
-            </Empty>
-          )}
-        </CardContent>
-      </Card>
+                {byModel.length > MODELS_SHOWN && (
+                  <div className="text-muted-foreground text-xs">
+                    {t("moreModels", { n: byModel.length - MODELS_SHOWN })}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Empty>
+                <EmptyHeader>
+                  <EmptyMedia variant="icon">
+                    <Inbox />
+                  </EmptyMedia>
+                  <EmptyTitle>{t("noModelDataTitle")}</EmptyTitle>
+                </EmptyHeader>
+              </Empty>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {hasNamedHost && (
         <Card>
@@ -208,6 +266,7 @@ export default async function MyUsagePage({
                   <TableHead className="text-right">{t("sessions")}</TableHead>
                   <TableHead className="text-right">{t("tokens")}</TableHead>
                   <TableHead className="text-right">{t("cost")}</TableHead>
+                  <TableHead className="w-[26%]">{t("share")}</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -219,6 +278,9 @@ export default async function MyUsagePage({
                     <TableCell className="text-right">{fmtNum(h.sessions)}</TableCell>
                     <TableCell className="text-right">{fmtCompact(h.totalTokens)}</TableCell>
                     <TableCell className="text-right">{fmtUsd(h.costUsd)}</TableCell>
+                    <TableCell>
+                      <ShareBar share={shareOf(h.costUsd, h.totalTokens, hostCostSum, hostTokenSum)} />
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

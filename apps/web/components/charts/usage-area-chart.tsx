@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Area, AreaChart, CartesianGrid, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import type { DailyPoint, TimeBucket } from "@toard/core";
 import { fmtCompact } from "@/lib/format";
 
@@ -17,10 +17,13 @@ export function UsageAreaChart({
   data,
   metric,
   bucket = "day",
+  markNow = false,
 }: {
   data: DailyPoint[];
   metric: "cost" | "tokens";
   bucket?: TimeBucket;
+  /** 마지막 버킷(=현재 시각)에 '지금' 기준선 표시 — '오늘' 프리셋처럼 시리즈가 지금까지 채워진 경우에만 */
+  markNow?: boolean;
 }) {
   const t = useTranslations("dashboard");
   const chartData = data.map((d) => ({
@@ -31,6 +34,8 @@ export function UsageAreaChart({
     tokens: d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens,
   }));
   const isCost = metric === "cost";
+  // '지금' 기준선 위치 = 마지막 버킷(현재 시각) — 시리즈가 지금까지 채워진 경우에만 의미 있음
+  const nowKey = markNow && chartData.length > 1 ? chartData.at(-1)?.day : undefined;
 
   return (
     <ResponsiveContainer width="100%" height={260}>
@@ -56,6 +61,20 @@ export function UsageAreaChart({
           contentStyle={tooltipStyle}
           formatter={(v: number) => (isCost ? [`$${v}`, t("chart.cost")] : [v.toLocaleString(), t("chart.tokens")])}
         />
+        {nowKey != null && (
+          <ReferenceLine
+            x={nowKey}
+            stroke="var(--color-muted-foreground)"
+            strokeDasharray="3 3"
+            label={{
+              value: t("chart.now"),
+              // 선이 항상 우측 끝(현재 시각)이라 라벨은 선 왼쪽 안쪽으로 — 차트 밖 클리핑 방지
+              position: "insideTopRight",
+              fontSize: 11,
+              fill: "var(--color-muted-foreground)",
+            }}
+          />
+        )}
         <Area
           type="monotone"
           dataKey={isCost ? "cost" : "tokens"}

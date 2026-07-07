@@ -6,6 +6,8 @@
   "sessions": "세션",
   "activeUsers": "활성 사용자",
   "totalTokens": "총 토큰",
+  "vsPrevToday": "전일 대비",
+  "vsPrevPeriod": "직전 기간 대비",
   "tokenHint": "입력 {in} · 출력 {out} · 캐시 {cache}",
   "dailyUsage": "일별 사용량",
   "hourlyUsage": "시간별 사용량",

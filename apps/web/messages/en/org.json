@@ -6,6 +6,8 @@
   "sessions": "Sessions",
   "activeUsers": "Active users",
   "totalTokens": "Total tokens",
+  "vsPrevToday": "vs yesterday",
+  "vsPrevPeriod": "vs previous period",
   "tokenHint": "Input {in} · Output {out} · Cache {cache}",
   "dailyUsage": "Daily usage",
   "hourlyUsage": "Hourly usage",

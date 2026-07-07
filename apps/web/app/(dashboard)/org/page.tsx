@@ -14,8 +14,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
-import { fillSeriesGaps, parseFilters, type DashboardSearchParams } from "@/lib/period";
+import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
+import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -85,18 +86,59 @@ async function OverviewTab({
   const t = await getTranslations("org");
   const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
   const storage = getStorage();
-  const [overview, daily, topUsers] = await Promise.all([
+  const [overview, prevOverview, daily, topUsers] = await Promise.all([
     storage.getOverview(period),
+    storage.getOverview(previousPeriod(period)),
     storage.getDailyTimeseries(period),
     storage.getLeaderboard({ ...period, scope: "user" }),
   ]);
 
+  // 차트·스파크라인이 같은 시리즈를 공유 — 내 사용량과 동형 (추가 조회 없음)
+  const series = fillSeriesGaps(daily, period);
+  const spark = {
+    cost: series.map((d) => d.costUsd),
+    sessions: series.map((d) => d.sessions),
+    tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
+  };
+  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
+  const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
+  const usersDelta = pctDelta(overview.activeUsers, prevOverview.activeUsers);
+  const tokensDelta = pctDelta(
+    overview.totalInputTokens +
+      overview.totalOutputTokens +
+      overview.totalCacheReadTokens +
+      overview.totalCacheCreationTokens,
+    prevOverview.totalInputTokens +
+      prevOverview.totalOutputTokens +
+      prevOverview.totalCacheReadTokens +
+      prevOverview.totalCacheCreationTokens,
+  );
+
   return (
     <div className="space-y-6">
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard label={t("totalCost")} value={fmtUsd(overview.totalCostUsd)} icon={<DollarSign className="size-4" />} />
-        <StatCard label={t("sessions")} value={fmtNum(overview.totalSessions)} icon={<Activity className="size-4" />} />
-        <StatCard label={t("activeUsers")} value={fmtNum(overview.activeUsers)} icon={<Users className="size-4" />} />
+        <StatCard
+          label={t("totalCost")}
+          value={fmtUsd(overview.totalCostUsd)}
+          delta={costDelta ? { ...costDelta, tone: "colored" } : null}
+          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
+          spark={spark.cost}
+          sparkAccent
+          icon={<DollarSign className="size-4" />}
+        />
+        <StatCard
+          label={t("sessions")}
+          value={fmtNum(overview.totalSessions)}
+          delta={sessionsDelta ? { ...sessionsDelta, tone: "neutral" } : null}
+          spark={spark.sessions}
+          icon={<Activity className="size-4" />}
+        />
+        <StatCard
+          label={t("activeUsers")}
+          value={fmtNum(overview.activeUsers)}
+          delta={usersDelta ? { ...usersDelta, tone: "neutral" } : null}
+          icon={<Users className="size-4" />}
+        />
         <StatCard
           label={t("totalTokens")}
           value={fmtCompact(
@@ -105,11 +147,13 @@ async function OverviewTab({
               overview.totalCacheReadTokens +
               overview.totalCacheCreationTokens,
           )}
+          delta={tokensDelta ? { ...tokensDelta, tone: "neutral" } : null}
           hint={t("tokenHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),
             cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
           })}
+          spark={spark.tokens}
           icon={<ArrowUpDown className="size-4" />}
         />
       </div>
@@ -122,7 +166,12 @@ async function OverviewTab({
           </CardHeader>
           <CardContent>
             {daily.length > 0 ? (
-              <UsageAreaChart data={fillSeriesGaps(daily, period)} metric={metric} bucket={period.bucket} />
+              <UsageAreaChart
+                data={series}
+                metric={metric}
+                bucket={period.bucket}
+                markNow={period.preset === "today"}
+              />
             ) : (
               <Empty>
                 <EmptyHeader>

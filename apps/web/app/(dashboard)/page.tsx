@@ -6,7 +6,7 @@ import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { StatCard, type StatDelta } from "@/components/dashboard/stat-card";
+import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -15,24 +15,12 @@ import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
+import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
-
-/**
- * 직전 동일 길이 기간 대비 증감 — 비교 기준(0)이 없거나 변화 0이면 배지 생략.
- * 직전 기간이 극소량이면 수만 % 로 폭주해 오히려 노이즈 — ±999% 로 클램프해 표시.
- */
-function pctDelta(curr: number, prev: number): Omit<StatDelta, "tone"> | null {
-  if (prev <= 0) return null;
-  const raw = Math.round(((curr - prev) / prev) * 100);
-  if (raw === 0) return null;
-  const clamped = Math.max(-999, Math.min(999, raw));
-  const overflow = raw !== clamped ? ">" : "";
-  return { pct: `${overflow}${clamped >= 0 ? "+" : ""}${clamped}%`, direction: raw > 0 ? "up" : "down" };
-}
 
 /** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */
 function shareOf(cost: number, tokens: number, costSum: number, tokenSum: number): number {

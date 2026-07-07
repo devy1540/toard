@@ -193,6 +193,7 @@ fn launchd_plist(exe: &str, interval: u64, log_out: &str, log_err: &str) -> Stri
   <array>
     <string>{exe}</string>
     <string>collect</string>
+    <string>--quiet</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -327,7 +328,7 @@ fn systemd_available() -> bool {
 /// service 유닛 생성 — 순수 함수 (유닛테스트 대상).
 fn systemd_service(exe: &str) -> String {
     format!(
-        "[Unit]\nDescription=toard usage collect\n\n[Service]\nType=oneshot\nExecStart=\"{exe}\" collect\n"
+        "[Unit]\nDescription=toard usage collect\n\n[Service]\nType=oneshot\nExecStart=\"{exe}\" collect --quiet\n"
     )
 }
 
@@ -423,7 +424,7 @@ fn systemd_uninstall() -> i32 {
 /// cron 항목 생성 — 순수 함수 (유닛테스트 대상). cron 은 분 단위가 최소 해상도.
 fn cron_line(exe: &str, interval: u64) -> String {
     let mins = interval.div_ceil(60).clamp(1, 59);
-    format!("*/{mins} * * * * \"{exe}\" collect >/dev/null 2>&1 {CRON_MARKER}")
+    format!("*/{mins} * * * * \"{exe}\" collect --quiet >/dev/null 2>&1 {CRON_MARKER}")
 }
 
 fn cron_current() -> String {
@@ -558,6 +559,10 @@ mod tests {
         assert!(p.contains("<string>dev.toard.collect</string>"));
         assert!(p.contains("<string>/Users/x/.toard/bin/toard-shim</string>"));
         assert!(p.contains("<string>collect</string>"));
+        assert!(
+            p.contains("<string>--quiet</string>"),
+            "데몬 실행은 무변경 시 무출력"
+        );
         assert!(p.contains("<integer>300</integer>"));
         assert_eq!(plist_interval(&p), Some(300), "쓴 간격을 그대로 읽어야 함");
     }
@@ -572,7 +577,7 @@ mod tests {
     #[test]
     fn systemd_units() {
         let s = systemd_service("/home/x/.toard/bin/toard-shim");
-        assert!(s.contains("ExecStart=\"/home/x/.toard/bin/toard-shim\" collect"));
+        assert!(s.contains("ExecStart=\"/home/x/.toard/bin/toard-shim\" collect --quiet"));
         let t = systemd_timer(300);
         assert!(t.contains("OnUnitActiveSec=300s"));
         assert!(t.contains("OnBootSec=300s"));

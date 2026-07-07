@@ -51,6 +51,7 @@ fn print_usage() {
                                (IDE 등 PATH 를 거치지 않는 실행까지 수집)
   collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
           [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
+          [--quiet]            무변경 시 무출력 (데몬 주기 실행용 — 전송·오류는 출력)
                                본문 수집은 opt-in(기본 off): TOARD_SHIM_COLLECT_CONTENT=1
                                — 프롬프트/응답 텍스트를 /v1/prompts 로 전송(서버가 암호화)
   daemon install|uninstall|status
@@ -69,11 +70,13 @@ fn print_usage() {
 
 fn collect_cmd(args: &[String]) -> i32 {
     let mut dry_run = false;
+    let mut quiet = false;
     let mut only: Option<String> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--dry-run" => dry_run = true,
+            "--quiet" => quiet = true,
             "--adapter" => match it.next() {
                 Some(key) => only = Some(key.clone()),
                 None => {
@@ -87,7 +90,7 @@ fn collect_cmd(args: &[String]) -> i32 {
             }
         }
     }
-    crate::collect::run(only.as_deref(), dry_run)
+    crate::collect::run(only.as_deref(), dry_run, quiet)
 }
 
 // ── claude-env — settings.json env 주입 관리 ──

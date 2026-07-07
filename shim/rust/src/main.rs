@@ -42,7 +42,7 @@ fn main() {
         Some(update::SPAWN_ARG) => update::spawn_detached_updater(),
         Some(update::RUN_ARG) => std::process::exit(update::run_self_update(true)),
         Some(collect::SPAWN_ARG) => collect::spawn_detached_collector(),
-        Some(collect::RUN_ARG) => std::process::exit(collect::run(None, false)),
+        Some(collect::RUN_ARG) => std::process::exit(collect::run(None, false, false)),
         _ => {}
     }
 

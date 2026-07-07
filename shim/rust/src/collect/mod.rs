@@ -267,8 +267,54 @@ fn to_prompts_body(adapter: &str, records: &[RawContent]) -> String {
 
 const CHUNK: usize = 1000;
 
-/// `toard-shim collect` 본체. only=특정 어댑터만, dry_run=파싱 결과만 출력.
-pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
+/// 전송 필터: 이전에 보낸 prefix(sent 개, 연쇄 해시)가 이번 파싱 결과의 앞부분과
+/// 일치하면 그 뒤(신규분)부터 전송, 아니면(파일 재작성·순서 변경·컷오프 변경) 처음부터.
+/// 폴백 중복은 서버 dedup 멱등 저장이 흡수하므로 판정이 보수적이어도 정확성엔 영향 없다.
+fn resume_index(prev_sent: u64, prev_hash: &str, keys: &[&str]) -> usize {
+    let n = prev_sent as usize;
+    if n == 0 || prev_hash.is_empty() || n > keys.len() {
+        return 0;
+    }
+    if keys_hash(&keys[..n]) == prev_hash {
+        n
+    } else {
+        0
+    }
+}
+
+/// dedup_key 연쇄 해시 — 전송한 prefix 의 지문 (커서 `sent_hash`).
+fn keys_hash(keys: &[&str]) -> String {
+    let mut h = Sha256::new();
+    for k in keys {
+        h.update(k.as_bytes());
+        h.update(b"\n");
+    }
+    format!("{:x}", h.finalize())
+}
+
+/// 데몬 로그 보존 1년 — 넘으면 `.1` 로 한 세대 보관(디스크엔 최대 ~2년치).
+/// launchd/systemd 엔 로테이션이 없어 shim 이 직접 한다. 이번 실행의 stdout fd 는
+/// 이미 옛 inode 를 물고 있어 이번 회차 출력은 `.1` 쪽에 남는다(경계 아티팩트 — 수용).
+const LOG_ROTATE_SECS: u64 = 365 * 24 * 3600;
+
+fn rotate_daemon_logs() {
+    if !bg::throttle("daemon-log-rotate", LOG_ROTATE_SECS) {
+        return;
+    }
+    let Some(state) = fsx::state_dir() else {
+        return;
+    };
+    for name in ["daemon.log", "daemon.err.log"] {
+        let p = state.join(name);
+        if p.exists() {
+            let _ = std::fs::rename(&p, state.join(format!("{name}.1")));
+        }
+    }
+}
+
+/// `toard-shim collect` 본체. only=특정 어댑터만, dry_run=파싱 결과만 출력,
+/// quiet=무변경 시 무출력(데몬 주기 실행용 — 전송·오류는 항상 출력).
+pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
     let creds = read_credentials();
     let endpoint = creds
         .endpoint
@@ -288,6 +334,7 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
     // 데몬(daemon.rs)이 방금 돌았으면 wrap 편승이 주기 내 중복 실행하지 않도록.
     if only.is_none() && !dry_run {
         bg::touch("last-collect");
+        rotate_daemon_logs();
     }
 
     // host 라벨은 수집 실행당 1회만 계산(hostname 명령 fork 최소화 — 컴퓨터별 구분, §design-host-breakdown)
@@ -309,39 +356,62 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
 
         let files = adapter.discover_files();
         let mut cur = cursor::load(key);
-        let mut changed: Vec<(PathBuf, cursor::FileStamp)> = Vec::new();
+        // 파일별로 파싱 → 전송 필터(resume_index) 적용: 이전에 보낸 prefix 가 그대로면
+        // 신규분만 전송 대상에 올린다. 활성 세션 파일이 매 주기 변경돼도 전체 재전송하지 않음.
+        let mut changed = 0usize;
+        let mut parsed_total = 0usize;
+        let mut events: Vec<UsageEvent> = Vec::new();
+        let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
         for file in &files {
             let Some(stamp) = cursor::stamp(file) else {
                 continue;
             };
-            if cur.files.get(&file.display().to_string()) != Some(&stamp) {
-                changed.push((file.clone(), stamp));
+            let path = file.display().to_string();
+            if cur.files.get(&path).map(|s| s.stamp()) == Some(stamp) {
+                continue;
             }
-        }
-
-        let mut events: Vec<UsageEvent> = Vec::new();
-        for (file, _) in &changed {
-            for raw in adapter.parse_file(file) {
-                events.push(to_usage_event(key, &raw, host.as_deref()));
-            }
+            changed += 1;
+            let file_events: Vec<UsageEvent> = adapter
+                .parse_file(file)
+                .iter()
+                .map(|raw| to_usage_event(key, raw, host.as_deref()))
+                .collect();
+            parsed_total += file_events.len();
+            let keys: Vec<&str> = file_events.iter().map(|e| e.dedup_key.as_str()).collect();
+            let prev = cur.files.get(&path);
+            let start = resume_index(
+                prev.map_or(0, |s| s.sent),
+                prev.map_or("", |s| s.sent_hash.as_str()),
+                &keys,
+            );
+            updates.push((
+                path,
+                cursor::FileState {
+                    mtime_ms: stamp.mtime_ms,
+                    size: stamp.size,
+                    sent: keys.len() as u64,
+                    sent_hash: keys_hash(&keys),
+                },
+            ));
+            events.extend(file_events.into_iter().skip(start));
         }
 
         if dry_run {
             println!(
-                "{key}: 파일 {}개 (변경 {}개) → 이벤트 {}건 [dry-run]",
+                "{key}: 파일 {}개 (변경 {changed}개) → 이벤트 {parsed_total}건, 전송 대상 {}건 [dry-run]",
                 files.len(),
-                changed.len(),
                 events.len()
             );
             continue;
         }
         if events.is_empty() {
-            println!(
-                "{key}: 새 이벤트 없음 (파일 {}개, 변경 {}개)",
-                files.len(),
-                changed.len()
-            );
-            // 이벤트 0건이어도 stamp 는 갱신해 다음 실행의 재파싱을 줄인다
+            if !quiet {
+                println!(
+                    "{key}: 새 이벤트 없음 (파일 {}개, 변경 {changed}개)",
+                    files.len()
+                );
+            }
+            // 이벤트 0건이어도 stamp·전송 진행은 갱신해 다음 실행의 재파싱을 줄인다
         } else {
             let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
             let (mut inserted, mut deduped) = (0u64, 0u64);
@@ -370,8 +440,8 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
             );
         }
 
-        for (file, stamp) in changed {
-            cur.files.insert(file.display().to_string(), stamp);
+        for (path, state) in updates {
+            cur.files.insert(path, state);
         }
         // 사라진 파일의 커서 정리
         let alive: std::collections::HashSet<String> =
@@ -394,6 +464,7 @@ pub fn run(only: Option<&str>, dry_run: bool) -> i32 {
                 &endpoint,
                 token.as_deref(),
                 dry_run,
+                quiet,
                 since_ms,
             ) {
                 failed = true;
@@ -439,6 +510,7 @@ fn collect_content_for(
     endpoint: &str,
     token: Option<&str>,
     dry_run: bool,
+    quiet: bool,
     since_ms: i64,
 ) -> bool {
     let key = adapter.key();
@@ -454,28 +526,52 @@ fn collect_content_for(
     let files = adapter.discover_files();
     let mut cur = cursor::load(&cursor_key);
 
-    let mut changed: Vec<(PathBuf, cursor::FileStamp)> = Vec::new();
+    // usage 루프와 동일한 파일별 전송 필터 — since 는 최초 opt-in 시각으로 고정되므로
+    // 컷오프 필터 결과도 파일 내용에 대해 결정적이라 prefix 판정이 유효하다.
+    let mut changed = 0usize;
+    let mut parsed_total = 0usize;
+    let mut records: Vec<RawContent> = Vec::new();
+    let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
     for file in &files {
         let Some(stamp) = cursor::stamp(file) else {
             continue;
         };
-        if cur.files.get(&file.display().to_string()) != Some(&stamp) {
-            changed.push((file.clone(), stamp));
+        let path = file.display().to_string();
+        if cur.files.get(&path).map(|s| s.stamp()) == Some(stamp) {
+            continue;
         }
+        changed += 1;
+        let mut file_records = adapter.parse_content(file);
+        // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
+        file_records.retain(|r| r.ts_ms >= since_ms);
+        parsed_total += file_records.len();
+        let keys: Vec<String> = file_records
+            .iter()
+            .map(|r| content_dedup_key(key, r))
+            .collect();
+        let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let prev = cur.files.get(&path);
+        let start = resume_index(
+            prev.map_or(0, |s| s.sent),
+            prev.map_or("", |s| s.sent_hash.as_str()),
+            &key_refs,
+        );
+        updates.push((
+            path,
+            cursor::FileState {
+                mtime_ms: stamp.mtime_ms,
+                size: stamp.size,
+                sent: key_refs.len() as u64,
+                sent_hash: keys_hash(&key_refs),
+            },
+        ));
+        records.extend(file_records.into_iter().skip(start));
     }
-
-    let mut records: Vec<RawContent> = Vec::new();
-    for (file, _) in &changed {
-        records.extend(adapter.parse_content(file));
-    }
-    // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
-    records.retain(|r| r.ts_ms >= since_ms);
 
     if dry_run {
         println!(
-            "{key} 본문: 파일 {}개 (변경 {}개) → 레코드 {}건 (since {}) [dry-run]",
+            "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 (since {}) [dry-run]",
             files.len(),
-            changed.len(),
             records.len(),
             if since_ms <= 0 {
                 "전체".to_string()
@@ -492,7 +588,9 @@ fn collect_content_for(
     }
 
     if records.is_empty() {
-        println!("{key} 본문: 새 레코드 없음 (변경 {}개)", changed.len());
+        if !quiet {
+            println!("{key} 본문: 새 레코드 없음 (변경 {changed}개)");
+        }
     } else {
         let token = token.expect("dry_run 아니면 토큰 존재");
         let (mut inserted, mut deduped) = (0u64, 0u64);
@@ -520,8 +618,8 @@ fn collect_content_for(
         );
     }
 
-    for (file, stamp) in changed {
-        cur.files.insert(file.display().to_string(), stamp);
+    for (path, state) in updates {
+        cur.files.insert(path, state);
     }
     let alive: std::collections::HashSet<String> =
         files.iter().map(|f| f.display().to_string()).collect();
@@ -562,6 +660,24 @@ mod tests {
         // 미설정·잘못된 값 → 기본(지금부터). dry_run 이라 state 미기록, 양수 타임스탬프.
         assert!(content_since_ms(None, true) > 0);
         assert!(content_since_ms(Some("bad-date"), true) > 0);
+    }
+
+    #[test]
+    fn resume_index_sends_only_appended_tail() {
+        let keys = ["k1", "k2", "k3", "k4"];
+        let h2 = keys_hash(&keys[..2]);
+        // 이전 2건 전송 + prefix 불변(append) → 3번째부터
+        assert_eq!(resume_index(2, &h2, &keys), 2);
+        // 전량 이미 전송 → 신규 없음
+        assert_eq!(resume_index(4, &keys_hash(&keys), &keys), 4);
+        // 첫 수집(진행 기록 없음) → 처음부터
+        assert_eq!(resume_index(0, "", &keys), 0);
+        // 구버전 커서(카운트만 있고 해시 없음) → 처음부터 (폴백)
+        assert_eq!(resume_index(2, "", &keys), 0);
+        // 파일 재작성으로 prefix 가 달라짐 → 처음부터 (서버 dedup 이 흡수)
+        assert_eq!(resume_index(2, &keys_hash(&["x1", "x2"]), &keys), 0);
+        // 파일이 줄어듦(sent > len) → 처음부터
+        assert_eq!(resume_index(9, &h2, &keys), 0);
     }
 
     #[test]

@@ -63,14 +63,20 @@ export function UserMenuDropdown({
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         {email ? (
-          <Button variant="outline" className="h-auto w-full justify-start px-2 py-1.5">
+          <Button
+            variant="outline"
+            className="h-auto w-full justify-start px-2 py-1.5 group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0"
+          >
             <span className="bg-muted text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-medium">
               {emailInitials(email)}
             </span>
-            <span className="min-w-0 flex-1 truncate text-left text-xs font-normal" title={email}>
+            <span
+              className="min-w-0 flex-1 truncate text-left text-xs font-normal group-data-[collapsible=icon]:hidden"
+              title={email}
+            >
               {email}
             </span>
-            <ChevronsUpDown className="text-muted-foreground size-3.5" />
+            <ChevronsUpDown className="text-muted-foreground size-3.5 group-data-[collapsible=icon]:hidden" />
           </Button>
         ) : (
           <Button variant="outline" size="icon" className="size-8" aria-label={t("preferences")}>

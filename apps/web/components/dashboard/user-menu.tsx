@@ -41,8 +41,9 @@ export async function UserMenu() {
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <Button asChild variant="outline" size="sm" className="flex-1 justify-start">
+    <div className="flex items-center gap-2 group-data-[collapsible=icon]:justify-center">
+      {/* 아이콘 collapse 폭(3rem)에는 못 들어가는 버튼 — 접힘 상태에선 숨기고 드롭다운만 남긴다 */}
+      <Button asChild variant="outline" size="sm" className="flex-1 justify-start group-data-[collapsible=icon]:hidden">
         <Link href="/login">
           <LogIn className="size-4" />
           {t("signIn")}

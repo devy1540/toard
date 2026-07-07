@@ -1,7 +1,10 @@
 {
+  "groupPersonal": "Personal",
+  "groupShared": "Shared",
+  "groupSystem": "System",
   "myUsage": "My usage",
   "history": "My history",
-  "org": "Organization",
+  "org": "Overview",
   "settings": "Settings",
   "admin": "Admin"
 }

@@ -1,4 +1,7 @@
 {
+  "groupPersonal": "개인",
+  "groupShared": "공용",
+  "groupSystem": "시스템",
   "myUsage": "내 사용량",
   "history": "내 히스토리",
   "org": "전체 현황",

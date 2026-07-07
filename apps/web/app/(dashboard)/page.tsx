@@ -11,7 +11,6 @@ import { StatCard, type StatDelta } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { getCurrentUserId } from "@/lib/current-user";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
@@ -48,6 +47,38 @@ function ShareBar({ share }: { share: number }) {
   return (
     <div className="bg-muted h-1.5 overflow-hidden rounded-full">
       <div className="bg-chart-1 h-full rounded-full" style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
+/** 분해 카드 공통 행 — 이름 + 비용 + 보조 텍스트 + 비중 바 (모델별·기기별이 공유) */
+function BreakdownRow({
+  name,
+  hoverTitle,
+  muted = false,
+  cost,
+  sub,
+  share,
+}: {
+  name: string;
+  hoverTitle?: string;
+  muted?: boolean;
+  cost: string;
+  sub: string;
+  share: number;
+}) {
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 text-sm">
+        <span className={muted ? "text-muted-foreground truncate" : "truncate font-medium"} title={hoverTitle}>
+          {name}
+        </span>
+        <span className="shrink-0 font-medium">{cost}</span>
+      </div>
+      <div className="text-muted-foreground mt-0.5 text-xs">{sub}</div>
+      <div className="mt-1.5">
+        <ShareBar share={share} />
+      </div>
     </div>
   );
 }
@@ -164,53 +195,47 @@ export default async function MyUsagePage({
         />
       </div>
 
-      {/* 와이드에서 차트(2/3)+모델(1/3) 나란히 — /org 의 차트+상위 사용자 패널과 밀도 통일 */}
-      <div className="grid gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
-            <MetricToggle value={metric} />
-          </CardHeader>
-          <CardContent>
-            {daily.length > 0 ? (
-              <UsageAreaChart
-                data={series}
-                metric={metric}
-                bucket={period.bucket}
-                markNow={period.preset === "today"}
-              />
-            ) : notInstalled ? (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
-                  <EmptyDescription>
-                    {t("noCollectedUsageDescription")}
-                  </EmptyDescription>
-                </EmptyHeader>
-                <EmptyContent>
-                  <Button asChild size="sm">
-                    <Link href="/settings?tab=install">{t("installShim")}</Link>
-                  </Button>
-                </EmptyContent>
-              </Empty>
-            ) : (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
-                  <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </CardContent>
-        </Card>
+      {/* 시계열은 가로 해상도가 생명 — 차트가 풀폭 히어로, 분해(모델·기기)는 아래 반반 */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
+          <MetricToggle value={metric} />
+        </CardHeader>
+        <CardContent>
+          {daily.length > 0 ? (
+            <UsageAreaChart data={series} metric={metric} bucket={period.bucket} markNow={period.preset === "today"} />
+          ) : notInstalled ? (
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Inbox />
+                </EmptyMedia>
+                <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
+                <EmptyDescription>{t("noCollectedUsageDescription")}</EmptyDescription>
+              </EmptyHeader>
+              <EmptyContent>
+                <Button asChild size="sm">
+                  <Link href="/settings?tab=install">{t("installShim")}</Link>
+                </Button>
+              </EmptyContent>
+            </Empty>
+          ) : (
+            <Empty>
+              <EmptyHeader>
+                <EmptyMedia variant="icon">
+                  <Inbox />
+                </EmptyMedia>
+                <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
+                <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
+              </EmptyHeader>
+            </Empty>
+          )}
+        </CardContent>
+      </Card>
 
-        <Card>
+      {/* 분해 카드 반반 — 같은 층위(분해)라 대칭 배치, 기기별이 숨으면 모델별이 풀폭 */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card className={hasNamedHost ? undefined : "lg:col-span-2"}>
           <CardHeader>
             <CardTitle>{t("byModelTitle")}</CardTitle>
           </CardHeader>
@@ -218,20 +243,14 @@ export default async function MyUsagePage({
             {byModel.length > 0 ? (
               <div className="space-y-4">
                 {byModel.slice(0, MODELS_SHOWN).map((m) => (
-                  <div key={m.model}>
-                    <div className="flex items-baseline justify-between gap-2 text-sm">
-                      <span className="truncate font-medium" title={m.model}>
-                        {formatModelName(m.model) ?? m.model}
-                      </span>
-                      <span className="shrink-0 font-medium">{fmtUsd(m.costUsd)}</span>
-                    </div>
-                    <div className="text-muted-foreground mt-0.5 text-xs">
-                      {t("modelSub", { tokens: fmtCompact(m.totalTokens), sessions: fmtNum(m.sessions) })}
-                    </div>
-                    <div className="mt-1.5">
-                      <ShareBar share={shareOf(m.costUsd, m.totalTokens, modelCostSum, modelTokenSum)} />
-                    </div>
-                  </div>
+                  <BreakdownRow
+                    key={m.model}
+                    name={formatModelName(m.model) ?? m.model}
+                    hoverTitle={m.model}
+                    cost={fmtUsd(m.costUsd)}
+                    sub={t("breakdownSub", { tokens: fmtCompact(m.totalTokens), sessions: fmtNum(m.sessions) })}
+                    share={shareOf(m.costUsd, m.totalTokens, modelCostSum, modelTokenSum)}
+                  />
                 ))}
                 {byModel.length > MODELS_SHOWN && (
                   <div className="text-muted-foreground text-xs">
@@ -251,43 +270,29 @@ export default async function MyUsagePage({
             )}
           </CardContent>
         </Card>
-      </div>
 
-      {hasNamedHost && (
-        <Card>
-          <CardHeader>
-            <CardTitle>{t("byHostTitle")}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>{t("computer")}</TableHead>
-                  <TableHead className="text-right">{t("sessions")}</TableHead>
-                  <TableHead className="text-right">{t("tokens")}</TableHead>
-                  <TableHead className="text-right">{t("cost")}</TableHead>
-                  <TableHead className="w-[26%]">{t("share")}</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+        {hasNamedHost && (
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("byHostTitle")}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
                 {byHost.map((h) => (
-                  <TableRow key={h.host ?? "__unknown__"}>
-                    <TableCell className={h.host ? "font-medium" : "text-muted-foreground"}>
-                      {h.host ?? t("unknownHost")}
-                    </TableCell>
-                    <TableCell className="text-right">{fmtNum(h.sessions)}</TableCell>
-                    <TableCell className="text-right">{fmtCompact(h.totalTokens)}</TableCell>
-                    <TableCell className="text-right">{fmtUsd(h.costUsd)}</TableCell>
-                    <TableCell>
-                      <ShareBar share={shareOf(h.costUsd, h.totalTokens, hostCostSum, hostTokenSum)} />
-                    </TableCell>
-                  </TableRow>
+                  <BreakdownRow
+                    key={h.host ?? "__unknown__"}
+                    name={h.host ?? t("unknownHost")}
+                    muted={h.host == null}
+                    cost={fmtUsd(h.costUsd)}
+                    sub={t("breakdownSub", { tokens: fmtCompact(h.totalTokens), sessions: fmtNum(h.sessions) })}
+                    share={shareOf(h.costUsd, h.totalTokens, hostCostSum, hostTokenSum)}
+                  />
                 ))}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-      )}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
 }

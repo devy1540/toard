@@ -15,11 +15,11 @@ import {
 } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
 import { fmtCompact, fmtUsd } from "@/lib/format";
-import { getOrgTimezone } from "@/lib/org-time";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { getMyHistorySessions } from "@/lib/prompt-history";
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
+import { getViewerTimezone } from "@/lib/viewer-time";
 import { SessionDetail } from "./session-detail";
 
 export const dynamic = "force-dynamic";
@@ -94,14 +94,15 @@ export default async function HistoryPage({
 
   // ── 목록 뷰 ──
   const locale = await getLocale();
+  const timezone = await getViewerTimezone();
   const fmtTs = (ts: Date): string =>
     new Intl.DateTimeFormat(locale, {
-      timeZone: getOrgTimezone(),
+      timeZone: timezone,
       dateStyle: "medium",
       timeStyle: "short",
     }).format(ts);
 
-  const filter = parseFilters(sp, "all");
+  const filter = parseFilters(sp, timezone, "all");
   const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
   const { enabled, sessions, totalSessions } = await getMyHistorySessions(
     userId,
@@ -149,6 +150,7 @@ export default async function HistoryPage({
         defaultPeriod="all"
         showAllPreset
         resetKeys={["page", "session"]}
+        timezone={timezone}
       />
 
       <p className="text-muted-foreground flex items-center gap-1.5 text-sm">

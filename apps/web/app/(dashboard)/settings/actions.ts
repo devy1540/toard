@@ -1,8 +1,10 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { getPool } from "@/lib/db";
+import { isValidTimezone } from "@/lib/org-time";
 import { hashPassword, validatePassword, verifyPassword } from "@/lib/password";
 
 export type PasswordState = { error?: string; ok?: boolean };
@@ -43,5 +45,29 @@ export async function changePasswordAction(
 
   const hash = await hashPassword(next);
   await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [hash, userId]);
+  return { ok: true };
+}
+
+export type TimezoneState = { error?: string; ok?: boolean };
+
+/**
+ * 표시 타임존 저장 — 빈 값('auto')이면 NULL(브라우저 자동 감지), 아니면 IANA 검증 후 저장.
+ * 표출 전용 설정이라 위험도가 낮지만, 계정 설정과 동일하게 실제 세션을 요구한다.
+ */
+export async function saveTimezoneAction(
+  _prev: TimezoneState,
+  formData: FormData,
+): Promise<TimezoneState> {
+  const t = await getTranslations("settings");
+  const session = await auth();
+  const userId = session?.user?.id;
+  if (!userId) return { error: t("errors.loginRequired") };
+
+  const raw = String(formData.get("timezone") ?? "").trim();
+  const tz = raw === "" || raw === "auto" ? null : raw;
+  if (tz && !isValidTimezone(tz)) return { error: t("errors.invalidTimezone") };
+
+  await getPool().query("UPDATE users SET timezone = $1 WHERE id = $2", [tz, userId]);
+  revalidatePath("/", "layout"); // 모든 대시보드 화면의 기간 경계·라벨이 바뀐다
   return { ok: true };
 }

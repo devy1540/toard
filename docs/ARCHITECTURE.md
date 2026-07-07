@@ -86,11 +86,15 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 - **결정:** 인증은 **Auth.js**. 계정·user 는 **Postgres**(adapter), 세션은 **JWT**(Credentials 는 database 세션 미지원). `AUTH_MODE` 로 배포 시 선택: `oauth`(GitHub/Google **+ id/pw credentials**)·`open`(인증 없음·내부망 전제). credentials 는 `AUTH_CREDENTIALS_ENABLED`(기본 on)로 토글 — 로그인 `/login`·가입 `/signup`(도메인 게이팅)·비번 변경/설정 `/settings`. 비번은 **bcrypt(cost 12)** 해시로만 저장. magic-link 는 확장 예정. 이메일 도메인 제한 + 검증된 identity.
 - **근거:** ADR-003(메타·계정은 항상 PG)과 일치. 조직마다 인증 요구가 달라(OAuth 불필요한 내부망 조직도 존재) 모드 선택이 필요. Supabase Auth(zeude·day1co) 대비 외부 종속 없음. **JWT 트레이드오프:** 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(database 세션의 즉시 무효화는 포기). **credentials 보안:** 기존 OAuth 이메일로는 가입 불가(계정 탈취 방지), 미존재/OAuth 전용 계정도 더미 해시 비교로 사용자 열거(timing) 완화.
 
-### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4)
+### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4) · **표출은 뷰어 타임존 (v4 개정)**
 - **결정:** 이벤트 `ts`는 항상 **UTC `timestamptz`** 저장(불변). 일별 집계·리더보드의 "하루" 경계는 **조직 단위 타임존 설정 `ORG_TIMEZONE`**(IANA, 기본 `UTC`)으로 결정한다. 앱이 env를 읽어 검증(무효 시 UTC 폴백) 후 `StorageBackend` 생성자에 주입 — 패키지는 env를 직접 읽지 않는다(core 의존성 0 유지).
 - **근거:** v3까지는 KST(Asia/Seoul)가 storage 쿼리·Mart 정의에 하드코딩돼 있었다(선행작 day1co 유산). 오픈소스 범용화(v4)에서 특정 타임존 가정은 성립하지 않는다. 서빙이 event-direct(§4.4 — Mart 미사용)인 지금이 전환 비용이 가장 싼 시점이다.
-- **단위 선택:** **조직 단위 1개**(per-user 아님) — 리더보드·팀 비교의 "같은 하루" 비교 가능성이 개인화보다 중요. per-user 타임존은 기각(일경계가 사용자마다 달라 집계 의미가 붕괴).
 - **트레이드오프:** `ORG_TIMEZONE` 변경 시 과거 일별 뷰의 버킷이 바뀐다 — event-direct 서빙은 쿼리 시점 계산이라 자동 반영, Mart를 서빙으로 전환한 후라면 전체 `recomputeDaily` 필요(운영 문서에 명시).
+
+**개정 — 대시보드 표출은 뷰어 타임존 (2026-07):**
+- **결정:** 모든 대시보드 화면(개인·조직)의 기간 경계("오늘")·시간/일 버킷·시각 포맷은 **뷰어 타임존** 기준으로 표출한다. 해석 우선순위: **사용자 설정(`users.timezone`, NULL=자동) → 브라우저 쿠키(`toard.tz`, `TimezoneSync`가 기록) → `ORG_TIMEZONE`**. 타임존은 `parseFilters`가 기간에 실어 storage 쿼리(`BucketOptions.timezone`)까지 요청 단위로 흐른다. 필터 바에 적용 타임존을 상시 표기(조용한 타임존 방지).
+- **근거:** 초기 결정은 "리더보드의 같은 하루 비교 가능성"을 들어 per-user를 기각했으나, 셀프호스팅 오픈소스에서는 신규 설치자가 기본값(UTC) 상태에서 "미래 시간에 데이터가 있는" 첫인상 결함을 겪고 조용히 이탈한다 — 수요 신호가 잡히지 않는 시장에서 표출 개인화는 선택 기능이 아니라 기본기다. 뷰어별로 집계 숫자가 달라질 수 있음은 감수한다(운영자 결정).
+- **불변 조건:** Mart 물질화(`saveUsageEvents` 증분·`recomputeDaily`)와 cron 마감 일자는 계속 **조직 타임존**(`StorageBackend` 생성자 주입값) — Mart의 `day`는 단일 타임존으로만 성립한다. 따라서 **뷰어 타임존 화면은 event-direct 서빙 전제** — Mart를 서빙으로 전환하더라도 버킷 시계열은 event-direct 로 남긴다(또는 시간 단위 롤업 신설 필요, 단 30분 오프셋 타임존 한계).
 
 ---
 

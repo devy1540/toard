@@ -61,9 +61,19 @@ export interface OverviewStats {
 /** 시계열 버킷 단위 — 'today' 등 하루짜리 기간은 시간 단위로 내려 점 하나 대신 곡선을 그린다. */
 export type TimeBucket = "day" | "hour";
 
+/**
+ * 시계열 버킷 옵션 — 표출은 뷰어 타임존을 따른다 (ADR-008 개정).
+ * `timezone`(IANA)을 넘기면 해당 벽시계로 일/시간 경계를 자르고, 미지정 시 백엔드
+ * 생성자에 주입된 조직 타임존을 쓴다. 유효성 검증은 호출자(앱) 책임.
+ */
+export interface BucketOptions {
+  bucket?: TimeBucket;
+  timezone?: string;
+}
+
 export interface DailyPoint {
   /**
-   * 버킷 키 — 조직 타임존(ORG_TIMEZONE, 기본 UTC) 기준 (ADR-008).
+   * 버킷 키 — 쿼리의 `timezone`(미지정 시 백엔드 기본 = 조직 타임존) 벽시계 기준 (ADR-008).
    * bucket='day'(기본) 은 'YYYY-MM-DD', bucket='hour' 는 'YYYY-MM-DD HH:00'.
    */
   day: string;
@@ -164,9 +174,9 @@ export interface StorageBackend {
   /** userId 지정 시 해당 사용자 스코프(내 사용량 직전 기간 비교 등). */
   getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats>;
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string; bucket?: TimeBucket },
+    q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]>;
-  getUserUsage(userId: string, q: PeriodQuery & { bucket?: TimeBucket }): Promise<UserUsage>;
+  getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;

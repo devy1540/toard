@@ -1,4 +1,5 @@
 import type {
+  BucketOptions,
   DailyPoint,
   DeviceInfo,
   HostBreakdown,
@@ -11,7 +12,6 @@ import type {
   SessionUsageEventRow,
   SessionUsageSummary,
   StorageBackend,
-  TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UserUsage,
@@ -24,7 +24,7 @@ const n = (v: unknown): number => (v == null ? 0 : Number(v));
 type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
 
 export interface PostgresStorageOptions {
-  /** 일별 집계의 "하루" 경계 타임존 (IANA, ADR-008). 기본 UTC. */
+  /** 조직 타임존 (IANA, ADR-008) — Mart 물질화 경계이자, 쿼리에 timezone 미지정 시 버킷 폴백. 기본 UTC. */
   timezone?: string;
 }
 
@@ -221,9 +221,10 @@ export class PostgresStorage implements StorageBackend {
     };
   }
 
-  private async dailyQuery(q: ScopedQuery & { bucket?: TimeBucket }): Promise<DailyPoint[]> {
+  private async dailyQuery(q: ScopedQuery & BucketOptions): Promise<DailyPoint[]> {
     const { where, params } = this.periodWhere(q);
-    params.push(this.tz);
+    // 버킷 타임존 — 요청(뷰어) 타임존 우선, 없으면 조직 타임존 (ADR-008 개정)
+    params.push(q.timezone ?? this.tz);
     // bucket='hour' 는 분 이하를 자른 포맷으로 그룹핑 — 키 'YYYY-MM-DD HH:00' (storage 계약 참조)
     const bucketExpr =
       q.bucket === "hour"
@@ -285,13 +286,13 @@ export class PostgresStorage implements StorageBackend {
 
   // scope='team' + teamId 는 periodWhere 가 비정규화 team_id 로 필터.
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string; bucket?: TimeBucket },
+    q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]> {
     return this.dailyQuery(q);
   }
 
-  async getUserUsage(userId: string, q: PeriodQuery & { bucket?: TimeBucket }): Promise<UserUsage> {
-    const scoped = { ...q, userId }; // bucket 은 dailyQuery 만 소비, 나머지 쿼리는 무시
+  async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
+    const scoped = { ...q, userId }; // bucket/timezone 은 dailyQuery 만 소비, 나머지 쿼리는 무시
     const [overview, daily, byModel, byHost] = await Promise.all([
       this.overviewQuery(scoped),
       this.dailyQuery(scoped),

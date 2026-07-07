@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { contentCollectionDefaultOn, contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
-import { getOrgTimezone } from "@/lib/org-time";
+import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims, getLatestShimVersion } from "@/lib/host-shims";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getStorage } from "@/lib/storage";
@@ -21,6 +21,7 @@ import { formatVersion, isShimOutdated } from "@toard/core";
 import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
+import { TimezoneForm } from "./timezone-form";
 
 export const dynamic = "force-dynamic";
 
@@ -38,12 +39,13 @@ export default async function SettingsPage({
   const userId = session?.user?.id;
   if (!userId) redirect("/login");
 
-  const r = await getPool().query<{ email: string; password_hash: string | null }>(
-    "SELECT email, password_hash FROM users WHERE id = $1",
+  const r = await getPool().query<{ email: string; password_hash: string | null; timezone: string | null }>(
+    "SELECT email, password_hash, timezone FROM users WHERE id = $1",
     [userId],
   );
   const email = r.rows[0]?.email ?? null;
   const hasPassword = Boolean(r.rows[0]?.password_hash);
+  const timezone = r.rows[0]?.timezone ?? null;
 
   const tab: Tab = (await searchParams).tab === "install" ? "install" : "account";
 
@@ -60,7 +62,7 @@ export default async function SettingsPage({
       />
 
       {tab === "account" ? (
-        <AccountTab hasPassword={hasPassword} />
+        <AccountTab hasPassword={hasPassword} timezone={timezone} />
       ) : (
         <InstallTab userId={userId} />
       )}
@@ -68,7 +70,7 @@ export default async function SettingsPage({
   );
 }
 
-async function AccountTab({ hasPassword }: { hasPassword: boolean }) {
+async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; timezone: string | null }) {
   const t = await getTranslations("settings");
   return (
     <div className="grid items-start gap-4 lg:grid-cols-2">
@@ -81,6 +83,16 @@ async function AccountTab({ hasPassword }: { hasPassword: boolean }) {
         </CardHeader>
         <CardContent>
           <PasswordForm hasPassword={hasPassword} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("timezone.title")}</CardTitle>
+          <CardDescription>{t("timezone.description")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <TimezoneForm initial={timezone} />
         </CardContent>
       </Card>
     </div>
@@ -177,7 +189,7 @@ async function DeviceList({
   const t = await getTranslations("settings");
   const locale = await getLocale();
   const fmtWhen = new Intl.DateTimeFormat(locale, {
-    timeZone: getOrgTimezone(),
+    timeZone: await getViewerTimezone(),
     dateStyle: "medium",
     timeStyle: "short",
   });

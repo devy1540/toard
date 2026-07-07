@@ -1,5 +1,5 @@
 import { fillHourlyGaps, type DailyPoint, type PeriodQuery, type TimeBucket } from "@toard/core";
-import { getOrgTimezone, orgDayStartUtc, startOfOrgToday } from "./org-time";
+import { dayStartUtc, startOfToday } from "./org-time";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -15,9 +15,9 @@ export function recentPeriod(days: number): { from: Date; to: Date } {
   return { from, to };
 }
 
-/** 오늘 — 조직 타임존 자정부터 현재까지. */
-export function todayPeriod(): { from: Date; to: Date } {
-  return { from: startOfOrgToday(), to: new Date() };
+/** 오늘 — 해당 타임존 자정부터 현재까지. */
+export function todayPeriod(tz: string): { from: Date; to: Date } {
+  return { from: startOfToday(tz), to: new Date() };
 }
 
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
@@ -32,21 +32,21 @@ function addDays(ymd: string, n: number): string {
   return new Date(Date.UTC(Number(y), Number(m) - 1, Number(d) + n)).toISOString().slice(0, 10);
 }
 
-/** 커스텀 범위: from/to(조직 타임존 캘린더 일자, to 포함). 유효하지 않으면 null. */
-function customPeriod(from?: string, to?: string): { from: Date; to: Date } | null {
+/** 커스텀 범위: from/to(뷰어 타임존 캘린더 일자, to 포함). 유효하지 않으면 null. */
+function customPeriod(from: string | undefined, to: string | undefined, tz: string): { from: Date; to: Date } | null {
   if (!isYmd(from) || !isYmd(to)) return null;
   let [a, b] = [from, to];
   if (a > b) [a, b] = [b, a]; // 뒤집힌 입력 방어
   // to 일자를 포함하도록 다음날 자정을 exclusive 상한으로.
-  return { from: orgDayStartUtc(a), to: orgDayStartUtc(addDays(b, 1)) };
+  return { from: dayStartUtc(a, tz), to: dayStartUtc(addDays(b, 1), tz) };
 }
 
 export interface DashboardSearchParams {
   period?: string;
   provider?: string;
-  /** period=custom 일 때 조직 타임존 캘린더 시작일 (YYYY-MM-DD) */
+  /** period=custom 일 때 뷰어 타임존 캘린더 시작일 (YYYY-MM-DD) */
   from?: string;
-  /** period=custom 일 때 조직 타임존 캘린더 종료일 (YYYY-MM-DD, 포함) */
+  /** period=custom 일 때 뷰어 타임존 캘린더 종료일 (YYYY-MM-DD, 포함) */
   to?: string;
   /** 차트 지표 (tokens|cost) — 페이지별 기본값은 각 페이지가 정한다 */
   metric?: string;
@@ -60,13 +60,19 @@ export function allPeriod(): { from: Date; to: Date } {
 /** 기간 프리셋 식별자 — 카드 라벨("오늘 비용")·델타 문구가 기간을 알아야 해서 노출 */
 export type PeriodPreset = "today" | "7" | "30" | "90" | "custom" | "all";
 
-export type DashboardPeriod = PeriodQuery & { bucket: TimeBucket; preset: PeriodPreset };
+export type DashboardPeriod = PeriodQuery & { bucket: TimeBucket; preset: PeriodPreset; timezone: string };
 
 /**
  * URL searchParams → 기간·프로바이더 필터 + 시계열 버킷. 기본 프리셋은 화면별로 주입 가능.
+ * timezone(뷰어 타임존, ADR-008 개정)이 "오늘"·커스텀 일자의 경계와 버킷 벽시계를 결정하며,
+ * 반환 기간에 실려 storage 쿼리(BucketOptions)까지 그대로 흐른다.
  * 하루짜리 기간(오늘·단일 일자 커스텀)은 일별로 점 하나만 나오므로 시간 버킷으로 내린다.
  */
-export function parseFilters(sp: DashboardSearchParams, defaultPeriod = DEFAULT_PERIOD): DashboardPeriod {
+export function parseFilters(
+  sp: DashboardSearchParams,
+  timezone: string,
+  defaultPeriod = DEFAULT_PERIOD,
+): DashboardPeriod {
   const providerKey = sp.provider && sp.provider !== "all" ? sp.provider : undefined;
   const period = sp.period ?? defaultPeriod;
   const rollingDays = ROLLING[period];
@@ -75,8 +81,8 @@ export function parseFilters(sp: DashboardSearchParams, defaultPeriod = DEFAULT_
   let bucket: TimeBucket;
   let preset: PeriodPreset;
   if (period === "custom") {
-    const custom = customPeriod(sp.from, sp.to);
-    range = custom ?? todayPeriod();
+    const custom = customPeriod(sp.from, sp.to, timezone);
+    range = custom ?? todayPeriod(timezone);
     bucket = !custom || sp.from === sp.to ? "hour" : "day";
     preset = custom ? "custom" : "today";
   } else if (period === "all") {
@@ -88,12 +94,12 @@ export function parseFilters(sp: DashboardSearchParams, defaultPeriod = DEFAULT_
     bucket = "day";
     preset = period as PeriodPreset;
   } else {
-    range = todayPeriod();
+    range = todayPeriod(timezone);
     bucket = "hour";
     preset = "today";
   }
 
-  return { ...range, providerKey, bucket, preset };
+  return { ...range, providerKey, bucket, preset, timezone };
 }
 
 /** 직전 동일 길이 기간 — 스탯 카드의 "전일/직전 기간 대비" 델타 비교용. */
@@ -102,8 +108,8 @@ export function previousPeriod(p: PeriodQuery): PeriodQuery {
   return { from: new Date(p.from.getTime() - span), to: p.from, providerKey: p.providerKey };
 }
 
-/** bucket='hour' 시리즈의 빈 시간대를 조직 타임존 기준 0 포인트로 채운다 (일별은 그대로). */
+/** bucket='hour' 시리즈의 빈 시간대를 기간의 타임존 기준 0 포인트로 채운다 (일별은 그대로). */
 export function fillSeriesGaps(points: DailyPoint[], period: DashboardPeriod): DailyPoint[] {
   if (period.bucket !== "hour") return points;
-  return fillHourlyGaps(points, period, getOrgTimezone());
+  return fillHourlyGaps(points, period, period.timezone);
 }

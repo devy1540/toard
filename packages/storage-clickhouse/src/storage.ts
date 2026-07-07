@@ -1,5 +1,6 @@
 import { type ClickHouseClient, createClient } from "@clickhouse/client";
 import type {
+  BucketOptions,
   DailyPoint,
   DeviceInfo,
   HostBreakdown,
@@ -12,7 +13,6 @@ import type {
   SessionUsageEventRow,
   SessionUsageSummary,
   StorageBackend,
-  TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UserUsage,
@@ -29,13 +29,13 @@ type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
 type Params = Record<string, unknown>;
 
 export interface ClickHouseStorageOptions {
-  /** 일별 집계의 "하루" 경계 타임존 (IANA, ADR-008). 기본 UTC. */
+  /** 조직 타임존 (IANA, ADR-008) — 쿼리에 timezone 미지정 시 버킷 폴백. 기본 UTC. */
   timezone?: string;
 }
 
-/** CH 쿼리에 리터럴로 들어가므로 IANA 형식만 허용(주입 방지). 무효 시 UTC. */
-function safeTimezone(tz: string | undefined): string {
-  if (!tz || !/^[A-Za-z0-9_+/-]+$/.test(tz)) return "UTC";
+/** CH 쿼리에 리터럴로 들어가므로 IANA 형식만 허용(주입 방지). 무효 시 fallback. */
+function safeTimezone(tz: string | undefined, fallback = "UTC"): string {
+  if (!tz || !/^[A-Za-z0-9_+/-]+$/.test(tz)) return fallback;
   return tz;
 }
 
@@ -191,13 +191,15 @@ export class ClickHouseStorage implements StorageBackend {
     };
   }
 
-  private async dailyQuery(q: ScopedQuery & { bucket?: TimeBucket }): Promise<DailyPoint[]> {
+  private async dailyQuery(q: ScopedQuery & BucketOptions): Promise<DailyPoint[]> {
     const { where, params } = this.periodWhere(q);
+    // 버킷 타임존 — 요청(뷰어) 타임존 우선, 없으면 조직 타임존 (ADR-008 개정). 리터럴 삽입이라 재검증 필수.
+    const tz = safeTimezone(q.timezone, this.tz);
     // bucket='hour' 는 분 이하를 자른 포맷으로 그룹핑 — 키 'YYYY-MM-DD HH:00' (storage 계약 참조)
     const bucketExpr =
       q.bucket === "hour"
-        ? `formatDateTime(ts, '%Y-%m-%d %H:00', '${this.tz}')`
-        : `toString(toDate(ts, '${this.tz}'))`;
+        ? `formatDateTime(ts, '%Y-%m-%d %H:00', '${tz}')`
+        : `toString(toDate(ts, '${tz}'))`;
     const rows = await this.queryJson<{ day: string } & AggRow>(
       `SELECT ${bucketExpr}                                   AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
@@ -262,13 +264,13 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   getDailyTimeseries(
-    q: PeriodQuery & { scope?: TimeseriesScope; teamId?: string; bucket?: TimeBucket },
+    q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]> {
     return this.dailyQuery(q);
   }
 
-  async getUserUsage(userId: string, q: PeriodQuery & { bucket?: TimeBucket }): Promise<UserUsage> {
-    const scoped = { ...q, userId }; // bucket 은 dailyQuery 만 소비, 나머지 쿼리는 무시
+  async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
+    const scoped = { ...q, userId }; // bucket/timezone 은 dailyQuery 만 소비, 나머지 쿼리는 무시
     const [overview, daily, byModel, byHost] = await Promise.all([
       this.overviewQuery(scoped),
       this.dailyQuery(scoped),

@@ -97,7 +97,12 @@ export default async function MyUsagePage({
         />
         <StatCard
           label={t("statTokens")}
-          value={fmtCompact(overview.totalInputTokens + overview.totalOutputTokens)}
+          value={fmtCompact(
+            overview.totalInputTokens +
+              overview.totalOutputTokens +
+              overview.totalCacheReadTokens +
+              overview.totalCacheCreationTokens,
+          )}
           hint={t("tokensHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),

@@ -7,7 +7,7 @@
   "sessions": "Sessions",
   "activeUsers": "Active users",
   "totalTokens": "Total tokens",
-  "tokenHint": "Input {in} · Output {out}",
+  "tokenHint": "Input {in} · Output {out} · Cache {cache}",
   "dailyUsage": "Daily usage",
   "hourlyUsage": "Hourly usage",
   "noDataTitle": "No data",

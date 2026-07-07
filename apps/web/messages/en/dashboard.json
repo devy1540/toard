@@ -43,7 +43,8 @@
     "startDate": "Start date",
     "endDate": "End date",
     "apply": "Apply",
-    "allTools": "All tools"
+    "allTools": "All tools",
+    "timezoneNote": "Times in {tz}"
   },
   "pricingNotice": {
     "title": "Model pricing is not synced, so costs show as $0.",

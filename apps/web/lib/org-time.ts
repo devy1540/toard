@@ -1,34 +1,45 @@
-// 조직 타임존 (ADR-008) — 일별 집계·리더보드의 "하루" 경계를 결정한다.
-// ORG_TIMEZONE(IANA, 예 'Asia/Seoul') 미설정/무효 시 UTC.
+// 타임존 유틸 (ADR-008) — 일별 집계·기간 필터의 "하루" 경계 계산.
+// 표출은 뷰어 타임존(viewer-time.ts), Mart 물질화·cron 마감은 조직 타임존(ORG_TIMEZONE)을 쓴다.
 
 let cached: string | undefined;
+
+/** IANA 타임존 유효성 — Intl 이 아는 이름만 통과. */
+export function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function getOrgTimezone(): string {
   if (cached) return cached;
   const tz = process.env.ORG_TIMEZONE?.trim();
   if (!tz) return (cached = "UTC");
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: tz });
-    return (cached = tz);
-  } catch {
-    console.warn(`[toard] ORG_TIMEZONE "${tz}" 은 유효한 IANA 타임존이 아님 — UTC 로 폴백`);
-    return (cached = "UTC");
-  }
+  if (isValidTimezone(tz)) return (cached = tz);
+  console.warn(`[toard] ORG_TIMEZONE "${tz}" 은 유효한 IANA 타임존이 아님 — UTC 로 폴백`);
+  return (cached = "UTC");
 }
 
-/** 조직 타임존 기준 날짜 'YYYY-MM-DD'. offsetDays 음수면 과거 일자. */
-export function orgDate(offsetDays = 0): string {
+/** 해당 타임존 기준 날짜 'YYYY-MM-DD'. offsetDays 음수면 과거 일자. */
+export function dateInTz(tz: string, offsetDays = 0): string {
   const d = new Date(Date.now() + offsetDays * 24 * 60 * 60 * 1000);
   // en-CA 로케일은 YYYY-MM-DD 형식을 보장한다
   return new Intl.DateTimeFormat("en-CA", {
-    timeZone: getOrgTimezone(),
+    timeZone: tz,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
   }).format(d);
 }
 
-/** 해당 시각의 조직 타임존 UTC 오프셋(ms) */
+/** 조직 타임존 기준 날짜 — Mart 마감(cron recompute)·가격 동기화 스탬프 등 조직 스코프 전용. */
+export function orgDate(offsetDays = 0): string {
+  return dateInTz(getOrgTimezone(), offsetDays);
+}
+
+/** 해당 시각의 타임존 UTC 오프셋(ms) */
 function tzOffsetMs(at: Date, tz: string): number {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
@@ -53,12 +64,11 @@ function tzOffsetMs(at: Date, tz: string): number {
 }
 
 /**
- * 조직 타임존 기준 특정 날짜(YYYY-MM-DD) "00:00" 의 UTC 시각.
+ * 해당 타임존 기준 특정 날짜(YYYY-MM-DD) "00:00" 의 UTC 시각.
  * 일별 집계가 (ts AT TIME ZONE tz)::date 로 버킷하므로, 기간 필터 경계도 동일 타임존에 맞춘다 (ADR-008).
  * DST 전환일은 오프셋이 달라질 수 있어 1회 재보정.
  */
-export function orgDayStartUtc(dateStr: string): Date {
-  const tz = getOrgTimezone();
+export function dayStartUtc(dateStr: string, tz: string): Date {
   const midnightAsUtc = new Date(`${dateStr}T00:00:00Z`).getTime();
   // 자정의 실제 UTC 시각 = 자정(UTC 표기) - 오프셋.
   let guess = new Date(midnightAsUtc - tzOffsetMs(new Date(midnightAsUtc), tz));
@@ -67,7 +77,7 @@ export function orgDayStartUtc(dateStr: string): Date {
   return guess;
 }
 
-/** 조직 타임존 기준 "오늘 00:00" 의 UTC 시각 — '오늘' 기간 필터의 시작 경계. */
-export function startOfOrgToday(): Date {
-  return orgDayStartUtc(orgDate(0));
+/** 해당 타임존 기준 "오늘 00:00" 의 UTC 시각 — '오늘' 기간 필터의 시작 경계. */
+export function startOfToday(tz: string): Date {
+  return dayStartUtc(dateInTz(tz), tz);
 }

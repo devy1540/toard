@@ -18,6 +18,7 @@ import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { fillSeriesGaps, parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
+import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
 
@@ -47,7 +48,7 @@ export default async function OrgPage({
   const sp = await searchParams;
   const t = await getTranslations("org");
   const tab = sp.tab === "ranking" ? "ranking" : "overview";
-  const period = parseFilters(sp);
+  const period = parseFilters(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
 
   return (
@@ -57,7 +58,7 @@ export default async function OrgPage({
         description={t("description")}
         actions={
           <>
-            <DashboardFilters providers={providers} />
+            <DashboardFilters providers={providers} timezone={period.timezone} />
             <AutoRefresh />
           </>
         }

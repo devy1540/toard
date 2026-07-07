@@ -43,7 +43,8 @@
     "startDate": "시작일",
     "endDate": "종료일",
     "apply": "적용",
-    "allTools": "전체 도구"
+    "allTools": "전체 도구",
+    "timezoneNote": "{tz} 기준"
   },
   "pricingNotice": {
     "title": "모델 가격이 동기화되지 않아 비용이 $0 으로 표시됩니다.",

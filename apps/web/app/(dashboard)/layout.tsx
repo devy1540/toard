@@ -4,6 +4,7 @@ import { auth } from "@/auth";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { UserMenu } from "@/components/dashboard/user-menu";
 import { LogoMark } from "@/components/logo-mark";
+import { TimezoneSync } from "@/components/timezone-sync";
 import { getSessionUser } from "@/lib/session-user";
 import { hasAnyUser } from "@/lib/setup";
 
@@ -22,6 +23,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   return (
     <div className="flex min-h-screen">
+      <TimezoneSync />
       <aside className="bg-sidebar text-sidebar-foreground border-sidebar-border sticky top-0 hidden h-screen w-56 shrink-0 flex-col border-r p-4 md:flex">
         <div className="mb-6 flex items-center gap-2 px-2">
           <LogoMark size={28} />

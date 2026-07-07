@@ -15,9 +15,9 @@ import {
 } from "@/components/ui/empty";
 import { fmtCompact, fmtUsd } from "@/lib/format";
 import { matchTurnUsage } from "@/lib/history-grouping";
-import { getOrgTimezone } from "@/lib/org-time";
 import { DETAIL_TURN_LIMIT, getMyHistorySession } from "@/lib/prompt-history";
 import { getStorage } from "@/lib/storage";
+import { getViewerTimezone } from "@/lib/viewer-time";
 
 /** 세션 상세 — 한 대화의 전체 턴 + usage 조인(세션 합계 헤더, assistant 턴별 모델·토큰·비용). */
 export async function SessionDetail({
@@ -33,7 +33,7 @@ export async function SessionDetail({
 }) {
   const t = await getTranslations("dashboard");
   const locale = await getLocale();
-  const tz = getOrgTimezone();
+  const tz = await getViewerTimezone();
   const fmtTs = (ts: Date): string =>
     new Intl.DateTimeFormat(locale, { timeZone: tz, dateStyle: "medium", timeStyle: "short" }).format(ts);
   const fmtTime = (ts: Date): string =>

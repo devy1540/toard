@@ -21,17 +21,20 @@ const ALL_PERIOD = { v: "all", key: "filters.periodAll" } as const;
 /** 기간(세그먼트+직접 선택)·도구(셀렉트) 필터 바 — 제목 줄 아래 별도 행에 배치.
  *  직접 선택을 켜면 프리셋 하이라이트 해제(상호배타), 날짜 입력은 아래 줄로 분리해 도구 위치를 고정.
  *  showAllPreset/defaultPeriod: 히스토리처럼 "기본 = 전체"인 화면용.
- *  resetKeys: 필터가 바뀌면 함께 지울 파라미터(페이지 번호·열린 세션 등). */
+ *  resetKeys: 필터가 바뀌면 함께 지울 파라미터(페이지 번호·열린 세션 등).
+ *  timezone: 서버가 해석한 뷰어 타임존 — 기간 경계가 어느 벽시계 기준인지 명시(조용한 타임존 방지). */
 export function DashboardFilters({
   providers,
   defaultPeriod = DEFAULT_PERIOD,
   showAllPreset = false,
   resetKeys = [],
+  timezone,
 }: {
   providers: ProviderOption[];
   defaultPeriod?: string;
   showAllPreset?: boolean;
   resetKeys?: string[];
+  timezone?: string;
 }) {
   const t = useTranslations("dashboard");
   const router = useRouter();
@@ -102,6 +105,12 @@ export function DashboardFilters({
             ))}
           </SelectContent>
         </Select>
+
+        {timezone && (
+          <span className="text-muted-foreground text-xs" title={timezone}>
+            {t("filters.timezoneNote", { tz: timezone })}
+          </span>
+        )}
       </div>
 
       {showCustom && (

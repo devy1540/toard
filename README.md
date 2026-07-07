@@ -33,7 +33,7 @@
 - **🗄️ 확장 가능한 저장소** — 기본은 Postgres 단일, 중규모 이상은 ClickHouse 옵트인 (`StorageBackend` 추상화)
 - **🔐 유연한 인증** — OAuth(GitHub/Google) · id/pw · open 모드를 조직 환경에 맞게 선택
 - **🏠 셀프호스팅** — Docker Compose 한 줄부터 Kubernetes/Helm 무중단 배포까지
-- **🌏 타임존 지원** — `ORG_TIMEZONE`(IANA) 기준 일별 집계 — 어느 조직 시간대든 "하루"가 정확
+- **🌏 타임존 지원** — 화면은 보는 사람의 브라우저 시간대(또는 사용자 설정)로 표출되어 어디서 보든 "오늘"이 정확 — `ORG_TIMEZONE`(IANA)은 마감 집계·폴백 기준
 
 ## 🧭 동작 방식
 
@@ -229,7 +229,7 @@ cron 등록 전이거나 실패했다면 **관리 → 시스템 탭에서 수동
 | 저장 | Postgres 단일(기본) · ClickHouse 옵트인 — `StorageBackend` 추상화 | ADR-003 |
 | 비용 | LiteLLM per-million + tiered(200k) + 캐시/fast | ADR-004 |
 | 인증 | Auth.js — OAuth·id/pw·open 모드, JWT 세션 | ADR-007 |
-| 타임존 | 일별 집계 "하루" 경계 = `ORG_TIMEZONE`(IANA, 기본 UTC) | ADR-008 |
+| 타임존 | 표출 = 뷰어 타임존(브라우저/사용자 설정) · Mart 마감·폴백 = `ORG_TIMEZONE`(IANA, 기본 UTC) | ADR-008 |
 
 자세한 근거·검토 이력은 [설계 문서](docs/ARCHITECTURE.md) §2(ADR) 참조.
 

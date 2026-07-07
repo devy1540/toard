@@ -19,6 +19,7 @@ import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParam
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
+import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +46,7 @@ export default async function MyUsagePage({
   }
 
   const sp = await searchParams;
-  const period = parseFilters(sp);
+  const period = parseFilters(sp, await getViewerTimezone());
   const metric: ChartMetric = sp.metric === "cost" ? "cost" : "tokens";
   const storage = getStorage();
   const [{ overview, daily, byModel, byHost }, prevOverview, providers, tokenMeta] = await Promise.all([
@@ -73,7 +74,7 @@ export default async function MyUsagePage({
     <div className="space-y-6">
       <PageHeader title={t("myUsageTitle")} description={t("myUsageDescription")} actions={<AutoRefresh />} />
 
-      <DashboardFilters providers={providers} />
+      <DashboardFilters providers={providers} timezone={period.timezone} />
 
       <PricingNotice />
 

@@ -44,7 +44,7 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 - **ClickHouse 모드**(선택): `STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 docker compose --profile clickhouse up -d`
 - **외부 DB**: `postgres` 서비스를 빼고 `DATABASE_URL` 을 외부 DB 로 지정.
 
-주요 변수: `AUTH_SECRET`(필수) · `POSTGRES_PASSWORD` · `AUTH_MODE`(oauth|open) · `ALLOWED_EMAIL_DOMAINS` · `AUTH_GITHUB_ID/SECRET` · `CRON_SECRET` · `PORT`.
+주요 변수: `AUTH_SECRET`(필수) · `POSTGRES_PASSWORD` · `AUTH_MODE`(oauth|open) · `ALLOWED_EMAIL_DOMAINS` · `AUTH_GITHUB_ID/SECRET` · `CRON_SECRET` · `PRICING_AUTO_SYNC`(기본 on) · `PORT`.
 
 ## 2) Kubernetes (kustomize · raw 매니페스트)
 
@@ -106,7 +106,7 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 - `readinessProbe=/api/ready`(DB 포함) 로 준비된 파드만 트래픽 수신, `livenessProbe=/api/health`(DB 무관)로 재시작 루프 방지.
 - 종료 시 `preStop sleep` + `terminationGracePeriodSeconds` 로 in-flight OTLP 수집을 드레인.
 - **스키마 변경**은 파괴적 변경을 한 번에 넣지 말 것 — 아래 expand→contract 절.
-- cron(`sync-pricing`)은 배포 플랫폼 스케줄러로 별도 등록(README 스케줄러 절).
+- cron(`sync-pricing`)은 앱 내장 스케줄러가 일 1회 자동 실행 — 별도 등록 불필요. on/off 는 관리 → 시스템 탭 토글(재시작 불필요), env `PRICING_AUTO_SYNC=off` 는 인프라 킬스위치. replica 가 여럿이면 각자 틱을 돌지만 "오늘 이미 동기화됨" 검사 + UPSERT 멱등이라 무해. 외부 스케줄러(Vercel·GH Actions)를 쓸 때만 별도 등록(README 스케줄러 절).
 
 ## 스키마 마이그레이션 (expand → contract)
 

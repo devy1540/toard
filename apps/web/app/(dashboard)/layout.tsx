@@ -1,16 +1,12 @@
 import { type ReactNode } from "react";
 import { redirect } from "next/navigation";
-import { formatVersion } from "@toard/core";
 import { auth } from "@/auth";
 import { SidebarNav } from "@/components/dashboard/sidebar-nav";
 import { UserMenu } from "@/components/dashboard/user-menu";
-import { LanguageToggle } from "@/components/language-toggle";
 import { LogoMark } from "@/components/logo-mark";
-import { ModeToggle } from "@/components/mode-toggle";
 import { TimezoneSync } from "@/components/timezone-sync";
 import { getSessionUser } from "@/lib/session-user";
 import { hasAnyUser } from "@/lib/setup";
-import { getServerVersion } from "@/lib/version";
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   // open 모드(내부망 공개)가 아니면 로그인 필수 — 미로그인은 로그인 화면으로.
@@ -34,13 +30,8 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <span className="text-lg font-bold">toard</span>
         </div>
         <SidebarNav isAdmin={isAdmin} />
-        <div className="border-sidebar-border mt-auto flex flex-col gap-3 border-t pt-4">
-          <UserMenu trailing={<ModeToggle />} />
-          <LanguageToggle />
-          {/* 실행 중인 서버 버전(빌드 시 임베드) — 배포가 실제 반영됐는지 화면에서 확인 */}
-          <span className="text-sidebar-foreground/50 px-2 font-mono text-xs">
-            {formatVersion(getServerVersion())}
-          </span>
+        <div className="border-sidebar-border mt-auto border-t pt-4">
+          <UserMenu />
         </div>
       </aside>
       <main className="flex-1">

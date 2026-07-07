@@ -1,8 +1,11 @@
 {
   "appName": "toard",
   "appDescription": "경량 멀티 프로바이더 AI 사용량 대시보드",
-  "changeLanguage": "언어 변경",
-  "toggleTheme": "테마 전환",
+  "preferences": "환경 설정",
+  "language": "언어",
+  "theme": "테마",
+  "themeLight": "라이트",
+  "themeDark": "다크",
   "signIn": "로그인",
   "signOut": "로그아웃",
   "copy": "복사",

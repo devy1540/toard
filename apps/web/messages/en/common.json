@@ -1,8 +1,11 @@
 {
   "appName": "toard",
   "appDescription": "Lightweight multi-provider AI usage dashboard",
-  "changeLanguage": "Change language",
-  "toggleTheme": "Toggle theme",
+  "preferences": "Preferences",
+  "language": "Language",
+  "theme": "Theme",
+  "themeLight": "Light",
+  "themeDark": "Dark",
   "signIn": "Sign in",
   "signOut": "Sign out",
   "copy": "Copy",

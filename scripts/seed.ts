@@ -57,15 +57,25 @@ async function main(): Promise<void> {
   }
 
   // dev ingest token (해시만 저장, 평문은 지금만 표시)
-  const token = `tk_${randomBytes(24).toString("hex")}`;
-  const hash = createHash("sha256").update(token).digest("hex");
-  await pool.query("INSERT INTO ingest_tokens (user_id, token_hash) VALUES ($1, $2)", [adminId, hash]);
+  // 재실행 멱등 — 활성 토큰이 이미 있으면 중복 발급하지 않는다(user 당 1개 정책).
+  // 중복 발급하면 수신 중인 토큰과 별개의 미사용 토큰이 남아 연결 상태 표시가 흐려진다.
+  const existing = await pool.query(
+    "SELECT 1 FROM ingest_tokens WHERE user_id = $1 AND revoked_at IS NULL LIMIT 1",
+    [adminId],
+  );
+  if (existing.rowCount) {
+    console.log("✓ ingest token: 기존 활성 토큰 유지 (재발급은 설정 화면에서)");
+  } else {
+    const token = `tk_${randomBytes(24).toString("hex")}`;
+    const hash = createHash("sha256").update(token).digest("hex");
+    await pool.query("INSERT INTO ingest_tokens (user_id, token_hash) VALUES ($1, $2)", [adminId, hash]);
 
-  console.log("\n──────────────────────────────────────────────");
-  console.log("  DEV INGEST TOKEN (평문은 지금만 노출):");
-  console.log(`  ${token}`);
-  console.log(`\n  shim/curl: Authorization: Bearer ${token}`);
-  console.log("──────────────────────────────────────────────\n");
+    console.log("\n──────────────────────────────────────────────");
+    console.log("  DEV INGEST TOKEN (평문은 지금만 노출):");
+    console.log(`  ${token}`);
+    console.log(`\n  shim/curl: Authorization: Bearer ${token}`);
+    console.log("──────────────────────────────────────────────\n");
+  }
 
   await pool.end();
 }

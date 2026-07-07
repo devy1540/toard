@@ -40,16 +40,20 @@ export async function issueToken(userId: string): Promise<string> {
   return token;
 }
 
-/** 활성 토큰 메타(평문 아님). 없으면 null. */
+/**
+ * 활성 토큰 메타(평문 아님). 없으면 null.
+ * 정책은 user 당 활성 1개지만 과거 seed 중복 발급 등으로 여러 개일 수 있다 — 최신 1개만 보면
+ * 실제 수신 중인 옛 토큰을 놓쳐 "미설치"로 오판하므로(대시보드 설치 CTA·설정 연결 상태),
+ * 활성 토큰 전체를 집계한다: lastUsedAt = 가장 최근 수신, createdAt = 가장 최근 발급.
+ */
 export async function getActiveTokenMeta(userId: string): Promise<TokenMeta | null> {
-  const r = await getPool().query<{ created_at: Date; last_used_at: Date | null }>(
-    `SELECT created_at, last_used_at FROM ingest_tokens
-     WHERE user_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
-     ORDER BY created_at DESC LIMIT 1`,
+  const r = await getPool().query<{ created_at: Date | null; last_used_at: Date | null }>(
+    `SELECT MAX(created_at) AS created_at, MAX(last_used_at) AS last_used_at FROM ingest_tokens
+     WHERE user_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())`,
     [userId],
   );
   const row = r.rows[0];
-  return row ? { createdAt: row.created_at, lastUsedAt: row.last_used_at } : null;
+  return row?.created_at ? { createdAt: row.created_at, lastUsedAt: row.last_used_at } : null;
 }
 
 export async function revokeActiveTokens(userId: string): Promise<void> {

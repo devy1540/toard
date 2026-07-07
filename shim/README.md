@@ -14,9 +14,10 @@
 ## 관리 CLI (`toard-shim`)
 같은 바이너리가 `toard-shim` 이름으로도 설치되어 관리 커맨드를 받는다:
 ```sh
-toard-shim doctor                    # 자격 증명·endpoint 연결·토큰 유효성·PATH 순서·codex config 상태 진단
+toard-shim doctor                    # 자격 증명·endpoint 연결·토큰 유효성·PATH 순서·codex config·주기 수집 상태 진단
 toard-shim claude-env on|off|status  # settings.json OTEL 주입 관리 (experimental OTLP 전용 — 강등)
 toard-shim collect [--dry-run]       # 로컬 세션 파일 수집(claude·codex·gemini·qwen) → /api/v1/events
+toard-shim daemon install|uninstall|status  # 주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
 toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를 임베드)
 ```
 `doctor` 의 endpoint 점검은 `POST <endpoint>/v1/logs` 에 빈 OTLP(`{}`)를 보내 연결·인증만 확인한다(레코드 0건 — 부작용 없음, curl 사용).
@@ -26,10 +27,10 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 ## 로컬 세션 파일 pull 수집 (사용량 기본 경로)
 claude·codex·gemini·qwen **전 도구**의 로컬 세션 파일을 어댑터로 파싱해 `UsageEvent[]` 로 정규화하고 `POST /api/v1/events` 로 보낸다. 파서는 ccusage(MIT) Rust 어댑터에서 이식(`shim/NOTICE` attribution 참조).
 - **소스·매핑**: claude=`~/.claude/projects/**/*.jsonl`(`assistant.message.usage`, Desktop 사용분 포함, `input_tokens` 는 캐시 제외), codex=`~/.codex/sessions/**/*.jsonl`(`token_count.info.last_token_usage`, 모델은 `turn_context.model`, `input−cached`, `total_token_usage` 변화 기준 중복 방출 dedup), gemini·qwen=각 CLI 로그.
-- **커서**: 로그가 append 가 아니라 세션 파일 제자리 갱신이라, 파일별 stamp(mtime+size) 를 `~/.toard/state/cursors/` 에 기록하고 변한 파일만 재파싱. 재파싱 중복은 dedup_key 멱등 저장이 흡수.
+- **커서**: 로그가 append 가 아니라 세션 파일 제자리 갱신이라, 파일별 stamp(mtime+size) 를 `~/.toard/state/cursors/` 에 기록하고 변한 파일만 재파싱. **전송 필터**: 파일별 전송 진행(sent 개수 + dedup_key prefix 해시)을 커서에 함께 기록해, 재파싱해도 이전에 보낸 prefix 가 그대로면 **신규분만 전송**한다 — 활성 세션 파일이 주기마다 변해도 전체 재전송하지 않음. 판정이 어긋나면(파일 재작성 등) 전체 전송으로 폴백하고 서버 dedup_key 멱등 저장이 흡수.
 - **백필**: usage 커서가 없으면 전 파일 스캔 → 과거 사용량 전량 백필(토큰 카운트라 민감정보 아님, 히스토리 가치↑). 이후엔 커서로 변한 파일만.
 - **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).
-- **실행 모델**: 데몬 없음. `claude`/`codex` wrap 실행에 편승해 10분 스로틀(double-spawn 분리)로 백그라운드 수집. `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절, `toard-shim collect` 즉시 실행.
+- **실행 모델**: 트리거 3중 — ① **주기 수집(권장, #65)**: `toard-shim daemon install` 이 OS 스케줄러에 단발 `collect` 를 등록(macOS launchd LaunchAgent / Linux systemd user timer, 폴백 crontab). 기본 300초, `--interval <초>`(하한 60) 조절. Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 간격 안에 수집. 상주 프로세스 아님 — 스케줄러가 매번 단발 실행을 깨움. 제거는 `daemon uninstall`, 상태는 `daemon status`/`doctor`. ② `claude`/`codex` wrap 실행 편승(10분 스로틀, double-spawn 분리 — `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절). ③ `toard-shim collect` 즉시 실행. 세 트리거는 `~/.toard/state/last-collect` 스탬프를 공유해 서로 중복 실행하지 않는다(겹쳐도 dedup 멱등이 흡수). 데몬 등록물은 `collect --quiet` 로 실행돼 **무변경 회차는 로그를 남기지 않고**(전송·오류만 출력), 데몬 로그(`~/.toard/state/daemon*.log`)는 **1년 주기로 `.1` 한 세대 로테이션**된다.
 
 ## 컴퓨터별 구분 (host — 기본 on)
 같은 계정을 여러 컴퓨터에서 써도 사용량을 **컴퓨터별로 구분**해 볼 수 있게, shim 이 발생 기기의 라벨(호스트명)을 함께 보낸다. **기본(pull) 경로는 `UsageEvent.host` 로 claude·codex·gemini·qwen 전부 자동 부착** — env 주입이 없어 host 누락 지점이 사라졌다. experimental OTLP push 는 OTEL resource attribute `toard.host`. 표시는 **본인 화면 한정**(내 사용량 · 설정 › 내 기기).

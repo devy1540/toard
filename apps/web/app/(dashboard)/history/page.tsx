@@ -2,7 +2,6 @@ import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Inbox, Lock } from "lucide-react";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
-import { PageHeader } from "@/components/dashboard/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -81,7 +80,7 @@ export default async function HistoryPage({
   if (sp.session) {
     return (
       <div className="space-y-6">
-        <PageHeader title={t("history.title")} description={t("history.description")} />
+        <h1 className="text-sm font-medium">{t("history.title")}</h1>
         <SessionDetail
           userId={userId}
           sessionKey={sp.session}
@@ -114,7 +113,7 @@ export default async function HistoryPage({
   if (!enabled) {
     return (
       <div className="space-y-6">
-        <PageHeader title={t("history.title")} description={t("history.description")} />
+        <h1 className="text-sm font-medium">{t("history.title")}</h1>
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -143,20 +142,20 @@ export default async function HistoryPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title={t("history.title")} description={t("history.description")} />
-
       <DashboardFilters
         providers={providers}
         defaultPeriod="all"
         showAllPreset
         resetKeys={["page", "session"]}
         timezone={timezone}
+        title={t("history.title")}
+        trailing={
+          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+            <Lock className="size-3.5" />
+            {t("history.privacyNote")}
+          </span>
+        }
       />
-
-      <p className="text-muted-foreground flex items-center gap-1.5 text-sm">
-        <Lock className="size-3.5" />
-        {t("history.privacyNote")}
-      </p>
 
       {totalSessions === 0 ? (
         <Empty>

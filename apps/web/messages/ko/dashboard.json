@@ -1,6 +1,5 @@
 {
   "myUsageTitle": "내 사용량",
-  "myUsageDescription": "내 AI 도구 사용량·비용",
   "loginRequiredTitle": "로그인이 필요합니다",
   "loginRequiredDescription": "사용량을 보려면 로그인하세요.",
   "costLabel": {
@@ -73,7 +72,6 @@
   },
   "history": {
     "title": "내 히스토리",
-    "description": "내 프롬프트·응답 — 나만 볼 수 있습니다",
     "loginRequiredTitle": "로그인이 필요합니다",
     "loginRequiredDescription": "내 히스토리를 보려면 로그인하세요.",
     "disabledTitle": "본문 수집이 비활성화되어 있습니다",

@@ -7,7 +7,6 @@ import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
-import { PageHeader } from "@/components/dashboard/page-header";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
@@ -53,26 +52,23 @@ export default async function OrgPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader
+      <DashboardFilters
+        providers={providers}
+        timezone={period.timezone}
         title={t("title")}
-        description={t("description")}
-        actions={
-          <>
-            <DashboardFilters providers={providers} timezone={period.timezone} />
-            <AutoRefresh />
-          </>
+        leading={
+          <LinkTabs
+            active={tab}
+            tabs={[
+              { value: "overview", label: t("tabOverview"), href: hrefWith(sp, { tab: "overview" }) },
+              { value: "ranking", label: t("tabRanking"), href: hrefWith(sp, { tab: "ranking" }) },
+            ]}
+          />
         }
+        trailing={<AutoRefresh />}
       />
 
       <PricingNotice />
-
-      <LinkTabs
-        active={tab}
-        tabs={[
-          { value: "overview", label: t("tabOverview"), href: hrefWith(sp, { tab: "overview" }) },
-          { value: "ranking", label: t("tabRanking"), href: hrefWith(sp, { tab: "ranking" }) },
-        ]}
-      />
 
       {tab === "overview" ? <OverviewTab sp={sp} period={period} /> : <RankingTab sp={sp} period={period} />}
     </div>

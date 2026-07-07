@@ -5,7 +5,6 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
-import { PageHeader } from "@/components/dashboard/page-header";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { StatCard, type StatDelta } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
@@ -152,9 +151,12 @@ export default async function MyUsagePage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title={t("myUsageTitle")} description={t("myUsageDescription")} actions={<AutoRefresh />} />
-
-      <DashboardFilters providers={providers} timezone={period.timezone} />
+      <DashboardFilters
+        providers={providers}
+        timezone={period.timezone}
+        title={t("myUsageTitle")}
+        trailing={<AutoRefresh />}
+      />
 
       <PricingNotice />
 

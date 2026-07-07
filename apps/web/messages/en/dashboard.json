@@ -1,6 +1,5 @@
 {
   "myUsageTitle": "My Usage",
-  "myUsageDescription": "My AI tool usage and cost",
   "loginRequiredTitle": "Login required",
   "loginRequiredDescription": "Sign in to view your usage.",
   "costLabel": {
@@ -73,7 +72,6 @@
   },
   "history": {
     "title": "My history",
-    "description": "My prompts and responses — only you can see them",
     "loginRequiredTitle": "Login required",
     "loginRequiredDescription": "Sign in to view your history.",
     "disabledTitle": "Content collection is disabled",

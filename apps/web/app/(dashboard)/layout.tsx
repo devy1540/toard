@@ -30,8 +30,8 @@ export default async function DashboardLayout({ children }: { children: ReactNod
       <TimezoneSync />
       <AppSidebar isAdmin={isAdmin} />
       <SidebarInset>
-        {/* 모바일 전용 상단바 — 드로어 트리거. 데스크톱 collapse 는 레일·⌘/Ctrl+B */}
-        <header className="bg-background sticky top-0 z-10 flex h-12 items-center gap-2 border-b px-4 md:hidden">
+        {/* 모바일 전용 상단바 — 드로어 트리거. 비고정(sticky 지양 — 스크롤 시 콘텐츠와 함께 올라감) */}
+        <header className="flex h-12 items-center gap-2 border-b px-4 md:hidden">
           <SidebarTrigger />
           <LogoMark size={20} />
           <span className="text-sm font-bold">toard</span>

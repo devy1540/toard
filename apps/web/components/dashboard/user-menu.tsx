@@ -1,49 +1,43 @@
-import { type ReactNode } from "react";
 import Link from "next/link";
 import { getTranslations } from "next-intl/server";
-import { LogIn, LogOut } from "lucide-react";
+import { LogIn } from "lucide-react";
+import { formatVersion } from "@toard/core";
 import { auth, credentialsEnabled, oauthConfigured, signOut } from "@/auth";
+import { UserMenuDropdown } from "@/components/dashboard/user-menu-dropdown";
 import { Button } from "@/components/ui/button";
+import { getServerVersion } from "@/lib/version";
 
 /**
  * 사이드바 하단 사용자 메뉴 (server component).
- *  - 로그인됨: 이메일 + 로그아웃
- *  - 로그인 수단(OAuth 또는 id/pw) 있음 + 미로그인: 로그인 버튼 → /login
- *  - 로그인 수단 없음(dev 폴백): 계정 버튼 없음
- * trailing: 계정 버튼과 같은 줄 오른쪽에 붙일 요소(테마 토글 등).
+ *  - 로그인됨: 계정 버튼 한 줄 → 드롭다운에 테마·언어·로그아웃·버전 수납
+ *  - 로그인 수단(OAuth 또는 id/pw) 있음 + 미로그인: 로그인 버튼 + 환경 설정 드롭다운
+ *  - 로그인 수단 없음(dev 폴백): 환경 설정 드롭다운만
  */
-export async function UserMenu({ trailing }: { trailing?: ReactNode }) {
+export async function UserMenu() {
   const session = await auth();
   const email = session?.user?.email;
   const t = await getTranslations("common");
+  const version = formatVersion(getServerVersion());
 
   if (email) {
     return (
-      <div className="flex flex-col gap-2">
-        <span className="text-muted-foreground truncate px-2 text-xs" title={email}>
-          {email}
-        </span>
-        <div className="flex items-center gap-2">
-          <form
-            action={async () => {
-              "use server";
-              await signOut({ redirectTo: "/" });
-            }}
-            className="flex-1"
-          >
-            <Button type="submit" variant="outline" size="sm" className="w-full justify-start">
-              <LogOut className="size-4" />
-              {t("signOut")}
-            </Button>
-          </form>
-          {trailing}
-        </div>
-      </div>
+      <UserMenuDropdown
+        email={email}
+        version={version}
+        signOutAction={async () => {
+          "use server";
+          await signOut({ redirectTo: "/" });
+        }}
+      />
     );
   }
 
   if (!oauthConfigured && !credentialsEnabled) {
-    return trailing ? <div className="flex justify-end">{trailing}</div> : null;
+    return (
+      <div className="flex justify-end">
+        <UserMenuDropdown version={version} />
+      </div>
+    );
   }
 
   return (
@@ -54,7 +48,7 @@ export async function UserMenu({ trailing }: { trailing?: ReactNode }) {
           {t("signIn")}
         </Link>
       </Button>
-      {trailing}
+      <UserMenuDropdown version={version} />
     </div>
   );
 }

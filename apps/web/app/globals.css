@@ -5,14 +5,19 @@
 
 :root {
   --radius: 0.625rem;
+  /* ── 브랜드(액센트) 단일 토큰 — 사용자 선택 프리셋의 진입점 (lib/brand.ts) ──
+     액센트 소비자(primary·ring·chart-1·사이드바 active)는 --brand 만 참조하고,
+     틴트·전경 파생색은 color-mix 로 유도 — 프리셋 하나 갈아끼우면 전체가 따라온다. */
+  --brand: oklch(0.646 0.222 41.116);
+  --brand-foreground: oklch(0.985 0 0);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
   --popover: oklch(1 0 0);
   --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
   --secondary: oklch(0.97 0 0);
   --secondary-foreground: oklch(0.205 0 0);
   --muted: oklch(0.97 0 0);
@@ -22,31 +27,34 @@
   --destructive: oklch(0.577 0.245 27.325);
   --border: oklch(0.922 0 0);
   --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
+  --ring: var(--brand);
+  --chart-1: var(--brand);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: oklch(0.985 0 0);
   --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: color-mix(in oklab, var(--brand) 10%, transparent);
+  --sidebar-accent-foreground: color-mix(in oklab, var(--brand) 78%, black);
   --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-ring: var(--brand);
 }
 
 .dark {
+  /* 다크에서도 브랜드 색 유지 — 명도만 프리셋별 다크 스톱으로 올린다 */
+  --brand: oklch(0.72 0.185 45);
+  --brand-foreground: oklch(0.185 0 0);
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
+  --primary: var(--brand);
+  --primary-foreground: var(--brand-foreground);
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
   --muted: oklch(0.269 0 0);
@@ -56,21 +64,39 @@
   --destructive: oklch(0.704 0.191 22.216);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
+  --ring: var(--brand);
+  --chart-1: var(--brand);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: var(--brand-foreground);
+  --sidebar-accent: color-mix(in oklab, var(--brand) 16%, transparent);
+  --sidebar-accent-foreground: color-mix(in oklab, var(--brand) 72%, white);
   --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar-ring: var(--brand);
 }
+
+/* ── 브랜드 프리셋 (lib/brand.ts 의 BRAND_PRESETS 와 키 동기화) ──
+   coral 은 :root/.dark 기본값(속성 없음). 각 프리셋은 라이트/다크 대비 검증 스톱 한 쌍.
+   :root 와 같은 특이도라 반드시 :root/.dark 블록 뒤에 위치해야 한다. */
+[data-brand="amber"] { --brand: oklch(0.666 0.156 58.32); }
+.dark[data-brand="amber"] { --brand: oklch(0.769 0.155 70.08); }
+[data-brand="green"] { --brand: oklch(0.627 0.155 149.2); }
+.dark[data-brand="green"] { --brand: oklch(0.723 0.15 150.07); }
+[data-brand="teal"] { --brand: oklch(0.6 0.118 184.7); }
+.dark[data-brand="teal"] { --brand: oklch(0.72 0.13 182.5); }
+[data-brand="blue"] { --brand: oklch(0.546 0.215 262.88); }
+.dark[data-brand="blue"] { --brand: oklch(0.707 0.145 254.62); }
+[data-brand="violet"] { --brand: oklch(0.541 0.247 293); }
+.dark[data-brand="violet"] { --brand: oklch(0.702 0.183 293.54); }
+[data-brand="pink"] { --brand: oklch(0.592 0.22 356); }
+.dark[data-brand="pink"] { --brand: oklch(0.718 0.18 349.76); }
+[data-brand="mono"] { --brand: oklch(0.205 0 0); }
+.dark[data-brand="mono"] { --brand: oklch(0.922 0 0); --brand-foreground: oklch(0.205 0 0); }
 
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);

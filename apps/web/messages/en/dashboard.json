@@ -127,6 +127,14 @@
     "outputShort": "Output",
     "cacheShort": "Cache",
     "noUsage": "No usage data",
-    "truncatedNote": "Long conversation — showing the first {limit} turns."
+    "truncatedNote": "Long conversation — showing the first {limit} turns.",
+    "codeRead": "Read",
+    "codeRaw": "Raw",
+    "codeReadMode": "Read mode",
+    "codeRawMode": "Raw",
+    "codeLines": "{count} lines",
+    "codeReadHint": "Long lines wrap to the panel width; use Raw for original scrolling",
+    "codeRawHint": "Original formatting with horizontal scroll",
+    "codeCopied": "Code copied."
   }
 }

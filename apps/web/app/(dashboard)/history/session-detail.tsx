@@ -109,10 +109,10 @@ export async function SessionDetail({
         </p>
       ) : null}
 
-      {/* 세션 정보는 넓은 화면에서 우측 세로 패널(비고정), 좁은 화면에선 대화 위로 접힌다.
+      {/* 세션 정보는 넓은 화면에서 우측 sticky 패널, 좁은 화면에선 대화 위로 접힌다.
           DOM 은 [패널, 대화] 순서라 모바일에선 패널이 먼저, lg 의 flex-row-reverse 로 우측 배치. */}
       <div className="flex flex-col gap-4 lg:flex-row-reverse">
-        <Card className="py-0 lg:w-64 lg:shrink-0 lg:self-start">
+        <Card className="py-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:w-64 lg:shrink-0 lg:self-start lg:overflow-auto">
           <CardContent className="space-y-3 px-4 py-4">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">{providerLabel(session.providerKey)}</Badge>

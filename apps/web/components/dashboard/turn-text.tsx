@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { HistoryCodeBlock } from "@/components/dashboard/history-code-block";
 
 // 히스토리 턴 본문 — 길면 CSS 만으로 접는다(체크박스+label, JS 불필요 → 서버 렌더로도 동작).
 // 짧은 본문은 토글 없이 그대로 노출. id 는 페이지에서 턴마다 유니크하게 넘긴다.
@@ -250,14 +251,7 @@ function TurnTextBlocks({ text }: { text: string }) {
           );
         }
         if (block.type === "code") {
-          return (
-            <pre
-              key={index}
-              className="bg-muted/70 text-foreground overflow-x-auto rounded-lg border px-3 py-2 font-mono text-xs leading-5 whitespace-pre"
-            >
-              <code>{block.text}</code>
-            </pre>
-          );
+          return <HistoryCodeBlock key={index} code={block.text} lang={block.lang} />;
         }
         if (block.type === "table") {
           return (

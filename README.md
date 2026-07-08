@@ -122,7 +122,7 @@ docs/                       # ARCHITECTURE.md · DEPLOY.md
 
 ```bash
 TOARD_INGEST_TOKEN=<seed 또는 설정→설치 탭에서 발급한 토큰> pnpm exec tsx scripts/send-sample-event.ts
-# → 200 {"inserted":1,"deduped":0} — 현재 시각으로 전송되어 대시보드 "최근 30일"에 바로 보임
+# → 200 {"inserted":1,"deduped":0} — 현재 시각으로 전송되어 대시보드 "오늘"에 바로 보임
 ```
 
 원시 OTLP 페이로드·멱등(dedup) 확인은 픽스처를 그대로 전송:
@@ -133,7 +133,7 @@ curl -X POST http://localhost:3000/api/v1/logs \
   -H "Content-Type: application/json" \
   --data @fixtures/sample-otlp-logs.json
 # → {"inserted":1,"deduped":0}  (재실행 시 deduped:1 — 멱등)
-# 픽스처 타임스탬프는 과거 고정이라 수집은 되지만 대시보드 기본 기간(최근 30일)에는 표시되지 않음
+# 픽스처 타임스탬프는 과거 고정이라 수집은 되지만 대시보드 기본 기간(오늘)에는 표시되지 않음
 ```
 
 ## 🔗 shim 설치 (사용량 수집)

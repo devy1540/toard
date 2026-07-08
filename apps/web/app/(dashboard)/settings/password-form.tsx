@@ -40,7 +40,8 @@ export function PasswordForm({ hasPassword }: { hasPassword: boolean }) {
       {state.ok ? (
         <p className="text-sm text-emerald-600 dark:text-emerald-400">{t("password.saved")}</p>
       ) : null}
-      <Button type="submit" disabled={pending}>
+      {/* flex-col 컨테이너가 버튼을 풀폭으로 늘리지 않게 — 폼 버튼은 콘텐츠 폭 */}
+      <Button type="submit" disabled={pending} className="self-start">
         {pending ? t("password.saving") : hasPassword ? t("password.change") : t("password.set")}
       </Button>
     </form>

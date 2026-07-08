@@ -3,7 +3,6 @@ import Link from "next/link";
 import { getLocale, getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
-import { PageHeader } from "@/components/dashboard/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -52,15 +51,18 @@ export default async function SettingsPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title={t("pageTitle")} description={email ?? undefined} />
-
-      <LinkTabs
-        active={tab}
-        tabs={[
-          { value: "account", label: t("tabAccount"), href: "/settings?tab=account" },
-          { value: "install", label: t("tabInstall"), href: "/settings?tab=install" },
-        ]}
-      />
+      {/* 대시보드와 같은 한 줄 상단 문법 — 작은 제목 + 탭, 우측에 계정 컨텍스트 */}
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-sm font-medium">{t("pageTitle")}</h1>
+        <LinkTabs
+          active={tab}
+          tabs={[
+            { value: "account", label: t("tabAccount"), href: "/settings?tab=account" },
+            { value: "install", label: t("tabInstall"), href: "/settings?tab=install" },
+          ]}
+        />
+        {email ? <span className="text-muted-foreground ml-auto text-xs">{email}</span> : null}
+      </div>
 
       {tab === "account" ? (
         <AccountTab hasPassword={hasPassword} timezone={timezone} />
@@ -73,17 +75,17 @@ export default async function SettingsPage({
 
 async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; timezone: string | null }) {
   const t = await getTranslations("settings");
+  // 설정성 폼은 좁은 단일 컬럼 스택 — 높이가 다른 카드를 그리드에 넣으면 빈 공간이 널뛴다.
+  // 순서는 사용 빈도순: 모양(개인화) → 타임존 → 비밀번호.
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div className="max-w-2xl space-y-4">
       <Card>
         <CardHeader>
-          <CardTitle>{hasPassword ? t("account.changeTitle") : t("account.setTitle")}</CardTitle>
-          <CardDescription>
-            {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
-          </CardDescription>
+          <CardTitle>{t("appearance.title")}</CardTitle>
+          <CardDescription>{t("appearance.description")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <PasswordForm hasPassword={hasPassword} />
+          <AppearanceForm />
         </CardContent>
       </Card>
 
@@ -99,11 +101,13 @@ async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; tim
 
       <Card>
         <CardHeader>
-          <CardTitle>{t("appearance.title")}</CardTitle>
-          <CardDescription>{t("appearance.description")}</CardDescription>
+          <CardTitle>{hasPassword ? t("account.changeTitle") : t("account.setTitle")}</CardTitle>
+          <CardDescription>
+            {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <AppearanceForm />
+          <PasswordForm hasPassword={hasPassword} />
         </CardContent>
       </Card>
     </div>

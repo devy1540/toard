@@ -51,7 +51,8 @@ export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pe
           </select>
         </div>
         {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
-        <Button type="submit" disabled={isPending}>
+        {/* flex-col 컨테이너가 버튼을 풀폭으로 늘리지 않게 — 폼 버튼은 콘텐츠 폭 */}
+        <Button type="submit" disabled={isPending} className="self-start">
           {isPending ? t("invites.generating") : t("invites.generateSubmit")}
         </Button>
       </form>

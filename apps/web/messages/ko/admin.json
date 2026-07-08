@@ -1,6 +1,5 @@
 {
   "title": "관리",
-  "description": "멤버·팀과 수집 연결 상태를 관리합니다",
   "tabs": {
     "members": "멤버",
     "teams": "팀",

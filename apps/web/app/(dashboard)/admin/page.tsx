@@ -4,7 +4,6 @@ import { AlertTriangle } from "lucide-react";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { Badge } from "@/components/ui/badge";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
-import { PageHeader } from "@/components/dashboard/page-header";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionEnabled } from "@/lib/content-crypto";
@@ -89,17 +88,19 @@ export default async function AdminPage({
 
   return (
     <div className="space-y-6">
-      <PageHeader title={t("title")} description={t("description")} />
-
-      <LinkTabs
-        active={tab}
-        tabs={[
-          { value: "members", label: t("tabs.members"), href: "/admin?tab=members" },
-          { value: "teams", label: t("tabs.teams"), href: "/admin?tab=teams" },
-          { value: "invites", label: t("tabs.invites"), href: "/admin?tab=invites" },
-          { value: "system", label: t("tabs.system"), href: "/admin?tab=system" },
-        ]}
-      />
+      {/* 대시보드와 같은 한 줄 상단 문법 — 작은 제목 + 탭 */}
+      <div className="flex flex-wrap items-center gap-3">
+        <h1 className="text-sm font-medium">{t("title")}</h1>
+        <LinkTabs
+          active={tab}
+          tabs={[
+            { value: "members", label: t("tabs.members"), href: "/admin?tab=members" },
+            { value: "teams", label: t("tabs.teams"), href: "/admin?tab=teams" },
+            { value: "invites", label: t("tabs.invites"), href: "/admin?tab=invites" },
+            { value: "system", label: t("tabs.system"), href: "/admin?tab=system" },
+          ]}
+        />
+      </div>
 
       {tab === "members" ? <MembersTab /> : null}
       {tab === "teams" ? <TeamsTab /> : null}
@@ -202,7 +203,7 @@ async function TeamsTab() {
   const [teams, t] = await Promise.all([listTeams(), getTranslations("admin")]);
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div className="max-w-2xl space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("teams.cardTitle", { count: teams.length })}</CardTitle>
@@ -226,7 +227,7 @@ async function SystemTab() {
   const contentEnabled = contentCollectionEnabled();
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div className="max-w-2xl space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("system.serverTitle")}</CardTitle>
@@ -297,7 +298,7 @@ async function InvitesTab() {
   ]);
 
   return (
-    <div className="grid items-start gap-4 lg:grid-cols-2">
+    <div className="max-w-2xl space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("invites.cardTitle")}</CardTitle>

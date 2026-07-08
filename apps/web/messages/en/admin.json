@@ -1,6 +1,5 @@
 {
   "title": "Admin",
-  "description": "Manage members, teams, and collection connection status",
   "tabs": {
     "members": "Members",
     "teams": "Teams",

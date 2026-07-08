@@ -1,10 +1,12 @@
 {
   "groupPersonal": "Personal",
-  "groupShared": "Shared",
+  "groupShared": "Workspace",
   "groupSystem": "System",
   "myUsage": "My usage",
   "history": "My history",
   "org": "Overview",
+  "orgTeams": "Team overview",
+  "myTeam": "Team status",
   "settings": "Settings",
   "admin": "Admin",
   "badge": {

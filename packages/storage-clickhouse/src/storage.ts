@@ -289,7 +289,7 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats> {
+  getOverview(q: PeriodQuery & { userId?: string; teamId?: string }): Promise<OverviewStats> {
     return this.overviewQuery(q);
   }
 
@@ -405,7 +405,7 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]> {
+  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]> {
     const { where, params } = this.periodWhere(q);
     const col = q.scope === "user" ? "user_id" : "team_id";
     const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string }>(

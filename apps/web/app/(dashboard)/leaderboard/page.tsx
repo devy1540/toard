@@ -1,17 +1,18 @@
 import { redirect } from "next/navigation";
 
-// 리더보드는 전체 현황(/org)의 순위 탭으로 통합됨 — 기존 링크 호환용 리다이렉트(필터·scope 유지).
+// 리더보드 구 URL 호환: 팀 scope 는 팀별 현황, 그 외는 전체 현황으로 보낸다.
 export default async function LeaderboardRedirect({
   searchParams,
 }: {
   searchParams: Promise<{ period?: string; provider?: string; scope?: string; from?: string; to?: string }>;
 }): Promise<never> {
   const sp = await searchParams;
-  const q = new URLSearchParams({ tab: "ranking" });
+  const q = new URLSearchParams();
   if (sp.period) q.set("period", sp.period);
   if (sp.provider) q.set("provider", sp.provider);
-  if (sp.scope) q.set("scope", sp.scope);
   if (sp.from) q.set("from", sp.from);
   if (sp.to) q.set("to", sp.to);
-  redirect(`/org?${q.toString()}`);
+  const path = sp.scope === "team" || sp.scope === "department" ? "/org/teams" : "/org";
+  const qs = q.toString();
+  redirect(qs ? `${path}?${qs}` : path);
 }

@@ -1,10 +1,12 @@
 {
   "groupPersonal": "개인",
-  "groupShared": "공용",
+  "groupShared": "워크스페이스",
   "groupSystem": "시스템",
   "myUsage": "내 사용량",
   "history": "내 히스토리",
   "org": "전체 현황",
+  "orgTeams": "팀별 현황",
+  "myTeam": "팀 현황",
   "settings": "설정",
   "admin": "관리",
   "badge": {

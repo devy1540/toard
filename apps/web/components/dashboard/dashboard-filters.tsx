@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DEFAULT_PERIOD } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
+import { FeatureStatusBadge, type FeatureStatus } from "./feature-status-badge";
 
 const PERIODS = [
   { v: "today", key: "filters.periodToday" },
@@ -33,6 +34,7 @@ export function DashboardFilters({
   resetKeys = [],
   timezone,
   title,
+  statusBadge,
   leading,
   trailing,
 }: {
@@ -43,6 +45,8 @@ export function DashboardFilters({
   timezone?: string;
   /** 페이지 제목 — h1 로 렌더 (접근성·오리엔테이션). */
   title?: string;
+  /** 제목 옆 기능 안정성 배지 (사이드바의 프리뷰/베타와 같은 의미). */
+  statusBadge?: { status: FeatureStatus; label: string };
   /** 제목 뒤 로컬 컨텍스트 (전체 현황의 개요/순위 탭 등) */
   leading?: React.ReactNode;
   /** 우측 정렬 요소 (새로고침·안내 캡션 등) */
@@ -91,7 +95,14 @@ export function DashboardFilters({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        {title ? <h1 className="mr-2 text-sm font-medium">{title}</h1> : null}
+        {title ? (
+          <div className="mr-2 flex shrink-0 items-center gap-2">
+            <h1 className="text-sm font-medium">{title}</h1>
+            {statusBadge ? (
+              <FeatureStatusBadge status={statusBadge.status}>{statusBadge.label}</FeatureStatusBadge>
+            ) : null}
+          </div>
+        ) : null}
         {leading}
         <div className="flex flex-wrap gap-1">
           {periods.map((p) => (

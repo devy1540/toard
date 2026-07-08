@@ -18,6 +18,7 @@ import { getActiveTokenMeta } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
+import { AppearanceForm } from "./appearance-form";
 import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
@@ -93,6 +94,16 @@ async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; tim
         </CardHeader>
         <CardContent>
           <TimezoneForm initial={timezone} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{t("appearance.title")}</CardTitle>
+          <CardDescription>{t("appearance.description")}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <AppearanceForm />
         </CardContent>
       </Card>
     </div>

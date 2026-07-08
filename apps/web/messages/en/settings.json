@@ -97,5 +97,17 @@
     "saved": "Saved.",
     "saving": "Saving…",
     "save": "Save"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "description": "Theme, color, and dashboard view — applies to this device (browser) only.",
+    "theme": "Theme",
+    "theme_light": "Light",
+    "theme_dark": "Dark",
+    "theme_system": "System",
+    "color": "Color",
+    "defaultView": "Dashboard view",
+    "view_classic": "Classic",
+    "view_stats": "Stats"
   }
 }

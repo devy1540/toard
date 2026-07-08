@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { useLocale, useTranslations } from "next-intl";
-import { ChevronsUpDown, Languages, LogOut, Moon, Palette, SlidersHorizontal, Sun } from "lucide-react";
+import { ChevronsUpDown, Languages, LogOut, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,15 +21,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { isLocale, localeNames, locales } from "@/i18n/config";
 import { setUserLocale } from "@/i18n/locale";
-import {
-  BRAND_COOKIE,
-  BRAND_PRESETS,
-  BRAND_SWATCHES,
-  DEFAULT_BRAND,
-  isBrandPreset,
-  type BrandPreset,
-} from "@/lib/brand";
-import { cn } from "@/lib/utils";
 
 /** 이메일 로컬파트에서 아바타 이니셜(최대 2자)을 뽑는다: hyukjun.yoon@… → HY */
 function emailInitials(email: string): string {
@@ -60,21 +51,6 @@ export function UserMenuDropdown({
   const router = useRouter();
   const [pending, startTransition] = useTransition();
 
-  // 브랜드 색 — html data-brand 가 진실(SSR 이 쿠키로 렌더). 마운트 후 읽어 하이라이트 동기화.
-  const [brand, setBrand] = useState<BrandPreset>(DEFAULT_BRAND);
-  useEffect(() => {
-    const current = document.documentElement.dataset.brand;
-    setBrand(isBrandPreset(current) ? current : DEFAULT_BRAND);
-  }, []);
-
-  function onBrandChange(next: BrandPreset) {
-    document.cookie = `${BRAND_COOKIE}=${next}; path=/; max-age=31536000; samesite=lax`;
-    // 즉시 반영(리렌더 전) + SSR 과 동일 규칙: 기본 프리셋은 속성 제거
-    if (next === DEFAULT_BRAND) delete document.documentElement.dataset.brand;
-    else document.documentElement.dataset.brand = next;
-    setBrand(next);
-    router.refresh();
-  }
 
   function onLocaleChange(next: string) {
     if (!isLocale(next) || next === locale) return;
@@ -129,27 +105,6 @@ export function UserMenuDropdown({
             {resolvedTheme === "dark" ? t("themeDark") : t("themeLight")}
           </span>
         </DropdownMenuItem>
-        {/* 색상 — 스와치 클릭 시 즉시 적용, 메뉴는 닫지 않아 바로 비교 가능(테마 토글과 동일 UX) */}
-        <div className="flex items-center gap-2 px-2 py-1.5 text-sm">
-          <Palette className="text-muted-foreground size-4" />
-          {t("color")}
-          <span className="ml-auto flex items-center gap-1">
-            {BRAND_PRESETS.map((p) => (
-              <button
-                key={p}
-                type="button"
-                aria-label={p}
-                title={p}
-                onClick={() => onBrandChange(p)}
-                className={cn(
-                  "size-4 rounded-full transition-transform hover:scale-110",
-                  brand === p && "ring-ring ring-2 ring-offset-1",
-                )}
-                style={{ background: BRAND_SWATCHES[p] }}
-              />
-            ))}
-          </span>
-        </div>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={pending}>
             <Languages className="size-4" />

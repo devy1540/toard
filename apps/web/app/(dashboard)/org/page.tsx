@@ -105,8 +105,8 @@ function LeaderboardPreview({
   const maxCost = shown[0]?.costUsd ?? 0;
 
   return (
-    <Card className="gap-4">
-      <CardHeader className="flex flex-row items-start justify-between gap-3">
+    <Card className="min-w-0 gap-4">
+      <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <CardTitle className="flex items-center gap-2 text-base">
             {icon}
@@ -154,7 +154,7 @@ function TeamAccessCard({
   href: string;
 }) {
   return (
-    <Card className="gap-4">
+    <Card className="min-w-0 gap-4">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <Building2 className="text-muted-foreground size-4" />
@@ -243,7 +243,7 @@ function OrgHero({
           <p className="text-muted-foreground mt-1 text-sm">{comparison}</p>
         </div>
 
-        <div className="grid w-full gap-4 sm:grid-cols-3 lg:w-auto lg:min-w-[520px]">
+        <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
           <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
           <SummaryTile
             label={avgPerUserLabel}
@@ -387,7 +387,7 @@ async function OverviewTab({
         <StatCard
           label={t("sessions")}
           value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "neutral" } : null}
+          delta={sessionsDelta ? { ...sessionsDelta, tone: "directional" } : null}
           spark={spark.sessions}
           icon={<Activity className="size-4" />}
         />
@@ -400,7 +400,7 @@ async function OverviewTab({
         <StatCard
           label={t("totalTokens")}
           value={fmtCompact(tokens)}
-          delta={tokensDelta ? { ...tokensDelta, tone: "neutral" } : null}
+          delta={tokensDelta ? { ...tokensDelta, tone: "directional" } : null}
           hint={t("tokenHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),
@@ -411,13 +411,13 @@ async function OverviewTab({
         />
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(320px,0.8fr)]">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
+        <Card className="min-w-0">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
             <MetricToggle value={metric} />
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-w-0">
             {daily.length > 0 ? (
               <UsageAreaChart
                 data={series}
@@ -449,7 +449,7 @@ async function OverviewTab({
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
         {canSeeTeamRanking ? (
           <LeaderboardPreview
             title={t("topTeams")}
@@ -469,7 +469,7 @@ async function OverviewTab({
             href={hrefWith(sp, "/org/team")}
           />
         )}
-        <Card className="gap-4">
+        <Card className="min-w-0 gap-4">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Trophy className="text-muted-foreground size-4" />
@@ -478,7 +478,7 @@ async function OverviewTab({
             <CardDescription>{t("workspaceSignalsDescription")}</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
+            <div className="grid min-w-0 gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
               <SummaryTile label={t("signal.totalSessions")} value={fmtNum(overview.totalSessions)} sub={t("signal.totalSessionsSub")} />
               <SummaryTile label={t("signal.totalTokens")} value={fmtCompact(tokens)} sub={t("signal.totalTokensSub")} />
               <SummaryTile

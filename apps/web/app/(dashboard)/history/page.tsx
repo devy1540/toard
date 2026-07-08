@@ -36,7 +36,7 @@ function PageTitle({
   badgeLabel: string;
 }) {
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 items-center gap-2">
       <h1 className="text-sm font-medium">{title}</h1>
       <FeatureStatusBadge status="preview">{badgeLabel}</FeatureStatusBadge>
     </div>
@@ -189,7 +189,7 @@ export default async function HistoryPage({
         </Empty>
       ) : (
         <>
-          <Card className="overflow-hidden py-0">
+          <Card className="min-w-0 overflow-hidden py-0">
             <CardContent className="p-0">
               <div className="divide-y">
                 {sessions.map((s) => {
@@ -201,7 +201,7 @@ export default async function HistoryPage({
                       href={historyHref(sp, { session: s.key })}
                       className="hover:bg-muted/40 block px-4 py-3 transition-colors"
                     >
-                      <div className="flex items-baseline gap-3">
+                      <div className="flex min-w-0 items-baseline gap-3">
                         <span className="min-w-0 flex-1 truncate text-sm font-medium">
                           {s.preview}
                         </span>
@@ -211,7 +211,7 @@ export default async function HistoryPage({
                           </span>
                         ) : null}
                       </div>
-                      <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                      <div className="text-muted-foreground mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
                         <Badge variant="secondary" className="text-[11px]">
                           {providerLabel(s.providerKey)}
                         </Badge>

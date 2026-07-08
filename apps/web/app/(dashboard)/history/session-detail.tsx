@@ -111,8 +111,8 @@ export async function SessionDetail({
 
       {/* 세션 정보는 넓은 화면에서 우측 sticky 패널, 좁은 화면에선 대화 위로 접힌다.
           DOM 은 [패널, 대화] 순서라 모바일에선 패널이 먼저, lg 의 flex-row-reverse 로 우측 배치. */}
-      <div className="flex flex-col gap-4 lg:flex-row-reverse">
-        <Card className="py-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:w-64 lg:shrink-0 lg:self-start lg:overflow-auto">
+      <div className="flex min-w-0 flex-col gap-4 lg:flex-row-reverse">
+        <Card className="min-w-0 py-0 lg:sticky lg:top-4 lg:max-h-[calc(100vh-2rem)] lg:w-64 lg:shrink-0 lg:self-start lg:overflow-auto">
           <CardContent className="space-y-3 px-4 py-4">
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="secondary">{providerLabel(session.providerKey)}</Badge>
@@ -141,7 +141,7 @@ export async function SessionDetail({
         <div className="min-w-0 flex-1">
           {/* 턴 — 채팅 뷰: 프롬프트는 오른쪽 버블, 응답은 왼쪽 버블, CLI 가 끼워 넣은
               시스템·명령 메시지는 가운데 접힌 칩(details — JS 없이 동작)으로 분리 */}
-          <Card className="py-0">
+          <Card className="min-w-0 py-0">
             <CardContent className="space-y-4 px-4 py-5 sm:px-6">
               {session.turns.map((turn, ti) => {
                 const isUser = turn.role === "user";

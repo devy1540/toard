@@ -116,7 +116,7 @@ export async function ClassicView({
 
   return (
     <>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard
           label={t(`costLabel.${period.preset}`)}
           value={fmtUsd(overview.totalCostUsd)}
@@ -129,7 +129,7 @@ export async function ClassicView({
         <StatCard
           label={t("statSessions")}
           value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "neutral" } : null}
+          delta={sessionsDelta ? { ...sessionsDelta, tone: "directional" } : null}
           hint={t("sessionsHint")}
           spark={spark.sessions}
           icon={<Activity className="size-4" />}
@@ -142,7 +142,7 @@ export async function ClassicView({
               overview.totalCacheReadTokens +
               overview.totalCacheCreationTokens,
           )}
-          delta={tokensDelta ? { ...tokensDelta, tone: "neutral" } : null}
+          delta={tokensDelta ? { ...tokensDelta, tone: "directional" } : null}
           hint={t("tokensHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),
@@ -154,12 +154,12 @@ export async function ClassicView({
       </div>
 
       {/* 시계열은 가로 해상도가 생명 — 차트가 풀폭 히어로, 분해(모델·기기)는 아래 반반 */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      <Card className="min-w-0">
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
           <MetricToggle value={metric} />
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           {daily.length > 0 ? (
             <UsageAreaChart data={series} metric={metric} bucket={period.bucket} markNow={period.preset === "today"} />
           ) : notInstalled ? (
@@ -230,7 +230,7 @@ export async function ClassicView({
         </Card>
 
         {hasNamedHost && (
-          <Card>
+          <Card className="min-w-0">
             <CardHeader>
               <CardTitle>{t("byHostTitle")}</CardTitle>
             </CardHeader>

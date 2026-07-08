@@ -59,7 +59,7 @@ export default async function SettingsPage({
   return (
     <div className="space-y-6">
       {/* 대시보드와 같은 한 줄 상단 문법 — 작은 제목 + 탭, 우측에 계정 컨텍스트 */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
         <h1 className="text-sm font-medium">{t("pageTitle")}</h1>
         <LinkTabs
           active={tab}
@@ -68,7 +68,7 @@ export default async function SettingsPage({
             { value: "install", label: t("tabInstall"), href: "/settings?tab=install" },
           ]}
         />
-        {email ? <span className="text-muted-foreground ml-auto text-xs">{email}</span> : null}
+        {email ? <span className="text-muted-foreground max-w-full truncate text-xs sm:ml-auto">{email}</span> : null}
       </div>
 
       {tab === "account" ? (
@@ -95,12 +95,12 @@ async function AccountTab({
   // 설정 행 리스트(A안) — 항목을 [라벨 | 컨트롤] 행으로 눕혀 죽은 공간 없이 폭을 채운다.
   return (
     <div className="space-y-4">
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("appearance.title")}</CardTitle>
           <CardDescription>{t("appearance.description")}</CardDescription>
         </CardHeader>
-        <CardContent className="divide-y">
+        <CardContent className="min-w-0 divide-y">
           <AppearanceForm />
           <SettingsRow label={t("timezone.title")} description={t("timezone.description")}>
             <TimezoneForm initial={timezone} />
@@ -108,12 +108,12 @@ async function AccountTab({
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("loginMethods.title")}</CardTitle>
           <CardDescription>{t("loginMethods.description")}</CardDescription>
         </CardHeader>
-        <CardContent className="divide-y">
+        <CardContent className="min-w-0 divide-y">
           <SettingsRow label={t("loginMethods.google")} description={t("loginMethods.googleDescription")}>
             <Badge variant={googleLinked ? "secondary" : "outline"}>
               {googleLinked ? t("loginMethods.connected") : t("loginMethods.notConnected")}
@@ -163,8 +163,8 @@ async function InstallTab({ userId }: { userId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid items-start gap-4 lg:grid-cols-3">
-        <Card className="lg:col-span-2">
+      <div className="grid min-w-0 items-start gap-4 lg:grid-cols-3">
+        <Card className="min-w-0 lg:col-span-2">
           <CardHeader>
             <CardTitle>{t("install.issueTitle")}</CardTitle>
             <CardDescription>
@@ -177,7 +177,7 @@ async function InstallTab({ userId }: { userId: string }) {
               )}
             </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="min-w-0">
             <OnboardingPanel
               baseUrl={baseUrl}
               endpoint={endpoint}
@@ -190,12 +190,12 @@ async function InstallTab({ userId }: { userId: string }) {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card className="min-w-0">
           <CardHeader>
             <CardTitle>{t("install.checkTitle")}</CardTitle>
             <CardDescription>{t("install.checkDescription")}</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-4">
+          <CardContent className="min-w-0 space-y-4">
             <ConnectionCheck
               initialHasToken={Boolean(meta)}
               initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
@@ -242,7 +242,7 @@ async function DeviceList({
     timeStyle: "short",
   });
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader>
         <CardTitle>{t("install.devicesTitle")}</CardTitle>
         <CardDescription>
@@ -252,7 +252,7 @@ async function DeviceList({
           })}
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="min-w-0">
         {devices.length > 0 ? (
           <Table>
             <TableHeader>

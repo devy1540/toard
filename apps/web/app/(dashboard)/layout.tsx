@@ -41,7 +41,7 @@ export default async function DashboardLayout({ children }: { children: ReactNod
           <span className="text-sm font-bold">toard</span>
         </header>
         {/* 공통 콘텐츠 영역 — 풀폭 + 고정 패딩. 페이지 간 폭·정렬 통일은 각 페이지의 그리드가 담당 */}
-        <div className="p-6 lg:p-8">{children}</div>
+        <div className="min-w-0 p-4 sm:p-6 lg:p-8">{children}</div>
       </SidebarInset>
     </SidebarProvider>
   );

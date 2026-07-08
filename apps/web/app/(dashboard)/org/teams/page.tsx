@@ -243,14 +243,14 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
 
       {rows.length > 0 ? (
         <>
-          <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(320px,0.72fr)]">
-            <Card className="gap-4">
+          <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,0.72fr)]">
+            <Card className="min-w-0 gap-4">
               <CardHeader>
                 <CardTitle>{t("ranking.podiumTitle", { scope: scopeLabel })}</CardTitle>
                 <CardDescription>{t("ranking.podiumDescription")}</CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="grid gap-3 lg:grid-cols-3">
+                <div className="grid min-w-0 gap-3 lg:grid-cols-3">
                   {topRows.map((row, i) => (
                     <PodiumCard
                       key={row.key}
@@ -266,18 +266,18 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
               </CardContent>
             </Card>
 
-            <Card className="gap-4">
+            <Card className="min-w-0 gap-4">
               <CardHeader>
                 <CardTitle>{t("ranking.distributionTitle")}</CardTitle>
                 <CardDescription>{t("ranking.distributionDescription")}</CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="min-w-0">
                 <LeaderboardBarChart data={rows} />
               </CardContent>
             </Card>
           </div>
 
-          <Card className="gap-4">
+          <Card className="min-w-0 gap-4">
             <CardHeader>
               <CardTitle>{t("ranking.detailTitle", { scope: scopeLabel })}</CardTitle>
               <CardDescription>{t("ranking.detailDescription")}</CardDescription>
@@ -301,8 +301,8 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
           </Card>
         </>
       ) : (
-        <Card>
-          <CardContent>
+        <Card className="min-w-0">
+          <CardContent className="min-w-0">
             <Empty>
               <EmptyHeader>
                 <EmptyMedia variant="icon">

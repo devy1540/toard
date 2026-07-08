@@ -47,6 +47,9 @@
     "cardDescription": "초대 링크를 만들어 전달하면, 받은 사람이 비밀번호를 설정해 가입하고 설치까지 이어집니다.",
     "emailLabel": "초대할 이메일",
     "roleLabel": "역할",
+    "teamLabel": "팀",
+    "teamPlaceholder": "팀 선택",
+    "noTeams": "초대 전에 팀을 먼저 만들어야 합니다.",
     "generating": "생성 중…",
     "generateSubmit": "초대 링크 생성",
     "linkCreatedToast": "{email} 초대 링크를 만들었습니다 — 복사해 전달하세요.",
@@ -54,6 +57,7 @@
     "linkCopied": "초대 링크를 복사했습니다.",
     "linkExpiry": "7일 후 만료 · 1회용.",
     "pendingHeading": "대기 중 초대",
+    "pendingTeam": "{team} 팀",
     "pendingExpires": "만료 {date}"
   },
   "system": {
@@ -100,6 +104,8 @@
     "onlyAdminInvite": "관리자만 초대할 수 있습니다.",
     "invalidEmail": "올바른 이메일 형식이 아닙니다.",
     "emailAlreadyExists": "이미 가입된 이메일입니다.",
+    "teamRequired": "초대할 팀을 선택하세요.",
+    "teamNotFound": "선택한 팀을 찾을 수 없습니다.",
     "onlyAdmin": "관리자만 가능합니다.",
     "teamNameRequired": "팀 이름을 입력하세요.",
     "teamNameTooLong": "팀 이름은 50자 이내로 입력하세요.",

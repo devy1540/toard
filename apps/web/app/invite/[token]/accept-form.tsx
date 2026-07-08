@@ -9,7 +9,15 @@ import { acceptInviteAction, type AcceptState } from "./actions";
 
 const INITIAL: AcceptState = {};
 
-export function AcceptForm({ token, email }: { token: string; email: string }) {
+export function AcceptForm({
+  token,
+  email,
+  teamName,
+}: {
+  token: string;
+  email: string;
+  teamName: string | null;
+}) {
   const t = useTranslations("invite");
   const [state, action, pending] = useActionState(acceptInviteAction, INITIAL);
   return (
@@ -19,6 +27,12 @@ export function AcceptForm({ token, email }: { token: string; email: string }) {
         <Label>{t("emailLabel")}</Label>
         <Input value={email} disabled readOnly />
       </div>
+      {teamName ? (
+        <div className="flex flex-col gap-2">
+          <Label>{t("teamLabel")}</Label>
+          <Input value={teamName} disabled readOnly />
+        </div>
+      ) : null}
       <div className="flex flex-col gap-2">
         <Label htmlFor="name">{t("nameLabel")}</Label>
         <Input id="name" name="name" type="text" autoComplete="name" />

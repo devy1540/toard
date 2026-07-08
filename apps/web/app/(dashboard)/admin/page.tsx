@@ -288,9 +288,10 @@ async function SystemTab() {
 }
 
 async function InvitesTab() {
-  const [baseUrl, pending, t] = await Promise.all([
+  const [baseUrl, pending, teams, t] = await Promise.all([
     getPublicBaseUrl(),
     listPendingInvites(),
+    listTeams(),
     getTranslations("admin"),
   ]);
 
@@ -307,8 +308,10 @@ async function InvitesTab() {
             pending={pending.map((p) => ({
               email: p.email,
               role: p.role,
+              teamName: p.teamName,
               expiresAt: p.expiresAt.toISOString(),
             }))}
+            teams={teams.map((team) => ({ id: team.id, name: team.name }))}
           />
         </CardContent>
       </Card>

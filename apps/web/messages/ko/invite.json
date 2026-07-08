@@ -3,6 +3,7 @@
   "descriptionValid": "{email} 로 초대되었습니다. 비밀번호를 설정해 가입하세요.",
   "descriptionInvalid": "유효하지 않거나 만료된 초대 링크입니다. 관리자에게 다시 요청하세요.",
   "emailLabel": "이메일",
+  "teamLabel": "배정된 팀",
   "nameLabel": "이름 (선택)",
   "passwordLabel": "비밀번호",
   "passwordPlaceholder": "8자 이상",

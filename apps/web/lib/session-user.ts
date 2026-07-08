@@ -2,18 +2,40 @@ import { auth } from "@/auth";
 import { getCurrentUserId } from "@/lib/current-user";
 import { getPool } from "./db";
 
-export type SessionUser = { id: string; email: string; role: string; teamId: string | null; teamName: string | null };
+export type SessionUser = {
+  id: string;
+  email: string;
+  role: string;
+  teamId: string | null;
+  teamName: string | null;
+  teamOnboardingCompletedAt: Date | null;
+};
 
 async function getUserById(id: string): Promise<SessionUser | null> {
-  const r = await getPool().query<{ email: string; role: string; team_id: string | null; team_name: string | null }>(
-    `SELECT u.email, u.role, u.team_id, t.name AS team_name
+  const r = await getPool().query<{
+    email: string;
+    role: string;
+    team_id: string | null;
+    team_name: string | null;
+    team_onboarding_completed_at: Date | null;
+  }>(
+    `SELECT u.email, u.role, u.team_id, u.team_onboarding_completed_at, t.name AS team_name
      FROM users u
      LEFT JOIN teams t ON t.id = u.team_id
      WHERE u.id = $1`,
     [id],
   );
   const row = r.rows[0];
-  return row ? { id, email: row.email, role: row.role, teamId: row.team_id, teamName: row.team_name } : null;
+  return row
+    ? {
+        id,
+        email: row.email,
+        role: row.role,
+        teamId: row.team_id,
+        teamName: row.team_name,
+        teamOnboardingCompletedAt: row.team_onboarding_completed_at,
+      }
+    : null;
 }
 
 /** 현재 로그인 사용자(세션 기반) + DB 의 role. 미로그인이면 null. */

@@ -47,6 +47,9 @@
     "cardDescription": "Create an invitation link and share it — the recipient sets a password to sign up and continues through installation.",
     "emailLabel": "Email to invite",
     "roleLabel": "Role",
+    "teamLabel": "Team",
+    "teamPlaceholder": "Choose a team",
+    "noTeams": "Create a team before sending invitations.",
     "generating": "Generating…",
     "generateSubmit": "Create invitation link",
     "linkCreatedToast": "Created an invitation link for {email} — copy and share it.",
@@ -54,6 +57,7 @@
     "linkCopied": "Copied the invitation link.",
     "linkExpiry": "Expires in 7 days · single use.",
     "pendingHeading": "Pending invites",
+    "pendingTeam": "{team} team",
     "pendingExpires": "Expires {date}"
   },
   "system": {
@@ -100,6 +104,8 @@
     "onlyAdminInvite": "Only administrators can send invitations.",
     "invalidEmail": "This is not a valid email format.",
     "emailAlreadyExists": "This email is already registered.",
+    "teamRequired": "Please choose a team for the invitation.",
+    "teamNotFound": "The selected team could not be found.",
     "onlyAdmin": "Only administrators are allowed.",
     "teamNameRequired": "Please enter a team name.",
     "teamNameTooLong": "Team names must be 50 characters or fewer.",

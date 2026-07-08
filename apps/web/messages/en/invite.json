@@ -3,6 +3,7 @@
   "descriptionValid": "You have been invited as {email}. Set a password to sign up.",
   "descriptionInvalid": "This invitation link is invalid or has expired. Please request a new one from your administrator.",
   "emailLabel": "Email",
+  "teamLabel": "Assigned team",
   "nameLabel": "Name (optional)",
   "passwordLabel": "Password",
   "passwordPlaceholder": "8 characters or more",

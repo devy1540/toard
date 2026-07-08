@@ -20,9 +20,18 @@ export async function createInviteAction(
     .toLowerCase()
     .trim();
   const role = String(formData.get("role") ?? "member");
+  const teamId = String(formData.get("teamId") ?? "");
   if (!isValidEmail(email)) return { error: t("errors.invalidEmail") };
+  if (!teamId) return { error: t("errors.teamRequired") };
 
-  const token = await createInvite(email, role, me.id);
-  if (!token) return { error: t("errors.emailAlreadyExists") };
-  return { token, email };
+  const result = await createInvite(email, role, teamId, me.id);
+  if (!result.ok) {
+    return {
+      error:
+        result.reason === "team-not-found"
+          ? t("errors.teamNotFound")
+          : t("errors.emailAlreadyExists"),
+    };
+  }
+  return { token: result.token, email };
 }

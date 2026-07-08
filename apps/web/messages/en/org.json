@@ -67,6 +67,12 @@
     "unassignedTitle": "No team assigned",
     "unassignedDescription": "Ask an administrator to assign you to a team to see this view."
   },
+  "teamSelector": {
+    "title": "Select team",
+    "description": "Administrators can choose a team to inspect a single-team status view.",
+    "emptyTitle": "No teams",
+    "emptyDescription": "Create teams from Admin before reviewing team status."
+  },
   "signal": {
     "totalSessions": "Total sessions",
     "totalSessionsSub": "Conversation-level total",

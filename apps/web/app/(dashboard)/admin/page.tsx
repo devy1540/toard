@@ -86,8 +86,9 @@ export default async function AdminPage({
 
   const t = await getTranslations("admin");
 
+  // 페이지 전체를 탭 폭에 맞는 중앙 컨테이너로 (설정 페이지와 동일 규칙)
   return (
-    <div className="space-y-6">
+    <div className={tab === "members" ? "mx-auto w-full max-w-5xl space-y-6" : "mx-auto w-full max-w-2xl space-y-6"}>
       {/* 대시보드와 같은 한 줄 상단 문법 — 작은 제목 + 탭 */}
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-sm font-medium">{t("title")}</h1>
@@ -203,7 +204,7 @@ async function TeamsTab() {
   const [teams, t] = await Promise.all([listTeams(), getTranslations("admin")]);
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("teams.cardTitle", { count: teams.length })}</CardTitle>
@@ -227,7 +228,7 @@ async function SystemTab() {
   const contentEnabled = contentCollectionEnabled();
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("system.serverTitle")}</CardTitle>
@@ -298,7 +299,7 @@ async function InvitesTab() {
   ]);
 
   return (
-    <div className="max-w-2xl space-y-4">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("invites.cardTitle")}</CardTitle>

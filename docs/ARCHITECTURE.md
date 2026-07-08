@@ -361,7 +361,7 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 > - **서빙은 event-direct**: 대시보드 쿼리는 `usage_events`를 직접 집계하며 Mart(`usage_daily_*`)·`bumpDailyUser`·`recomputeDaily`는 **미래 서빙 레이어로 현재 미사용**(데이터 규모가 커지면 읽기를 Mart로 전환). 따라서 "당일 증분 vs 마감 재계산 정합"은 현재 사용자 화면과 무관.
 > - **재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성은 2차 목표. 현재 `processed`는 항상 false, `raw_event_id`는 NULL.
 > - **팀 백필 없음**: `team_id` 비정규화는 수집(INSERT) 시점부터 적용되어, 마이그레이션 이전 이벤트는 팀 집계에서 제외(과거 시점 팀을 알 수 없어 NULL 유지).
-> - **기간 필터 일경계 미정렬**: `recentPeriod`는 UTC 롤링 윈도라 조직 타임존(`ORG_TIMEZONE`이 UTC가 아닌 경우) 일경계와 어긋나 일별 차트 양끝이 부분일로 표시(향후 조직 타임존 일경계 스냅 예정).
+> - **기간 프리셋**: 기본 UI 는 뷰어 타임존 기준 캘린더 프리셋(`오늘`·`이번 주`·`이번 달`·`최근 3개월`·`최근 12개월`)을 사용한다. 구 URL 호환용 `period=7|30|90`은 현재 시각 기준 롤링 윈도우로 계속 해석한다.
 
 ---
 

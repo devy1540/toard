@@ -218,7 +218,15 @@ function renderInline(text: string, keyPrefix = "i"): ReactNode[] {
 
     const href = safeHref(next.link.href);
     if (!href) {
-      nodes.push(text.slice(next.index, next.link.end));
+      nodes.push(
+        <code
+          key={`${keyPrefix}-file-${next.index}`}
+          title={next.link.href}
+          className="bg-muted text-foreground rounded px-1 py-0.5 font-mono text-[0.92em]"
+        >
+          {next.link.label || next.link.href}
+        </code>,
+      );
     } else {
       nodes.push(
         <a

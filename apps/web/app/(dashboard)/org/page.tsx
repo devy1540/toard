@@ -28,6 +28,10 @@ type OrgSearchParams = DashboardSearchParams & { tab?: string; scope?: string };
 type OrgPeriod = ReturnType<typeof parseFilters>;
 const costLabelKey = {
   today: "costLabel.today",
+  week: "costLabel.week",
+  month: "costLabel.month",
+  quarter: "costLabel.quarter",
+  year: "costLabel.year",
   "7": "costLabel.7",
   "30": "costLabel.30",
   "90": "costLabel.90",

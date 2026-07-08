@@ -7,6 +7,10 @@
   "tabRanking": "Ranking",
   "costLabel": {
     "today": "Today's workspace cost",
+    "week": "This week's workspace cost",
+    "month": "This month's workspace cost",
+    "quarter": "Last 3 calendar months workspace cost",
+    "year": "Last 12 calendar months workspace cost",
     "7": "Last 7 days workspace cost",
     "30": "Last 30 days workspace cost",
     "90": "Last 90 days workspace cost",

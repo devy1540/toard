@@ -46,6 +46,27 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 
 주요 변수: `AUTH_SECRET`(필수) · `POSTGRES_PASSWORD` · `AUTH_MODE`(oauth|open) · `ALLOWED_EMAIL_DOMAINS` · `AUTH_GITHUB_ID/SECRET` · `CRON_SECRET` · `PRICING_AUTO_SYNC`(기본 on) · `PORT`.
 
+### Compose 서버 업데이트 버튼(선택)
+
+관리 화면의 시스템 탭에서 서버 이미지를 업데이트하려면 별도 updater agent 를 켠다. 웹앱 컨테이너에는
+Docker socket 을 주지 않고, `updater` 서비스만 제한된 내부 API 로 `docker compose pull` →
+`docker compose run --rm migrate` → `docker compose up -d app` → health/ready/version 확인을 실행한다.
+
+```bash
+TOARD_UPDATER_SECRET=$(openssl rand -base64 33)
+
+# .env 에 저장 권장
+TOARD_UPDATER_URL=http://updater:3201
+TOARD_UPDATER_SECRET=$TOARD_UPDATER_SECRET
+
+docker compose --profile updater up -d
+```
+
+- **Compose 전용**: Helm/Kubernetes 배포는 이미지 태그·릴리스 관리 방식이 달라 이 updater 를 쓰지 않는다.
+- **권한 주의**: updater 는 `/var/run/docker.sock` 을 마운트하므로 호스트 Docker 권한을 가진다. 공개 포트를 열지 않고 Compose 내부 네트워크에서만 앱이 shared secret 으로 호출한다.
+- **태그 고정 배포**: `TOARD_TAG=1.2.3` 처럼 고정했다면 updater 도 그 태그를 기준으로 pull/up 한다. 태그 값을 바꾸는 작업은 운영자가 `.env` 또는 배포 설정에서 명시적으로 수행한다.
+- **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패 시 관리 화면에 마지막 단계와 로그 일부를 남기며, 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
+
 ## 2) Kubernetes (kustomize · raw 매니페스트)
 
 `k8s/` — Namespace·ConfigMap·Secret·Postgres(StatefulSet)·app(Deployment)·Service·Ingress.

@@ -14,9 +14,11 @@ import { listPendingInvites } from "@/lib/invites";
 import { getPricingStatus } from "@/lib/pricing";
 import { isAutoSyncEnabled, schedulerEligible } from "@/lib/pricing-auto-sync";
 import { getPublicBaseUrl } from "@/lib/public-url";
+import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
 import { PricingSyncPanel } from "./pricing-panel";
+import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
 import { InvitePanel } from "./invite-panel";
@@ -219,19 +221,24 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const [pricing, autoSync, t] = await Promise.all([
+  const [pricing, autoSync, serverUpdate, t] = await Promise.all([
     getPricingStatus(),
     // 마이그레이션 전 등 조회 실패 시 기본값(on)으로 표시 — 시스템 탭이 깨지지 않게
     isAutoSyncEnabled().catch(() => true),
+    getServerUpdateStatus(),
     getTranslations("admin"),
   ]);
   const contentEnabled = contentCollectionEnabled();
+  const serverVersion = getServerVersion();
 
   return (
     <Card>
       <CardContent className="divide-y">
-        <SettingsRow label={t("system.serverVersion")} description={t("system.serverDescription")}>
-          <span className="font-mono text-sm">{formatVersion(getServerVersion())}</span>
+        <SettingsRow wide label={t("system.serverVersion")} description={t("system.serverDescription")}>
+          <div className="space-y-3">
+            <span className="font-mono text-sm">{formatVersion(serverVersion)}</span>
+            <ServerUpdatePanel currentVersion={serverVersion} initialStatus={serverUpdate} />
+          </div>
         </SettingsRow>
 
         <SettingsRow wide label={t("system.pricingTitle")} description={t("system.pricingDescription")}>

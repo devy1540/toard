@@ -1,0 +1,10 @@
+{
+  "name": "@toard/updater",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "node --check src/server.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

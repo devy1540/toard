@@ -23,6 +23,7 @@ COPY packages/ingest/package.json ./packages/ingest/
 COPY packages/pricing/package.json ./packages/pricing/
 COPY packages/storage-postgres/package.json ./packages/storage-postgres/
 COPY packages/storage-clickhouse/package.json ./packages/storage-clickhouse/
+COPY packages/updater/package.json ./packages/updater/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
 
@@ -64,3 +65,17 @@ ENV HOME=/tmp
 COPY migrations/ ./migrations/
 COPY scripts/ ./scripts/
 CMD ["pnpm", "migrate"]
+
+# ---- updater: Compose 전용 서버 자가 업데이트 agent ----
+# Docker socket 권한은 웹앱이 아니라 이 선택 서비스에만 부여한다.
+FROM node:${NODE_VERSION} AS updater
+WORKDIR /app
+ENV NODE_ENV=production \
+    TOARD_UPDATER_PORT=3201 \
+    TOARD_APP_URL=http://app:3000 \
+    TOARD_COMPOSE_PROJECT_DIR=/workspace \
+    TOARD_COMPOSE_FILE=docker-compose.yml
+RUN apk add --no-cache docker-cli docker-cli-compose
+COPY packages/updater ./packages/updater
+EXPOSE 3201
+CMD ["node", "packages/updater/src/server.mjs"]

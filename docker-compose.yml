@@ -1,7 +1,7 @@
 # toard 올인원 배포 (프로덕션). 한 방 실행 — GHCR 프리빌트 이미지를 받아 기동:
 #   AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 # 소스에서 직접 빌드(미게시 변경 확인 등): 위 명령에 --build 추가
-# 이미지 태그 고정(선택): TOARD_TAG=v1.2.3 (기본 latest = main 최신)
+# 이미지 태그 고정(선택): TOARD_TAG=1.2.3 (기본 latest = main 최신)
 # AUTH_SECRET 는 compose 파싱 시 필수(기본값 없음) — down/logs 등에도 필요하니 .env 에 넣어두면 편함.
 # 최초 admin id/pw 부트스트랩(선택):
 #   BOOTSTRAP_ADMIN_EMAIL=you@corp.com BOOTSTRAP_ADMIN_PASSWORD=... \
@@ -75,6 +75,8 @@ services:
       ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}
       TOARD_CONTENT_KEK_B64: ${TOARD_CONTENT_KEK_B64:-}   # 설정 시 본문 수집 활성(암호화 KEK, base64 32B)
       CONTENT_COLLECTION_DEFAULT: ${CONTENT_COLLECTION_DEFAULT:-}   # on 이면 설치 기본 opt-out(자동 켜짐), 기본 opt-in
+      TOARD_UPDATER_URL: ${TOARD_UPDATER_URL:-}       # 선택: Compose updater agent 내부 URL (예: http://updater:3201)
+      TOARD_UPDATER_SECRET: ${TOARD_UPDATER_SECRET:-} # 선택: app ↔ updater 공유 secret
     ports:
       - "${PORT:-3000}:3000"
     depends_on:
@@ -82,6 +84,28 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    restart: unless-stopped
+
+  # 선택(profile=updater): 관리 화면에서 Compose 서버 업데이트를 실행하는 별도 agent.
+  # Docker socket 권한을 갖는 고위험 서비스라 명시적으로 profile 과 secret 을 설정한 경우에만 켠다.
+  updater:
+    image: ghcr.io/devy1540/toard-updater:${TOARD_TAG:-latest}
+    pull_policy: missing
+    build:
+      context: .
+      target: updater
+    profiles: ["updater"]
+    environment:
+      TOARD_UPDATER_SECRET: ${TOARD_UPDATER_SECRET:-}
+      TOARD_APP_URL: http://app:3000
+      TOARD_COMPOSE_PROJECT_DIR: /workspace
+      TOARD_COMPOSE_FILE: docker-compose.yml
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/workspace:ro
+    depends_on:
+      app:
+        condition: service_started
     restart: unless-stopped
 
   # 선택(profile=seed): providers·admin·비번 시드. `docker compose --profile seed run --rm seed`

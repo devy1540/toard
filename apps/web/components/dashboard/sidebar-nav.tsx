@@ -8,6 +8,7 @@ import {
   SidebarGroup,
   SidebarGroupLabel,
   SidebarMenu,
+  SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
@@ -15,8 +16,16 @@ import {
 
 type NavKey = "myUsage" | "history" | "org" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
-type NavItem = { href: string; key: NavKey; icon: LucideIcon };
+type NavBadge = "preview" | "beta";
+type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
 type NavGroup = { label: GroupKey; items: NavItem[] };
+
+const badgeClassName: Record<NavBadge, string> = {
+  preview:
+    "h-4 min-w-0 rounded-full border border-orange-200 bg-orange-50 px-1.5 text-[10px] font-bold uppercase tracking-normal text-orange-700 dark:border-orange-900/60 dark:bg-orange-950/50 dark:text-orange-300",
+  beta:
+    "h-4 min-w-0 rounded-full border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-bold uppercase tracking-normal text-cyan-700 dark:border-cyan-900/60 dark:bg-cyan-950/50 dark:text-cyan-300",
+};
 
 export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const t = useTranslations("nav");
@@ -29,12 +38,12 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
       label: "groupPersonal",
       items: [
         { href: "/", key: "myUsage", icon: User },
-        { href: "/history", key: "history", icon: MessageSquare },
+        { href: "/history", key: "history", icon: MessageSquare, badge: "preview" },
       ],
     },
     {
       label: "groupShared",
-      items: [{ href: "/org", key: "org", icon: ChartBar }],
+      items: [{ href: "/org", key: "org", icon: ChartBar, badge: "beta" }],
     },
     {
       label: "groupSystem",
@@ -51,18 +60,23 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
         <SidebarGroup key={label}>
           <SidebarGroupLabel>{t(label)}</SidebarGroupLabel>
           <SidebarMenu>
-            {items.map(({ href, key, icon: Icon }) => {
+            {items.map(({ href, key, icon: Icon, badge }) => {
               // 하위 경로(/history/:id 등)에서도 해당 메뉴가 활성으로 남게 prefix 매칭
               const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
               return (
                 <SidebarMenuItem key={href}>
-                  <SidebarMenuButton asChild isActive={active} tooltip={t(key)}>
+                  <SidebarMenuButton asChild isActive={active} tooltip={t(key)} className={badge ? "pr-20" : undefined}>
                     {/* 모바일 드로어는 이동 후 자동으로 닫히지 않아 직접 닫는다 (데스크톱은 no-op) */}
                     <Link href={href} onClick={() => setOpenMobile(false)}>
                       <Icon />
                       <span>{t(key)}</span>
                     </Link>
                   </SidebarMenuButton>
+                  {badge ? (
+                    <SidebarMenuBadge className={badgeClassName[badge]}>
+                      {badge === "preview" ? t("badge.preview") : t("badge.beta")}
+                    </SidebarMenuBadge>
+                  ) : null}
                 </SidebarMenuItem>
               );
             })}

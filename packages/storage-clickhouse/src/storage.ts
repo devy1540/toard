@@ -12,6 +12,7 @@ import type {
   SaveResult,
   SessionUsageEventRow,
   SessionUsageSummary,
+  ModelDailyPoint,
   StorageBackend,
   TimeseriesScope,
   UsageEvent,
@@ -240,6 +241,31 @@ export class ClickHouseStorage implements StorageBackend {
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
     }));
+  }
+
+  // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)
+  async getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]> {
+    const { where, params } = this.periodWhere({ ...q, userId });
+    const tz = safeTimezone(q.timezone, this.tz);
+    const bucketExpr =
+      q.bucket === "hour"
+        ? `formatDateTime(ts, '%Y-%m-%d %H:00', '${tz}')`
+        : `toString(toDate(ts, '${tz}'))`;
+    const rows = await this.queryJson<{ day: string; model: string; cost?: string; tokens?: string }>(
+      `SELECT ${bucketExpr}                                    AS day,
+              if(model = '', '(unknown)', model)               AS model,
+              sum(cost_usd)                                     AS cost,
+              sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
+       FROM usage_events FINAL ${where}
+       GROUP BY day, model ORDER BY day, cost DESC`,
+      params,
+    );
+    return rows.map((r) => ({ day: r.day, model: r.model, costUsd: n(r.cost), totalTokens: n(r.tokens) }));
+  }
+
+  // 시간 버킷 고정 시계열 — 히트맵은 기간의 표시 버킷(day)과 무관하게 항상 hour 로 그린다
+  getUserHourlyTimeseries(userId: string, q: PeriodQuery & { timezone?: string }): Promise<DailyPoint[]> {
+    return this.dailyQuery({ ...q, userId, bucket: "hour" });
   }
 
   // 컴퓨터(호스트)별 분해 — modelBreakdown 동형. 빈 문자열('') 은 nullIf 로 NULL 정규화해

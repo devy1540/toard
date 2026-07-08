@@ -11,6 +11,7 @@ import type {
   SaveResult,
   SessionUsageEventRow,
   SessionUsageSummary,
+  ModelDailyPoint,
   StorageBackend,
   TimeseriesScope,
   UsageEvent,
@@ -303,6 +304,31 @@ export class PostgresStorage implements StorageBackend {
       this.hostBreakdown(scoped),
     ]);
     return { overview, daily, byModel, byHost };
+  }
+
+  // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)
+  async getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]> {
+    const { where, params } = this.periodWhere({ ...q, userId });
+    params.push(q.timezone ?? this.tz);
+    const bucketExpr =
+      q.bucket === "hour"
+        ? `to_char(ts AT TIME ZONE $${params.length}, 'YYYY-MM-DD HH24:00')`
+        : `to_char((ts AT TIME ZONE $${params.length})::date, 'YYYY-MM-DD')`;
+    const res = await this.pool.query(
+      `SELECT ${bucketExpr} AS day,
+              COALESCE(model,'(unknown)') AS model,
+              COALESCE(SUM(cost_usd),0)   AS cost,
+              COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens
+       FROM usage_events ${where}
+       GROUP BY 1, 2 ORDER BY 1, cost DESC`,
+      params,
+    );
+    return res.rows.map((r) => ({ day: r.day, model: r.model, costUsd: n(r.cost), totalTokens: n(r.tokens) }));
+  }
+
+  // 시간 버킷 고정 시계열 — 히트맵은 기간의 표시 버킷(day)과 무관하게 항상 hour 로 그린다
+  getUserHourlyTimeseries(userId: string, q: PeriodQuery & { timezone?: string }): Promise<DailyPoint[]> {
+    return this.dailyQuery({ ...q, userId, bucket: "hour" });
   }
 
   // 내 기기 목록 — 기간·provider 무관 전체 이력(유휴 기기도 노출). host 는 raw(NULL 보존).

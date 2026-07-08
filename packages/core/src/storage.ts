@@ -85,6 +85,15 @@ export interface DailyPoint {
   cacheCreationTokens: number;
 }
 
+/** 버킷×모델 시계열 포인트 — 스탯 뷰의 모델별 스택 막대용. 키 규약은 DailyPoint.day 와 동일. */
+export interface ModelDailyPoint {
+  day: string;
+  model: string;
+  costUsd: number;
+  /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
+  totalTokens: number;
+}
+
 export interface ModelBreakdown {
   model: string;
   costUsd: number;
@@ -182,6 +191,10 @@ export interface StorageBackend {
     q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
+  /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
+  getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
+  /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */
+  getUserHourlyTimeseries(userId: string, q: PeriodQuery & { timezone?: string }): Promise<DailyPoint[]>;
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;

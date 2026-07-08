@@ -234,6 +234,7 @@ export class PostgresStorage implements StorageBackend {
     const res = await this.pool.query(
       `SELECT ${bucketExpr} AS day,
               COUNT(DISTINCT session_id) AS sessions,
+              COUNT(DISTINCT user_id)    AS active_users,
               COALESCE(SUM(cost_usd),0)  AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
               COALESCE(SUM(output_tokens),0) AS output,
@@ -244,7 +245,7 @@ export class PostgresStorage implements StorageBackend {
       params,
     );
     return res.rows.map((r) => ({
-      day: r.day, sessions: n(r.sessions), costUsd: n(r.cost),
+      day: r.day, sessions: n(r.sessions), activeUsers: n(r.active_users), costUsd: n(r.cost),
       inputTokens: n(r.input), outputTokens: n(r.output),
       cacheReadTokens: n(r.cache_read), cacheCreationTokens: n(r.cache_creation),
     }));

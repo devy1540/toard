@@ -78,6 +78,7 @@ export interface DailyPoint {
    */
   day: string;
   sessions: number;
+  activeUsers: number;
   costUsd: number;
   inputTokens: number;
   outputTokens: number;

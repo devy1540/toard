@@ -204,6 +204,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<{ day: string } & AggRow>(
       `SELECT ${bucketExpr}                                   AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
+              uniqExactIf(user_id, user_id != '')             AS active_users,
               sum(cost_usd)     AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
@@ -216,6 +217,7 @@ export class ClickHouseStorage implements StorageBackend {
     return rows.map((r) => ({
       day: r.day,
       sessions: n(r.sessions),
+      activeUsers: n(r.active_users),
       costUsd: n(r.cost),
       inputTokens: n(r.input),
       outputTokens: n(r.output),

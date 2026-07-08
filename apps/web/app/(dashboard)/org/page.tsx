@@ -3,13 +3,13 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import type { LeaderRow, OverviewStats } from "@toard/core";
-import { Activity, ArrowUpDown, Building2, DollarSign, Inbox, TrendingDown, TrendingUp, Trophy, Users } from "lucide-react";
+import { Activity, ArrowUpDown, Building2, DollarSign, Inbox, Trophy, Users } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { StatCard } from "@/components/dashboard/stat-card";
+import { DeltaBadge, StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -19,7 +19,6 @@ import { getEnabledProviders } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
-import { cn } from "@/lib/utils";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
@@ -227,16 +226,8 @@ function OrgHero({
           <div className="mt-2 flex flex-wrap items-center gap-3">
             <span className="text-4xl font-semibold tracking-tight tabular-nums">{fmtUsd(overview.totalCostUsd)}</span>
             {delta ? (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-0.5 rounded-full px-1.5 py-px text-xs font-medium",
-                  delta.direction === "down"
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                    : "bg-red-500/10 text-red-600 dark:text-red-400",
-                )}
-              >
-                {delta.direction === "down" ? <TrendingDown className="size-3" /> : <TrendingUp className="size-3" />}
-                {delta.pct}
+              <span className="text-xs">
+                <DeltaBadge delta={delta} />
               </span>
             ) : null}
           </div>
@@ -335,6 +326,7 @@ async function OverviewTab({
   const spark = {
     cost: series.map((d) => d.costUsd),
     sessions: series.map((d) => d.sessions),
+    users: series.map((d) => d.activeUsers),
     tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
   };
   const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
@@ -378,29 +370,29 @@ async function OverviewTab({
         <StatCard
           label={t("totalCost")}
           value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta ? { ...costDelta, tone: "colored" } : null}
+          delta={costDelta}
           hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
           spark={spark.cost}
-          sparkAccent
           icon={<DollarSign className="size-4" />}
         />
         <StatCard
           label={t("sessions")}
           value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "directional" } : null}
+          delta={sessionsDelta}
           spark={spark.sessions}
           icon={<Activity className="size-4" />}
         />
         <StatCard
           label={t("activeUsers")}
           value={fmtNum(overview.activeUsers)}
-          delta={usersDelta ? { ...usersDelta, tone: "neutral" } : null}
+          delta={usersDelta}
+          spark={spark.users}
           icon={<Users className="size-4" />}
         />
         <StatCard
           label={t("totalTokens")}
           value={fmtCompact(tokens)}
-          delta={tokensDelta ? { ...tokensDelta, tone: "directional" } : null}
+          delta={tokensDelta}
           hint={t("tokenHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),

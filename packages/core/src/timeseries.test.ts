@@ -6,6 +6,7 @@ import { fillHourlyGaps, hourKey } from "./timeseries";
 const pt = (day: string, tokens = 100): DailyPoint => ({
   day,
   sessions: 1,
+  activeUsers: 1,
   costUsd: 1,
   inputTokens: tokens,
   outputTokens: 0,

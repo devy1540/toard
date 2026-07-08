@@ -49,7 +49,8 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 ### Compose 서버 업데이트 버튼(선택)
 
 관리 화면의 시스템 탭에서 서버 이미지를 업데이트하려면 별도 updater agent 를 켠다. 웹앱 컨테이너에는
-Docker socket 을 주지 않고, `updater` 서비스만 제한된 내부 API 로 `docker compose pull` →
+Docker socket 을 주지 않고, `updater` 서비스만 제한된 내부 API 로 최신 릴리스를 확인한 뒤
+`.env` 의 `TOARD_TAG` 를 백업과 함께 갱신하고, `docker compose pull` →
 `docker compose run --rm migrate` → `docker compose up -d app` → health/ready/version 확인을 실행한다.
 
 ```bash
@@ -63,9 +64,9 @@ docker compose --profile updater up -d
 ```
 
 - **Compose 전용**: Helm/Kubernetes 배포는 이미지 태그·릴리스 관리 방식이 달라 이 updater 를 쓰지 않는다.
-- **권한 주의**: updater 는 `/var/run/docker.sock` 을 마운트하므로 호스트 Docker 권한을 가진다. 공개 포트를 열지 않고 Compose 내부 네트워크에서만 앱이 shared secret 으로 호출한다.
-- **태그 고정 배포**: `TOARD_TAG=1.2.3` 처럼 고정했다면 updater 도 그 태그를 기준으로 pull/up 한다. 태그 값을 바꾸는 작업은 운영자가 `.env` 또는 배포 설정에서 명시적으로 수행한다.
-- **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패 시 관리 화면에 마지막 단계와 로그 일부를 남기며, 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
+- **권한 주의**: updater 는 `/var/run/docker.sock` 과 배포 디렉터리를 마운트하므로 호스트 Docker 권한과 `.env` 수정 권한을 가진다. 공개 포트를 열지 않고 Compose 내부 네트워크에서만 앱이 shared secret 으로 호출한다.
+- **`.env` 필수**: updater 가 같은 배포 디렉터리에서 compose 를 실행하므로 `AUTH_SECRET` 같은 운영 설정은 `.env` 에 고정해 둔다. 업데이트 시 기존 값은 유지하고 `TOARD_TAG` 만 바꾼다.
+- **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패하면 updater 가 변경한 `.env` 는 되돌리지만, 이미 재시작된 컨테이너까지 자동으로 롤백하지는 않는다. 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
 
 ## 2) Kubernetes (kustomize · raw 매니페스트)
 

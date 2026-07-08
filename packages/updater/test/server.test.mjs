@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  composeMigrateArgs,
+  composePullArgs,
+  composeRestartAppArgs,
   dockerComposeArgs,
   initialStatus,
   normalizeTargetVersion,
@@ -30,6 +33,12 @@ test("normalizeTargetVersion returns docker image semver tags", () => {
 
 test("dockerComposeArgs always scopes commands to the configured compose file", () => {
   assert.deepEqual(dockerComposeArgs(["pull", "app"]), ["compose", "-f", "docker-compose.yml", "pull", "app"]);
+});
+
+test("update compose commands do not manage dependency services", () => {
+  assert.deepEqual(composePullArgs(), ["pull", "app", "migrate"]);
+  assert.deepEqual(composeMigrateArgs(), ["run", "--rm", "--no-deps", "migrate"]);
+  assert.deepEqual(composeRestartAppArgs(), ["up", "-d", "--no-deps", "app"]);
 });
 
 test("updateEnvContent replaces or appends TOARD_TAG without touching comments", () => {

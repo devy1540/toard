@@ -13,19 +13,13 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { featureStatusBadgeClassName } from "./feature-status-badge";
 
 type NavKey = "myUsage" | "history" | "org" | "orgTeams" | "myTeam" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
 type NavBadge = "preview" | "beta";
 type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
 type NavGroup = { label: GroupKey; items: NavItem[] };
-
-const badgeClassName: Record<NavBadge, string> = {
-  preview:
-    "h-4 min-w-0 rounded-full border border-orange-200 bg-orange-50 px-1.5 text-[10px] font-bold uppercase tracking-normal text-orange-700 dark:border-orange-900/60 dark:bg-orange-950/50 dark:text-orange-300",
-  beta:
-    "h-4 min-w-0 rounded-full border border-cyan-200 bg-cyan-50 px-1.5 text-[10px] font-bold uppercase tracking-normal text-cyan-700 dark:border-cyan-900/60 dark:bg-cyan-950/50 dark:text-cyan-300",
-};
 
 export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const t = useTranslations("nav");
@@ -81,7 +75,9 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
                     </Link>
                   </SidebarMenuButton>
                   {badge ? (
-                    <SidebarMenuBadge className={badgeClassName[badge]}>
+                    <SidebarMenuBadge
+                      className={featureStatusBadgeClassName(badge, "h-4 min-w-0 px-1.5 text-[10px]")}
+                    >
                       {badge === "preview" ? t("badge.preview") : t("badge.beta")}
                     </SidebarMenuBadge>
                   ) : null}

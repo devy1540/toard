@@ -1,22 +1,45 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useEffect, useMemo, useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DEFAULT_PERIOD } from "@/lib/period";
+import { DEFAULT_PERIOD, parseFilters } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
+import { FeatureStatusBadge, type FeatureStatus } from "./feature-status-badge";
 
 const PERIODS = [
   { v: "today", key: "filters.periodToday" },
-  { v: "7", key: "filters.period7" },
-  { v: "30", key: "filters.period30" },
-  { v: "90", key: "filters.period90" },
+  { v: "week", key: "filters.periodWeek" },
+  { v: "month", key: "filters.periodMonth" },
+  { v: "quarter", key: "filters.periodQuarter" },
+  { v: "year", key: "filters.periodYear" },
 ] as const;
 
 const ALL_PERIOD = { v: "all", key: "filters.periodAll" } as const;
+
+function formatRange(from: Date, to: Date, locale: string, timezone: string): string {
+  if (from.getTime() === 0) return "";
+  const end = new Date(to.getTime() - 1);
+  const dateFmt = new Intl.DateTimeFormat(locale, {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const timeFmt = new Intl.DateTimeFormat(locale, {
+    timeZone: timezone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  });
+  const startDate = dateFmt.format(from);
+  const endDate = dateFmt.format(end);
+  if (startDate === endDate) return `${startDate} ${timeFmt.format(from)}~${timeFmt.format(end)}`;
+  return `${startDate}~${endDate}`;
+}
 
 /** 페이지 툴바 — 한 줄에 [제목·leading(탭 등)] + 기간(세그먼트+직접 선택)·도구(셀렉트) + [trailing(새로고침 등)].
  *  제목은 작게(14px) 유지: 위치 신호는 내비 하이라이트 하나에 의존하지 않고 헤딩으로 보강(NN/g You Are Here).
@@ -33,6 +56,7 @@ export function DashboardFilters({
   resetKeys = [],
   timezone,
   title,
+  statusBadge,
   leading,
   trailing,
 }: {
@@ -43,12 +67,15 @@ export function DashboardFilters({
   timezone?: string;
   /** 페이지 제목 — h1 로 렌더 (접근성·오리엔테이션). */
   title?: string;
+  /** 제목 옆 기능 안정성 배지 (사이드바의 프리뷰/베타와 같은 의미). */
+  statusBadge?: { status: FeatureStatus; label: string };
   /** 제목 뒤 로컬 컨텍스트 (전체 현황의 개요/순위 탭 등) */
   leading?: React.ReactNode;
   /** 우측 정렬 요소 (새로고침·안내 캡션 등) */
   trailing?: React.ReactNode;
 }) {
   const t = useTranslations("dashboard");
+  const locale = useLocale();
   const router = useRouter();
   const pathname = usePathname();
   const sp = useSearchParams();
@@ -67,6 +94,21 @@ export function DashboardFilters({
     setDeviceTz(Intl.DateTimeFormat().resolvedOptions().timeZone ?? null);
   }, []);
   const tzDiffers = timezone != null && deviceTz != null && timezone !== deviceTz;
+  const rangeLabel = useMemo(() => {
+    if (!timezone) return null;
+    const parsed = parseFilters(
+      {
+        period,
+        provider,
+        from: sp.get("from") ?? undefined,
+        to: sp.get("to") ?? undefined,
+      },
+      timezone,
+      defaultPeriod,
+    );
+    const label = formatRange(parsed.from, parsed.to, locale, timezone);
+    return label || t("filters.rangeAll");
+  }, [defaultPeriod, locale, period, provider, sp, timezone, t]);
 
   const push = (params: Record<string, string | null>) => {
     const next = new URLSearchParams(sp.toString());
@@ -91,7 +133,14 @@ export function DashboardFilters({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
-        {title ? <h1 className="mr-2 text-sm font-medium">{title}</h1> : null}
+        {title ? (
+          <div className="mr-2 flex shrink-0 items-center gap-2">
+            <h1 className="text-sm font-medium">{title}</h1>
+            {statusBadge ? (
+              <FeatureStatusBadge status={statusBadge.status}>{statusBadge.label}</FeatureStatusBadge>
+            ) : null}
+          </div>
+        ) : null}
         {leading}
         <div className="flex flex-wrap gap-1">
           {periods.map((p) => (
@@ -127,6 +176,7 @@ export function DashboardFilters({
           </SelectContent>
         </Select>
 
+        {rangeLabel ? <span className="text-muted-foreground text-xs tabular-nums">{rangeLabel}</span> : null}
         {tzDiffers && (
           <span className="text-muted-foreground text-xs" title={timezone}>
             {t("filters.timezoneNote", { tz: timezone })}

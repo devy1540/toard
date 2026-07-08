@@ -25,6 +25,11 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const t = useTranslations("nav");
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
+  const workspaceItems: NavItem[] = [
+    { href: "/org", key: "org", icon: ChartBar, badge: "beta" },
+    ...(isAdmin ? ([{ href: "/org/teams", key: "orgTeams", icon: Building2, badge: "beta" }] satisfies NavItem[]) : []),
+    { href: "/org/team", key: "myTeam", icon: Building2, badge: "beta" },
+  ];
 
   // 그룹 축: 개인(내 데이터) / 워크스페이스(이 인스턴스 전체·팀별 집계) / 시스템
   const groups: NavGroup[] = [
@@ -37,10 +42,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
     },
     {
       label: "groupShared",
-      items: [
-        { href: "/org", key: "org", icon: ChartBar, badge: "beta" },
-        { href: "/org/teams", key: isAdmin ? "orgTeams" : "myTeam", icon: Building2, badge: "beta" },
-      ],
+      items: workspaceItems,
     },
     {
       label: "groupSystem",

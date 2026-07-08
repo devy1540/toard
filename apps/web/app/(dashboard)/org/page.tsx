@@ -466,7 +466,7 @@ async function OverviewTab({
             title={t("teamAccess.title")}
             description={t("teamAccess.memberDescription")}
             actionLabel={t("teamAccess.openMyTeam")}
-            href={hrefWith(sp, "/org/teams")}
+            href={hrefWith(sp, "/org/team")}
           />
         )}
         <Card className="gap-4">

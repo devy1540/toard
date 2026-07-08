@@ -1,22 +1,18 @@
 import { getTranslations } from "next-intl/server";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
-import type { LeaderRow, OverviewStats } from "@toard/core";
-import { Activity, ArrowUpDown, DollarSign, Inbox, TrendingUp, Trophy, Users } from "lucide-react";
+import type { LeaderRow } from "@toard/core";
+import { Activity, DollarSign, Inbox, TrendingUp, Trophy } from "lucide-react";
 import { LeaderboardBarChart } from "@/components/charts/leaderboard-bar-chart";
-import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
-import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { StatCard } from "@/components/dashboard/stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
-import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
+import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
-import { getDashboardViewer, type SessionUser } from "@/lib/session-user";
-import { pctDelta } from "@/lib/stat-delta";
+import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import { getViewerTimezone } from "@/lib/viewer-time";
@@ -25,8 +21,15 @@ export const dynamic = "force-dynamic";
 
 type TeamPeriod = ReturnType<typeof parseFilters>;
 
-function totalTokens(s: OverviewStats): number {
-  return s.totalInputTokens + s.totalOutputTokens + s.totalCacheReadTokens + s.totalCacheCreationTokens;
+function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
+  const q = new URLSearchParams();
+  if (sp.period) q.set("period", sp.period);
+  if (sp.provider) q.set("provider", sp.provider);
+  if (sp.from) q.set("from", sp.from);
+  if (sp.to) q.set("to", sp.to);
+  if (sp.metric) q.set("metric", sp.metric);
+  const qs = q.toString();
+  return qs ? `${path}?${qs}` : path;
 }
 
 function SummaryTile({
@@ -181,24 +184,20 @@ export default async function TeamUsagePage({
   if (!viewer) redirect("/login");
 
   const isAdmin = viewer.role === "admin";
-  const title = isAdmin
-    ? t("teamsTitle")
-    : viewer.teamName
-      ? t("myTeamTitle", { team: viewer.teamName })
-      : t("myTeamFallbackTitle");
+  if (!isAdmin) redirect(hrefWith(sp, "/org/team"));
 
   return (
     <div className="space-y-6">
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
-        title={title}
+        title={t("teamsTitle")}
         trailing={<AutoRefresh />}
       />
 
       <PricingNotice />
 
-      {isAdmin ? <AllTeamsOverview period={period} /> : <MemberTeamOverview sp={sp} period={period} viewer={viewer} />}
+      <AllTeamsOverview period={period} />
     </div>
   );
 }
@@ -317,161 +316,5 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
         </Card>
       )}
     </>
-  );
-}
-
-async function MemberTeamOverview({
-  sp,
-  period,
-  viewer,
-}: {
-  sp: DashboardSearchParams;
-  period: TeamPeriod;
-  viewer: SessionUser;
-}) {
-  const t = await getTranslations("org");
-  if (!viewer.teamId) {
-    return (
-      <Card>
-        <CardContent>
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <Users />
-              </EmptyMedia>
-              <EmptyTitle>{t("teamAccess.unassignedTitle")}</EmptyTitle>
-              <EmptyDescription>{t("teamAccess.unassignedDescription")}</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
-  const storage = getStorage();
-  const scoped = { ...period, teamId: viewer.teamId };
-  const [overview, prevOverview, daily, members] = await Promise.all([
-    storage.getOverview(scoped),
-    storage.getOverview({ ...previousPeriod(period), teamId: viewer.teamId }),
-    storage.getDailyTimeseries({ ...period, scope: "team", teamId: viewer.teamId }),
-    storage.getLeaderboard({ ...period, scope: "user", teamId: viewer.teamId }),
-  ]);
-  const series = fillSeriesGaps(daily, period);
-  const tokens = totalTokens(overview);
-  const spark = {
-    cost: series.map((d) => d.costUsd),
-    sessions: series.map((d) => d.sessions),
-    tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
-  };
-  const maxCost = members[0]?.costUsd ?? 0;
-  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
-  const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
-  const usersDelta = pctDelta(overview.activeUsers, prevOverview.activeUsers);
-  const tokensDelta = pctDelta(tokens, totalTokens(prevOverview));
-
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label={t("totalCost")}
-          value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta ? { ...costDelta, tone: "colored" } : null}
-          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
-          spark={spark.cost}
-          sparkAccent
-          icon={<DollarSign className="size-4" />}
-        />
-        <StatCard
-          label={t("sessions")}
-          value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "neutral" } : null}
-          spark={spark.sessions}
-          icon={<Activity className="size-4" />}
-        />
-        <StatCard
-          label={t("activeUsers")}
-          value={fmtNum(overview.activeUsers)}
-          delta={usersDelta ? { ...usersDelta, tone: "neutral" } : null}
-          icon={<Users className="size-4" />}
-        />
-        <StatCard
-          label={t("totalTokens")}
-          value={fmtCompact(tokens)}
-          delta={tokensDelta ? { ...tokensDelta, tone: "neutral" } : null}
-          hint={t("tokenHint", {
-            in: fmtCompact(overview.totalInputTokens),
-            out: fmtCompact(overview.totalOutputTokens),
-            cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
-          })}
-          spark={spark.tokens}
-          icon={<ArrowUpDown className="size-4" />}
-        />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>{t(period.bucket === "hour" ? "teamHourlyUsage" : "teamDailyUsage")}</CardTitle>
-            <MetricToggle value={metric} />
-          </CardHeader>
-          <CardContent>
-            {daily.length > 0 ? (
-              <UsageAreaChart
-                data={series}
-                metric={metric}
-                bucket={period.bucket}
-                markNow={period.preset === "today"}
-              />
-            ) : (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
-                  <EmptyDescription>{t("teamNoUsageDescription")}</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="gap-4">
-          <CardHeader>
-            <CardTitle>{t("teamMembers")}</CardTitle>
-            <CardDescription>{t("teamMembersDescription")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {members.length > 0 ? (
-              <div className="space-y-3">
-                {members.slice(0, 8).map((row, i) => (
-                  <RankingListRow
-                    key={row.key}
-                    row={row}
-                    rank={i + 1}
-                    totalCost={overview.totalCostUsd}
-                    maxCost={maxCost}
-                    sessionsLabel={t("sessionsCol")}
-                    tokensLabel={t("tokensCol")}
-                    costShareLabel={t("ranking.costShare")}
-                  />
-                ))}
-              </div>
-            ) : (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("teamNoMembersTitle")}</EmptyTitle>
-                  <EmptyDescription>{t("teamNoUsageDescription")}</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-    </div>
   );
 }

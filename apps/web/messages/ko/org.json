@@ -67,6 +67,12 @@
     "unassignedTitle": "팀이 배정되지 않았습니다",
     "unassignedDescription": "관리자에게 팀 배정을 요청하면 이 화면에서 내 팀 현황을 볼 수 있습니다."
   },
+  "teamSelector": {
+    "title": "팀 선택",
+    "description": "관리자는 팀을 선택해 단일 팀 현황을 볼 수 있습니다.",
+    "emptyTitle": "팀이 없습니다",
+    "emptyDescription": "관리 화면에서 팀을 만든 뒤 팀 현황을 확인할 수 있습니다."
+  },
   "signal": {
     "totalSessions": "전체 세션",
     "totalSessionsSub": "대화 단위 합계",

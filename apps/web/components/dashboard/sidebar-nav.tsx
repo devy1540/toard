@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { ChartBar, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
+import { Building2, ChartBar, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import { featureStatusBadgeClassName } from "./feature-status-badge";
 
-type NavKey = "myUsage" | "history" | "org" | "settings" | "admin";
+type NavKey = "myUsage" | "history" | "org" | "orgTeams" | "myTeam" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
 type NavBadge = "preview" | "beta";
 type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
@@ -26,7 +26,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
 
-  // 그룹 축: 개인(내 데이터) / 공용(모두의 데이터 — 팀·가족·개인 다중기기 등 배포 형태 불문) / 시스템
+  // 그룹 축: 개인(내 데이터) / 워크스페이스(이 인스턴스 전체·팀별 집계) / 시스템
   const groups: NavGroup[] = [
     {
       label: "groupPersonal",
@@ -37,7 +37,10 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
     },
     {
       label: "groupShared",
-      items: [{ href: "/org", key: "org", icon: ChartBar, badge: "beta" }],
+      items: [
+        { href: "/org", key: "org", icon: ChartBar, badge: "beta" },
+        { href: "/org/teams", key: isAdmin ? "orgTeams" : "myTeam", icon: Building2, badge: "beta" },
+      ],
     },
     {
       label: "groupSystem",
@@ -56,7 +59,12 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
           <SidebarMenu>
             {items.map(({ href, key, icon: Icon, badge }) => {
               // 하위 경로(/history/:id 등)에서도 해당 메뉴가 활성으로 남게 prefix 매칭
-              const active = href === "/" ? pathname === "/" : pathname.startsWith(href);
+              const active =
+                href === "/"
+                  ? pathname === "/"
+                  : href === "/org"
+                    ? pathname === "/org"
+                    : pathname === href || pathname.startsWith(`${href}/`);
               return (
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton asChild isActive={active} tooltip={t(key)} className={badge ? "pr-20" : undefined}>

@@ -1,17 +1,34 @@
 import { auth } from "@/auth";
+import { getCurrentUserId } from "@/lib/current-user";
 import { getPool } from "./db";
 
-export type SessionUser = { id: string; email: string; role: string };
+export type SessionUser = { id: string; email: string; role: string; teamId: string | null; teamName: string | null };
+
+async function getUserById(id: string): Promise<SessionUser | null> {
+  const r = await getPool().query<{ email: string; role: string; team_id: string | null; team_name: string | null }>(
+    `SELECT u.email, u.role, u.team_id, t.name AS team_name
+     FROM users u
+     LEFT JOIN teams t ON t.id = u.team_id
+     WHERE u.id = $1`,
+    [id],
+  );
+  const row = r.rows[0];
+  return row ? { id, email: row.email, role: row.role, teamId: row.team_id, teamName: row.team_name } : null;
+}
 
 /** 현재 로그인 사용자(세션 기반) + DB 의 role. 미로그인이면 null. */
 export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
   const id = session?.user?.id;
   if (!id) return null;
-  const r = await getPool().query<{ email: string; role: string }>(
-    "SELECT email, role FROM users WHERE id = $1",
-    [id],
-  );
-  const row = r.rows[0];
-  return row ? { id, email: row.email, role: row.role } : null;
+  return getUserById(id);
+}
+
+/** 대시보드 표시용 사용자. open 모드에서는 기존 getCurrentUserId 폴백을 사용한다. */
+export async function getDashboardViewer(): Promise<SessionUser | null> {
+  const sessionUser = await getSessionUser();
+  if (sessionUser) return sessionUser;
+  if ((process.env.AUTH_MODE ?? "oauth") !== "open") return null;
+  const id = await getCurrentUserId();
+  return id ? getUserById(id) : null;
 }

@@ -185,8 +185,8 @@ export interface StorageBackend {
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
 
   // ── 읽기 (대시보드) ──
-  /** userId 지정 시 해당 사용자 스코프(내 사용량 직전 기간 비교 등). */
-  getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats>;
+  /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */
+  getOverview(q: PeriodQuery & { userId?: string; teamId?: string }): Promise<OverviewStats>;
   getDailyTimeseries(
     q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]>;
@@ -195,7 +195,7 @@ export interface StorageBackend {
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */
   getUserHourlyTimeseries(userId: string, q: PeriodQuery & { timezone?: string }): Promise<DailyPoint[]>;
-  getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]>;
+  getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;
   /** 내 세션들의 사용량 요약 — 히스토리 목록의 앱레벨 조인. sessionIds 는 페이지 단위 소량 전제. */

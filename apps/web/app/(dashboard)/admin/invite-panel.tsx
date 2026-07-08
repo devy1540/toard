@@ -10,12 +10,22 @@ import { Label } from "@/components/ui/label";
 import { createInviteAction, type InviteState } from "./invite-actions";
 
 const INITIAL: InviteState = {};
-type Pending = { email: string; role: string; expiresAt: string };
+type Pending = { email: string; role: string; teamName: string | null; expiresAt: string };
+type Team = { id: string; name: string };
 
-export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pending[] }) {
+export function InvitePanel({
+  baseUrl,
+  pending,
+  teams,
+}: {
+  baseUrl: string;
+  pending: Pending[];
+  teams: Team[];
+}) {
   const t = useTranslations("admin");
   const [state, action, isPending] = useActionState(createInviteAction, INITIAL);
   const link = state.token ? `${baseUrl}/invite/${state.token}` : null;
+  const hasTeams = teams.length > 0;
   // 생성 결과 토스트 — 같은 토큰으로 중복 발화 방지
   const toastedToken = useRef<string | null>(null);
 
@@ -50,9 +60,30 @@ export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pe
             <option value="admin">admin</option>
           </select>
         </div>
+        <div className="flex items-center gap-2">
+          <Label htmlFor="invite-team">{t("invites.teamLabel")}</Label>
+          <select
+            id="invite-team"
+            name="teamId"
+            required
+            disabled={!hasTeams}
+            className="border-input h-9 rounded-md border bg-transparent px-3 text-sm"
+            defaultValue=""
+          >
+            <option value="" disabled>
+              {t("invites.teamPlaceholder")}
+            </option>
+            {teams.map((team) => (
+              <option key={team.id} value={team.id}>
+                {team.name}
+              </option>
+            ))}
+          </select>
+        </div>
+        {!hasTeams ? <p className="text-muted-foreground text-sm">{t("invites.noTeams")}</p> : null}
         {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
         {/* flex-col 컨테이너가 버튼을 풀폭으로 늘리지 않게 — 폼 버튼은 콘텐츠 폭 */}
-        <Button type="submit" disabled={isPending} className="self-start">
+        <Button type="submit" disabled={isPending || !hasTeams} className="self-start">
           {isPending ? t("invites.generating") : t("invites.generateSubmit")}
         </Button>
       </form>
@@ -75,7 +106,11 @@ export function InvitePanel({ baseUrl, pending }: { baseUrl: string; pending: Pe
             {pending.map((p) => (
               <li key={p.email} className="flex items-center justify-between">
                 <span>
-                  {p.email} <span className="text-muted-foreground">({p.role})</span>
+                  {p.email}{" "}
+                  <span className="text-muted-foreground">
+                    ({p.role}
+                    {p.teamName ? ` · ${t("invites.pendingTeam", { team: p.teamName })}` : ""})
+                  </span>
                 </span>
                 {/* 로캘 의존 포맷 — SSR 과 달라질 수 있어 클라이언트 값 유지 */}
                 <span className="text-muted-foreground text-xs" suppressHydrationWarning>

@@ -31,7 +31,7 @@ export default async function InvitePage({ params }: { params: Promise<{ token: 
         </CardHeader>
         {invite ? (
           <CardContent>
-            <AcceptForm token={token} email={invite.email} />
+            <AcceptForm token={token} email={invite.email} teamName={invite.teamName} />
           </CardContent>
         ) : null}
       </Card>

@@ -47,6 +47,7 @@ export default async function OrgPage({
 }) {
   const sp = await searchParams;
   const t = await getTranslations("org");
+  const navT = await getTranslations("nav");
   const tab = sp.tab === "ranking" ? "ranking" : "overview";
   const period = parseFilters(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
@@ -57,6 +58,7 @@ export default async function OrgPage({
         providers={providers}
         timezone={period.timezone}
         title={t("title")}
+        statusBadge={{ status: "beta", label: navT("badge.beta") }}
         leading={
           <LinkTabs
             active={tab}

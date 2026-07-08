@@ -2,6 +2,7 @@ import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { ChevronLeft, ChevronRight, Inbox, Lock } from "lucide-react";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,6 +27,21 @@ export const dynamic = "force-dynamic";
 const PAGE_SIZE = 20;
 /** 목록 배지로 노출할 모델 수 상한 — 넘치면 "+N" 로 접는다 */
 const MODEL_BADGE_MAX = 2;
+
+function PageTitle({
+  title,
+  badgeLabel,
+}: {
+  title: string;
+  badgeLabel: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <h1 className="text-sm font-medium">{title}</h1>
+      <FeatureStatusBadge status="preview">{badgeLabel}</FeatureStatusBadge>
+    </div>
+  );
+}
 
 interface HistorySearchParams extends DashboardSearchParams {
   /** 열린 세션(그룹) 키 — 있으면 상세 뷰 */
@@ -57,6 +73,7 @@ export default async function HistoryPage({
   searchParams: Promise<HistorySearchParams>;
 }) {
   const t = await getTranslations("dashboard");
+  const navT = await getTranslations("nav");
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -80,7 +97,7 @@ export default async function HistoryPage({
   if (sp.session) {
     return (
       <div className="space-y-6">
-        <h1 className="text-sm font-medium">{t("history.title")}</h1>
+        <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
         <SessionDetail
           userId={userId}
           sessionKey={sp.session}
@@ -113,7 +130,7 @@ export default async function HistoryPage({
   if (!enabled) {
     return (
       <div className="space-y-6">
-        <h1 className="text-sm font-medium">{t("history.title")}</h1>
+        <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -149,6 +166,7 @@ export default async function HistoryPage({
         resetKeys={["page", "session"]}
         timezone={timezone}
         title={t("history.title")}
+        statusBadge={{ status: "preview", label: navT("badge.preview") }}
         trailing={
           <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
             <Lock className="size-3.5" />

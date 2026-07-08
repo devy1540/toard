@@ -92,7 +92,7 @@ export default async function AdminPage({
   return (
     <div className="space-y-6">
       {/* 대시보드와 같은 한 줄 상단 문법 — 작은 제목 + 탭 */}
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
         <h1 className="text-sm font-medium">{t("title")}</h1>
         <LinkTabs
           active={tab}
@@ -137,12 +137,12 @@ async function MembersTab() {
         </div>
       ) : null}
 
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("members.cardTitle", { count: members.length })}</CardTitle>
           <CardDescription>{t("members.cardDescription")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           <Table>
             <TableHeader>
               <TableRow>
@@ -207,12 +207,12 @@ async function TeamsTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("teams.cardTitle", { count: teams.length })}</CardTitle>
           <CardDescription>{t("teams.cardDescription")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           <TeamPanel teams={teams} />
         </CardContent>
       </Card>
@@ -232,8 +232,8 @@ async function SystemTab() {
   const serverVersion = getServerVersion();
 
   return (
-    <Card>
-      <CardContent className="divide-y">
+    <Card className="min-w-0">
+      <CardContent className="min-w-0 divide-y">
         <SettingsRow wide label={t("system.serverVersion")} description={t("system.serverDescription")}>
           <div className="space-y-3">
             <span className="font-mono text-sm">{formatVersion(serverVersion)}</span>
@@ -297,12 +297,12 @@ async function InvitesTab() {
 
   return (
     <div className="space-y-4">
-      <Card>
+      <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("invites.cardTitle")}</CardTitle>
           <CardDescription>{t("invites.cardDescription")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="min-w-0">
           <InvitePanel
             baseUrl={baseUrl}
             pending={pending.map((p) => ({

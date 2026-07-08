@@ -230,7 +230,7 @@ export async function ClassicView({
         </Card>
 
         {hasNamedHost && (
-          <Card>
+          <Card className="min-w-0">
             <CardHeader>
               <CardTitle>{t("byHostTitle")}</CardTitle>
             </CardHeader>

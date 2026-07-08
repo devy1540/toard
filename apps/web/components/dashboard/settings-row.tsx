@@ -19,15 +19,20 @@ export function SettingsRow({
   children: ReactNode;
 }) {
   return (
-    <div className={cn("flex gap-6 py-4 first:pt-0 last:pb-0", wide ? "items-start" : "items-center")}>
-      <div className="w-40 shrink-0 sm:w-52">
+    <div
+      className={cn(
+        "flex flex-col gap-2 py-4 first:pt-0 last:pb-0 sm:flex-row sm:gap-6",
+        wide ? "sm:items-start" : "sm:items-center",
+      )}
+    >
+      <div className="min-w-0 sm:w-52 sm:shrink-0">
         <div className="text-sm font-medium">{label}</div>
         {description ? <div className="text-muted-foreground mt-0.5 text-xs">{description}</div> : null}
       </div>
       <div
         className={cn(
           "min-w-0 flex-1",
-          wide ? "" : "flex flex-wrap items-center justify-end gap-2",
+          wide ? "" : "flex flex-wrap items-center gap-2 sm:justify-end",
         )}
       >
         {children}

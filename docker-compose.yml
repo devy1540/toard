@@ -16,6 +16,7 @@ x-db-url: &db-url
 services:
   postgres:
     image: postgres:16-alpine
+    user: postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-toard}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-toard}

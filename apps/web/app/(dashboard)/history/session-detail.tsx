@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { ArrowLeft, ChevronRight, Inbox, Sparkles, Terminal } from "lucide-react";
+import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -186,7 +187,11 @@ export async function SessionDetail({
                 ) : (
                   <div className="flex max-w-[95%] gap-2.5 sm:max-w-[88%]">
                     <div className="bg-muted text-muted-foreground mt-1 flex size-6 shrink-0 items-center justify-center rounded-full border">
-                      <Sparkles className="size-3.5" />
+                      <ProviderIcon
+                        providerKey={turn.providerKey}
+                        className="size-3.5"
+                        fallback={<Sparkles className="size-3.5" />}
+                      />
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="bg-muted/40 rounded-2xl rounded-tl-md border px-3.5 py-2.5">

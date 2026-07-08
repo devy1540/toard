@@ -49,10 +49,8 @@ export default async function SettingsPage({
 
   const tab: Tab = (await searchParams).tab === "install" ? "install" : "account";
 
-  // 페이지 전체(상단 행 포함)를 탭 폭에 맞는 중앙 컨테이너로 — 와이드 화면에서
-  // 콘텐츠만 폭을 제한하면 좌측 쏠림 + 우측 사막이 된다(상단 요소도 화면 끝으로 흩어짐).
   return (
-    <div className={tab === "account" ? "mx-auto w-full max-w-2xl space-y-6" : "mx-auto w-full max-w-5xl space-y-6"}>
+    <div className="space-y-6">
       {/* 대시보드와 같은 한 줄 상단 문법 — 작은 제목 + 탭, 우측에 계정 컨텍스트 */}
       <div className="flex flex-wrap items-center gap-3">
         <h1 className="text-sm font-medium">{t("pageTitle")}</h1>
@@ -77,10 +75,10 @@ export default async function SettingsPage({
 
 async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; timezone: string | null }) {
   const t = await getTranslations("settings");
-  // 설정성 폼은 좁은 단일 컬럼 스택 — 높이가 다른 카드를 그리드에 넣으면 빈 공간이 널뛴다.
+  // 화면 폭을 채우는 그리드 — 같은 행의 카드는 높이를 맞춰(stretch) 빈 공간이 생기지 않게.
   // 순서는 사용 빈도순: 모양(개인화) → 타임존 → 비밀번호.
   return (
-    <div className="space-y-4">
+    <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
       <Card>
         <CardHeader>
           <CardTitle>{t("appearance.title")}</CardTitle>

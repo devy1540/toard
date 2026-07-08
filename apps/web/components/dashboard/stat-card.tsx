@@ -1,19 +1,16 @@
 import type { ReactNode } from "react";
-import { ArrowDownRight, ArrowUpRight, TrendingDown, TrendingUp } from "lucide-react";
+import { TrendingDown, TrendingUp } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 /**
- * 증감 배지 — tone 은 지표의 가치 방향을 뜻한다.
- *  - colored: 방향에 좋고 나쁨이 있는 지표(비용: 감소=초록/증가=빨강)
- *  - directional: 좋고 나쁨보다 변화 방향을 색으로 보여주는 지표(증가=초록/감소=빨강)
- *  - neutral: 의미상 색 판단이 애매한 지표 — 회색으로 방향만
+ * 증감 배지 — 모든 지표에서 같은 시각 규칙을 쓴다.
+ * 증가=빨강, 감소=초록.
  */
 export interface StatDelta {
   /** 표시용 문자열 (예: "+12%", "-92%", ">+999%") */
   pct: string;
   direction: "up" | "down";
-  tone: "colored" | "directional" | "neutral";
 }
 
 /** 기간 내 추이 미니 스파크라인 — 서버 렌더 순수 SVG (2점 미만이면 미표시). */
@@ -45,6 +42,24 @@ function Sparkline({ values }: { values: number[] }) {
   );
 }
 
+export function DeltaBadge({ delta }: { delta: StatDelta }) {
+  const DeltaIcon = delta.direction === "down" ? TrendingDown : TrendingUp;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-0.5 rounded-full px-1.5 py-px font-medium",
+        delta.direction === "down"
+          ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+          : "bg-red-500/10 text-red-600 dark:text-red-400",
+      )}
+    >
+      <DeltaIcon className="size-3" />
+      {delta.pct}
+    </span>
+  );
+}
+
 export function StatCard({
   label,
   value,
@@ -52,7 +67,6 @@ export function StatCard({
   icon,
   delta,
   spark,
-  sparkAccent = false,
 }: {
   label: string;
   value: string;
@@ -60,18 +74,7 @@ export function StatCard({
   icon?: ReactNode;
   delta?: StatDelta | null;
   spark?: number[];
-  /** 스파크라인을 차트 색(chart-1)으로 — 페이지 대표 지표(비용)용 */
-  sparkAccent?: boolean;
 }) {
-  const DeltaIcon = delta
-    ? delta.tone === "colored"
-      ? delta.direction === "down"
-        ? TrendingDown
-        : TrendingUp
-      : delta.direction === "down"
-        ? ArrowDownRight
-        : ArrowUpRight
-    : null;
   return (
     <Card className="min-w-0 gap-2 py-4">
       <CardHeader className="px-4">
@@ -84,32 +87,14 @@ export function StatCard({
         <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
           <div className="min-w-0 text-2xl font-bold tracking-tight tabular-nums">{value}</div>
           {spark ? (
-            <span className={sparkAccent ? "text-chart-1" : "text-muted-foreground/50"}>
+            <span className="text-chart-1">
               <Sparkline values={spark} />
             </span>
           ) : null}
         </div>
         {delta || hint ? (
           <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
-            {delta && DeltaIcon ? (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-0.5 rounded-full px-1.5 py-px font-medium",
-                  delta.tone === "neutral" && "bg-muted text-muted-foreground",
-                  delta.tone === "colored" &&
-                    (delta.direction === "down"
-                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                      : "bg-red-500/10 text-red-600 dark:text-red-400"),
-                  delta.tone === "directional" &&
-                    (delta.direction === "up"
-                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                      : "bg-red-500/10 text-red-600 dark:text-red-400"),
-                )}
-              >
-                <DeltaIcon className="size-3" />
-                {delta.pct}
-              </span>
-            ) : null}
+            {delta ? <DeltaBadge delta={delta} /> : null}
             {hint ? <span className="text-muted-foreground">{hint}</span> : null}
           </div>
         ) : null}

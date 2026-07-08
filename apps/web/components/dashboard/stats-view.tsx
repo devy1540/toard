@@ -1,8 +1,9 @@
 import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
-import { Inbox, Laptop, TrendingDown, TrendingUp } from "lucide-react";
+import { Inbox, Laptop } from "lucide-react";
 import { ModelStackedBarChart, type StackedSeries } from "@/components/charts/model-stacked-bar-chart";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
+import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
@@ -149,16 +150,8 @@ export async function StatsView({
               {fmtUsd(overview.totalCostUsd)}
             </span>
             {costDelta ? (
-              <span
-                className={cn(
-                  "inline-flex items-center gap-0.5 rounded-full px-1.5 py-px text-xs font-medium",
-                  costDelta.direction === "down"
-                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
-                    : "bg-red-500/10 text-red-600 dark:text-red-400",
-                )}
-              >
-                {costDelta.direction === "down" ? <TrendingDown className="size-3" /> : <TrendingUp className="size-3" />}
-                {costDelta.pct}
+              <span className="text-xs">
+                <DeltaBadge delta={costDelta} />
               </span>
             ) : null}
           </div>

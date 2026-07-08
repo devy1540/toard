@@ -5,7 +5,7 @@ import type { StatDelta } from "@/components/dashboard/stat-card";
  * 직전 기간이 극소량이면 수만 % 로 폭주해 오히려 노이즈 — ±999% 로 클램프해 표시.
  * (내 사용량·전체 현황 스탯카드가 공유)
  */
-export function pctDelta(curr: number, prev: number): Omit<StatDelta, "tone"> | null {
+export function pctDelta(curr: number, prev: number): StatDelta | null {
   if (prev <= 0) return null;
   const raw = Math.round(((curr - prev) / prev) * 100);
   if (raw === 0) return null;

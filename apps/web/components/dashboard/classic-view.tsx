@@ -120,16 +120,15 @@ export async function ClassicView({
         <StatCard
           label={t(`costLabel.${period.preset}`)}
           value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta ? { ...costDelta, tone: "colored" } : null}
+          delta={costDelta}
           hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
           spark={spark.cost}
-          sparkAccent
           icon={<DollarSign className="size-4" />}
         />
         <StatCard
           label={t("statSessions")}
           value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "directional" } : null}
+          delta={sessionsDelta}
           hint={t("sessionsHint")}
           spark={spark.sessions}
           icon={<Activity className="size-4" />}
@@ -142,7 +141,7 @@ export async function ClassicView({
               overview.totalCacheReadTokens +
               overview.totalCacheCreationTokens,
           )}
-          delta={tokensDelta ? { ...tokensDelta, tone: "directional" } : null}
+          delta={tokensDelta}
           hint={t("tokensHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),

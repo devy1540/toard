@@ -231,6 +231,7 @@ async function TeamDetailOverview({
   const spark = {
     cost: series.map((d) => d.costUsd),
     sessions: series.map((d) => d.sessions),
+    users: series.map((d) => d.activeUsers),
     tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
   };
   const maxCost = members[0]?.costUsd ?? 0;
@@ -245,29 +246,29 @@ async function TeamDetailOverview({
         <StatCard
           label={t("totalCost")}
           value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta ? { ...costDelta, tone: "colored" } : null}
+          delta={costDelta}
           hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
           spark={spark.cost}
-          sparkAccent
           icon={<DollarSign className="size-4" />}
         />
         <StatCard
           label={t("sessions")}
           value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "directional" } : null}
+          delta={sessionsDelta}
           spark={spark.sessions}
           icon={<Activity className="size-4" />}
         />
         <StatCard
           label={t("activeUsers")}
           value={fmtNum(overview.activeUsers)}
-          delta={usersDelta ? { ...usersDelta, tone: "neutral" } : null}
+          delta={usersDelta}
+          spark={spark.users}
           icon={<Users className="size-4" />}
         />
         <StatCard
           label={t("totalTokens")}
           value={fmtCompact(tokens)}
-          delta={tokensDelta ? { ...tokensDelta, tone: "directional" } : null}
+          delta={tokensDelta}
           hint={t("tokenHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),

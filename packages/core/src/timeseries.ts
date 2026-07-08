@@ -26,6 +26,7 @@ export function hourKey(at: Date, timezone: string): string {
 const zero = (day: string): DailyPoint => ({
   day,
   sessions: 0,
+  activeUsers: 0,
   costUsd: 0,
   inputTokens: 0,
   outputTokens: 0,

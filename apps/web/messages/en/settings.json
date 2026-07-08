@@ -8,6 +8,16 @@
     "changeDescription": "Verify your current password, then change it to a new one.",
     "setDescription": "Set a password on this account to enable id/pw login."
   },
+  "loginMethods": {
+    "title": "Login & security",
+    "description": "Manage sign-in methods and password for this account.",
+    "google": "Google",
+    "googleDescription": "Connect your Google account while signed in with id/pw, then use Google to sign in next time.",
+    "connected": "Connected",
+    "notConnected": "Not connected",
+    "connectGoogle": "Connect Google",
+    "googleNotConfigured": "Google OAuth is not configured on this server."
+  },
   "install": {
     "issueTitle": "Issue my token · Install",
     "issueDescription": "Install the <code>claude</code>/<code>codex</code> wrapper (shim) so your usage is sent to toard. The token is tied to you, so usage is attributed to <b>your account</b>. <b>Prompt and code content are not collected</b> — only usage metadata such as token counts, model, cost, and <b>computer name (host)</b> is sent.",

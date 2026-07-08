@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
 import Link from "next/link";
 import { getLocale, getTranslations } from "next-intl/server";
-import { auth } from "@/auth";
+import { auth, oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionDefaultOn, contentCollectionEnabled } from "@/lib/content-crypto";
@@ -47,6 +48,11 @@ export default async function SettingsPage({
   const email = r.rows[0]?.email ?? null;
   const hasPassword = Boolean(r.rows[0]?.password_hash);
   const timezone = r.rows[0]?.timezone ?? null;
+  const accounts = await getPool().query<{ provider: string }>(
+    `SELECT provider FROM accounts WHERE "userId" = $1 ORDER BY provider`,
+    [userId],
+  );
+  const linkedProviders = accounts.rows.map((x) => x.provider);
 
   const tab: Tab = (await searchParams).tab === "install" ? "install" : "account";
 
@@ -66,7 +72,7 @@ export default async function SettingsPage({
       </div>
 
       {tab === "account" ? (
-        <AccountTab hasPassword={hasPassword} timezone={timezone} />
+        <AccountTab hasPassword={hasPassword} linkedProviders={linkedProviders} timezone={timezone} />
       ) : (
         <InstallTab userId={userId} />
       )}
@@ -74,8 +80,18 @@ export default async function SettingsPage({
   );
 }
 
-async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; timezone: string | null }) {
+async function AccountTab({
+  hasPassword,
+  linkedProviders,
+  timezone,
+}: {
+  hasPassword: boolean;
+  linkedProviders: string[];
+  timezone: string | null;
+}) {
   const t = await getTranslations("settings");
+  const googleConfigured = oauthProviders.includes("google");
+  const googleLinked = linkedProviders.includes("google");
   // 설정 행 리스트(A안) — 항목을 [라벨 | 컨트롤] 행으로 눕혀 죽은 공간 없이 폭을 채운다.
   return (
     <div className="space-y-4">
@@ -93,18 +109,38 @@ async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; tim
       </Card>
 
       <Card>
-        <CardContent className="flex flex-col gap-4 lg:flex-row lg:items-start lg:gap-10">
-          <div className="shrink-0 lg:w-52">
-            <div className="text-sm font-medium">
-              {hasPassword ? t("account.changeTitle") : t("account.setTitle")}
-            </div>
-            <p className="text-muted-foreground mt-0.5 text-xs">
-              {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
-            </p>
-          </div>
-          <div className="min-w-0 flex-1">
+        <CardHeader>
+          <CardTitle>{t("loginMethods.title")}</CardTitle>
+          <CardDescription>{t("loginMethods.description")}</CardDescription>
+        </CardHeader>
+        <CardContent className="divide-y">
+          <SettingsRow label={t("loginMethods.google")} description={t("loginMethods.googleDescription")}>
+            <Badge variant={googleLinked ? "secondary" : "outline"}>
+              {googleLinked ? t("loginMethods.connected") : t("loginMethods.notConnected")}
+            </Badge>
+            {googleConfigured && !googleLinked ? (
+              <form
+                action={async () => {
+                  "use server";
+                  await signIn("google", { redirectTo: "/settings?tab=account" });
+                }}
+              >
+                <Button type="submit" variant="outline" size="sm">
+                  {t("loginMethods.connectGoogle")}
+                </Button>
+              </form>
+            ) : null}
+            {!googleConfigured ? (
+              <span className="text-muted-foreground text-sm">{t("loginMethods.googleNotConfigured")}</span>
+            ) : null}
+          </SettingsRow>
+          <SettingsRow
+            label={hasPassword ? t("account.changeTitle") : t("account.setTitle")}
+            description={hasPassword ? t("account.changeDescription") : t("account.setDescription")}
+            wide
+          >
             <PasswordForm hasPassword={hasPassword} />
-          </div>
+          </SettingsRow>
         </CardContent>
       </Card>
     </div>

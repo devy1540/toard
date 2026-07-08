@@ -8,6 +8,16 @@
     "changeDescription": "현재 비밀번호를 확인한 뒤 새 비밀번호로 변경합니다.",
     "setDescription": "이 계정에 비밀번호를 설정하면 id/pw 로그인이 가능합니다."
   },
+  "loginMethods": {
+    "title": "로그인 및 보안",
+    "description": "로그인 수단과 비밀번호를 관리합니다.",
+    "google": "Google",
+    "googleDescription": "id/pw로 로그인한 상태에서 Google 계정을 연결하면 다음부터 Google로 로그인할 수 있습니다.",
+    "connected": "연결됨",
+    "notConnected": "미연결",
+    "connectGoogle": "Google 연결",
+    "googleNotConfigured": "서버에 Google OAuth가 설정되어 있지 않습니다."
+  },
   "install": {
     "issueTitle": "내 토큰 발급 · 설치",
     "issueDescription": "내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를 설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용·<b>기기명(호스트)</b> 등 사용량 메타데이터만 전송됩니다.",

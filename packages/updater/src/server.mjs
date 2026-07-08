@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import { timingSafeEqual } from "node:crypto";
+import { copyFile, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 const PORT = Number(process.env.TOARD_UPDATER_PORT || "3201");
@@ -13,6 +15,7 @@ const LOG_LIMIT = Number(process.env.TOARD_UPDATER_LOG_LIMIT || "120");
 const COMMAND_TIMEOUT_MS = Number(process.env.TOARD_UPDATER_COMMAND_TIMEOUT_MS || "600000");
 const VERIFY_TIMEOUT_MS = Number(process.env.TOARD_UPDATER_VERIFY_TIMEOUT_MS || "120000");
 const LATEST_URL = process.env.TOARD_RELEASE_LATEST_URL || "https://github.com/devy1540/toard/releases/latest";
+const ENV_FILE = process.env.TOARD_ENV_FILE || ".env";
 
 const phases = {
   idle: "idle",
@@ -76,6 +79,74 @@ function normalizeTargetVersion(value) {
     throw new Error("targetVersion must be a semver like 1.2.3 or v1.2.3");
   }
   return stripped;
+}
+
+function updateEnvContent(content, key, value) {
+  const lines = content.split(/\n/);
+  const matcher = new RegExp(`^(\\s*(?:export\\s+)?${key}\\s*=).*$`);
+  let updated = false;
+  const next = lines.map((line) => {
+    if (line.trimStart().startsWith("#")) return line;
+    const match = matcher.exec(line);
+    if (!match) return line;
+    updated = true;
+    return `${match[1]}${value}`;
+  });
+
+  if (!updated) {
+    const needsNewline = content.length > 0 && !content.endsWith("\n");
+    return `${content}${needsNewline ? "\n" : ""}${key}=${value}\n`;
+  }
+  return next.join("\n");
+}
+
+function envPath() {
+  return resolve(PROJECT_DIR, ENV_FILE);
+}
+
+function backupPathFor(file) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${file}.bak-${stamp}`;
+}
+
+async function writeFileAtomic(file, content, mode) {
+  const tmp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  await writeFile(tmp, content, { mode });
+  await rename(tmp, file);
+}
+
+async function persistTargetVersion(targetVersion) {
+  const file = envPath();
+  let original;
+  let mode = 0o600;
+  try {
+    const [content, info] = await Promise.all([readFile(file, "utf8"), stat(file)]);
+    original = content;
+    mode = info.mode & 0o777;
+  } catch (e) {
+    if (e?.code === "ENOENT") {
+      throw new Error(`${ENV_FILE} not found in ${PROJECT_DIR}; create it with AUTH_SECRET and other runtime settings first`);
+    }
+    throw e;
+  }
+
+  const next = updateEnvContent(original, "TOARD_TAG", targetVersion);
+  if (next === original) {
+    addLog(`${ENV_FILE} already pins TOARD_TAG=${targetVersion}`);
+    return null;
+  }
+
+  const backup = backupPathFor(file);
+  await copyFile(file, backup);
+  await writeFileAtomic(file, next, mode);
+  addLog(`persisted TOARD_TAG=${targetVersion} in ${ENV_FILE} (backup: ${backup})`);
+  return { file, backup, original, mode };
+}
+
+async function restoreEnvFile(change) {
+  if (!change) return;
+  await writeFileAtomic(change.file, change.original, change.mode);
+  addLog(`restored ${ENV_FILE} from failed update`);
 }
 
 function authorized(req) {
@@ -202,15 +273,21 @@ async function runUpdate(targetVersion) {
     startedAt: new Date().toISOString(),
   };
   addLog("starting compose update");
+  let envChange = null;
 
   try {
     setPhase(phases.latest, "checking latest release");
+    let effectiveTargetVersion = targetVersion;
     try {
       status.latestVersion = await fetchLatestVersion();
       addLog(`latest release: v${status.latestVersion}`);
+      effectiveTargetVersion = effectiveTargetVersion ?? status.latestVersion;
     } catch (e) {
+      if (!effectiveTargetVersion) throw e;
       addLog(`latest release check skipped: ${String(e)}`);
     }
+    if (!effectiveTargetVersion) throw new Error("target version is required");
+    status.targetVersion = effectiveTargetVersion;
 
     setPhase(phases.preflight, "checking current server version");
     try {
@@ -220,22 +297,33 @@ async function runUpdate(targetVersion) {
       addLog(`current server version unavailable before update: ${String(e)}`);
     }
 
+    envChange = await persistTargetVersion(effectiveTargetVersion);
+
+    if (status.currentVersion === effectiveTargetVersion) {
+      status.running = false;
+      status.phase = phases.completed;
+      status.message = "already up to date";
+      status.finishedAt = new Date().toISOString();
+      addLog(`server already at ${effectiveTargetVersion}`);
+      return;
+    }
+
     setPhase(phases.pulling, "pulling app and migrator images");
-    await runDockerCompose(["pull", "app", "migrate"], targetVersion);
+    await runDockerCompose(["pull", "app", "migrate"], effectiveTargetVersion);
 
     setPhase(phases.migrating, "running database migrations");
-    await runDockerCompose(["run", "--rm", "migrate"], targetVersion);
+    await runDockerCompose(["run", "--rm", "migrate"], effectiveTargetVersion);
 
     setPhase(phases.restarting, "restarting app service");
-    await runDockerCompose(["up", "-d", "app"], targetVersion);
+    await runDockerCompose(["up", "-d", "app"], effectiveTargetVersion);
 
     setPhase(phases.verifying, "verifying updated app");
     await waitForOk("/api/health");
     await waitForOk("/api/ready");
     const verifiedVersion = await fetchServerVersion();
     status.currentVersion = verifiedVersion;
-    if (targetVersion && verifiedVersion !== targetVersion) {
-      throw new Error(`updated server reported ${verifiedVersion}, expected ${targetVersion}`);
+    if (verifiedVersion !== effectiveTargetVersion) {
+      throw new Error(`updated server reported ${verifiedVersion}, expected ${effectiveTargetVersion}`);
     }
 
     status.running = false;
@@ -244,6 +332,11 @@ async function runUpdate(targetVersion) {
     status.finishedAt = new Date().toISOString();
     addLog(`update completed; server version: ${verifiedVersion ?? "unknown"}`);
   } catch (e) {
+    try {
+      await restoreEnvFile(envChange);
+    } catch (restoreError) {
+      addLog(`failed to restore ${ENV_FILE}: ${String(restoreError)}`);
+    }
     status.running = false;
     status.phase = phases.failed;
     status.message = "update failed";
@@ -295,4 +388,5 @@ export {
   initialStatus,
   normalizeTargetVersion,
   parseLatestVersionFromLocation,
+  updateEnvContent,
 };

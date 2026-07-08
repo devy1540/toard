@@ -102,7 +102,7 @@ services:
       TOARD_COMPOSE_FILE: docker-compose.yml
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/workspace:ro
+      - .:/workspace
     depends_on:
       app:
         condition: service_started

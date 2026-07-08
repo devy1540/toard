@@ -5,6 +5,7 @@ import {
   initialStatus,
   normalizeTargetVersion,
   parseLatestVersionFromLocation,
+  updateEnvContent,
 } from "../src/server.mjs";
 
 test("parseLatestVersionFromLocation accepts GitHub release redirects", () => {
@@ -29,6 +30,12 @@ test("normalizeTargetVersion returns docker image semver tags", () => {
 
 test("dockerComposeArgs always scopes commands to the configured compose file", () => {
   assert.deepEqual(dockerComposeArgs(["pull", "app"]), ["compose", "-f", "docker-compose.yml", "pull", "app"]);
+});
+
+test("updateEnvContent replaces or appends TOARD_TAG without touching comments", () => {
+  assert.equal(updateEnvContent("AUTH_SECRET=keep\nTOARD_TAG=0.10.1\n", "TOARD_TAG", "0.11.0"), "AUTH_SECRET=keep\nTOARD_TAG=0.11.0\n");
+  assert.equal(updateEnvContent("# TOARD_TAG=0.10.1\nAUTH_SECRET=keep\n", "TOARD_TAG", "0.11.0"), "# TOARD_TAG=0.10.1\nAUTH_SECRET=keep\nTOARD_TAG=0.11.0\n");
+  assert.equal(updateEnvContent("AUTH_SECRET=keep", "TOARD_TAG", "0.11.0"), "AUTH_SECRET=keep\nTOARD_TAG=0.11.0\n");
 });
 
 test("initialStatus is idle and serializable", () => {

@@ -1,9 +1,18 @@
 import type { ReactNode } from "react";
 
-// 프로바이더 브랜드 마크 — simple-icons(CC0) 패스를 인라인 임베드, currentColor 모노크롬.
+// 프로바이더 브랜드 마크 — simple-icons(CC0) 패스를 인라인 임베드, 브랜드 고유색으로 렌더.
 // (각 로고 자체의 권리는 해당 브랜드 소유 — 출처 식별 용도로만 사용)
+// OpenAI 는 브랜드 컬러 자체가 흑백이라 currentColor(전경색)를 따른다 → 다크모드 대비도 해결.
 // provider_key 는 배포마다 다를 수 있어 부분 문자열로 느슨하게 매칭하고,
 // 모르는 프로바이더는 fallback(기본 아이콘)을 그대로 쓴다.
+
+/** simple-icons 공식 브랜드 hex — null 이면 currentColor */
+const COLORS: Record<keyof typeof PATHS, string | null> = {
+  claude: "#D97757",
+  openai: null,
+  gemini: "#8E75B2",
+  qwen: "#6950EF",
+};
 
 const PATHS = {
   claude:
@@ -37,7 +46,12 @@ export function ProviderIcon({
   const slug = slugFor(providerKey);
   if (!slug) return fallback;
   return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" fill="currentColor" className={className}>
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      fill={COLORS[slug] ?? "currentColor"}
+      className={className}
+    >
       <path d={PATHS[slug]} />
     </svg>
   );

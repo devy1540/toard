@@ -94,13 +94,11 @@
     "title": "Display timezone",
     "description": "Timezone used for \"today\" boundaries and chart axes on usage screens. Auto follows your browser's timezone.",
     "autoOption": "Auto — browser timezone ({tz})",
-    "saved": "Saved.",
-    "saving": "Saving…",
-    "save": "Save"
+    "saved": "Saved."
   },
   "appearance": {
-    "title": "Appearance",
-    "description": "Theme, color, and dashboard view — applies to this device (browser) only.",
+    "title": "Preferences",
+    "description": "Theme, color, and dashboard view apply to this device only; the display timezone is saved to your account.",
     "theme": "Theme",
     "theme_light": "Light",
     "theme_dark": "Dark",

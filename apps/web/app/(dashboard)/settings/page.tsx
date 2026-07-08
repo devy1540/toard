@@ -3,6 +3,7 @@ import Link from "next/link";
 import { getLocale, getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
+import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -75,39 +76,35 @@ export default async function SettingsPage({
 
 async function AccountTab({ hasPassword, timezone }: { hasPassword: boolean; timezone: string | null }) {
   const t = await getTranslations("settings");
-  // 화면 폭을 채우는 그리드 — 같은 행의 카드는 높이를 맞춰(stretch) 빈 공간이 생기지 않게.
-  // 순서는 사용 빈도순: 모양(개인화) → 타임존 → 비밀번호.
+  // 설정 행 리스트(A안) — 항목을 [라벨 | 컨트롤] 행으로 눕혀 죽은 공간 없이 폭을 채운다.
   return (
-    <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
+    <div className="space-y-4">
       <Card>
         <CardHeader>
           <CardTitle>{t("appearance.title")}</CardTitle>
           <CardDescription>{t("appearance.description")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="divide-y">
           <AppearanceForm />
+          <SettingsRow label={t("timezone.title")} description={t("timezone.description")}>
+            <TimezoneForm initial={timezone} />
+          </SettingsRow>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>{t("timezone.title")}</CardTitle>
-          <CardDescription>{t("timezone.description")}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <TimezoneForm initial={timezone} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>{hasPassword ? t("account.changeTitle") : t("account.setTitle")}</CardTitle>
-          <CardDescription>
-            {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <PasswordForm hasPassword={hasPassword} />
+        <CardContent className="flex flex-col gap-4 lg:flex-row lg:items-start lg:gap-10">
+          <div className="shrink-0 lg:w-52">
+            <div className="text-sm font-medium">
+              {hasPassword ? t("account.changeTitle") : t("account.setTitle")}
+            </div>
+            <p className="text-muted-foreground mt-0.5 text-xs">
+              {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
+            </p>
+          </div>
+          <div className="min-w-0 flex-1">
+            <PasswordForm hasPassword={hasPassword} />
+          </div>
         </CardContent>
       </Card>
     </div>

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { ChartColumn, Check, LayoutGrid, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
+import { SettingsRow } from "@/components/dashboard/settings-row";
 import {
   BRAND_COOKIE,
   BRAND_PRESETS,
@@ -31,8 +32,9 @@ const THEMES = [
 const VIEW_ICONS = { classic: LayoutGrid, stats: ChartColumn } as const;
 
 /**
- * 모양 설정 — 테마·브랜드 색·기본 대시보드 뷰 (전부 기기 단위 개인 설정).
+ * 모양 설정 행들 — 테마·브랜드 색·기본 대시보드 뷰 (전부 기기 단위 개인 설정).
  * 색·뷰는 쿠키가 진실이고 SSR 이 반영하므로, 여기서는 즉시 적용 + refresh 만 한다.
+ * divide-y 컨테이너(환경 설정 카드) 안에서 SettingsRow 목록으로 렌더된다.
  */
 export function AppearanceForm() {
   const t = useTranslations("settings");
@@ -65,9 +67,8 @@ export function AppearanceForm() {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium">{t("appearance.theme")}</span>
+    <>
+      <SettingsRow label={t("appearance.theme")}>
         <div className="border-input flex rounded-md border p-0.5">
           {THEMES.map(({ value, icon: Icon }) => (
             <button
@@ -87,10 +88,9 @@ export function AppearanceForm() {
             </button>
           ))}
         </div>
-      </div>
+      </SettingsRow>
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium">{t("appearance.color")}</span>
+      <SettingsRow label={t("appearance.color")}>
         <div className="flex items-center gap-2">
           {BRAND_PRESETS.map((p) => (
             <button
@@ -110,10 +110,9 @@ export function AppearanceForm() {
             </button>
           ))}
         </div>
-      </div>
+      </SettingsRow>
 
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-medium">{t("appearance.defaultView")}</span>
+      <SettingsRow label={t("appearance.defaultView")}>
         <div className="flex gap-2">
           {DASHBOARD_VIEWS.map((v) => {
             const Icon = VIEW_ICONS[v];
@@ -136,7 +135,7 @@ export function AppearanceForm() {
             );
           })}
         </div>
-      </div>
-    </div>
+      </SettingsRow>
+    </>
   );
 }

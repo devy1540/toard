@@ -4,6 +4,7 @@ import { AlertTriangle } from "lucide-react";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { Badge } from "@/components/ui/badge";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
+import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionEnabled } from "@/lib/content-crypto";
@@ -227,66 +228,55 @@ async function SystemTab() {
   const contentEnabled = contentCollectionEnabled();
 
   return (
-    <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("system.serverTitle")}</CardTitle>
-          <CardDescription>{t("system.serverDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent className="text-sm">
-          <div className="flex items-center justify-between">
-            <span className="text-muted-foreground">{t("system.serverVersion")}</span>
-            <span className="font-mono">{formatVersion(getServerVersion())}</span>
-          </div>
-        </CardContent>
-      </Card>
+    <Card>
+      <CardContent className="divide-y">
+        <SettingsRow label={t("system.serverVersion")} description={t("system.serverDescription")}>
+          <span className="font-mono text-sm">{formatVersion(getServerVersion())}</span>
+        </SettingsRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>{t("system.pricingTitle")}</CardTitle>
-          <CardDescription>{t("system.pricingDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent>
+        <SettingsRow wide label={t("system.pricingTitle")} description={t("system.pricingDescription")}>
           <PricingSyncPanel
             models={pricing.models}
             lastDay={pricing.lastDay}
             autoSync={autoSync}
             builtinScheduler={schedulerEligible(process.env)}
           />
-        </CardContent>
-      </Card>
+        </SettingsRow>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            {t("system.contentTitle")}
+        <SettingsRow
+          wide
+          label={
+            <span className="flex items-center gap-2">
+              {t("system.contentTitle")}
+              {contentEnabled ? (
+                <Badge variant="secondary">{t("system.contentBadgeOn")}</Badge>
+              ) : (
+                <Badge variant="outline">{t("system.contentBadgeOff")}</Badge>
+              )}
+            </span>
+          }
+          description={t("system.contentDescription")}
+        >
+          <div className="space-y-3 text-sm">
             {contentEnabled ? (
-              <Badge variant="secondary">{t("system.contentBadgeOn")}</Badge>
-            ) : (
-              <Badge variant="outline">{t("system.contentBadgeOff")}</Badge>
-            )}
-          </CardTitle>
-          <CardDescription>{t("system.contentDescription")}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3 text-sm">
-          {contentEnabled ? (
-            <p className="text-muted-foreground">
-              {t.rich("system.contentEnabledBody", { code: (chunks) => <code>{chunks}</code> })}
-            </p>
-          ) : (
-            <>
-              <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>
-              <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs">
-                TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)
-              </pre>
-              <p className="text-muted-foreground text-xs">
-                {t.rich("system.contentSetupNote", { code: (chunks) => <code>{chunks}</code> })}
+              <p className="text-muted-foreground">
+                {t.rich("system.contentEnabledBody", { code: (chunks) => <code>{chunks}</code> })}
               </p>
-            </>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+            ) : (
+              <>
+                <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>
+                <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs">
+                  TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)
+                </pre>
+                <p className="text-muted-foreground text-xs">
+                  {t.rich("system.contentSetupNote", { code: (chunks) => <code>{chunks}</code> })}
+                </p>
+              </>
+            )}
+          </div>
+        </SettingsRow>
+      </CardContent>
+    </Card>
   );
 }
 

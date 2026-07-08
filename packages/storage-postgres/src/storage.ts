@@ -284,7 +284,7 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
-  getOverview(q: PeriodQuery & { userId?: string }): Promise<OverviewStats> {
+  getOverview(q: PeriodQuery & { userId?: string; teamId?: string }): Promise<OverviewStats> {
     return this.overviewQuery(q);
   }
 
@@ -400,11 +400,13 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
-  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope }): Promise<LeaderRow[]> {
+  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]> {
     const { where, params } = this.periodWhere(q);
     const ePrefixed = where
       .replace(/ts /g, "e.ts ")
-      .replace(/provider_key /g, "e.provider_key ");
+      .replace(/provider_key /g, "e.provider_key ")
+      .replace(/user_id /g, "e.user_id ")
+      .replace(/team_id /g, "e.team_id ");
     const sql =
       q.scope === "user"
         ? `SELECT u.id AS key, COALESCE(u.name, u.email) AS label,

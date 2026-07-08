@@ -130,11 +130,16 @@
     "truncatedNote": "턴이 많아 처음 {limit}개까지만 표시합니다.",
     "codeRead": "Read",
     "codeRaw": "Raw",
+    "codeDiagram": "Diagram",
+    "codeDiagramMode": "다이어그램",
     "codeReadMode": "읽기 모드",
     "codeRawMode": "원문",
     "codeLines": "{count} lines",
+    "codeDiagramHint": "Mermaid를 다이어그램으로 렌더링하고, Read/Raw에서 원문 확인",
     "codeReadHint": "긴 줄은 화면 폭에 맞게 접고, Raw에서 원문 스크롤 확인",
     "codeRawHint": "가로 스크롤 원문 보존",
+    "codeDiagramRendering": "다이어그램을 렌더링하는 중입니다.",
+    "codeDiagramFailed": "다이어그램을 렌더링하지 못했습니다. Read 또는 Raw에서 원문을 확인하세요.",
     "codeCopied": "코드를 복사했습니다."
   }
 }

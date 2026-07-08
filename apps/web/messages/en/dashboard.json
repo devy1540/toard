@@ -130,11 +130,16 @@
     "truncatedNote": "Long conversation — showing the first {limit} turns.",
     "codeRead": "Read",
     "codeRaw": "Raw",
+    "codeDiagram": "Diagram",
+    "codeDiagramMode": "Diagram",
     "codeReadMode": "Read mode",
     "codeRawMode": "Raw",
     "codeLines": "{count} lines",
+    "codeDiagramHint": "Render Mermaid as a diagram; use Read or Raw for the source",
     "codeReadHint": "Long lines wrap to the panel width; use Raw for original scrolling",
     "codeRawHint": "Original formatting with horizontal scroll",
+    "codeDiagramRendering": "Rendering diagram.",
+    "codeDiagramFailed": "Couldn't render the diagram. Use Read or Raw to inspect the source.",
     "codeCopied": "Code copied."
   }
 }

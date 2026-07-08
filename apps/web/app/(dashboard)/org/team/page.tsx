@@ -254,7 +254,7 @@ async function TeamDetailOverview({
         <StatCard
           label={t("sessions")}
           value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta ? { ...sessionsDelta, tone: "neutral" } : null}
+          delta={sessionsDelta ? { ...sessionsDelta, tone: "directional" } : null}
           spark={spark.sessions}
           icon={<Activity className="size-4" />}
         />
@@ -267,7 +267,7 @@ async function TeamDetailOverview({
         <StatCard
           label={t("totalTokens")}
           value={fmtCompact(tokens)}
-          delta={tokensDelta ? { ...tokensDelta, tone: "neutral" } : null}
+          delta={tokensDelta ? { ...tokensDelta, tone: "directional" } : null}
           hint={t("tokenHint", {
             in: fmtCompact(overview.totalInputTokens),
             out: fmtCompact(overview.totalOutputTokens),

@@ -6,13 +6,14 @@ import { cn } from "@/lib/utils";
 /**
  * 증감 배지 — tone 은 지표의 가치 방향을 뜻한다.
  *  - colored: 방향에 좋고 나쁨이 있는 지표(비용: 감소=초록/증가=빨강)
- *  - neutral: 늘어도 나쁜 신호가 아닌 지표(세션·토큰) — 회색으로 방향만
+ *  - directional: 좋고 나쁨보다 변화 방향을 색으로 보여주는 지표(증가=초록/감소=빨강)
+ *  - neutral: 의미상 색 판단이 애매한 지표 — 회색으로 방향만
  */
 export interface StatDelta {
   /** 표시용 문자열 (예: "+12%", "-92%", ">+999%") */
   pct: string;
   direction: "up" | "down";
-  tone: "colored" | "neutral";
+  tone: "colored" | "directional" | "neutral";
 }
 
 /** 기간 내 추이 미니 스파크라인 — 서버 렌더 순수 SVG (2점 미만이면 미표시). */
@@ -72,16 +73,16 @@ export function StatCard({
         : ArrowUpRight
     : null;
   return (
-    <Card className="gap-2 py-4">
+    <Card className="min-w-0 gap-2 py-4">
       <CardHeader className="px-4">
-        <CardTitle className="text-muted-foreground flex items-center gap-2 text-sm font-normal">
+        <CardTitle className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm font-normal">
           {icon}
-          {label}
+          <span className="truncate">{label}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="px-4">
-        <div className="flex items-center justify-between gap-2">
-          <div className="text-2xl font-bold tracking-tight">{value}</div>
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0 text-2xl font-bold tracking-tight tabular-nums">{value}</div>
           {spark ? (
             <span className={sparkAccent ? "text-chart-1" : "text-muted-foreground/50"}>
               <Sparkline values={spark} />
@@ -97,6 +98,10 @@ export function StatCard({
                   delta.tone === "neutral" && "bg-muted text-muted-foreground",
                   delta.tone === "colored" &&
                     (delta.direction === "down"
+                      ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                      : "bg-red-500/10 text-red-600 dark:text-red-400"),
+                  delta.tone === "directional" &&
+                    (delta.direction === "up"
                       ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                       : "bg-red-500/10 text-red-600 dark:text-red-400"),
                 )}

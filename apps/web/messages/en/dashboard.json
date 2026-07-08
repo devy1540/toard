@@ -57,6 +57,22 @@
     "tokens": "Tokens",
     "now": "Now"
   },
+  "view": {
+    "label": "Dashboard view",
+    "classic": "Classic",
+    "stats": "Stats"
+  },
+  "stats": {
+    "lessThanPrev": "{diff} less than the previous period ({prev})",
+    "moreThanPrev": "{diff} more than the previous period ({prev})",
+    "activeDays": "Active days",
+    "activeHours": "Active hours",
+    "topModel": "Top model",
+    "byModelDaily": "By model over time",
+    "hourlyRhythm": "Hourly rhythm",
+    "breakdown": "Cost breakdown",
+    "othersLabel": "Other"
+  },
   "autoRefresh": {
     "off": "Auto-refresh off",
     "sec10": "10s",

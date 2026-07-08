@@ -97,6 +97,7 @@
     "privacyNote": "Only you can see this — administrators and other users cannot view this content.",
     "rolePrompt": "Prompt",
     "roleResponse": "Response",
+    "metaSystem": "System message",
     "showMore": "Show more",
     "showLess": "Show less",
     "listTotal": "{count} conversations",

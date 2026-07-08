@@ -1,6 +1,7 @@
+import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
-import { ArrowLeft, Inbox, Sparkles, User } from "lucide-react";
+import { ArrowLeft, ChevronRight, Inbox, Sparkles, Terminal } from "lucide-react";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,6 +18,7 @@ import { fmtCompact, fmtUsd } from "@/lib/format";
 import { matchTurnUsage } from "@/lib/history-grouping";
 import { DETAIL_TURN_LIMIT, getMyHistorySession } from "@/lib/prompt-history";
 import { getStorage } from "@/lib/storage";
+import { detectMetaTurn } from "@/lib/turn-meta";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 /** 세션 상세 — 한 대화의 전체 턴 + usage 조인(세션 합계 헤더, assistant 턴별 모델·토큰·비용). */
@@ -38,6 +40,8 @@ export async function SessionDetail({
     new Intl.DateTimeFormat(locale, { timeZone: tz, dateStyle: "medium", timeStyle: "short" }).format(ts);
   const fmtTime = (ts: Date): string =>
     new Intl.DateTimeFormat(locale, { timeZone: tz, timeStyle: "short" }).format(ts);
+  const fmtDay = (ts: Date): string =>
+    new Intl.DateTimeFormat(locale, { timeZone: tz, dateStyle: "medium" }).format(ts);
 
   const { session } = await getMyHistorySession(userId, sessionKey);
   if (!session) {
@@ -131,48 +135,84 @@ export async function SessionDetail({
         </p>
       ) : null}
 
-      {/* 턴 — 프롬프트→응답 시간순, assistant 턴에 usage 칩 */}
-      <Card className="overflow-hidden py-0">
-        <CardContent className="p-0">
-          <div className="divide-y">
-            {session.turns.map((turn, ti) => {
-              const isUser = turn.role === "user";
-              const usage = turnUsage.get(turn.dedupKey);
-              return (
-                <div key={turn.dedupKey} className={`flex gap-3 px-4 py-3 ${isUser ? "" : "bg-muted/30"}`}>
-                  <div
-                    className={`mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full ${
-                      isUser
-                        ? "bg-primary text-primary-foreground"
-                        : "bg-muted text-muted-foreground border"
-                    }`}
-                  >
-                    {isUser ? <User className="size-3.5" /> : <Sparkles className="size-3.5" />}
+      {/* 턴 — 채팅 뷰: 프롬프트는 오른쪽 버블, 응답은 왼쪽 버블, CLI 가 끼워 넣은
+          시스템·명령 메시지는 가운데 접힌 칩(details — JS 없이 동작)으로 분리 */}
+      <Card className="py-0">
+        <CardContent className="space-y-4 px-4 py-5 sm:px-6">
+          {session.turns.map((turn, ti) => {
+            const isUser = turn.role === "user";
+            const usage = turnUsage.get(turn.dedupKey);
+            const meta = isUser ? detectMetaTurn(turn.text) : null;
+            const day = fmtDay(turn.ts);
+            const prevTurn = ti > 0 ? session.turns[ti - 1] : undefined;
+            const showDay = prevTurn !== undefined && fmtDay(prevTurn.ts) !== day;
+            return (
+              <Fragment key={turn.dedupKey}>
+                {showDay ? (
+                  <div className="flex items-center gap-3 py-1">
+                    <div className="bg-border h-px flex-1" />
+                    <span className="text-muted-foreground text-xs">{day}</span>
+                    <div className="bg-border h-px flex-1" />
                   </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="text-muted-foreground mb-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-                      <span className="font-medium">
-                        {isUser ? t("history.rolePrompt") : t("history.roleResponse")}
+                ) : null}
+                {meta ? (
+                  <details className="group text-center">
+                    <summary className="text-muted-foreground hover:text-foreground bg-muted/40 inline-flex max-w-full cursor-pointer list-none items-center gap-1.5 rounded-full border px-3 py-1 text-xs select-none [&::-webkit-details-marker]:hidden">
+                      <Terminal className="size-3 shrink-0" />
+                      <span className="truncate font-mono">
+                        {meta.command ?? t("history.metaSystem")}
                       </span>
-                      {usage ? (
-                        <span className="font-mono text-[11px]">
-                          {usage.model ? `${usage.model} · ` : ""}↑{fmtCompact(usage.inputTokens)} ↓
-                          {fmtCompact(usage.outputTokens)} · {fmtUsd(usage.costUsd)}
-                        </span>
-                      ) : null}
-                      <span className="ml-auto tabular-nums">{fmtTime(turn.ts)}</span>
+                      <ChevronRight className="size-3 shrink-0 transition-transform group-open:rotate-90" />
+                    </summary>
+                    <pre className="bg-muted/40 mt-2 overflow-x-auto rounded-lg border p-3 text-left font-mono text-xs break-words whitespace-pre-wrap">
+                      {turn.text}
+                    </pre>
+                  </details>
+                ) : isUser ? (
+                  <div className="flex flex-col items-end">
+                    <div className="bg-primary/10 max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2.5 sm:max-w-[70%]">
+                      <span className="sr-only">{t("history.rolePrompt")}</span>
+                      <TurnText
+                        id={`tt-${ti}`}
+                        text={turn.text}
+                        more={t("history.showMore")}
+                        less={t("history.showLess")}
+                      />
                     </div>
-                    <TurnText
-                      id={`tt-${ti}`}
-                      text={turn.text}
-                      more={t("history.showMore")}
-                      less={t("history.showLess")}
-                    />
+                    <span className="text-muted-foreground mt-1 text-[11px] tabular-nums">
+                      {fmtTime(turn.ts)}
+                    </span>
                   </div>
-                </div>
-              );
-            })}
-          </div>
+                ) : (
+                  <div className="flex max-w-[95%] gap-2.5 sm:max-w-[88%]">
+                    <div className="bg-muted text-muted-foreground mt-1 flex size-6 shrink-0 items-center justify-center rounded-full border">
+                      <Sparkles className="size-3.5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="bg-muted/40 rounded-2xl rounded-tl-md border px-3.5 py-2.5">
+                        <span className="sr-only">{t("history.roleResponse")}</span>
+                        <TurnText
+                          id={`tt-${ti}`}
+                          text={turn.text}
+                          more={t("history.showMore")}
+                          less={t("history.showLess")}
+                        />
+                      </div>
+                      <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
+                        {usage ? (
+                          <span className="font-mono">
+                            {usage.model ? `${usage.model} · ` : ""}↑{fmtCompact(usage.inputTokens)}{" "}
+                            ↓{fmtCompact(usage.outputTokens)} · {fmtUsd(usage.costUsd)}
+                          </span>
+                        ) : null}
+                        <span className="tabular-nums">{fmtTime(turn.ts)}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </Fragment>
+            );
+          })}
         </CardContent>
       </Card>
     </div>

@@ -221,6 +221,18 @@ function dockerComposeArgs(args) {
   return ["compose", "-f", COMPOSE_FILE, ...args];
 }
 
+function composePullArgs() {
+  return ["pull", "app", "migrate"];
+}
+
+function composeMigrateArgs() {
+  return ["run", "--rm", "--no-deps", "migrate"];
+}
+
+function composeRestartAppArgs() {
+  return ["up", "-d", "--no-deps", "app"];
+}
+
 async function runDockerCompose(args, targetVersion) {
   const fullArgs = dockerComposeArgs(args);
   addLog(`$ ${DOCKER_BIN} ${fullArgs.join(" ")}`);
@@ -309,13 +321,13 @@ async function runUpdate(targetVersion) {
     }
 
     setPhase(phases.pulling, "pulling app and migrator images");
-    await runDockerCompose(["pull", "app", "migrate"], effectiveTargetVersion);
+    await runDockerCompose(composePullArgs(), effectiveTargetVersion);
 
     setPhase(phases.migrating, "running database migrations");
-    await runDockerCompose(["run", "--rm", "migrate"], effectiveTargetVersion);
+    await runDockerCompose(composeMigrateArgs(), effectiveTargetVersion);
 
     setPhase(phases.restarting, "restarting app service");
-    await runDockerCompose(["up", "-d", "app"], effectiveTargetVersion);
+    await runDockerCompose(composeRestartAppArgs(), effectiveTargetVersion);
 
     setPhase(phases.verifying, "verifying updated app");
     await waitForOk("/api/health");
@@ -384,6 +396,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
 }
 
 export {
+  composeMigrateArgs,
+  composePullArgs,
+  composeRestartAppArgs,
   dockerComposeArgs,
   initialStatus,
   normalizeTargetVersion,

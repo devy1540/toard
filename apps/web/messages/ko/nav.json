@@ -6,5 +6,9 @@
   "history": "내 히스토리",
   "org": "전체 현황",
   "settings": "설정",
-  "admin": "관리"
+  "admin": "관리",
+  "badge": {
+    "preview": "프리뷰",
+    "beta": "베타"
+  }
 }

@@ -6,5 +6,9 @@
   "history": "My history",
   "org": "Overview",
   "settings": "Settings",
-  "admin": "Admin"
+  "admin": "Admin",
+  "badge": {
+    "preview": "preview",
+    "beta": "beta"
+  }
 }

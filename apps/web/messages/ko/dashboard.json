@@ -118,6 +118,14 @@
     "outputShort": "출력",
     "cacheShort": "캐시",
     "noUsage": "사용량 정보 없음",
-    "truncatedNote": "턴이 많아 처음 {limit}개까지만 표시합니다."
+    "truncatedNote": "턴이 많아 처음 {limit}개까지만 표시합니다.",
+    "codeRead": "Read",
+    "codeRaw": "Raw",
+    "codeReadMode": "읽기 모드",
+    "codeRawMode": "원문",
+    "codeLines": "{count} lines",
+    "codeReadHint": "긴 줄은 화면 폭에 맞게 접고, Raw에서 원문 스크롤 확인",
+    "codeRawHint": "가로 스크롤 원문 보존",
+    "codeCopied": "코드를 복사했습니다."
   }
 }

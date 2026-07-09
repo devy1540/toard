@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DEFAULT_PERIOD, parseFilters } from "@/lib/period";
+import { DEFAULT_PERIOD, INTRADAY_BUCKETS, isIntradayBucket, parseFilters } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
 import { FeatureStatusBadge, type FeatureStatus } from "./feature-status-badge";
 
@@ -55,6 +55,7 @@ export function DashboardFilters({
   showAllPreset = false,
   resetKeys = [],
   timezone,
+  showBucketControl = false,
   title,
   statusBadge,
   leading,
@@ -65,6 +66,8 @@ export function DashboardFilters({
   showAllPreset?: boolean;
   resetKeys?: string[];
   timezone?: string;
+  /** 하루 범위 시계열이 있는 화면에서만 15분/30분/1시간 간격 선택을 노출한다. */
+  showBucketControl?: boolean;
   /** 페이지 제목 — h1 로 렌더 (접근성·오리엔테이션). */
   title?: string;
   /** 제목 옆 기능 안정성 배지 (사이드바의 프리뷰/베타와 같은 의미). */
@@ -81,6 +84,9 @@ export function DashboardFilters({
   const sp = useSearchParams();
   const period = sp.get("period") ?? defaultPeriod;
   const provider = sp.get("provider") ?? "all";
+  const fromParam = sp.get("from") ?? undefined;
+  const toParam = sp.get("to") ?? undefined;
+  const bucketParam = sp.get("bucket") ?? undefined;
   const isCustom = period === "custom";
   const periods = showAllPreset ? [ALL_PERIOD, ...PERIODS] : PERIODS;
 
@@ -94,21 +100,27 @@ export function DashboardFilters({
     setDeviceTz(Intl.DateTimeFormat().resolvedOptions().timeZone ?? null);
   }, []);
   const tzDiffers = timezone != null && deviceTz != null && timezone !== deviceTz;
-  const rangeLabel = useMemo(() => {
+  const parsedPeriod = useMemo(() => {
     if (!timezone) return null;
-    const parsed = parseFilters(
+    return parseFilters(
       {
         period,
         provider,
-        from: sp.get("from") ?? undefined,
-        to: sp.get("to") ?? undefined,
+        from: fromParam,
+        to: toParam,
+        bucket: bucketParam,
       },
       timezone,
       defaultPeriod,
     );
-    const label = formatRange(parsed.from, parsed.to, locale, timezone);
+  }, [bucketParam, defaultPeriod, fromParam, period, provider, timezone, toParam]);
+  const rangeLabel = useMemo(() => {
+    if (!timezone || !parsedPeriod) return null;
+    const label = formatRange(parsedPeriod.from, parsedPeriod.to, locale, timezone);
     return label || t("filters.rangeAll");
-  }, [defaultPeriod, locale, period, provider, sp, timezone, t]);
+  }, [locale, parsedPeriod, timezone, t]);
+  const showBucket = showBucketControl && parsedPeriod != null && parsedPeriod.bucket !== "day";
+  const selectedBucket = parsedPeriod?.bucket === "day" ? "hour" : (parsedPeriod?.bucket ?? "hour");
 
   const push = (params: Record<string, string | null>) => {
     const next = new URLSearchParams(sp.toString());
@@ -122,12 +134,17 @@ export function DashboardFilters({
 
   const selectPreset = (v: string) => {
     setShowCustom(false);
-    push({ period: v, from: null, to: null });
+    push({
+      period: v,
+      from: null,
+      to: null,
+      bucket: v === "today" && isIntradayBucket(bucketParam) ? bucketParam : null,
+    });
   };
 
   const applyCustom = () => {
     if (!from || !to) return;
-    push({ period: "custom", from, to });
+    push({ period: "custom", from, to, bucket: from === to && isIntradayBucket(bucketParam) ? bucketParam : null });
   };
 
   return (
@@ -175,6 +192,21 @@ export function DashboardFilters({
             ))}
           </SelectContent>
         </Select>
+
+        {showBucket ? (
+          <Select value={selectedBucket} onValueChange={(v) => push({ bucket: v })}>
+            <SelectTrigger className="h-8 w-24" aria-label={t("filters.bucketLabel")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {INTRADAY_BUCKETS.map((b) => (
+                <SelectItem key={b} value={b}>
+                  {t(`filters.bucket.${b}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null}
 
         {rangeLabel ? <span className="text-muted-foreground text-xs tabular-nums">{rangeLabel}</span> : null}
         {tzDiffers && (

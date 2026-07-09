@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { DailyPoint } from "./storage";
-import { fillHourlyGaps, hourKey } from "./timeseries";
+import { fillHourlyGaps, fillTimeBucketGaps, hourKey, timeBucketKey } from "./timeseries";
 
 const pt = (day: string, tokens = 100): DailyPoint => ({
   day,
@@ -20,6 +20,14 @@ test("hourKey — 타임존 벽시계 기준 'YYYY-MM-DD HH:00'", () => {
   assert.equal(hourKey(at, "Asia/Seoul"), "2026-07-06 14:00"); // UTC+9
   // 자정 경계 — h23 이므로 '24:00' 이 아니라 다음날 '00:00'
   assert.equal(hourKey(new Date("2026-07-06T15:00:00Z"), "Asia/Seoul"), "2026-07-07 00:00");
+});
+
+test("timeBucketKey — 30분/15분 버킷으로 분을 내림한다", () => {
+  const at = new Date("2026-07-06T05:37:45Z");
+  assert.equal(timeBucketKey(at, "Asia/Seoul", "30m"), "2026-07-06 14:30");
+  assert.equal(timeBucketKey(at, "Asia/Seoul", "15m"), "2026-07-06 14:30");
+  assert.equal(timeBucketKey(new Date("2026-07-06T05:44:45Z"), "Asia/Seoul", "15m"), "2026-07-06 14:30");
+  assert.equal(timeBucketKey(new Date("2026-07-06T05:45:00Z"), "Asia/Seoul", "15m"), "2026-07-06 14:45");
 });
 
 test("fillHourlyGaps — 자정부터 now 가 속한 시간까지 빈 버킷을 0 으로 채운다", () => {
@@ -71,4 +79,22 @@ test("fillHourlyGaps — 생성 범위 밖 키는 버리지 않고 정렬 병합
     filled.map((p) => p.day),
     ["2026-07-06 00:00", "2026-07-06 01:00", "2026-07-06 03:00"],
   );
+});
+
+test("fillTimeBucketGaps — 15분 단위로 현재 구간까지 채운다", () => {
+  const from = new Date("2026-07-06T00:00:00Z");
+  const now = new Date("2026-07-06T00:45:00Z");
+  const filled = fillTimeBucketGaps(
+    [pt("2026-07-06 00:30")],
+    { from, to: new Date("2026-07-07T00:00:00Z") },
+    "UTC",
+    "15m",
+    now,
+  );
+  assert.deepEqual(
+    filled.map((p) => p.day),
+    ["2026-07-06 00:00", "2026-07-06 00:15", "2026-07-06 00:30", "2026-07-06 00:45"],
+  );
+  assert.equal(filled[2]!.inputTokens, 100);
+  assert.equal(filled[1]!.inputTokens, 0);
 });

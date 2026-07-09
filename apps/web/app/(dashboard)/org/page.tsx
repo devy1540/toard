@@ -42,6 +42,13 @@ function totalTokens(s: OverviewStats): number {
   return s.totalInputTokens + s.totalOutputTokens + s.totalCacheReadTokens + s.totalCacheCreationTokens;
 }
 
+function usageTitleKey(bucket: OrgPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
+  if (bucket === "day") return "dailyUsage";
+  if (bucket === "hour") return "hourlyUsage";
+  if (bucket === "30m") return "usage30m";
+  return "usage15m";
+}
+
 function safeAverage(total: number, count: number): string {
   return count > 0 ? fmtUsd(total / count) : "—";
 }
@@ -259,6 +266,7 @@ function hrefWith(sp: OrgSearchParams, path = "/org"): string {
   if (sp.provider) q.set("provider", sp.provider);
   if (sp.from) q.set("from", sp.from);
   if (sp.to) q.set("to", sp.to);
+  if (sp.bucket) q.set("bucket", sp.bucket);
   if (sp.metric) q.set("metric", sp.metric);
   const qs = q.toString();
   return qs ? `${path}?${qs}` : path;
@@ -288,6 +296,7 @@ export default async function OrgPage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        showBucketControl
         title={t("title")}
         statusBadge={{ status: "beta", label: navT("badge.beta") }}
         trailing={<AutoRefresh />}
@@ -404,7 +413,7 @@ async function OverviewTab({
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
         <Card className="min-w-0">
           <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
+            <CardTitle>{t(usageTitleKey(period.bucket))}</CardTitle>
             <MetricToggle value={metric} />
           </CardHeader>
           <CardContent className="min-w-0">

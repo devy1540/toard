@@ -22,6 +22,8 @@
   "tokensHint": "Input {in} · Output {out} · Cache {cache}",
   "dailyUsage": "Daily usage",
   "hourlyUsage": "Hourly usage",
+  "usage30m": "30-minute usage",
+  "usage15m": "15-minute usage",
   "noCollectedUsageTitle": "No usage collected yet",
   "noCollectedUsageDescription": "Install the collector to automatically capture Claude Code and Codex usage.",
   "installShim": "Install collector",
@@ -56,6 +58,12 @@
     "endDate": "End date",
     "apply": "Apply",
     "allTools": "All tools",
+    "bucketLabel": "Chart interval",
+    "bucket": {
+      "hour": "1h",
+      "30m": "30m",
+      "15m": "15m"
+    },
     "rangeAll": "All time",
     "timezoneNote": "Times in {tz}"
   },
@@ -79,6 +87,7 @@
     "moreThanPrev": "{diff} more than the previous period ({prev})",
     "activeDays": "Active days",
     "activeHours": "Active hours",
+    "activeBuckets": "Active intervals",
     "topModel": "Top model",
     "byModelDaily": "By model over time",
     "hourlyRhythm": "Hourly rhythm",

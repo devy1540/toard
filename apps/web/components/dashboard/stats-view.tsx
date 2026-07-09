@@ -24,6 +24,10 @@ const SERIES_COLORS = [
   "color-mix(in oklab, var(--muted-foreground) 35%, var(--background))",
 ];
 
+function bucketLabel(day: string, bucket: DashboardPeriod["bucket"]): string {
+  return bucket === "day" ? day.slice(5) : day.slice(11);
+}
+
 /** 히트맵 강도 4단계 — 0 은 무활동, 1~3 은 비영(非零) 값의 삼분위 */
 const HEAT_COLORS = [
   "var(--muted)",
@@ -87,13 +91,12 @@ export async function StatsView({
   // ── 스택 막대: 상위 모델 + 기타로 피벗 (표시 버킷 = 기간 버킷) ──
   const topModels = byModel.slice(0, TOP_MODELS).map((m) => m.model);
   const hasOther = byModel.length > TOP_MODELS;
-  const dayLabel = (day: string): string => (period.bucket === "hour" ? day.slice(11) : day.slice(5));
   const rowMap = new Map<string, Record<string, number | string>>();
   for (const p of modelSeries) {
     const key = topModels.includes(p.model) ? p.model : OTHER_KEY;
     let row = rowMap.get(p.day);
     if (!row) {
-      row = { day: dayLabel(p.day) };
+      row = { day: bucketLabel(p.day, period.bucket) };
       for (const m of topModels) row[m] = 0;
       if (hasOther) row[OTHER_KEY] = 0;
       rowMap.set(p.day, row);
@@ -166,7 +169,7 @@ export async function StatsView({
           </div>
           <div>
             <div className="text-muted-foreground text-xs tracking-wide uppercase">
-              {t(period.bucket === "hour" ? "stats.activeHours" : "stats.activeDays")}
+              {t(period.bucket === "day" ? "stats.activeDays" : period.bucket === "hour" ? "stats.activeHours" : "stats.activeBuckets")}
             </div>
             <div className="mt-0.5 text-xl font-medium tabular-nums">{activeBuckets}</div>
           </div>

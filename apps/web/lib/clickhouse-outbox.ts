@@ -1,5 +1,3 @@
-import { getStorage } from "./storage";
-
 const STARTUP_DELAY_MS = 15_000;
 const TICK_MS = 30_000;
 const DEFAULT_LIMIT = 10;
@@ -14,6 +12,7 @@ function isFlushable(storage: unknown): storage is FlushableStorage {
 
 export async function flushClickHouseOutbox(limit = DEFAULT_LIMIT): Promise<{ batches: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { batches: 0, rows: 0 };
+  const { getStorage } = await import("./storage");
   const storage = getStorage();
   if (!isFlushable(storage)) return { batches: 0, rows: 0 };
   return storage.flushUsageOutbox(limit);

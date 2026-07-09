@@ -27,8 +27,8 @@ export function UsageAreaChart({
 }) {
   const t = useTranslations("dashboard");
   const chartData = data.map((d) => ({
-    // 버킷 키 'YYYY-MM-DD'/'YYYY-MM-DD HH:00' → 축 라벨 'MM-DD'/'HH:00'
-    day: bucket === "hour" ? d.day.slice(11) : d.day.slice(5),
+    // 버킷 키 'YYYY-MM-DD'/'YYYY-MM-DD HH:mm' → 축 라벨 'MM-DD'/'HH:mm'
+    day: bucket === "day" ? d.day.slice(5) : d.day.slice(11),
     cost: Number(d.costUsd.toFixed(4)),
     // 총 소모 토큰(입력+출력+캐시) — 토큰 카드·테이블과 동일 정의
     tokens: d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens,
@@ -47,7 +47,15 @@ export function UsageAreaChart({
           </linearGradient>
         </defs>
         <CartesianGrid vertical={false} stroke="var(--color-border)" />
-        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} fontSize={12} stroke="var(--color-muted-foreground)" />
+        <XAxis
+          dataKey="day"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          minTickGap={24}
+          fontSize={12}
+          stroke="var(--color-muted-foreground)"
+        />
         {/* 압축 표기(1.5M)로 눈금 라벨이 width 를 넘겨 잘리는 것 방지 */}
         <YAxis
           tickLine={false}

@@ -65,6 +65,13 @@ function BreakdownRow({
 /** 사이드 리스트가 세로로 길어지지 않게 상위 N개만 — 나머지는 개수로 요약 */
 const MODELS_SHOWN = 6;
 
+function usageTitleKey(bucket: DashboardPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
+  if (bucket === "day") return "dailyUsage";
+  if (bucket === "hour") return "hourlyUsage";
+  if (bucket === "30m") return "usage30m";
+  return "usage15m";
+}
+
 /** 클래식 뷰 — 스탯카드·면적 차트·분해 카드 (기존 대시보드 그대로, toard.view=classic). */
 export async function ClassicView({
   userId,
@@ -154,7 +161,7 @@ export async function ClassicView({
       {/* 시계열은 가로 해상도가 생명 — 차트가 풀폭 히어로, 분해(모델·기기)는 아래 반반 */}
       <Card className="min-w-0">
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <CardTitle>{t(period.bucket === "hour" ? "hourlyUsage" : "dailyUsage")}</CardTitle>
+          <CardTitle>{t(usageTitleKey(period.bucket))}</CardTitle>
           <MetricToggle value={metric} />
         </CardHeader>
         <CardContent className="min-w-0">

@@ -58,8 +58,8 @@ export interface OverviewStats {
   totalCacheCreationTokens: number;
 }
 
-/** 시계열 버킷 단위 — 'today' 등 하루짜리 기간은 시간 단위로 내려 점 하나 대신 곡선을 그린다. */
-export type TimeBucket = "day" | "hour";
+/** 시계열 버킷 단위 — 하루짜리 기간은 분/시간 단위로 내려 점 하나 대신 곡선을 그린다. */
+export type TimeBucket = "day" | "hour" | "30m" | "15m";
 
 /**
  * 시계열 버킷 옵션 — 표출은 뷰어 타임존을 따른다 (ADR-008 개정).
@@ -74,7 +74,7 @@ export interface BucketOptions {
 export interface DailyPoint {
   /**
    * 버킷 키 — 쿼리의 `timezone`(미지정 시 백엔드 기본 = 조직 타임존) 벽시계 기준 (ADR-008).
-   * bucket='day'(기본) 은 'YYYY-MM-DD', bucket='hour' 는 'YYYY-MM-DD HH:00'.
+   * bucket='day'(기본) 은 'YYYY-MM-DD', 나머지는 'YYYY-MM-DD HH:mm'.
    */
   day: string;
   sessions: number;

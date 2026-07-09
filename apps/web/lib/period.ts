@@ -1,4 +1,4 @@
-import { fillHourlyGaps, type DailyPoint, type PeriodQuery, type TimeBucket } from "@toard/core";
+import { fillTimeBucketGaps, type DailyPoint, type PeriodQuery, type TimeBucket } from "@toard/core";
 import { dateInTz, dayStartUtc, startOfToday } from "./org-time";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -90,6 +90,8 @@ export interface DashboardSearchParams {
   to?: string;
   /** 차트 지표 (tokens|cost) — 페이지별 기본값은 각 페이지가 정한다 */
   metric?: string;
+  /** 하루 범위 차트 버킷(hour|30m|15m). 하루 범위가 아니면 무시한다. */
+  bucket?: string;
 }
 
 /** 전체 기간 — epoch 부터 현재까지 (히스토리처럼 "기본 = 전체"가 자연스러운 화면용). */
@@ -101,6 +103,17 @@ export function allPeriod(): { from: Date; to: Date } {
 export type PeriodPreset = "today" | "week" | "month" | "quarter" | "year" | "7" | "30" | "90" | "custom" | "all";
 
 export type DashboardPeriod = PeriodQuery & { bucket: TimeBucket; preset: PeriodPreset; timezone: string };
+
+export type IntradayBucket = Exclude<TimeBucket, "day">;
+export const INTRADAY_BUCKETS = ["hour", "30m", "15m"] as const satisfies readonly IntradayBucket[];
+
+export function isIntradayBucket(v: unknown): v is IntradayBucket {
+  return typeof v === "string" && (INTRADAY_BUCKETS as readonly string[]).includes(v);
+}
+
+function requestedIntradayBucket(v: string | undefined): IntradayBucket {
+  return isIntradayBucket(v) ? v : "hour";
+}
 
 /**
  * URL searchParams → 기간·프로바이더 필터 + 시계열 버킷. 기본 프리셋은 화면별로 주입 가능.
@@ -116,6 +129,7 @@ export function parseFilters(
   const providerKey = sp.provider && sp.provider !== "all" ? sp.provider : undefined;
   const period = sp.period ?? defaultPeriod;
   const rollingDays = ROLLING[period];
+  const intradayBucket = requestedIntradayBucket(sp.bucket);
 
   let range: { from: Date; to: Date };
   let bucket: TimeBucket;
@@ -123,7 +137,7 @@ export function parseFilters(
   if (period === "custom") {
     const custom = customPeriod(sp.from, sp.to, timezone);
     range = custom ?? todayPeriod(timezone);
-    bucket = !custom || sp.from === sp.to ? "hour" : "day";
+    bucket = !custom || sp.from === sp.to ? intradayBucket : "day";
     preset = custom ? "custom" : "today";
   } else if (period === "week") {
     range = currentWeekPeriod(timezone);
@@ -151,7 +165,7 @@ export function parseFilters(
     preset = period as PeriodPreset;
   } else {
     range = todayPeriod(timezone);
-    bucket = "hour";
+    bucket = intradayBucket;
     preset = "today";
   }
 
@@ -190,8 +204,8 @@ export function previousPeriod(p: PeriodQuery & { preset?: PeriodPreset; timezon
   return { from: new Date(p.from.getTime() - span), to: p.from, providerKey: p.providerKey };
 }
 
-/** bucket='hour' 시리즈의 빈 시간대를 기간의 타임존 기준 0 포인트로 채운다 (일별은 그대로). */
+/** 하루 안 버킷 시리즈의 빈 시간대를 기간의 타임존 기준 0 포인트로 채운다 (일별은 그대로). */
 export function fillSeriesGaps(points: DailyPoint[], period: DashboardPeriod): DailyPoint[] {
-  if (period.bucket !== "hour") return points;
-  return fillHourlyGaps(points, period, period.timezone);
+  if (period.bucket === "day") return points;
+  return fillTimeBucketGaps(points, period, period.timezone, period.bucket);
 }

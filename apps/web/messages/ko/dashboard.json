@@ -22,6 +22,8 @@
   "tokensHint": "입력 {in} · 출력 {out} · 캐시 {cache}",
   "dailyUsage": "일별 사용량",
   "hourlyUsage": "시간별 사용량",
+  "usage30m": "30분별 사용량",
+  "usage15m": "15분별 사용량",
   "noCollectedUsageTitle": "아직 수집된 사용량이 없습니다",
   "noCollectedUsageDescription": "수집기를 설치하면 Claude Code·Codex 사용량이 자동으로 수집됩니다.",
   "installShim": "수집기 설치하기",
@@ -56,6 +58,12 @@
     "endDate": "종료일",
     "apply": "적용",
     "allTools": "전체 도구",
+    "bucketLabel": "차트 간격",
+    "bucket": {
+      "hour": "1시간",
+      "30m": "30분",
+      "15m": "15분"
+    },
     "rangeAll": "전체 기간",
     "timezoneNote": "{tz} 기준"
   },
@@ -79,6 +87,7 @@
     "moreThanPrev": "직전 기간({prev})보다 {diff} 더 썼습니다",
     "activeDays": "활동일",
     "activeHours": "활동 시간",
+    "activeBuckets": "활동 구간",
     "topModel": "주 사용 모델",
     "byModelDaily": "기간 · 모델별",
     "hourlyRhythm": "시간대 리듬",

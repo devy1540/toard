@@ -1,12 +1,13 @@
 import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
-import { ArrowLeft, ChevronRight, Inbox, Sparkles, Terminal } from "lucide-react";
+import { ArrowLeft, Inbox, Sparkles, Terminal } from "lucide-react";
 import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Disclosure } from "@/components/ui/disclosure";
 import {
   Empty,
   EmptyContent,
@@ -170,18 +171,22 @@ export async function SessionDetail({
                       </div>
                     ) : null}
                     {meta ? (
-                      <details className="group text-center">
-                        <summary className="text-muted-foreground hover:text-foreground bg-muted/40 inline-flex max-w-full cursor-pointer list-none items-center gap-1.5 rounded-full border px-3 py-1 text-xs select-none [&::-webkit-details-marker]:hidden">
+                      <Disclosure
+                        className="text-center"
+                        trigger={
+                          <>
                           <Terminal className="size-3 shrink-0" />
                           <span className="truncate font-mono">
                             {meta.command ?? t("history.metaSystem")}
                           </span>
-                          <ChevronRight className="size-3 shrink-0 transition-transform group-open:rotate-90" />
-                        </summary>
+                          </>
+                        }
+                        triggerClassName="text-muted-foreground hover:text-foreground bg-muted/40 rounded-full border px-3 py-1 text-xs"
+                      >
                         <pre className="bg-muted/40 mt-2 overflow-x-auto rounded-lg border p-3 text-left font-mono text-xs break-words whitespace-pre-wrap">
                           {turn.text}
                         </pre>
-                      </details>
+                      </Disclosure>
                     ) : isUser ? (
                       <div className="flex flex-col items-end">
                         <div className="bg-primary/10 max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2.5 sm:max-w-[70%]">

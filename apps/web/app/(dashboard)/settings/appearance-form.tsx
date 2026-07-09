@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { ChartColumn, Check, LayoutGrid, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { SettingsRow } from "@/components/dashboard/settings-row";
+import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/segmented-control";
 import {
   BRAND_COOKIE,
   BRAND_PRESETS,
@@ -28,6 +29,7 @@ const THEMES = [
   { value: "dark", icon: Moon },
   { value: "system", icon: Monitor },
 ] as const;
+type ThemeValue = (typeof THEMES)[number]["value"];
 
 const VIEW_ICONS = { classic: LayoutGrid, stats: ChartColumn } as const;
 
@@ -66,28 +68,27 @@ export function AppearanceForm() {
     router.refresh();
   }
 
+  const themeItems: SegmentedControlItem<ThemeValue>[] = THEMES.map(({ value, icon }) => ({
+    value,
+    icon,
+    label: t(`appearance.theme_${value}`),
+  }));
+  const themeValue = mounted && THEMES.some(({ value }) => value === theme) ? (theme as ThemeValue) : "system";
+  const viewItems: SegmentedControlItem<DashboardView>[] = DASHBOARD_VIEWS.map((v) => ({
+    value: v,
+    icon: VIEW_ICONS[v],
+    label: t(`appearance.view_${v}`),
+  }));
+
   return (
     <>
       <SettingsRow label={t("appearance.theme")}>
-        <div className="border-input flex rounded-md border p-0.5">
-          {THEMES.map(({ value, icon: Icon }) => (
-            <button
-              key={value}
-              type="button"
-              aria-pressed={mounted && theme === value}
-              onClick={() => setTheme(value)}
-              className={cn(
-                "flex items-center gap-1.5 rounded-sm px-2.5 py-1 text-xs transition-colors",
-                mounted && theme === value
-                  ? "bg-muted text-foreground font-medium"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Icon className="size-3.5" />
-              {t(`appearance.theme_${value}`)}
-            </button>
-          ))}
-        </div>
+        <SegmentedControl
+          value={themeValue}
+          items={themeItems}
+          onValueChange={setTheme}
+          aria-label={t("appearance.theme")}
+        />
       </SettingsRow>
 
       <SettingsRow label={t("appearance.color")}>
@@ -113,28 +114,12 @@ export function AppearanceForm() {
       </SettingsRow>
 
       <SettingsRow label={t("appearance.defaultView")}>
-        <div className="flex gap-2">
-          {DASHBOARD_VIEWS.map((v) => {
-            const Icon = VIEW_ICONS[v];
-            return (
-              <button
-                key={v}
-                type="button"
-                aria-pressed={view === v}
-                onClick={() => onViewChange(v)}
-                className={cn(
-                  "flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-xs transition-colors",
-                  view === v
-                    ? "border-ring bg-muted text-foreground font-medium"
-                    : "border-input text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Icon className="size-3.5" />
-                {t(`appearance.view_${v}`)}
-              </button>
-            );
-          })}
-        </div>
+        <SegmentedControl
+          value={view}
+          items={viewItems}
+          onValueChange={onViewChange}
+          aria-label={t("appearance.defaultView")}
+        />
       </SettingsRow>
     </>
   );

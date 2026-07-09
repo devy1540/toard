@@ -1,12 +1,19 @@
 "use client";
 
-import { useActionState, useEffect, useRef } from "react";
+import { useActionState, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { CopyButton } from "@/components/dashboard/copy-button";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { createInviteAction, type InviteState } from "./invite-actions";
 
 const INITIAL: InviteState = {};
@@ -24,6 +31,8 @@ export function InvitePanel({
 }) {
   const t = useTranslations("admin");
   const [state, action, isPending] = useActionState(createInviteAction, INITIAL);
+  const [role, setRole] = useState("member");
+  const [teamId, setTeamId] = useState("");
   const link = state.token ? `${baseUrl}/invite/${state.token}` : null;
   const hasTeams = teams.length > 0;
   // 생성 결과 토스트 — 같은 토큰으로 중복 발화 방지
@@ -39,6 +48,8 @@ export function InvitePanel({
   return (
     <div className="space-y-4">
       <form action={action} className="flex flex-col gap-3">
+        <input type="hidden" name="role" value={role} />
+        <input type="hidden" name="teamId" value={teamId} />
         <div className="flex flex-col gap-2">
           <Label htmlFor="invite-email">{t("invites.emailLabel")}</Label>
           <Input
@@ -49,41 +60,37 @@ export function InvitePanel({
             placeholder="member@company.com"
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Label htmlFor="invite-role">{t("invites.roleLabel")}</Label>
-          <select
-            id="invite-role"
-            name="role"
-            className="border-input h-9 rounded-md border bg-transparent px-3 text-sm"
-          >
-            <option value="member">member</option>
-            <option value="admin">admin</option>
-          </select>
+          <Select value={role} onValueChange={setRole}>
+            <SelectTrigger id="invite-role" className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="member">member</SelectItem>
+              <SelectItem value="admin">admin</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Label htmlFor="invite-team">{t("invites.teamLabel")}</Label>
-          <select
-            id="invite-team"
-            name="teamId"
-            required
-            disabled={!hasTeams}
-            className="border-input h-9 rounded-md border bg-transparent px-3 text-sm"
-            defaultValue=""
-          >
-            <option value="" disabled>
-              {t("invites.teamPlaceholder")}
-            </option>
-            {teams.map((team) => (
-              <option key={team.id} value={team.id}>
-                {team.name}
-              </option>
-            ))}
-          </select>
+          <Select value={teamId} onValueChange={setTeamId} disabled={!hasTeams}>
+            <SelectTrigger id="invite-team" className="w-56 max-w-full">
+              <SelectValue placeholder={t("invites.teamPlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              {teams.map((team) => (
+                <SelectItem key={team.id} value={team.id}>
+                  {team.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
         {!hasTeams ? <p className="text-muted-foreground text-sm">{t("invites.noTeams")}</p> : null}
         {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
         {/* flex-col 컨테이너가 버튼을 풀폭으로 늘리지 않게 — 폼 버튼은 콘텐츠 폭 */}
-        <Button type="submit" disabled={isPending || !hasTeams} className="self-start">
+        <Button type="submit" disabled={isPending || !hasTeams || !teamId} className="self-start">
           {isPending ? t("invites.generating") : t("invites.generateSubmit")}
         </Button>
       </form>

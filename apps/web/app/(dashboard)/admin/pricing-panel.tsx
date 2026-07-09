@@ -1,8 +1,9 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useRef } from "react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   setPricingAutoSyncAction,
   syncPricingAction,
@@ -33,6 +34,7 @@ export function PricingSyncPanel({
     setPricingAutoSyncAction,
     INITIAL_TOGGLE,
   );
+  const toggleFormRef = useRef<HTMLFormElement>(null);
   const enabled = toggleState.enabled ?? autoSync;
 
   return (
@@ -60,14 +62,14 @@ export function PricingSyncPanel({
       </div>
 
       {builtinScheduler ? (
-        <form action={toggleAction} className="space-y-1">
+        <form ref={toggleFormRef} action={toggleAction} className="space-y-1">
           <input type="hidden" name="enabled" value={enabled ? "false" : "true"} />
-          <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <input
-              type="checkbox"
+          <label className="flex cursor-pointer items-center gap-2 text-sm" htmlFor="pricing-auto-sync">
+            <Switch
+              id="pricing-auto-sync"
               checked={enabled}
               disabled={togglePending}
-              onChange={(e) => e.currentTarget.form?.requestSubmit()}
+              onCheckedChange={() => toggleFormRef.current?.requestSubmit()}
             />
             <span>{t("system.autoSyncLabel")}</span>
           </label>

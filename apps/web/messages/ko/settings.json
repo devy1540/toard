@@ -36,7 +36,23 @@
     "noDevices": "아직 수집된 기기가 없습니다. shim 설치 후 <code>claude</code>/<code>codex</code> 를 쓰면 여기에 기기가 나타납니다.",
     "deviceShim": "shim 버전",
     "shimUnreported": "미보고 (구 shim)",
-    "shimOutdated": "업데이트 필요"
+    "shimOutdated": "업데이트 필요",
+    "tokensTitle": "토큰 관리",
+    "tokensDescription": "토큰은 서버 인증 단위입니다. 기기마다 별도 토큰을 발급해 두면 문제가 생긴 기기만 폐기할 수 있습니다.",
+    "tokenLabel": "라벨",
+    "tokenLastHost": "마지막 기기",
+    "tokenCreated": "발급",
+    "tokenLastUsed": "마지막 사용",
+    "tokenActions": "작업",
+    "tokenUnnamed": "라벨 없음",
+    "tokenNoHost": "아직 수신 없음",
+    "tokenNeverUsed": "미사용",
+    "noTokens": "활성 토큰이 없습니다. 새 기기용 토큰을 발급하면 여기에 표시됩니다.",
+    "revokeToken": "폐기",
+    "revokeTokenTitle": "이 토큰을 폐기할까요?",
+    "revokeTokenDescription": "{label} 토큰만 폐기됩니다. 이 토큰이 설치된 기기는 새 토큰으로 다시 설치하기 전까지 수집이 중단됩니다.",
+    "revokeTokenCancel": "취소",
+    "revokeTokenConfirm": "토큰 폐기"
   },
   "password": {
     "currentLabel": "현재 비밀번호",
@@ -59,6 +75,8 @@
     "issuing": "발급 중…",
     "issue": "토큰 발급",
     "issueAdditional": "새 기기용 토큰 발급",
+    "deviceLabel": "토큰 라벨",
+    "deviceLabelPlaceholder": "예: 맥북, 맥미니",
     "issueSuccess": "새 토큰이 발급되었습니다 — 아래 설치 명령에 채워졌습니다.",
     "newTokenNotice": "새 토큰 — 지금만 표시됩니다. 설치할 기기에서 아래 명령을 실행하세요.",
     "newTokenReissueHint": "기존 기기의 토큰은 계속 유효합니다. 기기별 토큰을 폐기해야 할 때만 해당 자격 증명을 교체하세요.",
@@ -95,6 +113,7 @@
     "passwordMismatch": "새 비밀번호가 일치하지 않습니다.",
     "currentPasswordWrong": "현재 비밀번호가 올바르지 않습니다.",
     "issueTokenFailed": "토큰 발급에 실패했습니다. 다시 시도하세요.",
+    "revokeTokenFailed": "토큰 폐기에 실패했습니다. 다시 시도하세요.",
     "invalidTimezone": "유효하지 않은 타임존입니다."
   },
   "timezone": {

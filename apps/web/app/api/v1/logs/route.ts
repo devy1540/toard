@@ -10,12 +10,13 @@ import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingMap } from "@/lib/pricing";
 import { getStorage } from "@/lib/storage";
 import { hostFromResourceAttrs, sanitizeAttrs } from "@/lib/sanitize";
+import { recordTokenHost } from "@/lib/tokens";
 
 // OTLP/JSON 수신 (ADR-001). shim 의 OTEL_EXPORTER_OTLP_ENDPOINT=<base>/api 가 /v1/logs 로 도달.
 export async function POST(req: Request): Promise<Response> {
   // 1. 인증 — 토큰 user_id 가 SSOT (§10.1)
-  const userId = await authenticateIngestToken(req.headers.get("authorization"));
-  if (!userId) return new Response("unauthorized", { status: 401 });
+  const auth = await authenticateIngestToken(req.headers.get("authorization"));
+  if (!auth) return new Response("unauthorized", { status: 401 });
 
   // 2. 파싱 후 프롬프트 제거 (raw 저장 전 — §10.3). attrs·resourceAttrs 양쪽을 평탄화 후 정제.
   const records = parseOtlpLogs(await req.json());
@@ -46,6 +47,7 @@ export async function POST(req: Request): Promise<Response> {
   let inserted = 0;
   let deduped = 0;
   const failed: string[] = [];
+  const hosts: Array<string | null> = [];
   for (const [providerKey, recs] of byProvider) {
     // 프로바이더 그룹별로 격리 — 한 그룹 실패가 다른 그룹·이미 저장분을 무효화하지 않도록
     try {
@@ -59,9 +61,10 @@ export async function POST(req: Request): Promise<Response> {
       // 여기서 그룹 recs 의 resourceAttrs(toard.host / host.name)를 읽어 이벤트에 부착.
       // 한 provider 그룹 = 한 머신(한 POST=한 머신, ADR-001)이라 그룹 대표값이 곧 host.
       const host = hostFromResourceAttrs(recs);
+      hosts.push(host);
 
       // 4. 정규화 → 5. 비용 (정규화와 비용은 별도 단계 — §5.5)
-      const normalized = normalizer.normalize(recs, { userId });
+      const normalized = normalizer.normalize(recs, { userId: auth.userId });
       const events: UsageEvent[] = normalized.map((u) => ({
         dedupKey: u.dedupKey,
         providerKey: u.providerKey,
@@ -94,6 +97,11 @@ export async function POST(req: Request): Promise<Response> {
       failed.push(providerKey);
       console.error(`ingest: provider ${providerKey} 처리 실패`, e);
     }
+  }
+  try {
+    await recordTokenHost(auth.tokenId, hosts);
+  } catch {
+    // 토큰 관리용 관측 메타데이터 — 수집을 막지 않는다
   }
 
   return Response.json({ inserted, deduped, ...(failed.length > 0 ? { failed } : {}) });

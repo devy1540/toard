@@ -6,6 +6,7 @@ import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingMap } from "@/lib/pricing";
 import { sanitizeHost } from "@/lib/sanitize";
 import { getStorage } from "@/lib/storage";
+import { recordTokenHost } from "@/lib/tokens";
 
 // 정규화 UsageEvent[] 수신 — shim 로컬 로그 pull 경로 (설계 §5.6, ADR-002).
 // OTLP(/v1/logs)와 달리 shim 이 이미 정규화했으므로 raw 저장이 없고,
@@ -14,8 +15,8 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024; // 배치 상한 4MB (§5.6)
 
 export async function POST(req: Request): Promise<Response> {
   // 1. 인증 — 토큰 user_id 가 SSOT, 본문 userId 는 무시 (§10.1)
-  const userId = await authenticateIngestToken(req.headers.get("authorization"));
-  if (!userId) return new Response("unauthorized", { status: 401 });
+  const auth = await authenticateIngestToken(req.headers.get("authorization"));
+  if (!auth) return new Response("unauthorized", { status: 401 });
 
   const text = await req.text();
   if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
@@ -59,7 +60,7 @@ export async function POST(req: Request): Promise<Response> {
   const pricing = await getPricingMap();
   const finalized: UsageEvent[] = gated.map((e) => ({
     ...e,
-    userId,
+    userId: auth.userId,
     // host 는 클라이언트 제공값이라 저장 전 살균(제어문자·255자, §design-host-breakdown)
     host: sanitizeHost(e.host),
     costUsd: resolveCost({
@@ -77,13 +78,18 @@ export async function POST(req: Request): Promise<Response> {
 
   // 5. 멱등 저장 + 당일 Mart 증분 — dedupKey 는 shim 생성 값 신뢰(멱등이라 무해, §4.4)
   const res = await getStorage().saveUsageEvents(finalized);
+  try {
+    await recordTokenHost(auth.tokenId, finalized.map((e) => e.host));
+  } catch {
+    // 토큰 관리용 관측 메타데이터 — 수집을 막지 않는다
+  }
 
   // 6. 부수 기록: User-Agent 의 shim 버전을 기기별로 남김(host_shims, 버전 관측).
   // 한 배치는 한 기기에서 오므로 배치 내 host 전부에 귀속. 실패해도 수집 응답엔 영향 없음.
   const shimVersion = parseShimUserAgent(req.headers.get("user-agent"));
   if (shimVersion) {
     try {
-      await recordShimVersions(userId, shimVersion, finalized.map((e) => e.host));
+      await recordShimVersions(auth.userId, shimVersion, finalized.map((e) => e.host));
     } catch {
       // 관측 부가 경로 — 수집을 막지 않는다
     }

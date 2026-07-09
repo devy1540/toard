@@ -1,9 +1,24 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { QueryResult } from "pg";
 import { getPool } from "./db";
 
 // ingest 토큰: 평문은 발급 시 1회만 노출, DB 엔 sha256 해시만 저장(seed·ingest-auth 와 동일 방식).
 export type TokenMeta = { createdAt: Date; lastUsedAt: Date | null };
+export type IngestTokenRow = {
+  id: string;
+  label: string | null;
+  lastHost: string | null;
+  createdAt: Date;
+  lastUsedAt: Date | null;
+  expiresAt: Date | null;
+  revokedAt: Date | null;
+};
+
+type QueryResultLike = { rows: Record<string, unknown>[]; rowCount?: number | null };
+type Queryable = {
+  query(sql: string, params?: unknown[]): Promise<QueryResultLike | void>;
+};
+
+const TOKEN_LABEL_MAX_LEN = 80;
 
 function genToken(): string {
   return `tk_${randomBytes(24).toString("hex")}`;
@@ -13,6 +28,11 @@ function hashToken(t: string): string {
   return createHash("sha256").update(t).digest("hex");
 }
 
+function normalizeLabel(label: string | null | undefined): string | null {
+  const trimmed = label?.trim();
+  return trimmed ? trimmed.slice(0, TOKEN_LABEL_MAX_LEN) : null;
+}
+
 /**
  * 새 설치용 ingest token 발급. 기존 활성 토큰은 유지한다.
  *
@@ -20,18 +40,94 @@ function hashToken(t: string): string {
  * 보안상 전체 토큰을 폐기해야 하는 경우에는 revokeActiveTokens 를 명시적으로 호출한다.
  * 평문 토큰은 오직 여기서만 반환된다(이후 조회 불가).
  */
-export async function issueToken(userId: string): Promise<string> {
-  return issueTokenWithPool(userId, getPool());
+export async function issueToken(userId: string, label?: string | null): Promise<string> {
+  return issueTokenWithPool(userId, getPool(), label);
 }
 
 export async function issueTokenWithPool(
   userId: string,
-  pool: { query(sql: string, params?: unknown[]): Promise<QueryResult | void> },
+  pool: Queryable,
+  label?: string | null,
 ): Promise<string> {
   const token = genToken();
   const hash = hashToken(token);
-  await pool.query("INSERT INTO ingest_tokens (user_id, token_hash) VALUES ($1, $2)", [userId, hash]);
+  await pool.query("INSERT INTO ingest_tokens (user_id, token_hash, device_label) VALUES ($1, $2, $3)", [
+    userId,
+    hash,
+    normalizeLabel(label),
+  ]);
   return token;
+}
+
+export async function listActiveTokens(userId: string): Promise<IngestTokenRow[]> {
+  return listActiveTokensWithPool(userId, getPool());
+}
+
+export async function listActiveTokensWithPool(
+  userId: string,
+  pool: Queryable,
+): Promise<IngestTokenRow[]> {
+  type TokenDbRow = {
+    id: string;
+    device_label: string | null;
+    last_host: string | null;
+    created_at: Date;
+    last_used_at: Date | null;
+    expires_at: Date | null;
+    revoked_at: Date | null;
+  };
+  const r = await pool.query(
+    `SELECT id, device_label, last_host, created_at, last_used_at, expires_at, revoked_at
+     FROM ingest_tokens
+     WHERE user_id = $1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())
+     ORDER BY created_at DESC`,
+    [userId],
+  );
+  return ((r?.rows ?? []) as TokenDbRow[]).map((x) => ({
+    id: x.id,
+    label: x.device_label,
+    lastHost: x.last_host,
+    createdAt: x.created_at,
+    lastUsedAt: x.last_used_at,
+    expiresAt: x.expires_at,
+    revokedAt: x.revoked_at,
+  }));
+}
+
+export async function revokeToken(userId: string, tokenId: string): Promise<boolean> {
+  return revokeTokenWithPool(userId, tokenId, getPool());
+}
+
+export async function revokeTokenWithPool(
+  userId: string,
+  tokenId: string,
+  pool: Queryable,
+): Promise<boolean> {
+  const r = await pool.query(
+    "UPDATE ingest_tokens SET revoked_at = now() WHERE user_id = $1 AND id = $2 AND revoked_at IS NULL",
+    [userId, tokenId],
+  );
+  return Boolean(r?.rowCount);
+}
+
+export async function recordTokenHost(
+  tokenId: string,
+  hosts: Array<string | null | undefined>,
+): Promise<void> {
+  await recordTokenHostWithPool(tokenId, hosts, getPool());
+}
+
+export async function recordTokenHostWithPool(
+  tokenId: string,
+  hosts: Array<string | null | undefined>,
+  pool: Queryable,
+): Promise<void> {
+  const host = hosts.find((h): h is string => typeof h === "string" && h.trim().length > 0)?.trim();
+  if (!host) return;
+  await pool.query("UPDATE ingest_tokens SET last_host = $2 WHERE id = $1 AND revoked_at IS NULL", [
+    tokenId,
+    host,
+  ]);
 }
 
 /**

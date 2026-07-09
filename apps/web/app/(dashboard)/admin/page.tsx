@@ -235,10 +235,7 @@ async function SystemTab() {
     <Card className="min-w-0">
       <CardContent className="min-w-0 divide-y">
         <SettingsRow wide label={t("system.serverVersion")} description={t("system.serverDescription")}>
-          <div className="space-y-3">
-            <span className="font-mono text-sm">{formatVersion(serverVersion)}</span>
-            <ServerUpdatePanel currentVersion={serverVersion} initialStatus={serverUpdate} />
-          </div>
+          <ServerUpdatePanel currentVersion={serverVersion} initialStatus={serverUpdate} />
         </SettingsRow>
 
         <SettingsRow wide label={t("system.pricingTitle")} description={t("system.pricingDescription")}>

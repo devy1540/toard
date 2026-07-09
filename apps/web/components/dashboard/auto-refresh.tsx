@@ -77,7 +77,7 @@ export function AutoRefresh() {
   }, [lastAt, t]);
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-2">
       {ago ? (
         <span className="text-muted-foreground mr-1 hidden text-xs tabular-nums sm:inline">
           {t("autoRefresh.updated", { ago })}
@@ -90,11 +90,15 @@ export function AutoRefresh() {
         disabled={isPending}
         aria-label={t("autoRefresh.refreshNow")}
         title={t("autoRefresh.refreshNow")}
+        className="size-8 p-0"
       >
         <RefreshCw className={`size-4 ${isPending ? "animate-spin" : ""}`} />
       </Button>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger className="w-32" aria-label={t("autoRefresh.intervalLabel")}>
+        <SelectTrigger
+          className="h-8 w-auto justify-start gap-1.5 px-3"
+          aria-label={t("autoRefresh.intervalLabel")}
+        >
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

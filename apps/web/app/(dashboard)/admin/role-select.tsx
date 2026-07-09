@@ -24,7 +24,10 @@ export function RoleSelect({ userId, current }: { userId: string; current: UserR
 
   return (
     <Select value={current} onValueChange={onChange} disabled={pending}>
-      <SelectTrigger className="h-8 w-28" aria-label={t("roleSelect.label")}>
+      <SelectTrigger
+        className="h-8 w-auto justify-start gap-1.5"
+        aria-label={t("roleSelect.label")}
+      >
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

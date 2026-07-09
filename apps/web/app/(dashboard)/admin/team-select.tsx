@@ -35,7 +35,9 @@ export function TeamSelect({
 
   return (
     <Select value={current ?? NONE} onValueChange={onChange} disabled={pending}>
-      <SelectTrigger className="h-8 w-32">
+      <SelectTrigger
+        className="h-8 w-auto max-w-40 justify-start gap-1.5 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate"
+      >
         <SelectValue />
       </SelectTrigger>
       <SelectContent>

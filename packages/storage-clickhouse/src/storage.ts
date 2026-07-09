@@ -157,6 +157,19 @@ const CLICKHOUSE_SCHEMA_DDL = [
   "ALTER TABLE usage_hourly_rollup MODIFY SETTING non_replicated_deduplication_window = 10000",
 ] as const;
 
+const CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS = 5;
+const CLICKHOUSE_TRANSIENT_RETRY_BASE_MS = 150;
+const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EPIPE",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ETIMEDOUT",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
+
 /**
  * ClickHouse 저장 백엔드 (설계 §4.3, ADR-003 옵트인).
  * 이벤트·집계는 CH(ReplacingMergeTree, 읽기 시 FINAL), 메타(이름)는 PG 에서 머지.
@@ -230,9 +243,11 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   private async queryJson<T>(query: string, query_params: Params): Promise<T[]> {
-    await this.ensureSchema();
-    const rs = await this.ch.query({ query, query_params, format: "JSONEachRow" });
-    return rs.json<T>();
+    return retryTransientClickHouseError(async () => {
+      await this.ensureSchema();
+      const rs = await this.ch.query({ query, query_params, format: "JSONEachRow" });
+      return rs.json<T>();
+    });
   }
 
   // ── 쓰기 ──
@@ -800,11 +815,45 @@ export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions
 }
 
 export async function pingClickHouse(): Promise<void> {
-  const ch = createClickHouseClient();
-  try {
-    const result = await ch.ping({ select: true });
-    if (!result.success) throw result.error;
-  } finally {
-    await ch.close();
+  await retryTransientClickHouseError(async () => {
+    const ch = createClickHouseClient();
+    try {
+      const result = await ch.ping({ select: true });
+      if (!result.success) throw result.error;
+    } finally {
+      await ch.close();
+    }
+  });
+}
+
+async function retryTransientClickHouseError<T>(op: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await op();
+    } catch (err) {
+      lastError = err;
+      if (attempt === CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS - 1 || !isTransientClickHouseError(err)) throw err;
+      await sleep(CLICKHOUSE_TRANSIENT_RETRY_BASE_MS * 2 ** attempt);
+    }
   }
+  throw lastError;
+}
+
+function isTransientClickHouseError(err: unknown): boolean {
+  const codes = errorCodes(err);
+  if (codes.some((code) => TRANSIENT_CLICKHOUSE_ERROR_CODES.has(code))) return true;
+  const message = String(err instanceof Error ? err.message : err);
+  return [...TRANSIENT_CLICKHOUSE_ERROR_CODES].some((code) => message.includes(code));
+}
+
+function errorCodes(err: unknown): string[] {
+  if (!err || typeof err !== "object") return [];
+  const e = err as { code?: unknown; cause?: unknown };
+  const own = typeof e.code === "string" ? [e.code] : [];
+  return [...own, ...errorCodes(e.cause)];
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

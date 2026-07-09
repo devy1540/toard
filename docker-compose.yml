@@ -87,6 +87,11 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      # ClickHouse profile 을 쓰는 배포에서는 CH ready 이후 앱을 띄운다.
+      # profile 미사용(Postgres 기본 모드)에서는 optional dependency 로만 남긴다.
+      clickhouse:
+        condition: service_healthy
+        required: false
     restart: unless-stopped
 
   # 선택(profile=updater): 관리 화면에서 Compose 서버 업데이트를 실행하는 별도 agent.

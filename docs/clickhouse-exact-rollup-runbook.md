@@ -120,4 +120,45 @@ FROM raw CROSS JOIN rollup;
 - raw vs rollup diff가 0이다.
 - `/api/ready`가 200이고 ClickHouse 컨테이너가 healthy다.
 
-전환 후에도 문제가 있으면 `CLICKHOUSE_READ_ROLLUP`을 빈 값으로 되돌리면 raw query path로 복귀한다.
+## 7. 운영 전환 절차
+
+전환은 앱 컨테이너만 재시작한다. ClickHouse/Postgres까지 함께 재생성하는
+`docker compose up -d` 형태의 전체 apply는 피한다. ClickHouse가 재시작되는 동안
+앱이 먼저 요청을 받으면 대시보드 SSR이 일시적으로 실패할 수 있기 때문이다.
+
+```bash
+docker compose ps clickhouse
+curl -fsS http://127.0.0.1:${PORT:-3000}/api/ready
+
+cp .env ".env.bak.rollup-$(date +%Y%m%d%H%M%S)"
+if grep -q '^CLICKHOUSE_READ_ROLLUP=' .env; then
+  sed -i.bak 's/^CLICKHOUSE_READ_ROLLUP=.*/CLICKHOUSE_READ_ROLLUP=1/' .env
+else
+  printf '\nCLICKHOUSE_READ_ROLLUP=1\n' >> .env
+fi
+
+docker compose up -d --no-deps --force-recreate app
+
+for i in $(seq 1 30); do
+  curl -fsS http://127.0.0.1:${PORT:-3000}/api/ready && break
+  sleep 1
+done
+```
+
+전환 직후 다음을 확인한다.
+
+```bash
+docker compose ps app clickhouse
+docker compose logs --since=5m app | grep -Ei 'ECONNREFUSED|ENOTFOUND|digest|Error' || true
+curl -fsS http://127.0.0.1:${PORT:-3000}/api/ready
+```
+
+호스트 `127.0.0.1:${PORT:-3000}`만 connection reset이고 컨테이너 내부 ready는 200이면
+Docker 포트 프록시가 꼬인 상태다. 이때는 ClickHouse나 다른 서비스를 건드리지 말고
+앱 컨테이너만 재시작한다.
+
+```bash
+docker compose restart app
+```
+
+문제가 있으면 `CLICKHOUSE_READ_ROLLUP`을 빈 값으로 되돌리고 앱만 재시작하면 raw query path로 복귀한다.

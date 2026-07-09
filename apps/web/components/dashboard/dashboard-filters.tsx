@@ -180,7 +180,7 @@ export function DashboardFilters({
         </div>
 
         <Select value={provider} onValueChange={(v) => push({ provider: v })}>
-          <SelectTrigger className="h-8 w-36">
+          <SelectTrigger className="h-8 w-auto justify-start gap-1.5">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -195,7 +195,10 @@ export function DashboardFilters({
 
         {showBucket ? (
           <Select value={selectedBucket} onValueChange={(v) => push({ bucket: v })}>
-            <SelectTrigger className="h-8 w-24" aria-label={t("filters.bucketLabel")}>
+            <SelectTrigger
+              className="h-8 w-auto justify-start gap-1.5"
+              aria-label={t("filters.bucketLabel")}
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

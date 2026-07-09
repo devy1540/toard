@@ -180,13 +180,13 @@ export function DashboardFilters({
         </div>
 
         <Select value={provider} onValueChange={(v) => push({ provider: v })}>
-          <SelectTrigger className="h-8 w-auto justify-start gap-1.5">
+          <SelectTrigger className="h-8 w-44 max-w-[calc(100vw-2rem)] justify-start gap-1.5 sm:w-64">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent className="max-w-[min(24rem,var(--radix-select-content-available-width))]">
             <SelectItem value="all">{t("filters.allTools")}</SelectItem>
             {providers.map((p) => (
-              <SelectItem key={p.key} value={p.key}>
+              <SelectItem key={p.key} value={p.key} title={p.label}>
                 {p.label}
               </SelectItem>
             ))}

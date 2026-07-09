@@ -59,7 +59,7 @@ fn print_usage() {
                                install --interval <초> (기본 300, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
   update                       최신 릴리스로 즉시 업데이트
-                               (평소엔 24h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
+                               (평소엔 6h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()

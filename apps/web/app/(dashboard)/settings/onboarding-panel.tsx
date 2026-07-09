@@ -3,17 +3,6 @@
 import { useActionState, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/dashboard/copy-button";
 import { issueTokenAction, type TokenState } from "./token-actions";
@@ -81,8 +70,7 @@ export function OnboardingPanel({
     if (state.error) toast.error(state.error);
   }, [state.error]);
 
-  // 재발급(=이전 토큰 즉시 폐기)은 파괴적 동작 — 확인 다이얼로그를 거친다. 최초 발급은 바로.
-  const reissue = hasToken || Boolean(token);
+  const issueLabel = hasToken || Boolean(token) ? "onboarding.issueAdditional" : "onboarding.issue";
 
   return (
     <div className="space-y-6">
@@ -112,35 +100,9 @@ export function OnboardingPanel({
           )}
         </div>
         <form id={ISSUE_FORM_ID} action={action}>
-          {reissue ? (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button type="button" disabled={pending}>
-                  {pending ? t("onboarding.issuing") : t("onboarding.reissue")}
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>{t("onboarding.reissueConfirmTitle")}</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {t.rich("onboarding.reissueConfirmDescription", {
-                      code: (chunks) => <code>{chunks}</code>,
-                    })}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>{t("onboarding.cancel")}</AlertDialogCancel>
-                  <AlertDialogAction type="submit" form={ISSUE_FORM_ID}>
-                    {t("onboarding.reissue")}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          ) : (
-            <Button type="submit" disabled={pending}>
-              {pending ? t("onboarding.issuing") : t("onboarding.issue")}
-            </Button>
-          )}
+          <Button type="submit" disabled={pending}>
+            {pending ? t("onboarding.issuing") : t(issueLabel)}
+          </Button>
         </form>
       </div>
 

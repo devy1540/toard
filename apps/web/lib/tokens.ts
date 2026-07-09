@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { QueryResult } from "pg";
 import { getPool } from "./db";
 
 // ingest 토큰: 평문은 발급 시 1회만 노출, DB 엔 sha256 해시만 저장(seed·ingest-auth 와 동일 방식).
@@ -13,30 +14,23 @@ function hashToken(t: string): string {
 }
 
 /**
- * user 당 활성 토큰 1개 정책 — 재발급(회전) 시 기존 활성 토큰을 폐기하고 새로 발급.
+ * 새 설치용 ingest token 발급. 기존 활성 토큰은 유지한다.
+ *
+ * 같은 계정을 여러 머신에 설치하는 것이 정상 사용 흐름이므로, 발급은 additive 여야 한다.
+ * 보안상 전체 토큰을 폐기해야 하는 경우에는 revokeActiveTokens 를 명시적으로 호출한다.
  * 평문 토큰은 오직 여기서만 반환된다(이후 조회 불가).
  */
 export async function issueToken(userId: string): Promise<string> {
+  return issueTokenWithPool(userId, getPool());
+}
+
+export async function issueTokenWithPool(
+  userId: string,
+  pool: { query(sql: string, params?: unknown[]): Promise<QueryResult | void> },
+): Promise<string> {
   const token = genToken();
   const hash = hashToken(token);
-  const client = await getPool().connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(
-      "UPDATE ingest_tokens SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL",
-      [userId],
-    );
-    await client.query("INSERT INTO ingest_tokens (user_id, token_hash) VALUES ($1, $2)", [
-      userId,
-      hash,
-    ]);
-    await client.query("COMMIT");
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
-  }
+  await pool.query("INSERT INTO ingest_tokens (user_id, token_hash) VALUES ($1, $2)", [userId, hash]);
   return token;
 }
 

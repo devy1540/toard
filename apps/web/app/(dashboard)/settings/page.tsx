@@ -1,5 +1,4 @@
 import { redirect } from "next/navigation";
-import Link from "next/link";
 import { getLocale, getTranslations } from "next-intl/server";
 import { auth, oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
@@ -12,7 +11,7 @@ import { contentCollectionDefaultOn, contentCollectionEnabled } from "@/lib/cont
 import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
-import { getHostShims, getLatestShimVersion } from "@/lib/host-shims";
+import { getHostShims } from "@/lib/host-shims";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta, listActiveTokens } from "@/lib/tokens";
@@ -20,7 +19,7 @@ import { getServerVersion } from "@/lib/version";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { AppearanceForm } from "./appearance-form";
-import { ConnectionCheck } from "./connection-check";
+import { DeviceActions } from "./device-actions";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
@@ -150,14 +149,13 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [meta, tokens, endpoint, baseUrl, devices, shims, latestShim] = await Promise.all([
+  const [meta, tokens, endpoint, baseUrl, devices, shims] = await Promise.all([
     getActiveTokenMeta(userId),
     listActiveTokens(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
     getStorage().getUserHosts(userId),
     getHostShims(userId),
-    getLatestShimVersion(userId),
   ]);
   const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
@@ -178,62 +176,28 @@ async function InstallTab({ userId }: { userId: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid min-w-0 items-start gap-4 lg:grid-cols-3">
-        <Card className="min-w-0 lg:col-span-2">
-          <CardHeader>
-            <CardTitle>{t("install.issueTitle")}</CardTitle>
-            <CardDescription>
-              {t.rich(
-                contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription",
-                {
-                  code: (chunks) => <code>{chunks}</code>,
-                  b: (chunks) => <b>{chunks}</b>,
-                },
-              )}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="min-w-0">
-            <OnboardingPanel
-              baseUrl={baseUrl}
-              endpoint={endpoint}
-              hasToken={Boolean(meta)}
-              createdAt={meta?.createdAt.toISOString() ?? null}
-              lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
-              contentEnabled={contentEnabled}
-              contentDefaultOn={contentDefaultOn}
-            />
-          </CardContent>
-        </Card>
-
-        <Card className="min-w-0">
-          <CardHeader>
-            <CardTitle>{t("install.checkTitle")}</CardTitle>
-            <CardDescription>{t("install.checkDescription")}</CardDescription>
-          </CardHeader>
-          <CardContent className="min-w-0 space-y-4">
-            <ConnectionCheck
-              initialHasToken={Boolean(meta)}
-              initialLastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
-              initialShimVersion={latestShim}
-              serverVersion={serverVersion}
-            />
-            <div className="text-muted-foreground space-y-1 border-t pt-3 text-sm">
-              <p>{t.rich("install.hintWhich", { code: (chunks) => <code>{chunks}</code> })}</p>
-              <p>
-                {t.rich("install.hintUsage", {
-                  code: (chunks) => <code>{chunks}</code>,
-                  link: (chunks) => (
-                    <Link className="text-primary underline-offset-4 hover:underline" href="/">
-                      {chunks}
-                    </Link>
-                  ),
-                })}
-              </p>
-              <p>{t("install.hintPrereq")}</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <Card className="min-w-0">
+        <CardHeader>
+          <CardTitle>{t("install.issueTitle")}</CardTitle>
+          <CardDescription>
+            {t.rich(contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription", {
+              code: (chunks) => <code>{chunks}</code>,
+              b: (chunks) => <b>{chunks}</b>,
+            })}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="min-w-0">
+          <OnboardingPanel
+            baseUrl={baseUrl}
+            endpoint={endpoint}
+            hasToken={Boolean(meta)}
+            createdAt={meta?.createdAt.toISOString() ?? null}
+            lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
+            contentEnabled={contentEnabled}
+            contentDefaultOn={contentDefaultOn}
+          />
+        </CardContent>
+      </Card>
 
       <TokenManagementPanel tokens={tokenRows} />
       <DeviceList devices={devices} shims={shims} serverVersion={serverVersion} />
@@ -277,22 +241,36 @@ async function DeviceList({
                 <TableHead className="text-right">{t("install.deviceEvents")}</TableHead>
                 <TableHead>{t("install.deviceShim")}</TableHead>
                 <TableHead className="text-right">{t("install.deviceLastSeen")}</TableHead>
+                <TableHead className="text-right">{t("install.deviceActions")}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {devices.map((d) => {
                 const shim = d.host ? shims.get(d.host) : undefined;
+                const outdated = shim ? isShimOutdated(shim.version, serverVersion) : false;
+                const primaryAction = !shim ? "doctor" : outdated ? "update" : "collect";
                 return (
                   <TableRow key={d.host ?? "__unknown__"}>
-                    <TableCell className={d.host ? "font-medium" : "text-muted-foreground"}>
-                      {d.host ?? t("install.unknownHost")}
+                    <TableCell>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span
+                          className={
+                            shim
+                              ? "size-2 shrink-0 rounded-full bg-emerald-500"
+                              : "bg-muted-foreground/40 size-2 shrink-0 rounded-full"
+                          }
+                        />
+                        <span className={d.host ? "truncate font-medium" : "text-muted-foreground"}>
+                          {d.host ?? t("install.unknownHost")}
+                        </span>
+                      </span>
                     </TableCell>
                     <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
                     <TableCell>
                       {shim ? (
                         <span className="flex items-center gap-2">
                           <span className="font-mono text-xs">{formatVersion(shim.version)}</span>
-                          {isShimOutdated(shim.version, serverVersion) ? (
+                          {outdated ? (
                             <Badge
                               variant="outline"
                               className="border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-500"
@@ -302,13 +280,14 @@ async function DeviceList({
                           ) : null}
                         </span>
                       ) : (
-                        <span className="text-muted-foreground">
-                          {t("install.shimUnreported")}
-                        </span>
+                        <span className="text-muted-foreground">{t("install.shimUnreported")}</span>
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-right">
                       {fmtWhen.format(d.lastSeenAt)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <DeviceActions primary={primaryAction} />
                     </TableCell>
                   </TableRow>
                 );

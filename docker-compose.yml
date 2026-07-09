@@ -75,6 +75,10 @@ services:
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-toard}
       CLICKHOUSE_READ_FINAL: ${CLICKHOUSE_READ_FINAL:-} # 1/true/on 이면 CH read 에 FINAL 강제(기본 off, 중복 0 운영 기준 부하 완화)
       CLICKHOUSE_READ_ROLLUP: ${CLICKHOUSE_READ_ROLLUP:-} # 1/true/on 이면 검증 완료된 CH hourly rollup 으로 대시보드 집계 조회
+      CLICKHOUSE_15M_ROLLUP_COMPACTOR: ${CLICKHOUSE_15M_ROLLUP_COMPACTOR:-} # 1/true/on 이면 finalized 15분 rollup compactor 실행
+      CLICKHOUSE_READ_15M_ROLLUP: ${CLICKHOUSE_READ_15M_ROLLUP:-} # 1/true/on 이면 검증 완료된 15분 rollup + raw tail 로 시계열 조회
+      CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS: ${CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS:-} # 15분 rollup 확정 지연(ms), 기본 30분
+      CLICKHOUSE_ROLLUP_MAX_BUCKETS: ${CLICKHOUSE_ROLLUP_MAX_BUCKETS:-} # compactor tick 당 최대 bucket 수, 기본 16
       ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}
       TOARD_CONTENT_KEK_B64: ${TOARD_CONTENT_KEK_B64:-}   # 설정 시 본문 수집 활성(암호화 KEK, base64 32B)
       CONTENT_COLLECTION_DEFAULT: ${CONTENT_COLLECTION_DEFAULT:-}   # on 이면 설치 기본 opt-out(자동 켜짐), 기본 opt-in

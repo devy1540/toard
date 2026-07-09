@@ -64,6 +64,11 @@ function floorFifteenMinuteDate(ts: Date): Date {
   return new Date(Math.floor(ts.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS);
 }
 
+function ceilFifteenMinuteDate(ts: Date): Date {
+  const floor = floorFifteenMinuteDate(ts);
+  return floor.getTime() === ts.getTime() ? floor : new Date(floor.getTime() + FIFTEEN_MINUTES_MS);
+}
+
 function chDate(s: string): Date {
   return new Date(`${s.replace(" ", "T")}Z`);
 }
@@ -336,39 +341,52 @@ export class ClickHouseStorage implements StorageBackend {
     return `toString(toDate(${timeCol}, '${tz}'))`;
   }
 
-  private async rollup15mSafeSplit(q: ScopedQuery): Promise<Date | null> {
+  private async rollup15mWindow(q: ScopedQuery): Promise<{ rollupFrom: Date; rollupTo: Date } | null> {
     if (!this.read15mRollup) return null;
+    if (q.to <= q.from) return null;
+    const rollupFrom = ceilFifteenMinuteDate(q.from);
+    let rollupTo = floorFifteenMinuteDate(q.to);
+    if (rollupTo <= rollupFrom) return null;
     const watermark = await this.pg.query<{ watermark: Date }>(
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
       [CLICKHOUSE_15M_ROLLUP_NAME],
     );
     const current = watermark.rows[0]?.watermark;
-    if (!current || current <= q.from) return null;
-    let split = current < q.to ? current : q.to;
+    if (!current) return null;
+    if (current < rollupTo) rollupTo = current;
+    if (rollupTo <= rollupFrom) return null;
     const dirty = await this.pg.query<{ bucket: Date }>(
       `SELECT min(bucket) AS bucket
        FROM clickhouse_rollup_dirty_buckets
        WHERE name = $1
          AND bucket >= $2
          AND bucket < $3`,
-      [CLICKHOUSE_15M_ROLLUP_NAME, q.from, split],
+      [CLICKHOUSE_15M_ROLLUP_NAME, rollupFrom, rollupTo],
     );
     const dirtyBucket = dirty.rows[0]?.bucket;
-    if (dirtyBucket && dirtyBucket < split) split = dirtyBucket;
-    return split > q.from ? split : null;
+    if (dirtyBucket && dirtyBucket < rollupTo) rollupTo = dirtyBucket;
+    return rollupTo > rollupFrom ? { rollupFrom, rollupTo } : null;
   }
 
   private async rollup15mTimeseriesSource(q: ScopedQuery): Promise<{ source: string; params: Params } | null> {
-    const split = await this.rollup15mSafeSplit(q);
-    if (!split) return null;
+    const window = await this.rollup15mWindow(q);
+    if (!window) return null;
     const filter = this.scopedAndFilter(q);
     const params = {
       from: chTs(q.from),
-      split: chTs(split),
+      rollupFrom: chTs(window.rollupFrom),
+      rollupTo: chTs(window.rollupTo),
       to: chTs(q.to),
       ...filter.params,
     };
     const source = `(
+      SELECT ts, provider_key, user_id, team_id, session_id, model, host,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+      FROM usage_events FINAL
+      WHERE ts >= {from:DateTime64(3)}
+        AND ts < {rollupFrom:DateTime64(3)}
+        ${filter.sql}
+      UNION ALL
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
       FROM (
@@ -385,8 +403,8 @@ export class ClickHouseStorage implements StorageBackend {
                argMax(cache_creation_tokens, version) AS cache_creation_tokens,
                argMax(cost_usd, version) AS cost_usd
         FROM usage_15m_rollup
-        WHERE bucket_15m >= {from:DateTime64(3)}
-          AND bucket_15m < {split:DateTime64(3)}
+        WHERE bucket_15m >= {rollupFrom:DateTime64(3)}
+          AND bucket_15m < {rollupTo:DateTime64(3)}
           ${filter.sql}
         GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host
       )
@@ -394,7 +412,7 @@ export class ClickHouseStorage implements StorageBackend {
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
       FROM usage_events FINAL
-      WHERE ts >= {split:DateTime64(3)}
+      WHERE ts >= {rollupTo:DateTime64(3)}
         AND ts < {to:DateTime64(3)}
         ${filter.sql}
     )`;

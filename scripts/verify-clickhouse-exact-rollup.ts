@@ -362,6 +362,31 @@ async function main(): Promise<void> {
       await raw.getUserModelTimeseries(userId, { ...period, bucket: "15m", timezone: "UTC" }),
       "15m model timeseries raw vs hybrid rollup",
     );
+    const partialPeriod = {
+      from: new Date("2020-01-01T01:05:00.000Z"),
+      to: new Date("2020-01-01T03:35:00.000Z"),
+      providerKey,
+    };
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      "15m partial-boundary raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...partialPeriod, bucket: "hour", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...partialPeriod, bucket: "hour", timezone: "UTC" }),
+      "hour partial-boundary raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...partialPeriod, bucket: "day", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...partialPeriod, bucket: "day", timezone: "UTC" }),
+      "day partial-boundary raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getUserModelTimeseries(userId, { ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      await raw.getUserModelTimeseries(userId, { ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      "15m partial-boundary model raw vs hybrid rollup",
+    );
     assertEqual(
       await rollup.getLeaderboard({ ...period, scope: "user" }),
       await raw.getLeaderboard({ ...period, scope: "user" }),

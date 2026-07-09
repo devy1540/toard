@@ -20,12 +20,12 @@ const config: NextConfig = {
   experimental: {
     optimizePackageImports: ["recharts"],
   },
-  // instrumentation.ts 는 edge 런타임용으로도 컴파일되는데, import 체인의 pg 내부
-  // require('net'/'tls'/'crypto')가 edge 번들에서 resolve 실패해 dev 전체가 깨진다.
-  // edge 번들에서만 pg 를 빈 모듈로 alias — 실행은 register 의 NEXT_RUNTIME 가드가 이미 막는다.
+  // instrumentation.ts 는 edge 런타임용으로도 컴파일되는데, import 체인의 Node 전용 모듈이
+  // edge 번들에서 resolve 실패해 dev 전체가 깨진다. 실행은 register 의 NEXT_RUNTIME 가드가 막으므로
+  // edge 번들에서만 서버 전용 DB 클라이언트를 빈 모듈로 alias 한다.
   webpack: (config, { nextRuntime }) => {
     if (nextRuntime === "edge") {
-      config.resolve.alias = { ...config.resolve.alias, pg: false };
+      config.resolve.alias = { ...config.resolve.alias, pg: false, "@clickhouse/client": false };
     }
     return config;
   },

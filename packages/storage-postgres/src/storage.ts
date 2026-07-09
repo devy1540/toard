@@ -13,6 +13,7 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UserUsage,
@@ -56,6 +57,17 @@ export class PostgresStorage implements StorageBackend {
       conds.push(`team_id = $${params.length}`);
     }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
+  }
+
+  private bucketExpr(bucket: TimeBucket | undefined, tzParam: string): string {
+    if (bucket === "hour") return `to_char(ts AT TIME ZONE ${tzParam}, 'YYYY-MM-DD HH24:00')`;
+    if (bucket === "30m") {
+      return `to_char(date_bin('30 minutes', ts AT TIME ZONE ${tzParam}, TIMESTAMP '1970-01-01 00:00:00'), 'YYYY-MM-DD HH24:MI')`;
+    }
+    if (bucket === "15m") {
+      return `to_char(date_bin('15 minutes', ts AT TIME ZONE ${tzParam}, TIMESTAMP '1970-01-01 00:00:00'), 'YYYY-MM-DD HH24:MI')`;
+    }
+    return `to_char((ts AT TIME ZONE ${tzParam})::date, 'YYYY-MM-DD')`;
   }
 
   // ── 쓰기 ──
@@ -226,11 +238,8 @@ export class PostgresStorage implements StorageBackend {
     const { where, params } = this.periodWhere(q);
     // 버킷 타임존 — 요청(뷰어) 타임존 우선, 없으면 조직 타임존 (ADR-008 개정)
     params.push(q.timezone ?? this.tz);
-    // bucket='hour' 는 분 이하를 자른 포맷으로 그룹핑 — 키 'YYYY-MM-DD HH:00' (storage 계약 참조)
-    const bucketExpr =
-      q.bucket === "hour"
-        ? `to_char(ts AT TIME ZONE $${params.length}, 'YYYY-MM-DD HH24:00')`
-        : `to_char((ts AT TIME ZONE $${params.length})::date, 'YYYY-MM-DD')`;
+    // 하루 안 버킷은 'YYYY-MM-DD HH:mm', 일 버킷은 'YYYY-MM-DD' (storage 계약 참조)
+    const bucketExpr = this.bucketExpr(q.bucket, `$${params.length}`);
     const res = await this.pool.query(
       `SELECT ${bucketExpr} AS day,
               COUNT(DISTINCT session_id) AS sessions,
@@ -311,10 +320,7 @@ export class PostgresStorage implements StorageBackend {
   async getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]> {
     const { where, params } = this.periodWhere({ ...q, userId });
     params.push(q.timezone ?? this.tz);
-    const bucketExpr =
-      q.bucket === "hour"
-        ? `to_char(ts AT TIME ZONE $${params.length}, 'YYYY-MM-DD HH24:00')`
-        : `to_char((ts AT TIME ZONE $${params.length})::date, 'YYYY-MM-DD')`;
+    const bucketExpr = this.bucketExpr(q.bucket, `$${params.length}`);
     const res = await this.pool.query(
       `SELECT ${bucketExpr} AS day,
               COALESCE(model,'(unknown)') AS model,

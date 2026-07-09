@@ -27,6 +27,7 @@ function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
   if (sp.provider) q.set("provider", sp.provider);
   if (sp.from) q.set("from", sp.from);
   if (sp.to) q.set("to", sp.to);
+  if (sp.bucket) q.set("bucket", sp.bucket);
   if (sp.metric) q.set("metric", sp.metric);
   const qs = q.toString();
   return qs ? `${path}?${qs}` : path;

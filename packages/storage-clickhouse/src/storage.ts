@@ -1,5 +1,4 @@
 import { type ClickHouseClient, createClient } from "@clickhouse/client";
-import { randomUUID } from "node:crypto";
 import type {
   BucketOptions,
   DailyPoint,
@@ -15,6 +14,7 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UserUsage,
@@ -228,6 +228,21 @@ export class ClickHouseStorage implements StorageBackend {
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
 
+  private canUseRollup(bucket?: TimeBucket): boolean {
+    return this.readRollup && bucket !== "30m" && bucket !== "15m";
+  }
+
+  private bucketExpr(bucket: TimeBucket | undefined, timeCol: string, tz: string): string {
+    if (bucket === "hour") return `formatDateTime(${timeCol}, '%Y-%m-%d %H:00', '${tz}')`;
+    if (bucket === "30m") {
+      return `formatDateTime(toStartOfInterval(${timeCol}, INTERVAL 30 minute, '${tz}'), '%Y-%m-%d %H:%i', '${tz}')`;
+    }
+    if (bucket === "15m") {
+      return `formatDateTime(toStartOfInterval(${timeCol}, INTERVAL 15 minute, '${tz}'), '%Y-%m-%d %H:%i', '${tz}')`;
+    }
+    return `toString(toDate(${timeCol}, '${tz}'))`;
+  }
+
   private async ensureClickHouseSchema(): Promise<void> {
     for (const query of CLICKHOUSE_SCHEMA_DDL) {
       await this.ch.command({ query });
@@ -290,7 +305,7 @@ export class ClickHouseStorage implements StorageBackend {
         `INSERT INTO clickhouse_usage_batches (insert_token)
          VALUES ($1)
          RETURNING id`,
-        [`toard-usage-${randomUUID()}`],
+        [`toard-usage-${globalThis.crypto.randomUUID()}`],
       );
       const batchId = batch.rows[0]!.id;
       let inserted = 0;
@@ -540,15 +555,13 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   private async dailyQuery(q: ScopedQuery & BucketOptions): Promise<DailyPoint[]> {
-    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
+    const readRollup = this.canUseRollup(q.bucket);
+    const { where, params } = readRollup ? this.rollupWhere(q) : this.periodWhere(q);
     // 버킷 타임존 — 요청(뷰어) 타임존 우선, 없으면 조직 타임존 (ADR-008 개정). 리터럴 삽입이라 재검증 필수.
     const tz = safeTimezone(q.timezone, this.tz);
-    const timeCol = this.readRollup ? "bucket_hour" : "ts";
-    // bucket='hour' 는 분 이하를 자른 포맷으로 그룹핑 — 키 'YYYY-MM-DD HH:00' (storage 계약 참조)
-    const bucketExpr =
-      q.bucket === "hour"
-        ? `formatDateTime(${timeCol}, '%Y-%m-%d %H:00', '${tz}')`
-        : `toString(toDate(${timeCol}, '${tz}'))`;
+    const timeCol = readRollup ? "bucket_hour" : "ts";
+    // 하루 안 버킷은 'YYYY-MM-DD HH:mm', 일 버킷은 'YYYY-MM-DD' (storage 계약 참조)
+    const bucketExpr = this.bucketExpr(q.bucket, timeCol, tz);
     const rows = await this.queryJson<{ day: string } & AggRow>(
       `SELECT ${bucketExpr}                                   AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
@@ -558,7 +571,7 @@ export class ClickHouseStorage implements StorageBackend {
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
               sum(cache_creation_tokens) AS cache_creation
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+       FROM ${readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
        GROUP BY day ORDER BY day`,
       params,
     );
@@ -595,19 +608,17 @@ export class ClickHouseStorage implements StorageBackend {
 
   // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)
   async getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]> {
-    const { where, params } = this.readRollup ? this.rollupWhere({ ...q, userId }) : this.periodWhere({ ...q, userId });
+    const readRollup = this.canUseRollup(q.bucket);
+    const { where, params } = readRollup ? this.rollupWhere({ ...q, userId }) : this.periodWhere({ ...q, userId });
     const tz = safeTimezone(q.timezone, this.tz);
-    const timeCol = this.readRollup ? "bucket_hour" : "ts";
-    const bucketExpr =
-      q.bucket === "hour"
-        ? `formatDateTime(${timeCol}, '%Y-%m-%d %H:00', '${tz}')`
-        : `toString(toDate(${timeCol}, '${tz}'))`;
+    const timeCol = readRollup ? "bucket_hour" : "ts";
+    const bucketExpr = this.bucketExpr(q.bucket, timeCol, tz);
     const rows = await this.queryJson<{ day: string; model: string; cost?: string; tokens?: string }>(
       `SELECT ${bucketExpr}                                    AS day,
               if(model = '', '(unknown)', model)               AS model,
               sum(cost_usd)                                     AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+       FROM ${readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
        GROUP BY day, model ORDER BY day, cost DESC`,
       params,
     );

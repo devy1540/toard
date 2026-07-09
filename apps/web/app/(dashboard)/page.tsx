@@ -52,6 +52,7 @@ export default async function MyUsagePage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        showBucketControl
         title={t("myUsageTitle")}
         trailing={
           <>

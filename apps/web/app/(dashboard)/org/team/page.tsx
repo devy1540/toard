@@ -31,6 +31,15 @@ function totalTokens(s: OverviewStats): number {
   return s.totalInputTokens + s.totalOutputTokens + s.totalCacheReadTokens + s.totalCacheCreationTokens;
 }
 
+function teamUsageTitleKey(
+  bucket: TeamPeriod["bucket"],
+): "teamDailyUsage" | "teamHourlyUsage" | "teamUsage30m" | "teamUsage15m" {
+  if (bucket === "day") return "teamDailyUsage";
+  if (bucket === "hour") return "teamHourlyUsage";
+  if (bucket === "30m") return "teamUsage30m";
+  return "teamUsage15m";
+}
+
 function shareText(value: number, total: number): string {
   if (total <= 0) return "—";
   return `${Math.round((value / total) * 100)}%`;
@@ -42,6 +51,7 @@ function hrefWithTeam(sp: TeamStatusSearchParams, teamId: string): string {
   if (sp.provider) q.set("provider", sp.provider);
   if (sp.from) q.set("from", sp.from);
   if (sp.to) q.set("to", sp.to);
+  if (sp.bucket) q.set("bucket", sp.bucket);
   if (sp.metric) q.set("metric", sp.metric);
   q.set("team", teamId);
   return `/org/team?${q.toString()}`;
@@ -163,6 +173,7 @@ export default async function TeamStatusPage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        showBucketControl
         title={title}
         statusBadge={{ status: "beta", label: navT("badge.beta") }}
         trailing={<AutoRefresh />}
@@ -280,7 +291,7 @@ async function TeamDetailOverview({
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)]">
         <Card className="min-w-0">
           <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle>{t(period.bucket === "hour" ? "teamHourlyUsage" : "teamDailyUsage")}</CardTitle>
+            <CardTitle>{t(teamUsageTitleKey(period.bucket))}</CardTitle>
             <MetricToggle value={metric} />
           </CardHeader>
           <CardContent className="min-w-0">

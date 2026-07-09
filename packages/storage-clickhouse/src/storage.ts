@@ -382,7 +382,7 @@ export class ClickHouseStorage implements StorageBackend {
     const source = `(
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
-      FROM usage_events FINAL
+      FROM ${this.usageEventsSource}
       WHERE ts >= {from:DateTime64(3)}
         AND ts < {rollupFrom:DateTime64(3)}
         ${filter.sql}
@@ -411,7 +411,7 @@ export class ClickHouseStorage implements StorageBackend {
       UNION ALL
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
-      FROM usage_events FINAL
+      FROM ${this.usageEventsSource}
       WHERE ts >= {rollupTo:DateTime64(3)}
         AND ts < {to:DateTime64(3)}
         ${filter.sql}
@@ -711,7 +711,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<{ events?: string; first_bucket?: string }>(
       `SELECT count() AS events,
               min(toStartOfInterval(ts, INTERVAL 15 minute, 'UTC')) AS first_bucket
-       FROM usage_events FINAL`,
+       FROM ${this.usageEventsSource}`,
       {},
     );
     const row = rows[0];
@@ -760,7 +760,7 @@ export class ClickHouseStorage implements StorageBackend {
               sum(cache_read_tokens) AS cache_read_tokens,
               sum(cache_creation_tokens) AS cache_creation_tokens,
               sum(cost_usd) AS cost_usd
-       FROM usage_events FINAL
+       FROM ${this.usageEventsSource}
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
          AND has(arrayMap(x -> toDateTime64(x, 3, 'UTC'), {buckets:Array(String)}), toStartOfInterval(ts, INTERVAL 15 minute, 'UTC'))

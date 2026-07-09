@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { getTranslations } from "next-intl/server";
+import { assignUserRoleWithPool } from "@/lib/admin-members";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session-user";
 
@@ -63,6 +64,23 @@ export async function assignTeamAction(
   if (guard) return guard;
 
   await getPool().query("UPDATE users SET team_id = $2 WHERE id = $1", [userId, teamId]);
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+/** 멤버 역할 변경 — 마지막 admin 은 보호해 관리 화면 접근 불능 상태를 막는다. */
+export async function assignRoleAction(userId: string, role: string): Promise<TeamState> {
+  const guard = await requireAdmin();
+  if (guard) return guard;
+
+  const t = await getTranslations("admin");
+  const result = await assignUserRoleWithPool(getPool(), userId, role);
+  if (!result.ok) {
+    if (result.reason === "invalid-role") return { error: t("errors.roleInvalid") };
+    if (result.reason === "user-not-found") return { error: t("errors.userNotFound") };
+    return { error: t("errors.lastAdminRequired") };
+  }
+
   revalidatePath("/admin");
   return { ok: true };
 }

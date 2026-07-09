@@ -18,6 +18,7 @@ import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
 import { PricingSyncPanel } from "./pricing-panel";
+import { RoleSelect } from "./role-select";
 import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
@@ -157,6 +158,7 @@ async function MembersTab() {
             <TableBody>
               {members.map((m) => {
                 const v = worst.get(m.id);
+                const role = m.role === "admin" ? "admin" : "member";
                 return (
                   <TableRow key={m.id}>
                     <TableCell>
@@ -164,7 +166,7 @@ async function MembersTab() {
                       {m.name ? <div className="text-muted-foreground text-xs">{m.email}</div> : null}
                     </TableCell>
                     <TableCell>
-                      {m.role === "admin" ? <Badge variant="secondary">admin</Badge> : <span className="text-muted-foreground">member</span>}
+                      <RoleSelect userId={m.id} current={role} />
                     </TableCell>
                     <TableCell>
                       <TeamSelect userId={m.id} current={m.team_id} teams={deptOptions} />

@@ -8,7 +8,7 @@
   },
   "members": {
     "cardTitle": "멤버 ({count})",
-    "cardDescription": "팀 변경은 이후 수집분부터 반영됩니다(과거 이벤트는 당시 팀 귀속 유지). 마지막 수신이 비어 있으면 shim 미설치 또는 수집 미연결 상태입니다.",
+    "cardDescription": "역할 변경은 다음 요청부터 권한에 반영되고, 팀 변경은 이후 수집분부터 반영됩니다(과거 이벤트는 당시 팀 귀속 유지). 마지막 수신이 비어 있으면 shim 미설치 또는 수집 미연결 상태입니다.",
     "colMember": "멤버",
     "colRole": "역할",
     "colTeam": "팀",
@@ -41,6 +41,12 @@
     "none": "팀 없음",
     "assignedToast": "\"{name}\" 팀으로 배정했습니다.",
     "unassignedToast": "팀 배정을 해제했습니다."
+  },
+  "roleSelect": {
+    "label": "역할 변경",
+    "member": "member",
+    "admin": "admin",
+    "updatedToast": "역할을 {role}로 변경했습니다."
   },
   "invites": {
     "cardTitle": "멤버 초대",
@@ -112,6 +118,9 @@
     "teamNameExists": "이미 있는 팀 이름입니다.",
     "teamHasMembers": "소속 멤버가 있는 팀은 삭제할 수 없습니다.",
     "teamHasEvents": "수집 이력이 귀속된 팀은 삭제할 수 없습니다.",
+    "roleInvalid": "변경할 역할이 올바르지 않습니다.",
+    "userNotFound": "대상 멤버를 찾을 수 없습니다.",
+    "lastAdminRequired": "마지막 관리자는 member로 변경할 수 없습니다.",
     "pricingDownloadKept": "가격 다운로드에 실패해 기존 스냅샷을 유지했습니다 — {error}",
     "pricingSyncFailed": "동기화 실패 — {error}",
     "autoSyncSaveFailed": "자동 동기화 설정 저장 실패: {error}"

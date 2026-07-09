@@ -8,7 +8,7 @@
   },
   "members": {
     "cardTitle": "Members ({count})",
-    "cardDescription": "Team changes apply from the next collection onward (past events keep the team they were attributed to at the time). If Last received is empty, the shim is not installed or collection is not connected.",
+    "cardDescription": "Role changes apply on the next request, and team changes apply from the next collection onward (past events keep the team they were attributed to at the time). If Last received is empty, the shim is not installed or collection is not connected.",
     "colMember": "Member",
     "colRole": "Role",
     "colTeam": "Team",
@@ -41,6 +41,12 @@
     "none": "No team",
     "assignedToast": "Assigned to the \"{name}\" team.",
     "unassignedToast": "Team assignment removed."
+  },
+  "roleSelect": {
+    "label": "Change role",
+    "member": "member",
+    "admin": "admin",
+    "updatedToast": "Role changed to {role}."
   },
   "invites": {
     "cardTitle": "Invite members",
@@ -112,6 +118,9 @@
     "teamNameExists": "That team name already exists.",
     "teamHasMembers": "A team with members cannot be deleted.",
     "teamHasEvents": "A team with attributed collection history cannot be deleted.",
+    "roleInvalid": "The selected role is not valid.",
+    "userNotFound": "The selected member could not be found.",
+    "lastAdminRequired": "The last administrator cannot be changed to member.",
     "pricingDownloadKept": "Pricing download failed, so the existing snapshot was kept — {error}",
     "pricingSyncFailed": "Sync failed — {error}",
     "autoSyncSaveFailed": "Failed to save auto sync setting: {error}"

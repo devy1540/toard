@@ -168,12 +168,7 @@ export function OnboardingPanel({
           <p className="text-muted-foreground text-xs">{t("onboarding.collectContentGated")}</p>
         )}
         <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{one}</pre>
-        <p className="text-muted-foreground text-xs">
-          {t.rich("onboarding.oneLinerDescription", {
-            code: (chunks) => <code>{chunks}</code>,
-            endpoint,
-          })}
-        </p>
+        <p className="text-muted-foreground text-xs">{t("onboarding.oneLinerDescription")}</p>
       </div>
 
       {/* 수동(고급) — 접기 */}
@@ -203,11 +198,7 @@ export function OnboardingPanel({
           />
         </div>
         <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{`curl -fsSL ${baseUrl}/uninstall.sh | sh`}</pre>
-        <p className="text-muted-foreground text-xs">
-          {t.rich("onboarding.uninstallDescription", {
-            code: (chunks) => <code>{chunks}</code>,
-          })}
-        </p>
+        <p className="text-muted-foreground text-xs">{t("onboarding.uninstallDescription")}</p>
       </div>
     </div>
   );

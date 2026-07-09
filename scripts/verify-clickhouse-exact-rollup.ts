@@ -72,8 +72,8 @@ async function main(): Promise<void> {
   const providerKey = `${runId}_provider`;
   const teamName = `${runId}_team`;
   const email = `${runId}@example.test`;
-  const from = new Date("2099-01-01T00:00:00.000Z");
-  const to = new Date("2099-01-02T00:00:00.000Z");
+  const from = new Date("2020-01-01T00:00:00.000Z");
+  const to = new Date("2020-01-02T00:00:00.000Z");
 
   try {
     await pg.query(
@@ -93,6 +93,7 @@ async function main(): Promise<void> {
 
     const raw = new ClickHouseStorage(ch, pg, { timezone: "UTC", readRollup: false });
     const rollup = new ClickHouseStorage(ch, pg, { timezone: "UTC", readRollup: true });
+    const rollup15m = new ClickHouseStorage(ch, pg, { timezone: "UTC", read15mRollup: true });
 
     const duplicate = event({
       dedupKey: `${runId}:duplicate`,
@@ -100,7 +101,7 @@ async function main(): Promise<void> {
       userId,
       sessionId: `${runId}:s1`,
       model: "verify-model-a",
-      ts: new Date("2099-01-01T01:10:00.000Z"),
+      ts: new Date("2020-01-01T01:10:00.000Z"),
       inputTokens: 10,
       outputTokens: 20,
       cacheReadTokens: 3,
@@ -122,7 +123,7 @@ async function main(): Promise<void> {
         userId,
         sessionId: `${runId}:s1`,
         model: "verify-model-a",
-        ts: new Date("2099-01-01T01:20:00.000Z"),
+        ts: new Date("2020-01-01T01:20:00.000Z"),
         inputTokens: 7,
         outputTokens: 11,
         costUsd: 0.2,
@@ -134,7 +135,7 @@ async function main(): Promise<void> {
         userId,
         sessionId: `${runId}:s2`,
         model: "verify-model-b",
-        ts: new Date("2099-01-01T02:00:00.000Z"),
+        ts: new Date("2020-01-01T02:00:00.000Z"),
         inputTokens: 5,
         outputTokens: 13,
         cacheReadTokens: 2,
@@ -147,7 +148,7 @@ async function main(): Promise<void> {
         userId,
         sessionId: `${runId}:s3`,
         model: "verify-model-b",
-        ts: new Date("2099-01-01T03:30:00.000Z"),
+        ts: new Date("2020-01-01T03:30:00.000Z"),
         inputTokens: 17,
         outputTokens: 19,
         cacheCreationTokens: 5,
@@ -185,7 +186,7 @@ async function main(): Promise<void> {
         team_id: teamId,
         session_id: duplicate.sessionId ?? "",
         model: duplicate.model ?? "",
-        ts: "2099-01-01 01:10:00.000",
+        ts: "2020-01-01 01:10:00.000",
         input_tokens: duplicate.inputTokens,
         output_tokens: duplicate.outputTokens,
         cache_read_tokens: duplicate.cacheReadTokens,
@@ -284,7 +285,47 @@ async function main(): Promise<void> {
       "same-token retry rollup group totals",
     );
 
+    await raw.compactUsage15mRollup(256);
+    const rollup15mRows = await ch.query({
+      query: "SELECT count() AS rows FROM usage_15m_rollup WHERE provider_key = {provider:String}",
+      query_params: { provider: providerKey },
+      format: "JSONEachRow",
+    });
+    const rollup15mCount = (await rollup15mRows.json<{ rows: string }>())[0]!;
+    if (Number(rollup15mCount.rows) === 0) throw new Error("15m rollup compaction produced no rows");
+
+    const watermark = await pg.query<{ watermark: Date }>(
+      "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = 'usage_15m'",
+    );
+    const watermarkValue = watermark.rows[0]?.watermark;
+    if (!watermarkValue || watermarkValue < to) {
+      throw new Error(`15m rollup watermark did not cover verification period: ${watermarkValue?.toISOString() ?? "missing"}`);
+    }
+
     const period = { from, to, providerKey };
+    const late = event({
+      dedupKey: `${runId}:late`,
+      providerKey,
+      userId,
+      sessionId: `${runId}:s4`,
+      model: "verify-model-c",
+      ts: new Date("2020-01-01T01:25:00.000Z"),
+      inputTokens: 23,
+      outputTokens: 29,
+      cacheReadTokens: 7,
+      cacheCreationTokens: 11,
+      costUsd: 0.5,
+      host: "verify-host-c",
+    });
+    const saveLate = await raw.saveUsageEvents([late]);
+    assertEqual(saveLate, { inserted: 1, deduped: 0 }, "late event save result");
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...period, bucket: "15m", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...period, bucket: "15m", timezone: "UTC" }),
+      "15m dirty fallback raw vs hybrid rollup",
+    );
+    await raw.compactUsage15mRollup(256);
+
     assertEqual(await rollup.getOverview(period), await raw.getOverview(period), "overview raw vs rollup");
     assertEqual(
       await rollup.getDailyTimeseries({ ...period, bucket: "hour", timezone: "UTC" }),
@@ -297,12 +338,62 @@ async function main(): Promise<void> {
       "model timeseries raw vs rollup",
     );
     assertEqual(
+      await rollup15m.getDailyTimeseries({ ...period, bucket: "15m", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...period, bucket: "15m", timezone: "UTC" }),
+      "15m raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...period, bucket: "30m", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...period, bucket: "30m", timezone: "UTC" }),
+      "30m raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...period, bucket: "hour", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...period, bucket: "hour", timezone: "UTC" }),
+      "hour raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...period, bucket: "day", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...period, bucket: "day", timezone: "UTC" }),
+      "day raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getUserModelTimeseries(userId, { ...period, bucket: "15m", timezone: "UTC" }),
+      await raw.getUserModelTimeseries(userId, { ...period, bucket: "15m", timezone: "UTC" }),
+      "15m model timeseries raw vs hybrid rollup",
+    );
+    const partialPeriod = {
+      from: new Date("2020-01-01T01:05:00.000Z"),
+      to: new Date("2020-01-01T03:35:00.000Z"),
+      providerKey,
+    };
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      "15m partial-boundary raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...partialPeriod, bucket: "hour", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...partialPeriod, bucket: "hour", timezone: "UTC" }),
+      "hour partial-boundary raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getDailyTimeseries({ ...partialPeriod, bucket: "day", timezone: "UTC" }),
+      await raw.getDailyTimeseries({ ...partialPeriod, bucket: "day", timezone: "UTC" }),
+      "day partial-boundary raw vs hybrid rollup",
+    );
+    assertEqual(
+      await rollup15m.getUserModelTimeseries(userId, { ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      await raw.getUserModelTimeseries(userId, { ...partialPeriod, bucket: "15m", timezone: "UTC" }),
+      "15m partial-boundary model raw vs hybrid rollup",
+    );
+    assertEqual(
       await rollup.getLeaderboard({ ...period, scope: "user" }),
       await raw.getLeaderboard({ ...period, scope: "user" }),
       "user leaderboard raw vs rollup",
     );
 
-    console.log(JSON.stringify({ ok: true, runId, inserted: insertedDuplicates + saveRest.inserted }));
+    console.log(JSON.stringify({ ok: true, runId, inserted: insertedDuplicates + saveRest.inserted + saveLate.inserted }));
   } finally {
     await ch.close();
     await pg.end();

@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/dashboard/copy-button";
+import { Input } from "@/components/ui/input";
 import { issueTokenAction, type TokenState } from "./token-actions";
 
 const RELEASE_INSTALL = "https://github.com/devy1540/toard/releases/latest/download/install.sh";
@@ -99,7 +100,19 @@ export function OnboardingPanel({
             <span className="text-muted-foreground">{t("onboarding.notYet")}</span>
           )}
         </div>
-        <form id={ISSUE_FORM_ID} action={action}>
+        <form id={ISSUE_FORM_ID} action={action} className="flex flex-wrap items-end justify-end gap-2">
+          <div className="w-48 space-y-1">
+            <label className="text-muted-foreground text-xs" htmlFor="token-device-label">
+              {t("onboarding.deviceLabel")}
+            </label>
+            <Input
+              id="token-device-label"
+              name="label"
+              maxLength={80}
+              placeholder={t("onboarding.deviceLabelPlaceholder")}
+              disabled={pending}
+            />
+          </div>
           <Button type="submit" disabled={pending}>
             {pending ? t("onboarding.issuing") : t(issueLabel)}
           </Button>

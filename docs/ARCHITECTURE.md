@@ -525,7 +525,7 @@ app/
 
 ### 7.4 공통/상태
 - `PageHeader`(제목 + 우측 필터) · `LinkTabs`(URL 쿼리 기반 탭 — shadcn Tabs 스타일 미러) · `DashboardFilters`(기간 세그먼트 + 도구 셀렉트, providers 테이블 동적 로딩). shadcn/ui + Recharts. 필터·탭은 URL searchParams(페이지 스코프).
-- 액션 피드백은 **sonner 토스트**(복사·발급·팀 생성/배정/삭제·초대 — `CopyButton` 공용), 파괴적 동작은 **alert-dialog 확인**(토큰 재발급 = 이전 토큰 즉시 폐기, 팀 삭제).
+- 액션 피드백은 **sonner 토스트**(복사·발급·팀 생성/배정/삭제·초대 — `CopyButton` 공용), 파괴적 동작은 **alert-dialog 확인**(개별 토큰 폐기, 팀 삭제). 새 기기용 토큰 발급은 기존 활성 토큰을 유지한다.
 
 ### 7.5 권한
 - `member`: 내 사용량 + 공개 전체 현황. `admin`: 전체 + 관리(`/admin` — 멤버·초대, 향후 수집 상태·도구·토큰 관리). role은 **Auth.js 세션 클레임**으로 서버 검증.
@@ -584,7 +584,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 - **이벤트 `user_id`는 인증 토큰 소유자로 강제.** resource attribute의 user.id/email(otel)·POST 본문의 userId(shim events)는 신뢰하지 않음(공개 엔드포인트 위협모델 — env·본문 위조 방지). `/api/v1/logs`·`/api/v1/events` 모두 토큰으로만 귀속. §4.4·§5.4·§5.6과 일치.
 
 ### 10.2 토큰 수명주기 & Rate limit
-- `ingest_tokens.expires_at`(만료)·`revoked_at`(폐기/회전). 주기적 재발급 권장. admin이 타인 토큰 폐기 가능(§7.5).
+- `ingest_tokens.expires_at`(만료)·`revoked_at`(폐기/회전). 새 토큰 발급은 additive 이며, 폐기는 특정 토큰 단위로 수행한다. 주기적 재발급 권장. admin의 타인 토큰 폐기는 별도 관리 기능으로 확장 가능(§7.5).
 - **Rate limit(수치):** 토큰당 ≤ N req/min(예 120), 일일 이벤트 상한, 수집 배치 페이로드(logs·events) ≤ 4MB(초과 413). 초과 시 429 + Retry-After. 카운터는 단일 인스턴스 인메모리(다중 시 Redis). 이상 탐지: 토큰별 IP 수·이벤트율 급증 경보.
 
 ### 10.3 PII / 프롬프트 미수집

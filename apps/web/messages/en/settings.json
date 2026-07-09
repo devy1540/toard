@@ -36,7 +36,23 @@
     "noDevices": "No devices yet. After installing the shim, using <code>claude</code>/<code>codex</code> will make devices appear here.",
     "deviceShim": "Shim version",
     "shimUnreported": "Not reported (old shim)",
-    "shimOutdated": "Update needed"
+    "shimOutdated": "Update needed",
+    "tokensTitle": "Token management",
+    "tokensDescription": "Tokens are the server authentication unit. Issue one token per machine so you can revoke only the affected machine when needed.",
+    "tokenLabel": "Label",
+    "tokenLastHost": "Last device",
+    "tokenCreated": "Issued",
+    "tokenLastUsed": "Last used",
+    "tokenActions": "Actions",
+    "tokenUnnamed": "Unnamed",
+    "tokenNoHost": "No data yet",
+    "tokenNeverUsed": "Never used",
+    "noTokens": "No active tokens. Issue a token for a new machine and it will appear here.",
+    "revokeToken": "Revoke",
+    "revokeTokenTitle": "Revoke this token?",
+    "revokeTokenDescription": "Only the {label} token will be revoked. Machines using this token stop collecting until they are reinstalled with a new token.",
+    "revokeTokenCancel": "Cancel",
+    "revokeTokenConfirm": "Revoke token"
   },
   "password": {
     "currentLabel": "Current password",
@@ -59,6 +75,8 @@
     "issuing": "Issuing…",
     "issue": "Issue token",
     "issueAdditional": "Issue token for a new machine",
+    "deviceLabel": "Token label",
+    "deviceLabelPlaceholder": "e.g. MacBook, Mac mini",
     "issueSuccess": "A new token has been issued — it has been filled into the install command below.",
     "newTokenNotice": "New token — shown only now. Run the command below on the machine you are setting up.",
     "newTokenReissueHint": "Tokens already installed on other machines remain valid. Replace credentials only on machines you want to move to this token.",
@@ -95,6 +113,7 @@
     "passwordMismatch": "New passwords do not match.",
     "currentPasswordWrong": "Current password is incorrect.",
     "issueTokenFailed": "Failed to issue token. Please try again.",
+    "revokeTokenFailed": "Failed to revoke token. Please try again.",
     "invalidTimezone": "Invalid timezone."
   },
   "timezone": {

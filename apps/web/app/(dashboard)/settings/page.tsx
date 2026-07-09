@@ -15,7 +15,7 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims, getLatestShimVersion } from "@/lib/host-shims";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getStorage } from "@/lib/storage";
-import { getActiveTokenMeta } from "@/lib/tokens";
+import { getActiveTokenMeta, listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
@@ -24,6 +24,7 @@ import { ConnectionCheck } from "./connection-check";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
+import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -149,8 +150,9 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [meta, endpoint, baseUrl, devices, shims, latestShim] = await Promise.all([
+  const [meta, tokens, endpoint, baseUrl, devices, shims, latestShim] = await Promise.all([
     getActiveTokenMeta(userId),
+    listActiveTokens(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
     getStorage().getUserHosts(userId),
@@ -160,6 +162,19 @@ async function InstallTab({ userId }: { userId: string }) {
   const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
   const contentDefaultOn = contentCollectionDefaultOn();
+  const locale = await getLocale();
+  const fmtWhen = new Intl.DateTimeFormat(locale, {
+    timeZone: await getViewerTimezone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const tokenRows: TokenManagementRow[] = tokens.map((token) => ({
+    id: token.id,
+    label: token.label,
+    lastHost: token.lastHost,
+    createdAt: fmtWhen.format(token.createdAt),
+    lastUsedAt: token.lastUsedAt ? fmtWhen.format(token.lastUsedAt) : null,
+  }));
 
   return (
     <div className="space-y-4">
@@ -220,6 +235,7 @@ async function InstallTab({ userId }: { userId: string }) {
         </Card>
       </div>
 
+      <TokenManagementPanel tokens={tokenRows} />
       <DeviceList devices={devices} shims={shims} serverVersion={serverVersion} />
     </div>
   );

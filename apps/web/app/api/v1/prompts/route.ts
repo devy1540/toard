@@ -10,8 +10,8 @@ const MAX_BODY_BYTES = 4 * 1024 * 1024; // 배치 상한 4MB (/events 와 동일
 
 export async function POST(req: Request): Promise<Response> {
   // 1. 인증 — 토큰 user_id 가 소유자 SSOT, 본문에 userId 없음 (§10.1)
-  const userId = await authenticateIngestToken(req.headers.get("authorization"));
-  if (!userId) return new Response("unauthorized", { status: 401 });
+  const auth = await authenticateIngestToken(req.headers.get("authorization"));
+  if (!auth) return new Response("unauthorized", { status: 401 });
 
   // 2. 본문 수집 활성화 게이트 = KEK 설정 여부 (운영자 opt-in)
   let kek: Buffer;
@@ -47,6 +47,6 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   // 5. 암호화 + 멱등 저장 (RLS 컨텍스트 안에서)
-  const res = await savePromptRecords(userId, records, kek);
+  const res = await savePromptRecords(auth.userId, records, kek);
   return Response.json(res);
 }

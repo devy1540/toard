@@ -312,13 +312,11 @@ async function OverviewTab({
   const t = await getTranslations("org");
   const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
   const storage = getStorage();
-  const [overview, prevOverview, daily, topUsers, topTeams] = await Promise.all([
-    storage.getOverview(period),
-    storage.getOverview(previousPeriod(period)),
-    storage.getDailyTimeseries(period),
-    storage.getLeaderboard({ ...period, scope: "user" }),
-    canSeeTeamRanking ? storage.getLeaderboard({ ...period, scope: "team" }) : Promise.resolve([]),
-  ]);
+  const overview = await storage.getOverview(period);
+  const prevOverview = await storage.getOverview(previousPeriod(period));
+  const daily = await storage.getDailyTimeseries(period);
+  const topUsers = await storage.getLeaderboard({ ...period, scope: "user" });
+  const topTeams = canSeeTeamRanking ? await storage.getLeaderboard({ ...period, scope: "team" }) : [];
 
   // 차트·스파크라인이 같은 시리즈를 공유 — 내 사용량과 동형 (추가 조회 없음)
   const series = fillSeriesGaps(daily, period);

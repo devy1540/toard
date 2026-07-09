@@ -1,1 +1,1 @@
-export { ClickHouseStorage, createClickHouseStorage } from "./storage";
+export { ClickHouseStorage, createClickHouseStorage, pingClickHouse } from "./storage";

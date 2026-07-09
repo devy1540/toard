@@ -77,11 +77,10 @@ export async function ClassicView({
 }) {
   const t = await getTranslations("dashboard");
   const storage = getStorage();
-  const [{ overview, daily, byModel, byHost }, prevOverview, tokenMeta] = await Promise.all([
-    storage.getUserUsage(userId, period),
-    storage.getOverview({ ...previousPeriod(period), userId }),
-    getActiveTokenMeta(userId),
-  ]);
+  const tokenMetaPromise = getActiveTokenMeta(userId);
+  const { overview, daily, byModel, byHost } = await storage.getUserUsage(userId, period);
+  const prevOverview = await storage.getOverview({ ...previousPeriod(period), userId });
+  const tokenMeta = await tokenMetaPromise;
   // 미설치 추정: 토큰이 없거나 한 번도 수신된 적 없음 → 빈 상태에서 설치 CTA 노출
   const notInstalled = !tokenMeta || !tokenMeta.lastUsedAt;
 

@@ -45,12 +45,10 @@ export async function StatsView({
   const t = await getTranslations("dashboard");
   const locale = await getLocale();
   const storage = getStorage();
-  const [{ overview, daily, byModel, byHost }, prevOverview, modelSeries, hourly] = await Promise.all([
-    storage.getUserUsage(userId, period),
-    storage.getOverview({ ...previousPeriod(period), userId }),
-    storage.getUserModelTimeseries(userId, period),
-    storage.getUserHourlyTimeseries(userId, period),
-  ]);
+  const { overview, daily, byModel, byHost } = await storage.getUserUsage(userId, period);
+  const prevOverview = await storage.getOverview({ ...previousPeriod(period), userId });
+  const modelSeries = await storage.getUserModelTimeseries(userId, period);
+  const hourly = await storage.getUserHourlyTimeseries(userId, period);
 
   if (daily.length === 0) {
     return (

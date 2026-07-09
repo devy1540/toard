@@ -73,6 +73,8 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-toard}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-toard}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-toard}
+      CLICKHOUSE_READ_FINAL: ${CLICKHOUSE_READ_FINAL:-} # 1/true/on 이면 CH read 에 FINAL 강제(기본 off, 중복 0 운영 기준 부하 완화)
+      CLICKHOUSE_READ_ROLLUP: ${CLICKHOUSE_READ_ROLLUP:-} # 1/true/on 이면 검증 완료된 CH hourly rollup 으로 대시보드 집계 조회
       ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}
       TOARD_CONTENT_KEK_B64: ${TOARD_CONTENT_KEK_B64:-}   # 설정 시 본문 수집 활성(암호화 KEK, base64 32B)
       CONTENT_COLLECTION_DEFAULT: ${CONTENT_COLLECTION_DEFAULT:-}   # on 이면 설치 기본 opt-out(자동 켜짐), 기본 opt-in
@@ -139,6 +141,7 @@ services:
     volumes:
       - toard-ch:/var/lib/clickhouse
       - ./clickhouse/init:/docker-entrypoint-initdb.d
+      - ./clickhouse/users.d/toard-limits.xml:/etc/clickhouse-server/users.d/toard-limits.xml:ro
     ulimits:
       nofile:
         soft: 262144

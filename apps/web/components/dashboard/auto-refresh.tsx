@@ -9,8 +9,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 
 const OPTIONS = [
   { v: "off", key: "autoRefresh.off", ms: 0 },
-  { v: "10", key: "autoRefresh.sec10", ms: 10_000 },
-  { v: "30", key: "autoRefresh.sec30", ms: 30_000 },
   { v: "60", key: "autoRefresh.min1", ms: 60_000 },
   { v: "300", key: "autoRefresh.min5", ms: 300_000 },
 ] as const;

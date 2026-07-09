@@ -220,12 +220,10 @@ async function TeamDetailOverview({
   const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
   const storage = getStorage();
   const scoped = { ...period, teamId };
-  const [overview, prevOverview, daily, members] = await Promise.all([
-    storage.getOverview(scoped),
-    storage.getOverview({ ...previousPeriod(period), teamId }),
-    storage.getDailyTimeseries({ ...period, scope: "team", teamId }),
-    storage.getLeaderboard({ ...period, scope: "user", teamId }),
-  ]);
+  const overview = await storage.getOverview(scoped);
+  const prevOverview = await storage.getOverview({ ...previousPeriod(period), teamId });
+  const daily = await storage.getDailyTimeseries({ ...period, scope: "team", teamId });
+  const members = await storage.getLeaderboard({ ...period, scope: "user", teamId });
   const series = fillSeriesGaps(daily, period);
   const tokens = totalTokens(overview);
   const spark = {

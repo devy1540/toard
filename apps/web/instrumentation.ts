@@ -4,4 +4,6 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   const { schedulerEligible, startPricingAutoSync } = await import("./lib/pricing-auto-sync");
   if (schedulerEligible(process.env)) startPricingAutoSync();
+  const { startClickHouseOutboxFlush } = await import("./lib/clickhouse-outbox");
+  startClickHouseOutboxFlush();
 }

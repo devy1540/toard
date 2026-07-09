@@ -71,7 +71,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
                 <SidebarMenuItem key={href}>
                   <SidebarMenuButton asChild isActive={active} tooltip={t(key)} className={badge ? "pr-20" : undefined}>
                     {/* 모바일 드로어는 이동 후 자동으로 닫히지 않아 직접 닫는다 (데스크톱은 no-op) */}
-                    <Link href={href} onClick={() => setOpenMobile(false)}>
+                    <Link href={href} prefetch={false} onClick={() => setOpenMobile(false)}>
                       <Icon />
                       <span>{t(key)}</span>
                     </Link>

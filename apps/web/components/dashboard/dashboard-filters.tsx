@@ -180,7 +180,7 @@ export function DashboardFilters({
         </div>
 
         <Select value={provider} onValueChange={(v) => push({ provider: v })}>
-          <SelectTrigger className="h-8 w-44 max-w-[calc(100vw-2rem)] justify-start gap-1.5 sm:w-64">
+          <SelectTrigger className="h-8 w-fit min-w-0 max-w-44 justify-start gap-1.5 px-2.5">
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="max-w-[min(24rem,var(--radix-select-content-available-width))]">

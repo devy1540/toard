@@ -5,7 +5,9 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/dashboard/copy-button";
+import { Disclosure } from "@/components/ui/disclosure";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import { issueTokenAction, type TokenState } from "./token-actions";
 
 const RELEASE_INSTALL = "https://github.com/devy1540/toard/releases/latest/download/install.sh";
@@ -146,14 +148,14 @@ export function OnboardingPanel({
           </p>
         ) : null}
         {contentEnabled ? (
-          <label className="flex items-start gap-2 text-xs">
-            <input
-              type="checkbox"
+          <div className="flex items-start gap-2 text-xs">
+            <Switch
+              id="collect-content"
               className="mt-0.5"
               checked={collectContent}
-              onChange={(e) => setCollectContent(e.target.checked)}
+              onCheckedChange={setCollectContent}
             />
-            <span>
+            <label htmlFor="collect-content">
               {t.rich("onboarding.collectContentLabel", {
                 muted: (chunks) => <span className="text-muted-foreground">{chunks}</span>,
                 link: (chunks) => (
@@ -162,8 +164,8 @@ export function OnboardingPanel({
                   </a>
                 ),
               })}
-            </span>
-          </label>
+            </label>
+          </div>
         ) : (
           <p className="text-muted-foreground text-xs">{t("onboarding.collectContentGated")}</p>
         )}
@@ -172,10 +174,10 @@ export function OnboardingPanel({
       </div>
 
       {/* 수동(고급) — 접기 */}
-      <details className="text-sm">
-        <summary className="text-muted-foreground cursor-pointer select-none">
-          {t("onboarding.manualSummary")}
-        </summary>
+      <Disclosure
+        trigger={t("onboarding.manualSummary")}
+        triggerClassName="text-muted-foreground hover:text-foreground text-sm"
+      >
         <div className="mt-2 flex items-center justify-end">
           <CopyButton
             text={manualSnippet(token ?? placeholder, endpoint, collectContent)}
@@ -185,7 +187,7 @@ export function OnboardingPanel({
         <pre className="bg-muted mt-1 overflow-x-auto rounded-md p-3 text-xs leading-relaxed">
           {manualSnippet(token ?? placeholder, endpoint, collectContent)}
         </pre>
-      </details>
+      </Disclosure>
 
       {/* 제거 */}
       <div className="space-y-2 border-t pt-4">

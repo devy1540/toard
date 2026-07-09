@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { getLocale, getTranslations } from "next-intl/server";
-import { auth, oauthProviders, signIn } from "@/auth";
+import { oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,7 @@ import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims } from "@/lib/host-shims";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
+import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta, listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
@@ -36,10 +37,10 @@ export default async function SettingsPage({
   searchParams: Promise<{ tab?: string }>;
 }) {
   const t = await getTranslations("settings");
-  // 실제 세션 필수 — 폴백 신원으로는 접근 불가.
-  const session = await auth();
-  const userId = session?.user?.id;
-  if (!userId) redirect("/login");
+  // open/demo 모드에서는 대시보드와 같은 viewer 폴백으로 설정 화면까지 확인 가능하게 한다.
+  const viewer = await getDashboardViewer();
+  if (!viewer) redirect("/login");
+  const userId = viewer.id;
 
   const r = await getPool().query<{ email: string; password_hash: string | null; timezone: string | null }>(
     "SELECT email, password_hash, timezone FROM users WHERE id = $1",

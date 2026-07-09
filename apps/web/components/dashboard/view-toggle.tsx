@@ -3,8 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { ChartColumn, LayoutGrid } from "lucide-react";
+import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/segmented-control";
 import { DASHBOARD_VIEWS, VIEW_COOKIE, type DashboardView } from "@/lib/dashboard-view";
-import { cn } from "@/lib/utils";
 
 const ICONS = { classic: LayoutGrid, stats: ChartColumn } as const;
 
@@ -19,26 +19,13 @@ export function ViewToggle({ view }: { view: DashboardView }) {
     router.refresh();
   }
 
+  const items: SegmentedControlItem<DashboardView>[] = DASHBOARD_VIEWS.map((v) => ({
+    value: v,
+    label: t(`view.${v}`),
+    icon: ICONS[v],
+  }));
+
   return (
-    <div className="border-input flex rounded-md border p-0.5" role="group" aria-label={t("view.label")}>
-      {DASHBOARD_VIEWS.map((v) => {
-        const Icon = ICONS[v];
-        return (
-          <button
-            key={v}
-            type="button"
-            aria-pressed={view === v}
-            onClick={() => select(v)}
-            className={cn(
-              "flex items-center gap-1.5 rounded-sm px-2 py-1 text-xs transition-colors",
-              view === v ? "bg-muted text-foreground font-medium" : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <Icon className="size-3.5" />
-            {t(`view.${v}`)}
-          </button>
-        );
-      })}
-    </div>
+    <SegmentedControl value={view} items={items} onValueChange={select} aria-label={t("view.label")} />
   );
 }

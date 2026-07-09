@@ -131,6 +131,8 @@
     "backToList": "목록으로",
     "notFoundTitle": "대화를 찾을 수 없습니다",
     "notFoundDescription": "삭제되었거나 접근할 수 없는 대화입니다.",
+    "previewUnavailable": "미리보기 없음",
+    "contentUnavailable": "본문을 열 수 없습니다. 서버의 본문 암호화 키를 확인하세요.",
     "sessionLabel": "세션",
     "startedAt": "시작",
     "endedAt": "마지막",

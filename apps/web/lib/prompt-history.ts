@@ -15,6 +15,7 @@ export interface PromptHistoryItem {
   role: "user" | "assistant";
   ts: Date;
   text: string;
+  contentUnavailable?: boolean;
 }
 
 export interface HistoryFilter {
@@ -85,9 +86,31 @@ function decryptRow(r: CipherRow, kek: Buffer): string {
   );
 }
 
-/** 미리보기용 한 줄 축약 — 개행·연속 공백을 접고 앞부분만 */
-function toPreview(text: string): string {
-  const oneLine = text.replace(/\s+/g, " ").trim();
+function tryDecryptRow(r: CipherRow, kek: Buffer): string | null {
+  try {
+    return decryptRow(r, kek);
+  } catch {
+    return null;
+  }
+}
+
+const REQUEST_MARKER_RE = /(?:^|\n)#{1,6}\s*My request for [^:\n]+:\s*/i;
+const GENERATED_ATTACHMENT_LINE_RE =
+  /^\s*#{1,6}\s+(?:[\w.-]+-)?(?:codex-clipboard|claude-clipboard)[^\n]*$/gim;
+
+/** 미리보기용 한 줄 축약 — 첨부파일 메타데이터 대신 실제 요청문을 우선 노출한다. */
+export function toHistoryPreview(text: string): string {
+  const requestMarker = REQUEST_MARKER_RE.exec(text);
+  const candidate =
+    requestMarker && requestMarker.index >= 0
+      ? text.slice(requestMarker.index + requestMarker[0].length)
+      : text;
+  const cleaned = candidate
+    .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
+    .replace(/<image\b[^>]*>/gi, " ")
+    .replace(/^\s*#{1,6}\s*files? mentioned by the user:\s*$/gim, " ")
+    .replace(GENERATED_ATTACHMENT_LINE_RE, " ");
+  const oneLine = cleaned.replace(/\s+/g, " ").trim();
   return oneLine.length > PREVIEW_CHARS ? `${oneLine.slice(0, PREVIEW_CHARS)}…` : oneLine;
 }
 
@@ -168,7 +191,12 @@ export async function getMyHistorySessions(
     return { groups: groupsRes.rows, previews: previewRes.rows };
   });
 
-  const previewByKey = new Map(previews.map((r) => [r.gkey, toPreview(decryptRow(r, kek))]));
+  const previewByKey = new Map(
+    previews.map((r) => {
+      const text = tryDecryptRow(r, kek);
+      return [r.gkey, text ? toHistoryPreview(text) : ""];
+    }),
+  );
   return {
     enabled: true,
     totalSessions: groups.length > 0 ? Number(groups[0]!.total_groups) : 0,
@@ -216,14 +244,18 @@ export async function getMyHistorySession(
   );
   if (res.rows.length === 0) return { enabled: true, session: null };
 
-  const turns = res.rows.map((r) => ({
-    dedupKey: r.dedup_key,
-    sessionId: r.session_id,
-    providerKey: r.provider_key,
-    role: r.turn_role,
-    ts: r.ts,
-    text: decryptRow(r, kek),
-  }));
+  const turns = res.rows.map((r) => {
+    const text = tryDecryptRow(r, kek);
+    return {
+      dedupKey: r.dedup_key,
+      sessionId: r.session_id,
+      providerKey: r.provider_key,
+      role: r.turn_role,
+      ts: r.ts,
+      text: text ?? "",
+      contentUnavailable: text == null,
+    };
+  });
   const first = turns[0]!;
   return {
     enabled: true,

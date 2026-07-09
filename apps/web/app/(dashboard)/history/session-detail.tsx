@@ -146,10 +146,20 @@ export async function SessionDetail({
               {session.turns.map((turn, ti) => {
                 const isUser = turn.role === "user";
                 const usage = turnUsage.get(turn.dedupKey);
-                const meta = isUser ? detectMetaTurn(turn.text) : null;
+                const meta = isUser && !turn.contentUnavailable ? detectMetaTurn(turn.text) : null;
                 const day = fmtDay(turn.ts);
                 const prevTurn = ti > 0 ? session.turns[ti - 1] : undefined;
                 const showDay = prevTurn !== undefined && fmtDay(prevTurn.ts) !== day;
+                const content = turn.contentUnavailable ? (
+                  <p className="text-muted-foreground text-sm italic">{t("history.contentUnavailable")}</p>
+                ) : (
+                  <TurnText
+                    id={`tt-${ti}`}
+                    text={turn.text}
+                    more={t("history.showMore")}
+                    less={t("history.showLess")}
+                  />
+                );
                 return (
                   <Fragment key={turn.dedupKey}>
                     {showDay ? (
@@ -176,12 +186,7 @@ export async function SessionDetail({
                       <div className="flex flex-col items-end">
                         <div className="bg-primary/10 max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2.5 sm:max-w-[70%]">
                           <span className="sr-only">{t("history.rolePrompt")}</span>
-                          <TurnText
-                            id={`tt-${ti}`}
-                            text={turn.text}
-                            more={t("history.showMore")}
-                            less={t("history.showLess")}
-                          />
+                          {content}
                         </div>
                         <span className="text-muted-foreground mt-1 text-[11px] tabular-nums">
                           {fmtTime(turn.ts)}
@@ -199,12 +204,7 @@ export async function SessionDetail({
                         <div className="min-w-0 flex-1">
                           <div className="bg-muted/40 rounded-2xl rounded-tl-md border px-3.5 py-2.5">
                             <span className="sr-only">{t("history.roleResponse")}</span>
-                            <TurnText
-                              id={`tt-${ti}`}
-                              text={turn.text}
-                              more={t("history.showMore")}
-                              less={t("history.showLess")}
-                            />
+                            {content}
                           </div>
                           <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
                             {usage ? (

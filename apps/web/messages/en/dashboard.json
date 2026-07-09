@@ -131,6 +131,8 @@
     "backToList": "Back to list",
     "notFoundTitle": "Conversation not found",
     "notFoundDescription": "It may have been removed or is not accessible.",
+    "previewUnavailable": "Preview unavailable",
+    "contentUnavailable": "Content cannot be opened. Check the server content encryption key.",
     "sessionLabel": "Session",
     "startedAt": "Started",
     "endedAt": "Last activity",

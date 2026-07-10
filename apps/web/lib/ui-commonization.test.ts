@@ -160,7 +160,16 @@ test("insight comparison chart fills only the current period with the approved g
   const chart = source("components/charts/insight-comparison-chart.tsx");
 
   assert.match(chart, /ComposedChart/);
-  assert.match(chart, /<linearGradient id=\{gradientId\}[\s\S]*stopOpacity=\{0\.32\}[\s\S]*stopOpacity=\{0\.04\}/);
+  assert.match(chart, /const gradientId = `\$\{descriptionId\.replace\(\/:\/g, ""\)\}-current-fill`/);
+  assert.match(chart, /<linearGradient id=\{gradientId\}/);
+  assert.match(
+    chart,
+    /<stop offset="5%" stopColor="var\(--color-chart-1\)" stopOpacity=\{0\.32\}/,
+  );
+  assert.match(
+    chart,
+    /<stop offset="95%" stopColor="var\(--color-chart-1\)" stopOpacity=\{0\.04\}/,
+  );
   assert.match(
     chart,
     /<Area[^>]*dataKey="current"[^>]*stroke="var\(--color-chart-1\)"[^>]*fill=\{`url\(#\$\{gradientId\}\)`\}[^>]*isAnimationActive=\{false\}/s,

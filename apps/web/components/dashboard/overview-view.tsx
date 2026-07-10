@@ -14,7 +14,7 @@ import { orderByTokens, tokenShare } from "@/lib/composition";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { costCoverageState } from "@/lib/pricing";
+import { formatCostForCoverage } from "@/lib/pricing";
 import { getMyHistorySessions } from "@/lib/prompt-history";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
@@ -27,11 +27,7 @@ function coveredCost(
   coverage: UsageCostCoverage,
   labels: { partial: string; unpriced: string; legacy: string },
 ): string {
-  const state = costCoverageState(coverage);
-  if (state === "unpriced") return labels.unpriced;
-  if (state === "partial") return `${fmtUsd(costUsd)} · ${labels.partial}`;
-  if (state === "legacy") return `${fmtUsd(costUsd)} · ${labels.legacy}`;
-  return fmtUsd(costUsd);
+  return formatCostForCoverage(fmtUsd(costUsd), coverage, labels);
 }
 
 function ShareBar({ share }: { share: number }) {
@@ -421,7 +417,9 @@ export async function OverviewView({
               {history.sessions.map((s) => {
                 const u = usageBySession.get(s.key);
                 const model = u?.models[0] ? (formatModelName(u.models[0]) ?? u.models[0]) : s.providerKey;
-                const cost = u ? fmtUsd(u.costUsd) : t("history.noUsage");
+                const cost = u
+                  ? formatCostForCoverage(fmtUsd(u.costUsd), u.costCoverage, costLabels)
+                  : t("history.noUsage");
                 return (
                   <Link
                     key={s.key}

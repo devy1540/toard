@@ -1,4 +1,4 @@
-import type { UsageCostCoverage } from "@toard/core";
+import type { UsageCostCoverage, UsageCostStatus } from "@toard/core";
 import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "@toard/pricing";
 import { getAppSetting } from "./app-settings";
 import { getPool } from "./db";
@@ -43,6 +43,15 @@ export function formatCostForCoverage(
   if (state === "partial") return `${cost} · ${labels.partial}`;
   if (state === "legacy") return `${cost} · ${labels.legacy}`;
   return cost;
+}
+
+/** 단일 usage event의 가격 상태를 공통 집계 표시 형식으로 변환한다. */
+export function costCoverageForStatus(status: UsageCostStatus): UsageCostCoverage {
+  return {
+    pricedEvents: status === "priced" ? 1 : 0,
+    unpricedEvents: status === "unpriced" ? 1 : 0,
+    legacyEvents: status === "legacy" ? 1 : 0,
+  };
 }
 
 export type PricingSyncStatus = {

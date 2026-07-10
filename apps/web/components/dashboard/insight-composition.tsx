@@ -23,14 +23,22 @@ export function InsightComposition({
   metric: InsightMetric;
 }) {
   const t = useTranslations("insights");
+  const dashboardT = useTranslations("dashboard");
   const format = useFormatter();
   const [dimension, setDimension] = useState<CompositionDimension>("model");
   const tabs: SegmentedControlItem<CompositionDimension>[] = [
     { value: "model", label: t("composition.model") },
     { value: "provider", label: t("composition.provider") },
   ];
+  const source = dimension === "model" ? byModel : byProvider;
+  const costIncomplete = metric === "cost" && source.some(
+    (row) => row.current.costCoverage.unpricedEvents > 0 || row.previous.costCoverage.unpricedEvents > 0,
+  );
   const rows = useMemo(() => {
     const source = dimension === "model" ? byModel : byProvider;
+    if (metric === "cost" && source.some(
+      (row) => row.current.costCoverage.unpricedEvents > 0 || row.previous.costCoverage.unpricedEvents > 0,
+    )) return [];
     const currentTotal = source.reduce((sum, row) => sum + metricValue(row, "current", metric), 0);
     const previousTotal = source.reduce((sum, row) => sum + metricValue(row, "previous", metric), 0);
 
@@ -67,7 +75,9 @@ export function InsightComposition({
       </CardHeader>
       <CardContent>
         {rows.length === 0 ? (
-          <div className="text-muted-foreground py-8 text-center text-sm">{t("composition.empty")}</div>
+          <div className="text-muted-foreground py-8 text-center text-sm">
+            {costIncomplete ? dashboardT("costCoverage.partial") : t("composition.empty")}
+          </div>
         ) : (
           <div className="divide-y">
             {rows.map((row) => (

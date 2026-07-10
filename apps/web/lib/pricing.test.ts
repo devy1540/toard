@@ -235,6 +235,16 @@ test("비용 표시 상태는 mixed, all-unpriced, legacy-only를 구분한다",
   assert.equal(format("$0.00", { pricedEvents: 0, unpricedEvents: 3, legacyEvents: 0 }, labels), "가격 미확정");
   assert.equal(format("$1.25", { pricedEvents: 2, unpricedEvents: 1, legacyEvents: 0 }, labels), "$1.25 · 부분 합계");
   assert.equal(format("$4.50", { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 4 }, labels), "$4.50 · 기존 저장 비용");
+
+  assert.equal(typeof pricing.costCoverageForStatus, "function");
+  const coverageForStatus = pricing.costCoverageForStatus as (status: string) => {
+    pricedEvents: number;
+    unpricedEvents: number;
+    legacyEvents: number;
+  };
+  assert.deepEqual(coverageForStatus("priced"), { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 });
+  assert.deepEqual(coverageForStatus("unpriced"), { pricedEvents: 0, unpricedEvents: 1, legacyEvents: 0 });
+  assert.deepEqual(coverageForStatus("legacy"), { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 1 });
 });
 
 test("한영 UI는 미확정 건수, 부분 합계, legacy 근거를 명시한다", () => {

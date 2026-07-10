@@ -274,7 +274,7 @@ export class PostgresStorage implements StorageBackend {
       `SELECT ${bucketExpr} AS day,
               COUNT(DISTINCT session_id) AS sessions,
               COUNT(DISTINCT user_id)    AS active_users,
-              COALESCE(SUM(cost_usd),0)  AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
               COALESCE(SUM(output_tokens),0) AS output,
               COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
@@ -355,7 +355,7 @@ export class PostgresStorage implements StorageBackend {
               user_id,
               COUNT(DISTINCT session_id) AS sessions,
               COUNT(DISTINCT user_id)    AS active_users,
-              COALESCE(SUM(cost_usd),0)  AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
               COALESCE(SUM(output_tokens),0) AS output,
               COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
@@ -401,13 +401,14 @@ export class PostgresStorage implements StorageBackend {
         cost: string;
         sessions: string;
         tokens: string;
-      }>(
+      } & CostCoverageRow>(
         `WITH scoped AS MATERIALIZED (
            SELECT
              CASE WHEN ts >= $3 AND ts < $4 THEN 'current' ELSE 'previous' END AS period,
              ts,
              session_id,
              cost_usd,
+             cost_status,
              input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
            FROM usage_events
            WHERE ts >= $1 AND ts < $4
@@ -423,13 +424,20 @@ export class PostgresStorage implements StorageBackend {
            FROM scoped
          )
          SELECT 'summary' AS kind, period, NULL::int AS position,
-                COALESCE(SUM(cost_usd), 0) AS cost,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost,
                 COUNT(DISTINCT session_id) AS sessions,
-                COALESCE(SUM(tokens), 0) AS tokens
+                COALESCE(SUM(tokens), 0) AS tokens,
+                COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+                COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+                COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
          FROM tagged GROUP BY period
          UNION ALL
          SELECT 'trend' AS kind, period, position,
-                COALESCE(SUM(cost_usd), 0), COUNT(DISTINCT session_id), COALESCE(SUM(tokens), 0)
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0),
+                COUNT(DISTINCT session_id), COALESCE(SUM(tokens), 0),
+                COUNT(*) FILTER (WHERE cost_status = 'priced'),
+                COUNT(*) FILTER (WHERE cost_status = 'unpriced'),
+                COUNT(*) FILTER (WHERE cost_status = 'legacy')
          FROM tagged GROUP BY period, position
          ORDER BY kind, position, period`,
         aggregateParams,
@@ -440,22 +448,33 @@ export class PostgresStorage implements StorageBackend {
         period: "current" | "previous";
         cost: string;
         tokens: string;
-      }>(
+      } & CostCoverageRow>(
         `WITH scoped AS MATERIALIZED (
            SELECT CASE WHEN ts >= $3 AND ts < $4 THEN 'current' ELSE 'previous' END AS period,
                   COALESCE(model, '(unknown)') AS model,
                   provider_key,
                   cost_usd,
+                  cost_status,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
            FROM usage_events
            WHERE user_id = $5
              AND ((ts >= $1 AND ts < $2) OR (ts >= $3 AND ts < $4))
              AND ($6::text IS NULL OR provider_key = $6)
          )
-         SELECT 'model' AS dimension, model AS key, period, SUM(cost_usd) AS cost, SUM(tokens) AS tokens
+         SELECT 'model' AS dimension, model AS key, period,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost,
+                SUM(tokens) AS tokens,
+                COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+                COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+                COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
          FROM scoped GROUP BY model, period
          UNION ALL
-         SELECT 'provider' AS dimension, provider_key AS key, period, SUM(cost_usd), SUM(tokens)
+         SELECT 'provider' AS dimension, provider_key AS key, period,
+                COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0),
+                SUM(tokens),
+                COUNT(*) FILTER (WHERE cost_status = 'priced'),
+                COUNT(*) FILTER (WHERE cost_status = 'unpriced'),
+                COUNT(*) FILTER (WHERE cost_status = 'legacy')
          FROM scoped GROUP BY provider_key, period`,
         params,
       ),
@@ -468,6 +487,7 @@ export class PostgresStorage implements StorageBackend {
       costUsd: n(r.cost),
       sessions: n(r.sessions),
       totalTokens: n(r.tokens),
+      costCoverage: costCoverage(r),
     }));
     const compositions: InsightCompositionRow[] = compositionResult.rows.map((r) => ({
       dimension: r.dimension,
@@ -475,6 +495,7 @@ export class PostgresStorage implements StorageBackend {
       period: r.period,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
+      costCoverage: costCoverage(r),
     }));
     return buildUserInsightComparison(aggregates, compositions);
   }
@@ -487,7 +508,7 @@ export class PostgresStorage implements StorageBackend {
     const res = await this.pool.query(
       `SELECT ${bucketExpr} AS day,
               COALESCE(model,'(unknown)') AS model,
-              COALESCE(SUM(cost_usd),0)   AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens
        FROM usage_events ${where}
        GROUP BY 1, 2 ORDER BY 1, cost DESC`,
@@ -529,8 +550,11 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(output_tokens),0)         AS output,
               COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
               COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
-              COALESCE(SUM(cost_usd),0)              AS cost,
-              COUNT(*)                               AS events
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
+              COUNT(*)                               AS events,
+              COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
        FROM usage_events
        WHERE user_id = $1 AND session_id = ANY($2)
        GROUP BY session_id`,
@@ -546,6 +570,7 @@ export class PostgresStorage implements StorageBackend {
       cacheCreationTokens: n(r.cache_creation),
       costUsd: n(r.cost),
       eventCount: n(r.events),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -553,7 +578,7 @@ export class PostgresStorage implements StorageBackend {
   async getSessionUsageEvents(userId: string, sessionId: string): Promise<SessionUsageEventRow[]> {
     const res = await this.pool.query(
       `SELECT ts, model, input_tokens, output_tokens,
-              cache_read_tokens, cache_creation_tokens, cost_usd
+              cache_read_tokens, cache_creation_tokens, cost_usd, cost_status
        FROM usage_events
        WHERE user_id = $1 AND session_id = $2
        ORDER BY ts ASC`,
@@ -567,6 +592,7 @@ export class PostgresStorage implements StorageBackend {
       cacheReadTokens: n(r.cache_read_tokens),
       cacheCreationTokens: n(r.cache_creation_tokens),
       costUsd: n(r.cost_usd),
+      costStatus: r.cost_status,
     }));
   }
 

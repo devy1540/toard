@@ -1718,7 +1718,7 @@ export class ClickHouseStorage implements StorageBackend {
         cost?: string;
         sessions?: string;
         tokens?: string;
-      }>(
+      } & CostCoverageRow>(
         `WITH '/* user-insights */' AS query_tag,
          tagged AS (
            SELECT period,
@@ -1727,19 +1727,27 @@ export class ClickHouseStorage implements StorageBackend {
                      dateDiff('day', {previous_from:DateTime64(3)}, ts, '${tz}')) AS position,
                   session_id,
                   cost_usd,
+                  cost_status,
+                  event_count,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
            FROM ${source.source}
          )
          SELECT 'summary' AS kind, period, CAST(NULL AS Nullable(Int64)) AS position,
-                sum(cost_usd) AS cost,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost,
                 uniqExactIf(session_id, session_id != '') AS sessions,
-                sum(tokens) AS tokens
+                sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM tagged GROUP BY period
          UNION ALL
          SELECT 'trend' AS kind, period, position,
-                sum(cost_usd) AS cost,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost,
                 uniqExactIf(session_id, session_id != '') AS sessions,
-                sum(tokens) AS tokens
+                sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM tagged GROUP BY period, position
          ORDER BY kind, position, period`,
         source.params,
@@ -1750,22 +1758,30 @@ export class ClickHouseStorage implements StorageBackend {
         period: "current" | "previous";
         cost?: string;
         tokens?: string;
-      }>(
+      } & CostCoverageRow>(
         `WITH '/* user-insights */' AS query_tag,
          scoped AS (
            SELECT period,
                   if(model = '', '(unknown)', model) AS model,
                   provider_key,
                   cost_usd,
+                  cost_status,
+                  event_count,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
            FROM ${source.source}
          )
          SELECT 'model' AS dimension, model AS key, period,
-                sum(cost_usd) AS cost, sum(tokens) AS tokens
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost, sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM scoped GROUP BY model, period
          UNION ALL
          SELECT 'provider' AS dimension, provider_key AS key, period,
-                sum(cost_usd) AS cost, sum(tokens) AS tokens
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost, sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM scoped GROUP BY provider_key, period`,
         source.params,
       ),
@@ -1778,6 +1794,7 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       sessions: n(r.sessions),
       totalTokens: n(r.tokens),
+      costCoverage: costCoverage(r),
     }));
     const compositions: InsightCompositionRow[] = compositionRows.map((r) => ({
       dimension: r.dimension,
@@ -1785,6 +1802,7 @@ export class ClickHouseStorage implements StorageBackend {
       period: r.period,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
+      costCoverage: costCoverage(r),
     }));
     return buildUserInsightComparison(aggregates, compositions);
   }
@@ -1821,7 +1839,7 @@ export class ClickHouseStorage implements StorageBackend {
       cache_creation?: string;
       cost?: string;
       events?: string;
-    }>(
+    } & CostCoverageRow>(
       `SELECT session_id,
               groupUniqArrayIf(model, model != '') AS models,
               groupUniqArrayIf(host,  host  != '') AS hosts,
@@ -1829,8 +1847,11 @@ export class ClickHouseStorage implements StorageBackend {
               sum(output_tokens)         AS output,
               sum(cache_read_tokens)     AS cache_read,
               sum(cache_creation_tokens) AS cache_creation,
-              sum(cost_usd)              AS cost,
-              count()                    AS events
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+              count()                    AS events,
+              countIf(cost_status = 'priced')   AS priced_events,
+              countIf(cost_status = 'unpriced') AS unpriced_events,
+              countIf(cost_status = 'legacy')   AS legacy_events
        FROM ${this.usageEventsSource}
        WHERE user_id = {uid:String} AND session_id IN {sids:Array(String)}
        GROUP BY session_id`,
@@ -1846,6 +1867,7 @@ export class ClickHouseStorage implements StorageBackend {
       cacheCreationTokens: n(r.cache_creation),
       costUsd: n(r.cost),
       eventCount: n(r.events),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1859,6 +1881,7 @@ export class ClickHouseStorage implements StorageBackend {
       cache_read?: string;
       cache_creation?: string;
       cost?: string;
+      cost_status: SessionUsageEventRow["costStatus"];
     }>(
       `SELECT ts,
               nullIf(model, '')          AS model,
@@ -1866,7 +1889,8 @@ export class ClickHouseStorage implements StorageBackend {
               output_tokens              AS output,
               cache_read_tokens          AS cache_read,
               cache_creation_tokens      AS cache_creation,
-              cost_usd                   AS cost
+              cost_usd                   AS cost,
+              cost_status
        FROM ${this.usageEventsSource}
        WHERE user_id = {uid:String} AND session_id = {sid:String}
        ORDER BY ts ASC`,
@@ -1881,6 +1905,7 @@ export class ClickHouseStorage implements StorageBackend {
       cacheReadTokens: n(r.cache_read),
       cacheCreationTokens: n(r.cache_creation),
       costUsd: n(r.cost),
+      costStatus: r.cost_status,
     }));
   }
 

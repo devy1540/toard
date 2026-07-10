@@ -716,6 +716,78 @@ test("모델별 비용은 all-unpriced와 legacy-only provenance를 반환한다
   ]);
 });
 
+test("ClickHouse 인사이트와 session 경로도 가격 coverage를 같은 query에서 보존한다", async () => {
+  const queries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      if (query.includes("SELECT 'summary' AS kind")) {
+        return {
+          json: async () => [{
+            kind: "summary", period: "current", position: null,
+            cost: "1.25", sessions: "2", tokens: "15",
+            priced_events: "2", unpriced_events: "1", legacy_events: "0",
+          }],
+        };
+      }
+      if (query.includes("SELECT 'model' AS dimension")) {
+        return {
+          json: async () => [{
+            dimension: "model", key: "model-a", period: "current",
+            cost: "1.25", tokens: "15",
+            priced_events: "2", unpriced_events: "1", legacy_events: "0",
+          }],
+        };
+      }
+      if (query.includes("GROUP BY session_id")) {
+        return {
+          json: async () => [{
+            session_id: "session-1", models: ["model-a"], hosts: ["host-a"],
+            input: "10", output: "5", cache_read: "0", cache_creation: "0",
+            cost: "2.5", events: "4",
+            priced_events: "2", unpriced_events: "1", legacy_events: "1",
+          }],
+        };
+      }
+      return {
+        json: async () => [{
+          ts: "2026-07-01 00:00:00.000", model: "model-a",
+          input: "10", output: "5", cache_read: "0", cache_creation: "0",
+          cost: "0", cost_status: "unpriced",
+        }],
+      };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const comparison = await storage.getUserInsightComparison("user-1", {
+    previous: { from: new Date("2026-06-01T00:00:00Z"), to: new Date("2026-06-08T00:00:00Z") },
+    current: { from: new Date("2026-06-08T00:00:00Z"), to: new Date("2026-06-15T00:00:00Z") },
+    timezone: "UTC",
+  });
+  const summaries = await storage.getSessionUsageSummaries("user-1", ["session-1"]);
+  const events = await storage.getSessionUsageEvents("user-1", "session-1");
+
+  const insightQueries = queries.filter((query) => query.includes("/* user-insights */"));
+  assert.equal(insightQueries.length, 2);
+  for (const query of insightQueries) {
+    assert.match(query, /sumIf\(cost_usd, cost_status != 'unpriced'\)/);
+    assert.match(query, /sumIf\(event_count, cost_status = 'unpriced'\)/);
+  }
+  const summaryQuery = queries.find((query) => query.includes("GROUP BY session_id"));
+  assert.ok(summaryQuery);
+  assert.match(summaryQuery, /sumIf\(cost_usd, cost_status != 'unpriced'\)/);
+  assert.match(summaryQuery, /countIf\(cost_status = 'legacy'\)/);
+  const eventQuery = queries.find((query) => /ORDER BY ts ASC/.test(query));
+  assert.ok(eventQuery);
+  assert.match(eventQuery, /cost_status/);
+  assert.equal(comparison.current.costCoverage.unpricedEvents, 1);
+  assert.equal(comparison.byModel[0]?.current.costCoverage.unpricedEvents, 1);
+  assert.equal(summaries[0]?.costCoverage.unpricedEvents, 1);
+  assert.equal(events[0]?.costStatus, "unpriced");
+});
+
 test("unaligned 요청은 exact head·ready day cache·exact tail을 겹침 없이 같은 schema로 합친다", async () => {
   const range = localDayRange("Asia/Seoul", "2026-07-01", 4);
   const from = new Date(range.from.getTime() + 12 * 60 * 60 * 1000);

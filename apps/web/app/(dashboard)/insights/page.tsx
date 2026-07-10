@@ -4,6 +4,7 @@ import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { InsightComparisonChart } from "@/components/charts/insight-comparison-chart";
 import { InsightComposition } from "@/components/dashboard/insight-composition";
 import { InsightFilters } from "@/components/dashboard/insight-filters";
+import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
@@ -15,6 +16,7 @@ import {
 } from "@/lib/insight-period";
 import { generateInsightCandidates, type InsightRuleKey } from "@/lib/insight-rules";
 import { getEnabledProviders, resolveInsightProvider } from "@/lib/providers";
+import { formatCostForCoverage } from "@/lib/pricing";
 import { getCachedUserInsights } from "@/lib/user-insights";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -47,7 +49,12 @@ export default async function InsightsPage({
 }: {
   searchParams: Promise<InsightSearchParams>;
 }) {
-  const [t, format, locale] = await Promise.all([getTranslations("insights"), getFormatter(), getLocale()]);
+  const [t, dashboardT, format, locale] = await Promise.all([
+    getTranslations("insights"),
+    getTranslations("dashboard"),
+    getFormatter(),
+    getLocale(),
+  ]);
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -73,6 +80,17 @@ export default async function InsightsPage({
   const providerKey = resolveInsightProvider(sp.provider, providers);
   const comparison = await getCachedUserInsights(userId, pair, providerKey);
   const candidates = generateInsightCandidates(comparison, metric);
+  const comparisonCoverage = {
+    pricedEvents: comparison.current.costCoverage.pricedEvents + comparison.previous.costCoverage.pricedEvents,
+    unpricedEvents: comparison.current.costCoverage.unpricedEvents + comparison.previous.costCoverage.unpricedEvents,
+    legacyEvents: comparison.current.costCoverage.legacyEvents + comparison.previous.costCoverage.legacyEvents,
+  };
+  const costLabels = {
+    partial: dashboardT("costCoverage.partial"),
+    unpriced: dashboardT("costCoverage.unpriced"),
+    legacy: dashboardT("costCoverage.legacy"),
+  };
+  const costComplete = comparisonCoverage.unpricedEvents === 0;
   const hasCurrentUsage =
     comparison.current.sessions > 0 || comparison.current.costUsd > 0 || comparison.current.totalTokens > 0;
 
@@ -158,6 +176,8 @@ export default async function InsightsPage({
         </div>
       </header>
 
+      <PricingNotice coverage={comparisonCoverage} />
+
       {!hasCurrentUsage ? (
         <Empty>
           <EmptyHeader>
@@ -211,13 +231,23 @@ export default async function InsightsPage({
             />
             <KpiCard
               label={t("kpi.cost")}
-              value={format.number(comparison.current.costUsd, {
-                style: "currency",
-                currency: "USD",
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 4,
-              })}
-              comparison={formatComparison(comparison.current.costUsd, comparison.previous.costUsd)}
+              value={formatCostForCoverage(
+                format.number(comparison.current.costUsd, {
+                  style: "currency",
+                  currency: "USD",
+                  minimumFractionDigits: 2,
+                  maximumFractionDigits: 4,
+                }),
+                comparison.current.costCoverage,
+                costLabels,
+              )}
+              comparison={
+                costComplete
+                  ? formatComparison(comparison.current.costUsd, comparison.previous.costUsd)
+                  : comparisonCoverage.pricedEvents + comparisonCoverage.legacyEvents > 0
+                    ? costLabels.partial
+                    : costLabels.unpriced
+              }
             />
           </section>
 

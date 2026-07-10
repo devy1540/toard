@@ -2,6 +2,7 @@ import type {
   InsightCompositionChange,
   InsightMetricSummary,
   InsightTrendPoint,
+  UsageCostCoverage,
   UserInsightComparison,
 } from "./storage";
 
@@ -14,6 +15,7 @@ export type InsightAggregateRow = {
   costUsd: number;
   sessions: number;
   totalTokens: number;
+  costCoverage: UsageCostCoverage;
 };
 
 export type InsightCompositionRow = {
@@ -22,13 +24,22 @@ export type InsightCompositionRow = {
   period: InsightPeriod;
   costUsd: number;
   totalTokens: number;
+  costCoverage: UsageCostCoverage;
 };
 
-const zeroSummary = (): InsightMetricSummary => ({ costUsd: 0, sessions: 0, totalTokens: 0 });
+const zeroCoverage = (): UsageCostCoverage => ({ pricedEvents: 0, unpricedEvents: 0, legacyEvents: 0 });
+
+const zeroSummary = (): InsightMetricSummary => ({
+  costUsd: 0,
+  sessions: 0,
+  totalTokens: 0,
+  costCoverage: zeroCoverage(),
+});
 
 const zeroComposition = (): InsightCompositionChange[InsightPeriod] => ({
   costUsd: 0,
   totalTokens: 0,
+  costCoverage: zeroCoverage(),
 });
 
 export function buildUserInsightComparison(
@@ -40,7 +51,12 @@ export function buildUserInsightComparison(
   const trendByPosition = new Map<number, InsightTrendPoint>();
 
   for (const row of rows) {
-    const summary = { costUsd: row.costUsd, sessions: row.sessions, totalTokens: row.totalTokens };
+    const summary = {
+      costUsd: row.costUsd,
+      sessions: row.sessions,
+      totalTokens: row.totalTokens,
+      costCoverage: row.costCoverage,
+    };
     if (row.kind === "summary") {
       if (row.period === "current") current = summary;
       else previous = summary;
@@ -69,7 +85,11 @@ export function buildUserInsightComparison(
       current: zeroComposition(),
       previous: zeroComposition(),
     };
-    values[row.period] = { costUsd: row.costUsd, totalTokens: row.totalTokens };
+    values[row.period] = {
+      costUsd: row.costUsd,
+      totalTokens: row.totalTokens,
+      costCoverage: row.costCoverage,
+    };
     byDimension[row.dimension].set(key, values);
   }
 

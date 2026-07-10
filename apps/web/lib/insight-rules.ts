@@ -88,6 +88,8 @@ export function generateInsightCandidates(
   }
 
   const candidates: InsightCandidate[] = [];
+  const costComplete = comparison.current.costCoverage.unpricedEvents === 0
+    && comparison.previous.costCoverage.unpricedEvents === 0;
   const hasMinimumSample =
     comparison.current.sessions >= MIN_SESSIONS && comparison.previous.sessions >= MIN_SESSIONS;
   const add = (candidate: InsightCandidate | null) => {
@@ -96,7 +98,7 @@ export function generateInsightCandidates(
 
   if (hasMinimumSample) {
     add(rateCandidate("sessions", comparison.current.sessions, comparison.previous.sessions));
-    if (metric === "cost") {
+    if (metric === "cost" && costComplete) {
       add(rateCandidate("cost", comparison.current.costUsd, comparison.previous.costUsd));
       add(
         rateCandidate(
@@ -112,10 +114,12 @@ export function generateInsightCandidates(
 
   const totalCurrent = metric === "cost" ? comparison.current.costUsd : comparison.current.totalTokens;
   const totalPrevious = metric === "cost" ? comparison.previous.costUsd : comparison.previous.totalTokens;
-  candidates.push(
-    ...compositionCandidates(comparison.byModel, totalCurrent, totalPrevious, metric, "model", hasMinimumSample),
-    ...compositionCandidates(comparison.byProvider, totalCurrent, totalPrevious, metric, "provider", hasMinimumSample),
-  );
+  if (metric !== "cost" || costComplete) {
+    candidates.push(
+      ...compositionCandidates(comparison.byModel, totalCurrent, totalPrevious, metric, "model", hasMinimumSample),
+      ...compositionCandidates(comparison.byProvider, totalCurrent, totalPrevious, metric, "provider", hasMinimumSample),
+    );
+  }
 
   return candidates.sort((a, b) => b.score - a.score).slice(0, MAX_INSIGHTS);
 }

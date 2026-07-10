@@ -21,6 +21,7 @@ export interface InsightMetricSummary {
   costUsd: number;
   sessions: number;
   totalTokens: number;
+  costCoverage: UsageCostCoverage;
 }
 
 export interface InsightTrendPoint {
@@ -31,8 +32,8 @@ export interface InsightTrendPoint {
 
 export interface InsightCompositionChange {
   key: string;
-  current: { costUsd: number; totalTokens: number };
-  previous: { costUsd: number; totalTokens: number };
+  current: { costUsd: number; totalTokens: number; costCoverage: UsageCostCoverage };
+  previous: { costUsd: number; totalTokens: number; costCoverage: UsageCostCoverage };
 }
 
 export interface UserInsightComparison {
@@ -202,6 +203,7 @@ export interface SessionUsageSummary {
   cacheCreationTokens: number;
   costUsd: number;
   eventCount: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 세션 내 개별 사용 이벤트 — 히스토리 상세의 턴별(ts 근접) 매칭용 최소 필드. */
@@ -213,6 +215,7 @@ export interface SessionUsageEventRow {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
+  costStatus: UsageCostStatus;
 }
 
 export interface LeaderRow {

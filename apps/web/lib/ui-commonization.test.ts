@@ -59,6 +59,20 @@ test("insights page uses the cached comparison and shared cards", () => {
   assert.match(page, /@\/components\/ui\/card/);
 });
 
+test("insights와 history 비용 UI는 같은 query coverage formatter를 재사용한다", () => {
+  const insights = source("app/(dashboard)/insights/page.tsx");
+  const overview = source("components/dashboard/overview-view.tsx");
+  const history = source("app/(dashboard)/history/page.tsx");
+  const detail = source("app/(dashboard)/history/session-detail.tsx");
+
+  assert.match(insights, /<PricingNotice coverage=\{comparisonCoverage\}/);
+  assert.match(insights, /formatCostForCoverage/);
+  assert.match(overview, /formatCostForCoverage\(fmtUsd\(u\.costUsd\), u\.costCoverage/);
+  assert.match(history, /formatCostForCoverage\(fmtUsd\(usage\.costUsd\), usage\.costCoverage/);
+  assert.match(detail, /formatCostForCoverage\(fmtUsd\(summary\.costUsd\), summary\.costCoverage/);
+  assert.match(detail, /costCoverageForStatus\(usage\.costStatus\)/);
+});
+
 test("insights default to tokens while preserving explicit cost selection", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   assert.match(page, /const metric = sp\.metric === "cost" \? "cost" : "tokens"/);
@@ -160,6 +174,8 @@ test("insight comparison chart renders current and previous without animation", 
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);
   assert.match(chart, /dataKey="previous"[\s\S]*isAnimationActive=\{false\}/);
+  assert.match(chart, /current\.costCoverage\.unpricedEvents/);
+  assert.match(chart, /previous\.costCoverage\.unpricedEvents/);
 });
 
 test("insight comparison chart fills only the current period with the approved gradient", () => {
@@ -242,6 +258,7 @@ test("insight composition uses shared tabs and limits rows", () => {
   const composition = source("components/dashboard/insight-composition.tsx");
   assert.match(composition, /@\/components\/ui\/segmented-control/);
   assert.match(composition, /\.slice\(0, 5\)/);
+  assert.match(composition, /costCoverage\.unpricedEvents/);
 });
 
 test("tool activity copy distinguishes explicit calls from loads", () => {

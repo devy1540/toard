@@ -86,6 +86,11 @@ export interface DailyPoint {
   cacheCreationTokens: number;
 }
 
+/** 팀 구성원별 버킷 시계열 포인트 — team 현황의 구성원별 추이용. */
+export interface TeamMemberTimeseriesPoint extends DailyPoint {
+  userId: string;
+}
+
 /** 버킷×모델 시계열 포인트 — 스탯 뷰의 모델별 스택 막대용. 키 규약은 DailyPoint.day 와 동일. */
 export interface ModelDailyPoint {
   day: string;
@@ -99,6 +104,15 @@ export interface ModelBreakdown {
   model: string;
   costUsd: number;
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
+  totalTokens: number;
+  sessions: number;
+}
+
+/** 프로바이더별 사용량 분해 — 워크스페이스 전체 기간 범위. */
+export interface ProviderBreakdown {
+  providerKey: string;
+  costUsd: number;
+  /** 총 소모 토큰 = input+output+cache_read+cache_creation */
   totalTokens: number;
   sessions: number;
 }
@@ -162,6 +176,7 @@ export interface LeaderRow {
 
 export type LeaderScope = "user" | "team";
 export type TimeseriesScope = "all" | "team";
+export type LeaderOrder = "cost" | "tokens";
 
 export interface SaveResult {
   inserted: number;
@@ -191,12 +206,18 @@ export interface StorageBackend {
   getDailyTimeseries(
     q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]>;
+  /** 선택한 팀 구성원별 버킷 시계열. 호출자는 표시할 사용자 수를 제한한다. */
+  getTeamMemberTimeseries(
+    q: PeriodQuery & BucketOptions & { teamId: string; userIds: string[] },
+  ): Promise<TeamMemberTimeseriesPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */
   getUserHourlyTimeseries(userId: string, q: PeriodQuery & { timezone?: string }): Promise<DailyPoint[]>;
-  getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]>;
+  getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string; orderBy?: LeaderOrder }): Promise<LeaderRow[]>;
+  /** 워크스페이스/팀의 프로바이더별 분해 — 기간·provider 필터 적용. */
+  getProviderBreakdown(q: PeriodQuery & { teamId?: string }): Promise<ProviderBreakdown[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;
   /** 내 세션들의 사용량 요약 — 히스토리 목록의 앱레벨 조인. sessionIds 는 페이지 단위 소량 전제. */

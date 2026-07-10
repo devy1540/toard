@@ -1251,7 +1251,7 @@ export class ClickHouseStorage implements StorageBackend {
       `WITH affected(bucket) AS (
          SELECT unnest($1::timestamptz[])
        ), requested(resolution, timezone, bucket) AS (
-         SELECT resolution, timezone, date_trunc(resolution, affected.bucket, timezone)
+         SELECT DISTINCT resolution, timezone, date_trunc(resolution, affected.bucket, timezone)
          FROM affected
          CROSS JOIN clickhouse_rollup_timezones
          CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS resolutions(resolution)

@@ -345,6 +345,108 @@ function pricedEvent(base: {
   };
 }
 
+async function verifyTimezoneReenqueueDedup(
+  adminPool: Pool,
+  databaseUrl: string,
+  ch: ReturnType<typeof createClient>,
+  runId: string,
+): Promise<void> {
+  const schema = `${runId}_timezone_enqueue`.replace(/[^a-zA-Z0-9_]/g, "_");
+  const quotedSchema = `"${schema}"`;
+  await adminPool.query(`CREATE SCHEMA ${quotedSchema}`);
+  const isolatedPool = new Pool({
+    connectionString: databaseUrl,
+    max: 2,
+    options: `-c search_path=${schema},public`,
+  });
+  const hourBucket = new Date(Math.floor((Date.now() - 2 * 60 * 60 * 1_000) / 3_600_000) * 3_600_000);
+  const buckets = [hourBucket, new Date(hourBucket.getTime() + 15 * 60 * 1_000)];
+  const watermark = new Date(hourBucket.getTime() + 30 * 60 * 1_000);
+  const dayBucket = new Date(Date.UTC(
+    hourBucket.getUTCFullYear(),
+    hourBucket.getUTCMonth(),
+    hourBucket.getUTCDate(),
+  ));
+
+  try {
+    await isolatedPool.query(`
+      CREATE TABLE clickhouse_rollup_watermarks (
+        name TEXT PRIMARY KEY,
+        watermark TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE clickhouse_rollup_dirty_buckets (
+        name TEXT NOT NULL,
+        bucket TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (name, bucket)
+      );
+      CREATE TABLE clickhouse_rollup_timezones (
+        timezone TEXT PRIMARY KEY,
+        activated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        last_requested_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE clickhouse_timezone_rollup_jobs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        resolution TEXT NOT NULL CHECK (resolution IN ('hour', 'day')),
+        timezone TEXT NOT NULL,
+        bucket TIMESTAMPTZ NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'inflight', 'done')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (resolution, timezone, bucket)
+      );
+      CREATE TABLE clickhouse_timezone_rollup_coverage (
+        resolution TEXT NOT NULL CHECK (resolution IN ('hour', 'day')),
+        timezone TEXT NOT NULL,
+        bucket TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (resolution, timezone, bucket)
+      );
+    `);
+    await isolatedPool.query(
+      `INSERT INTO clickhouse_rollup_watermarks (name, watermark)
+       VALUES ('usage_15m_v2', $1)`,
+      [watermark],
+    );
+    await isolatedPool.query(
+      `INSERT INTO clickhouse_rollup_dirty_buckets (name, bucket)
+       SELECT 'usage_15m_v2', unnest($1::timestamptz[])`,
+      [buckets],
+    );
+    await isolatedPool.query("INSERT INTO clickhouse_rollup_timezones (timezone) VALUES ('UTC')");
+    await isolatedPool.query(
+      `INSERT INTO clickhouse_timezone_rollup_coverage (resolution, timezone, bucket)
+       VALUES ('hour', 'UTC', $1), ('day', 'UTC', $2)`,
+      [hourBucket, dayBucket],
+    );
+
+    const isolatedStorage = new ClickHouseStorage(ch, isolatedPool, { timezone: "UTC" });
+    const result = await isolatedStorage.compactUsage15mV2(4);
+    assertEqual(result.buckets, 4, "same-hour v2 compact bucket count");
+
+    const jobs = await isolatedPool.query<{ resolution: string; status: string; count: string }>(
+      `SELECT resolution, min(status) AS status, count(*)::text AS count
+       FROM clickhouse_timezone_rollup_jobs
+       GROUP BY resolution
+       ORDER BY resolution`,
+    );
+    assertEqual(jobs.rows, [
+      { resolution: "day", status: "pending", count: "1" },
+      { resolution: "hour", status: "pending", count: "1" },
+    ], "same-hour timezone job deduplication");
+
+    const coverage = await isolatedPool.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM clickhouse_timezone_rollup_coverage",
+    );
+    assertEqual(coverage.rows[0]?.count, "0", "same-hour timezone coverage invalidation");
+  } finally {
+    await isolatedPool.end();
+    await adminPool.query(`DROP SCHEMA ${quotedSchema} CASCADE`).catch(() => undefined);
+  }
+}
+
 async function main(): Promise<void> {
   await verifyOperationalFixtures();
   const databaseUrl = assertLocalUrl("DATABASE_URL", process.env.DATABASE_URL);
@@ -384,6 +486,8 @@ async function main(): Promise<void> {
     const rollup = new ClickHouseStorage(ch, pg, { timezone: "UTC", readRollup: true });
     const rollup15m = new ClickHouseStorage(ch, pg, { timezone: "UTC", read15mRollup: true });
     const v2 = new ClickHouseStorage(ch, pg, { timezone: "UTC", read15mV2Rollup: true });
+
+    await verifyTimezoneReenqueueDedup(pg, databaseUrl, ch, runId);
 
     const duplicate = pricedEvent({
       dedupKey: `${runId}:duplicate`,

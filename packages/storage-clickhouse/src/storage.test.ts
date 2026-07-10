@@ -427,7 +427,7 @@ test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한
 
   const timezoneJobs = pgQueries.find((query) => query.includes("INSERT INTO clickhouse_timezone_rollup_jobs"));
   assert.ok(timezoneJobs);
-  assert.match(timezoneJobs, /date_trunc\(resolution, affected\.bucket, timezone\)/);
+  assert.match(timezoneJobs, /SELECT DISTINCT resolution, timezone, date_trunc\(resolution, affected\.bucket, timezone\)/);
   assert.match(timezoneJobs, /DELETE FROM clickhouse_timezone_rollup_coverage/);
   assert.match(timezoneJobs, /ON CONFLICT \(resolution, timezone, bucket\) DO UPDATE/);
   assert.match(timezoneJobs, /status = 'pending'/);

@@ -53,6 +53,13 @@ test("overview adds tool activity as a secondary card", () => {
   assert.match(overview, /<ToolActivityCard[^>]*\/>/s);
 });
 
+test("tool activity card marks the feature as beta", () => {
+  const card = source("components/dashboard/tool-activity-card.tsx");
+  assert.match(card, /FeatureStatusBadge/);
+  assert.match(card, /status="beta"/);
+  assert.match(card, /navT\("badge\.beta"\)/);
+});
+
 test("device inventory is current state, not period activity", () => {
   const inventory = source("app/(dashboard)/settings/device-inventory.tsx");
   assert.match(inventory, /DeviceToolInventory/);

@@ -1096,8 +1096,8 @@ export class ClickHouseStorage implements StorageBackend {
         sessions?: string;
         tokens?: string;
       }>(
-        `/* user-insights */
-         WITH tagged AS (
+        `WITH '/* user-insights */' AS query_tag,
+         tagged AS (
            SELECT period,
                   if(period = 'current',
                      dateDiff('day', {current_from:DateTime64(3)}, ts, '${tz}'),
@@ -1128,8 +1128,8 @@ export class ClickHouseStorage implements StorageBackend {
         cost?: string;
         tokens?: string;
       }>(
-        `/* user-insights */
-         WITH scoped AS (
+        `WITH '/* user-insights */' AS query_tag,
+         scoped AS (
            SELECT period,
                   if(model = '', '(unknown)', model) AS model,
                   provider_key,

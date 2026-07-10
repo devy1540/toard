@@ -81,6 +81,49 @@ function chDate(s: string): Date {
   return new Date(`${s.replace(" ", "T")}Z`);
 }
 
+function timezoneOffsetMs(at: Date, timezone: string): number {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone,
+      hourCycle: "h23",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).formatToParts(at).map((part) => [part.type, part.value]),
+  );
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second),
+  );
+  return Math.round((asUtc - at.getTime()) / 60_000) * 60_000;
+}
+
+function timezoneDateKey(at: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(at);
+}
+
+function nextTimezoneDayStart(bucket: Date, timezone: string): Date {
+  const [year, month, day] = timezoneDateKey(bucket, timezone).split("-").map(Number);
+  const nextDate = new Date(Date.UTC(year!, month! - 1, day! + 1));
+  const midnightAsUtc = nextDate.getTime();
+  let result = new Date(midnightAsUtc - timezoneOffsetMs(nextDate, timezone));
+  const refined = new Date(midnightAsUtc - timezoneOffsetMs(result, timezone));
+  if (refined.getTime() !== result.getTime()) result = refined;
+  return result;
+}
+
 type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
 type Params = Record<string, unknown>;
 type InsightSourcePart =
@@ -194,6 +237,23 @@ interface Rollup15mAggRow extends Omit<Rollup15mRow, "event_count" | "input_toke
   cache_creation_tokens?: string;
 }
 
+interface TimezoneRollupAggRow {
+  provider_key: string;
+  user_id: string;
+  team_id: string;
+  session_id: string;
+  model: string;
+  host: string;
+  pricing_revision_id: string;
+  cost_status: FinalizedUsageEvent["costStatus"];
+  event_count?: string;
+  input_tokens?: string;
+  output_tokens?: string;
+  cache_read_tokens?: string;
+  cache_creation_tokens?: string;
+  cost_usd: string;
+}
+
 interface RollupAccumulator extends Omit<RollupRow, "event_count" | "cost_usd"> {
   event_count: number;
   cost_scaled: bigint;
@@ -289,6 +349,54 @@ const CLICKHOUSE_SCHEMA_DDL = [
    PARTITION BY toYYYYMM(bucket_15m)
    ORDER BY (bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status)
    TTL toDateTime(bucket_15m) + INTERVAL 400 DAY DELETE`,
+  `CREATE TABLE IF NOT EXISTS usage_hourly_timezone_rollup
+   (
+     timezone              LowCardinality(String),
+     bucket_start          DateTime64(3, 'UTC'),
+     user_id               String,
+     team_id               String,
+     provider_key          LowCardinality(String),
+     model                 LowCardinality(String),
+     host                  LowCardinality(String),
+     session_id            String,
+     pricing_revision_id   String,
+     cost_status           LowCardinality(String),
+     event_count           UInt64,
+     input_tokens          UInt64,
+     output_tokens         UInt64,
+     cache_read_tokens     UInt64,
+     cache_creation_tokens UInt64,
+     cost_usd              Decimal(18, 8),
+     version               UInt64
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_start)
+   ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
+   TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE`,
+  `CREATE TABLE IF NOT EXISTS usage_daily_timezone_rollup
+   (
+     timezone              LowCardinality(String),
+     bucket_start          DateTime64(3, 'UTC'),
+     user_id               String,
+     team_id               String,
+     provider_key          LowCardinality(String),
+     model                 LowCardinality(String),
+     host                  LowCardinality(String),
+     session_id            String,
+     pricing_revision_id   String,
+     cost_status           LowCardinality(String),
+     event_count           UInt64,
+     input_tokens          UInt64,
+     output_tokens         UInt64,
+     cache_read_tokens     UInt64,
+     cache_creation_tokens UInt64,
+     cost_usd              Decimal(18, 8),
+     version               UInt64
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_start)
+   ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
+   TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE`,
 ] as const;
 
 const CLICKHOUSE_RAW_RETENTION_DDL =
@@ -980,6 +1088,23 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
+  private async enqueueTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
+    if (buckets.length === 0) return;
+    await client.query(
+      `WITH affected(bucket) AS (
+         SELECT unnest($1::timestamptz[])
+       )
+       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
+       SELECT resolution, timezone, date_trunc(resolution, bucket, timezone)
+       FROM affected
+       CROSS JOIN clickhouse_rollup_timezones
+       CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS requested(resolution)
+       ON CONFLICT (resolution, timezone, bucket) DO UPDATE
+       SET status = 'pending', updated_at = now()`,
+      [buckets],
+    );
+  }
+
   private async compactUsageRollup(
     spec: RollupSpec,
     limitBuckets?: number,
@@ -1033,6 +1158,9 @@ export class ClickHouseStorage implements StorageBackend {
           format: "JSONEachRow",
         });
       }
+      if (spec.name === USAGE_15M_V2.name) {
+        await this.enqueueTimezoneRollupJobs(client, buckets);
+      }
 
       const newWatermark = contiguousBuckets.length > 0
         ? new Date(watermark.getTime() + contiguousBuckets.length * spec.intervalMs)
@@ -1064,6 +1192,71 @@ export class ClickHouseStorage implements StorageBackend {
 
   async compactUsage15mV2(limitBuckets?: number): Promise<CompactUsage15mV2Result> {
     return this.compactUsageRollup(USAGE_15M_V2, limitBuckets);
+  }
+
+  async compactTimezoneRollup(
+    resolution: "hour" | "day",
+    timezone: string,
+    bucket: Date,
+  ): Promise<number> {
+    const tz = safeTimezone(timezone);
+    const bucketExpression = resolution === "hour"
+      ? `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${tz}')`
+      : `toStartOfDay(bucket_15m, '${tz}')`;
+    const to = resolution === "hour"
+      ? new Date(bucket.getTime() + 60 * 60 * 1000)
+      : nextTimezoneDayStart(bucket, tz);
+    const rows = await this.queryJson<TimezoneRollupAggRow>(
+      `SELECT ${bucketExpression} AS bucket_start,
+              provider_key,
+              user_id,
+              team_id,
+              session_id,
+              model,
+              host,
+              pricing_revision_id,
+              cost_status,
+              sum(event_count) AS event_count,
+              sum(input_tokens) AS input_tokens,
+              sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              sum(cache_creation_tokens) AS cache_creation_tokens,
+              sum(cost_usd) AS cost_usd
+       FROM usage_15m_rollup_v2 FINAL
+       WHERE bucket_15m >= {bucket:DateTime64(3)}
+         AND bucket_15m < {to:DateTime64(3)}
+         AND ${bucketExpression} = {bucket:DateTime64(3)}
+       GROUP BY bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status`,
+      { bucket: chTs(bucket), to: chTs(to) },
+    );
+    if (rows.length === 0) return 0;
+
+    const version = Date.now();
+    await this.ch.insert({
+      table: resolution === "hour" ? "usage_hourly_timezone_rollup" : "usage_daily_timezone_rollup",
+      values: rows.map((row) => ({
+        timezone: tz,
+        bucket_start: chTs(bucket),
+        user_id: row.user_id,
+        team_id: row.team_id,
+        provider_key: row.provider_key,
+        model: row.model,
+        host: row.host,
+        session_id: row.session_id,
+        pricing_revision_id: row.pricing_revision_id,
+        cost_status: row.cost_status,
+        event_count: n(row.event_count),
+        input_tokens: n(row.input_tokens),
+        output_tokens: n(row.output_tokens),
+        cache_read_tokens: n(row.cache_read_tokens),
+        cache_creation_tokens: n(row.cache_creation_tokens),
+        cost_usd: row.cost_usd,
+        version,
+      })),
+      format: "JSONEachRow",
+    });
+    return rows.length;
   }
 
   private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {

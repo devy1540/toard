@@ -96,13 +96,16 @@ function v2CompactorFixture(): {
   storage: ClickHouseStorage;
   aggregateQueries: string[];
   inserts: InsertedRows[];
+  pgQueries: string[];
 } {
   const aggregateQueries: string[] = [];
   const inserts: InsertedRows[] = [];
+  const pgQueries: string[] = [];
   const bucket = new Date(Math.floor((Date.now() - 2 * 60 * 60 * 1000) / (15 * 60 * 1000)) * (15 * 60 * 1000));
   let watermark = bucket;
   const client = {
     query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push(sql);
       const normalized = sql.replace(/\s+/g, " ").trim();
       if (normalized.startsWith("SELECT watermark")) {
         return { rows: [{ watermark }], rowCount: 1 };
@@ -148,7 +151,7 @@ function v2CompactorFixture(): {
       inserts.push({ table, values });
     },
   } as unknown as ClickHouseClient;
-  return { storage: new ClickHouseStorage(ch, pg), aggregateQueries, inserts };
+  return { storage: new ClickHouseStorage(ch, pg), aggregateQueries, inserts, pgQueries };
 }
 
 async function schemaCommands(
@@ -300,7 +303,7 @@ test("finalizer가 90일 초과 이벤트를 제외해 빈 배열을 넘기면 v
 });
 
 test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한다", async () => {
-  const { storage, aggregateQueries, inserts } = v2CompactorFixture();
+  const { storage, aggregateQueries, inserts, pgQueries } = v2CompactorFixture();
   const compact = (storage as unknown as {
     compactUsage15mV2?: (limitBuckets?: number) => Promise<{ buckets: number; rows: number; watermark: string }>;
   }).compactUsage15mV2;
@@ -323,10 +326,16 @@ test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한
   assert.ok(inserted);
   assert.equal(inserted.values[0]?.pricing_revision_id, "rev-1");
   assert.equal(inserted.values[0]?.cost_status, "priced");
+
+  const timezoneJobs = pgQueries.find((query) => query.includes("INSERT INTO clickhouse_timezone_rollup_jobs"));
+  assert.ok(timezoneJobs);
+  assert.match(timezoneJobs, /date_trunc\(resolution, bucket, timezone\)/);
+  assert.match(timezoneJobs, /ON CONFLICT \(resolution, timezone, bucket\) DO UPDATE/);
+  assert.match(timezoneJobs, /status = 'pending'/);
 });
 
 test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async () => {
-  const { storage, aggregateQueries } = v2CompactorFixture();
+  const { storage, aggregateQueries, pgQueries } = v2CompactorFixture();
 
   await storage.compactUsage15mRollup(1);
 
@@ -334,6 +343,7 @@ test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async
   assert.ok(aggregate);
   assert.match(aggregate, /FROM usage_events\s+WHERE/);
   assert.doesNotMatch(aggregate, /FROM usage_events FINAL/);
+  assert.equal(pgQueries.some((query) => query.includes("INSERT INTO clickhouse_timezone_rollup_jobs")), false);
 });
 
 test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async () => {
@@ -440,4 +450,108 @@ test("0021 migration은 ClickHouse outbox에 가격 상태 컬럼만 추가한�
   assert.match(sql, /ALTER TABLE clickhouse_usage_outbox ADD COLUMN pricing_revision_id UUID/);
   assert.match(sql, /ALTER TABLE clickhouse_usage_outbox ADD COLUMN cost_status TEXT NOT NULL DEFAULT 'legacy'/);
   assert.match(sql, /CHECK \(cost_status IN \('priced', 'unpriced', 'legacy'\)\)/);
+});
+
+test("시간대 cache compactor는 v2 15분 canonical source만 소비한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const inserts: InsertedRows[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return {
+        json: async () => [{
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "team-1",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          host: "macbook",
+          pricing_revision_id: "revision-1",
+          cost_status: "priced",
+          event_count: "4",
+          input_tokens: "100",
+          output_tokens: "20",
+          cache_read_tokens: "5",
+          cache_creation_tokens: "3",
+          cost_usd: "0.01230000",
+        }],
+      };
+    },
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      inserts.push({ table, values });
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+  const bucket = new Date("2026-03-08T08:00:00.000Z");
+
+  const rows = await storage.compactTimezoneRollup("day", "America/Los_Angeles", bucket);
+
+  assert.equal(rows, 1);
+  const aggregate = queries.find(({ query }) => query.includes("toStartOfDay"));
+  assert.ok(aggregate);
+  assert.match(aggregate.query, /FROM usage_15m_rollup_v2 FINAL/);
+  assert.doesNotMatch(aggregate.query, /usage_events|usage_hourly_rollup/);
+  assert.match(aggregate.query, /toStartOfDay\(bucket_15m, 'America\/Los_Angeles'\)/);
+  assert.equal(aggregate.params.bucket, "2026-03-08 08:00:00.000");
+  assert.equal(aggregate.params.to, "2026-03-09 07:00:00.000");
+  assert.equal(inserts[0]?.table, "usage_daily_timezone_rollup");
+  assert.equal(inserts[0]?.values[0]?.bucket_start, "2026-03-08 08:00:00.000");
+});
+
+test("비정수 offset 시간대의 시간 cache도 timezone 식으로 v2를 집계한다", async () => {
+  const queries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  await storage.compactTimezoneRollup(
+    "hour",
+    "Asia/Kathmandu",
+    new Date("2026-07-01T00:15:00.000Z"),
+  );
+
+  const aggregate = queries.find((query) => query.includes("toStartOfInterval"));
+  assert.ok(aggregate);
+  assert.match(
+    aggregate,
+    /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Kathmandu'\)/,
+  );
+  assert.match(aggregate, /FROM usage_15m_rollup_v2 FINAL/);
+});
+
+test("ClickHouse runtime/init schema는 timezone cache 2종에 400일 TTL과 exact key를 둔다", async () => {
+  const commands = await schemaCommands();
+  const init = readFileSync(new URL("../../../clickhouse/init/004-rollup.sql", import.meta.url), "utf8");
+  const order = /ORDER BY\s*\(timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status\)/;
+  const ttl = /TTL\s+toDateTime\(bucket_start\)\s*\+\s*INTERVAL\s+400\s+DAY\s+DELETE/;
+
+  for (const table of ["usage_hourly_timezone_rollup", "usage_daily_timezone_rollup"]) {
+    const ddl = commands.find((query) => query.includes(`CREATE TABLE IF NOT EXISTS ${table}`));
+    assert.ok(ddl);
+    assert.match(ddl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
+    assert.match(ddl, order);
+    assert.match(ddl, ttl);
+    assert.match(init, new RegExp(`CREATE TABLE IF NOT EXISTS toard\\.${table}`));
+  }
+  assert.equal((init.match(new RegExp(ttl.source, "g")) ?? []).length, 2);
+  assert.equal((init.match(new RegExp(order.source, "g")) ?? []).length, 2);
+});
+
+test("0022 migration은 최대 활성 registry와 dedup timezone job queue를 선언한다", () => {
+  const migration = new URL("../../../migrations/1700000022_clickhouse_timezone_rollup.sql", import.meta.url);
+  assert.equal(existsSync(migration), true);
+  const sql = readFileSync(migration, "utf8");
+
+  assert.match(sql, /CREATE TABLE clickhouse_rollup_timezones/);
+  assert.match(sql, /timezone TEXT PRIMARY KEY/);
+  assert.match(sql, /CREATE TABLE clickhouse_timezone_rollup_jobs/);
+  assert.match(sql, /CHECK \(resolution IN \('hour', 'day'\)\)/);
+  assert.match(sql, /CHECK \(status IN \('pending', 'inflight', 'done'\)\)/);
+  assert.match(sql, /UNIQUE \(resolution, timezone, bucket\)/);
 });

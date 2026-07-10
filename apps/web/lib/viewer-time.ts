@@ -6,7 +6,8 @@ import { cache } from "react";
 import { cookies } from "next/headers";
 import { getCurrentUserId } from "./current-user";
 import { getPool } from "./db";
-import { getOrgTimezone, isValidTimezone } from "./org-time";
+import { getOrgTimezone } from "./org-time";
+import { activateTimezoneRollupNonBlocking, isValidRollupTimezone } from "./timezone-rollup";
 
 /** TimezoneSync(클라이언트)가 기록하는 브라우저 타임존 쿠키. 값은 raw IANA 이름. */
 export const TZ_COOKIE = "toard.tz";
@@ -20,11 +21,14 @@ export const getViewerTimezone = cache(async (): Promise<string> => {
       [userId],
     );
     const set = r.rows[0]?.timezone;
-    if (set && isValidTimezone(set)) return set;
+    if (set && isValidRollupTimezone(set)) return set;
   }
 
   const cookieTz = (await cookies()).get(TZ_COOKIE)?.value;
-  if (cookieTz && isValidTimezone(cookieTz)) return cookieTz;
+  if (cookieTz && isValidRollupTimezone(cookieTz)) {
+    activateTimezoneRollupNonBlocking(cookieTz);
+    return cookieTz;
+  }
 
   return getOrgTimezone();
 });

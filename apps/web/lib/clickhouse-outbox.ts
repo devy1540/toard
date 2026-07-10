@@ -58,6 +58,13 @@ export async function compactClickHouse15mV2Rollup(limitBuckets?: number): Promi
   return storage.compactUsage15mV2(limitBuckets);
 }
 
+/** Task 7의 scheduler가 호출할 시간대 cache bounded tick. 시작 flag/timer는 그 task에서 연결한다. */
+export async function compactClickHouseTimezoneRollups(): Promise<{ jobs: number; rows: number }> {
+  if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
+  const { runTimezoneRollupWorker } = await import("./timezone-rollup");
+  return runTimezoneRollupWorker();
+}
+
 async function tick(): Promise<void> {
   try {
     const r = await flushClickHouseOutbox();

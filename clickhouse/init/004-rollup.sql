@@ -84,3 +84,53 @@ ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(bucket_15m)
 ORDER BY (bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status)
 TTL toDateTime(bucket_15m) + INTERVAL 400 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS toard.usage_hourly_timezone_rollup
+(
+  timezone              LowCardinality(String),
+  bucket_start          DateTime64(3, 'UTC'),
+  user_id               String,
+  team_id               String,
+  provider_key          LowCardinality(String),
+  model                 LowCardinality(String),
+  host                  LowCardinality(String),
+  session_id            String,
+  pricing_revision_id   String,
+  cost_status           LowCardinality(String),
+  event_count           UInt64,
+  input_tokens          UInt64,
+  output_tokens         UInt64,
+  cache_read_tokens     UInt64,
+  cache_creation_tokens UInt64,
+  cost_usd              Decimal(18, 8),
+  version               UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+PARTITION BY toYYYYMM(bucket_start)
+ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
+TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE;
+
+CREATE TABLE IF NOT EXISTS toard.usage_daily_timezone_rollup
+(
+  timezone              LowCardinality(String),
+  bucket_start          DateTime64(3, 'UTC'),
+  user_id               String,
+  team_id               String,
+  provider_key          LowCardinality(String),
+  model                 LowCardinality(String),
+  host                  LowCardinality(String),
+  session_id            String,
+  pricing_revision_id   String,
+  cost_status           LowCardinality(String),
+  event_count           UInt64,
+  input_tokens          UInt64,
+  output_tokens         UInt64,
+  cache_read_tokens     UInt64,
+  cache_creation_tokens UInt64,
+  cost_usd              Decimal(18, 8),
+  version               UInt64
+)
+ENGINE = ReplacingMergeTree(version)
+PARTITION BY toYYYYMM(bucket_start)
+ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
+TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE;

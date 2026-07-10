@@ -1,6 +1,7 @@
 import { createClient } from "../packages/storage-clickhouse/node_modules/@clickhouse/client/dist/index.js";
 import type { FinalizedUsageEvent } from "../packages/core/src/storage";
 import { ClickHouseStorage } from "../packages/storage-clickhouse/src/storage";
+import { dayStartUtc } from "../apps/web/lib/org-time";
 import { Pool } from "pg";
 
 function assertLocalUrl(name: string, value: string | undefined): string {
@@ -31,6 +32,115 @@ async function compactUntil(
 
 function chTs(d: Date): string {
   return d.toISOString().replace("T", " ").replace("Z", "");
+}
+
+type TimezoneTotals = {
+  events: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreation: number;
+  cost: number;
+};
+
+function timezoneTotals(row: {
+  events?: string;
+  input?: string;
+  output?: string;
+  cache_read?: string;
+  cache_creation?: string;
+  cost?: string;
+} | undefined): TimezoneTotals {
+  return {
+    events: Number(row?.events ?? 0),
+    input: Number(row?.input ?? 0),
+    output: Number(row?.output ?? 0),
+    cacheRead: Number(row?.cache_read ?? 0),
+    cacheCreation: Number(row?.cache_creation ?? 0),
+    cost: Number(row?.cost ?? 0),
+  };
+}
+
+async function readTimezoneSourceTotals(
+  ch: ReturnType<typeof createClient>,
+  resolution: "hour" | "day",
+  timezone: string,
+  bucket: Date,
+  providerKey: string,
+): Promise<TimezoneTotals> {
+  const expression = resolution === "hour"
+    ? `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${timezone}')`
+    : `toStartOfDay(bucket_15m, '${timezone}')`;
+  const result = await ch.query({
+    query: `SELECT sum(event_count) AS events,
+                   sum(input_tokens) AS input,
+                   sum(output_tokens) AS output,
+                   sum(cache_read_tokens) AS cache_read,
+                   sum(cache_creation_tokens) AS cache_creation,
+                   sum(cost_usd) AS cost
+            FROM usage_15m_rollup_v2 FINAL
+            WHERE provider_key = {provider:String}
+              AND ${expression} = {bucket:DateTime64(3)}`,
+    query_params: { provider: providerKey, bucket: chTs(bucket) },
+    format: "JSONEachRow",
+  });
+  return timezoneTotals((await result.json<{
+    events?: string;
+    input?: string;
+    output?: string;
+    cache_read?: string;
+    cache_creation?: string;
+    cost?: string;
+  }>())[0]);
+}
+
+async function readTimezoneCacheTotals(
+  ch: ReturnType<typeof createClient>,
+  resolution: "hour" | "day",
+  timezone: string,
+  bucket: Date,
+  providerKey: string,
+): Promise<TimezoneTotals> {
+  const table = resolution === "hour" ? "usage_hourly_timezone_rollup" : "usage_daily_timezone_rollup";
+  const result = await ch.query({
+    query: `SELECT sum(event_count) AS events,
+                   sum(input_tokens) AS input,
+                   sum(output_tokens) AS output,
+                   sum(cache_read_tokens) AS cache_read,
+                   sum(cache_creation_tokens) AS cache_creation,
+                   sum(cost_usd) AS cost
+            FROM ${table} FINAL
+            WHERE timezone = {timezone:String}
+              AND bucket_start = {bucket:DateTime64(3)}
+              AND provider_key = {provider:String}`,
+    query_params: { timezone, bucket: chTs(bucket), provider: providerKey },
+    format: "JSONEachRow",
+  });
+  return timezoneTotals((await result.json<{
+    events?: string;
+    input?: string;
+    output?: string;
+    cache_read?: string;
+    cache_creation?: string;
+    cost?: string;
+  }>())[0]);
+}
+
+async function timezoneHourStart(
+  ch: ReturnType<typeof createClient>,
+  timezone: string,
+  at: Date,
+): Promise<Date> {
+  const result = await ch.query({
+    query: `SELECT toUnixTimestamp(
+                     toStartOfInterval(toDateTime64({at:String}, 3, 'UTC'), INTERVAL 1 HOUR, '${timezone}')
+                   ) AS epoch_seconds`,
+    query_params: { at: chTs(at) },
+    format: "JSONEachRow",
+  });
+  const row = (await result.json<{ epoch_seconds: string }>())[0];
+  if (!row) throw new Error(`failed to resolve hourly bucket for ${timezone}`);
+  return new Date(Number(row.epoch_seconds) * 1000);
 }
 
 function hourBucket(d: Date): string {
@@ -564,7 +674,93 @@ async function main(): Promise<void> {
       "user leaderboard raw vs rollup",
     );
 
-    console.log(JSON.stringify({ ok: true, runId, inserted: insertedDuplicates + saveRest.inserted + saveLate.inserted }));
+    const timezoneProviderKey = `${runId}:timezone-provider`;
+    const timezoneRows = Array.from(
+      { length: (4 * 24 * 60) / 15 },
+      (_, index) => ({
+        bucket_15m: chTs(new Date(Date.UTC(2026, 2, 7) + index * 15 * 60 * 1000)),
+        provider_key: timezoneProviderKey,
+        user_id: userId,
+        team_id: teamId,
+        session_id: `${runId}:timezone-session`,
+        model: "verify-timezone-model",
+        host: "verify-timezone-host",
+        pricing_revision_id: "00000000-0000-0000-0000-000000000001",
+        cost_status: "priced",
+        event_count: 1,
+        input_tokens: 2,
+        output_tokens: 3,
+        cache_read_tokens: 5,
+        cache_creation_tokens: 7,
+        cost_usd: "0.01000000",
+        version: Date.now(),
+      }),
+    );
+    await ch.insert({
+      table: "usage_15m_rollup_v2",
+      values: timezoneRows,
+      format: "JSONEachRow",
+    });
+
+    const verifiedTimezones = [
+      "Asia/Seoul",
+      "America/Los_Angeles",
+      "Asia/Kolkata",
+      "Asia/Kathmandu",
+      "Europe/London",
+    ] as const;
+    for (const timezone of verifiedTimezones) {
+      const dayBucket = dayStartUtc("2026-03-08", timezone);
+      await v2.compactTimezoneRollup("day", timezone, dayBucket);
+      const daySource = await readTimezoneSourceTotals(ch, "day", timezone, dayBucket, timezoneProviderKey);
+      const dayCache = await readTimezoneCacheTotals(ch, "day", timezone, dayBucket, timezoneProviderKey);
+      assertEqual(dayCache, daySource, `${timezone} daily timezone cache vs 15m v2`);
+      if (timezone === "America/Los_Angeles") {
+        assertEqual(daySource.events, 23 * 4, "Los Angeles DST transition day 15m bucket count");
+      }
+
+      const hourBucket = await timezoneHourStart(ch, timezone, new Date("2026-03-08T12:34:00.000Z"));
+      await v2.compactTimezoneRollup("hour", timezone, hourBucket);
+      const hourSource = await readTimezoneSourceTotals(ch, "hour", timezone, hourBucket, timezoneProviderKey);
+      const hourCache = await readTimezoneCacheTotals(ch, "hour", timezone, hourBucket, timezoneProviderKey);
+      assertEqual(hourCache, hourSource, `${timezone} hourly timezone cache vs 15m v2`);
+      assertEqual(hourSource.events, 4, `${timezone} hourly 15m bucket count`);
+    }
+
+    const duplicateJobBucket = new Date();
+    await pg.query(
+      `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket, status)
+       VALUES ('day', 'Asia/Seoul', $1, 'done')`,
+      [duplicateJobBucket],
+    );
+    await pg.query(
+      `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
+       VALUES ('day', 'Asia/Seoul', $1)
+       ON CONFLICT (resolution, timezone, bucket) DO UPDATE
+       SET status = 'pending', updated_at = now()`,
+      [duplicateJobBucket],
+    );
+    const duplicateJobs = await pg.query<{ count: string; status: string }>(
+      `SELECT count(*)::text AS count, min(status) AS status
+       FROM clickhouse_timezone_rollup_jobs
+       WHERE resolution = 'day' AND timezone = 'Asia/Seoul' AND bucket = $1`,
+      [duplicateJobBucket],
+    );
+    assertEqual(Number(duplicateJobs.rows[0]?.count), 1, "timezone rollup duplicate PG job count");
+    assertEqual(duplicateJobs.rows[0]?.status, "pending", "timezone rollup completed job requeue status");
+    await pg.query(
+      `DELETE FROM clickhouse_timezone_rollup_jobs
+       WHERE resolution = 'day' AND timezone = 'Asia/Seoul' AND bucket = $1`,
+      [duplicateJobBucket],
+    );
+
+    console.log(JSON.stringify({
+      ok: true,
+      runId,
+      inserted: insertedDuplicates + saveRest.inserted + saveLate.inserted,
+      verifiedTimezones,
+      timezoneRows: timezoneRows.length,
+    }));
   } finally {
     await ch.close();
     await pg.end();

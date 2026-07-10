@@ -19,6 +19,18 @@ test("10% 수치 변화는 포함하고 10% 미만은 제외한다", () => {
   assert.equal(keys.includes("tokens.increase"), false);
 });
 
+test("0.10에서 0.11로 증가한 정확한 10% 비용 변화를 포함한다", () => {
+  const result = generateInsightCandidates(
+    base({
+      current: { costUsd: 0.11, sessions: 10, totalTokens: 100 },
+      previous: { costUsd: 0.1, sessions: 10, totalTokens: 100 },
+    }),
+    "cost",
+  );
+
+  assert.equal(result.some((value) => value.key === "cost.increase"), true);
+});
+
 test("5%p 구성 변화는 포함한다", () => {
   const result = generateInsightCandidates(
     base({
@@ -27,6 +39,25 @@ test("5%p 구성 변화는 포함한다", () => {
           key: "claude",
           current: { costUsd: 66, totalTokens: 66 },
           previous: { costUsd: 50, totalTokens: 50 },
+        },
+      ],
+    }),
+    "cost",
+  );
+
+  assert.equal(result.some((value) => value.key === "composition.increase"), true);
+});
+
+test("전체 20에서 2에서 3으로 증가한 정확한 5%p 구성 변화를 포함한다", () => {
+  const result = generateInsightCandidates(
+    base({
+      current: { costUsd: 20, sessions: 10, totalTokens: 20 },
+      previous: { costUsd: 20, sessions: 10, totalTokens: 20 },
+      byModel: [
+        {
+          key: "claude",
+          current: { costUsd: 3, totalTokens: 3 },
+          previous: { costUsd: 2, totalTokens: 2 },
         },
       ],
     }),

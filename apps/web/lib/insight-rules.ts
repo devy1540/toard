@@ -24,6 +24,11 @@ const RATE_THRESHOLD = 10;
 const SHARE_THRESHOLD = 5;
 const MIN_SESSIONS = 5;
 const MAX_INSIGHTS = 3;
+const PERCENTAGE_TOLERANCE = 1e-9;
+
+function isBelowThreshold(value: number, threshold: number): boolean {
+  return Math.abs(value) + PERCENTAGE_TOLERANCE < threshold;
+}
 
 function rate(current: number, previous: number): number | null {
   if (previous === 0) return null;
@@ -46,7 +51,7 @@ function compositionCandidates(
     if (totalCurrent === 0 || totalPrevious === 0) return [];
 
     const delta = (current / totalCurrent - previous / totalPrevious) * 100;
-    if (Math.abs(delta) < SHARE_THRESHOLD) return [];
+    if (isBelowThreshold(delta, SHARE_THRESHOLD)) return [];
     return [
       {
         key: delta > 0 ? "composition.increase" : "composition.decrease",
@@ -63,7 +68,7 @@ function rateCandidate(
   previous: number,
 ): InsightCandidate | null {
   const delta = rate(current, previous);
-  if (delta == null || Math.abs(delta) < RATE_THRESHOLD) return null;
+  if (delta == null || isBelowThreshold(delta, RATE_THRESHOLD)) return null;
   return {
     key: `${name}.${delta > 0 ? "increase" : "decrease"}` as InsightRuleKey,
     score: Math.abs(delta),

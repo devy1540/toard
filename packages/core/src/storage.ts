@@ -10,6 +10,39 @@ export interface PeriodQuery {
   providerKey?: string;
 }
 
+export interface InsightComparisonQuery {
+  current: { from: Date; to: Date };
+  previous: { from: Date; to: Date };
+  providerKey?: string;
+  timezone: string;
+}
+
+export interface InsightMetricSummary {
+  costUsd: number;
+  sessions: number;
+  totalTokens: number;
+}
+
+export interface InsightTrendPoint {
+  position: number;
+  current: InsightMetricSummary;
+  previous: InsightMetricSummary;
+}
+
+export interface InsightCompositionChange {
+  key: string;
+  current: { costUsd: number; totalTokens: number };
+  previous: { costUsd: number; totalTokens: number };
+}
+
+export interface UserInsightComparison {
+  current: InsightMetricSummary;
+  previous: InsightMetricSummary;
+  trend: InsightTrendPoint[];
+  byModel: InsightCompositionChange[];
+  byProvider: InsightCompositionChange[];
+}
+
 /**
  * 정규화된 사용 이벤트 — 모든 프로바이더가 이 형태로 수렴.
  *

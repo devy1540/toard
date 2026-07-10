@@ -101,14 +101,17 @@ export async function runPricingSyncTransaction(
   client: PricingSyncQueryClient,
   fetchPricing: () => Promise<PricingMap>,
   day: string,
-  effectiveAt: Date,
+  /** @deprecated 호출 호환용. revision 시각은 lock 획득·fetch 성공 뒤 생성한다. */
+  _requestedAt?: Date,
   invalidateCache: () => void = invalidatePricingCache,
+  now: () => Date = () => new Date(),
 ): Promise<number> {
   await client.query("BEGIN");
   let upserted = 0;
   try {
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [PRICING_SYNC_LOCK_KEY]);
     const pricing = await fetchPricing();
+    const effectiveAt = now();
     upserted = await syncPricingRevisions(client, pricing, effectiveAt);
     await client.query(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
@@ -135,7 +138,6 @@ export async function runPricingSyncTransaction(
 export async function runPricingSync(): Promise<PricingSyncResult> {
   const url = process.env.LITELLM_PRICING_URL ?? DEFAULT_URL;
   const day = orgDate(0);
-  const effectiveAt = new Date();
   const client = await getPool().connect();
   let upserted = 0;
   let fetchFailed = false;
@@ -151,7 +153,6 @@ export async function runPricingSync(): Promise<PricingSyncResult> {
         }
       },
       day,
-      effectiveAt,
     );
   } catch (e) {
     return { ok: false, error: String(e), kept: fetchFailed };

@@ -437,6 +437,10 @@ export class ClickHouseStorage implements StorageBackend {
     this.enforceRetentionTtl = opts.enforceRetentionTtl ?? false;
   }
 
+  async close(): Promise<void> {
+    await this.ch.close();
+  }
+
   // ── 공통 ──
   private periodWhere(q: ScopedQuery): { where: string; params: Params } {
     const conds = ["ts >= {from:DateTime64(3)}", "ts < {to:DateTime64(3)}"];

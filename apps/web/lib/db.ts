@@ -14,3 +14,10 @@ export function getPool(): Pool {
   }
   return pool;
 }
+
+/** 일회성 CLI 전용 종료 경로. 서버 startup/viewer에서는 호출하지 않는다. */
+export async function closePool(): Promise<void> {
+  const current = pool;
+  pool = undefined;
+  if (current) await current.end();
+}

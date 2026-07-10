@@ -1,4 +1,6 @@
 import { createClient } from "../packages/storage-clickhouse/node_modules/@clickhouse/client/dist/index.js";
+import { spawn } from "node:child_process";
+import { performance } from "node:perf_hooks";
 import type { FinalizedUsageEvent } from "../packages/core/src/storage";
 import {
   canonicalTimezoneId,
@@ -32,6 +34,99 @@ function assertEqual(actual: unknown, expected: unknown, label: string): void {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a !== e) throw new Error(`${label} mismatch\nactual:   ${a}\nexpected: ${e}`);
+}
+
+async function runActivationCli(
+  databaseUrl: string,
+  clickhouseUrl: string,
+  clickhouseDatabase: string,
+): Promise<{ code: number | null; durationMs: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const startedAt = performance.now();
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ["--import", "tsx", "scripts/activate-timezone-rollups.ts"],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          STORAGE_BACKEND: "clickhouse",
+          DATABASE_URL: databaseUrl,
+          CLICKHOUSE_URL: clickhouseUrl,
+          CLICKHOUSE_DB: clickhouseDatabase,
+          ORG_TIMEZONE: "UTC",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, 5_000);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timeout);
+      resolve({
+        code,
+        durationMs: performance.now() - startedAt,
+        stdout,
+        stderr,
+        timedOut,
+      });
+    });
+  });
+}
+
+async function verifyActivationCliExit(
+  databaseUrl: string,
+  clickhouseUrl: string,
+  clickhouseDatabase: string,
+): Promise<{ successMs: number; failureMs: number }> {
+  const success = await runActivationCli(databaseUrl, clickhouseUrl, clickhouseDatabase);
+  assertEqual(success.timedOut, false, "successful activation CLI exits within 5 seconds");
+  assertEqual(success.code, 0, "successful activation CLI exit code");
+  const successResult = JSON.parse(success.stdout.trim()) as {
+    ok?: boolean;
+    activated?: string[];
+  };
+  assertEqual(successResult.ok, true, "successful activation CLI output");
+  if ((successResult.activated?.length ?? 0) === 0) {
+    throw new Error("successful activation CLI must wait for activation result before exiting");
+  }
+  if (success.durationMs >= 5_000) {
+    throw new Error(`successful activation CLI exceeded 5 seconds: ${success.durationMs.toFixed(1)}ms`);
+  }
+
+  const failure = await runActivationCli(
+    databaseUrl,
+    clickhouseUrl,
+    "__toard_missing_activation_cli_database__",
+  );
+  assertEqual(failure.timedOut, false, "failed activation CLI exits within 5 seconds");
+  assertEqual(failure.code, 1, "failed activation CLI exit code");
+  const failureResult = JSON.parse(failure.stdout.trim()) as {
+    ok?: boolean;
+    failed?: string[];
+  };
+  assertEqual(failureResult.ok, false, "failed activation CLI output");
+  if ((failureResult.failed?.length ?? 0) === 0) {
+    throw new Error("failed activation CLI must report completed activation failures before exiting");
+  }
+  if (failure.durationMs >= 5_000) {
+    throw new Error(`failed activation CLI exceeded 5 seconds: ${failure.durationMs.toFixed(1)}ms`);
+  }
+  return {
+    successMs: Math.round(success.durationMs),
+    failureMs: Math.round(failure.durationMs),
+  };
 }
 
 async function verifyOperationalFixtures(): Promise<void> {
@@ -621,12 +716,18 @@ async function main(): Promise<void> {
   await verifyOperationalFixtures();
   const databaseUrl = assertLocalUrl("DATABASE_URL", process.env.DATABASE_URL);
   const clickhouseUrl = assertLocalUrl("CLICKHOUSE_URL", process.env.CLICKHOUSE_URL ?? "http://localhost:8123");
+  const clickhouseDatabase = process.env.CLICKHOUSE_DB ?? "toard";
+  const activationCliExit = await verifyActivationCliExit(
+    databaseUrl,
+    clickhouseUrl,
+    clickhouseDatabase,
+  );
   const pg = new Pool({ connectionString: databaseUrl });
   const ch = createClient({
     url: clickhouseUrl,
     username: process.env.CLICKHOUSE_USER ?? "toard",
     password: process.env.CLICKHOUSE_PASSWORD ?? "toard",
-    database: process.env.CLICKHOUSE_DB ?? "toard",
+    database: clickhouseDatabase,
   });
 
   const runId = `verify_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -1341,6 +1442,7 @@ async function main(): Promise<void> {
       hybridRouterTimezone,
       verifiedMidnightGapTimezone: "America/Santiago",
       timezoneRows: timezoneRows.length,
+      activationCliExit,
     }));
   } finally {
     await ch.close();

@@ -208,13 +208,18 @@ test("viewer resolver는 saved와 ORG_TIMEZONE 선택도 process-local activatio
 
 test("startup과 rollout CLI는 persisted timezone seed를 non-blocking·비대화형으로 연결한다", () => {
   const instrumentation = readFileSync(new URL("../instrumentation.ts", import.meta.url), "utf8");
+  const viewer = readFileSync(new URL("./viewer-time.ts", import.meta.url), "utf8");
   const packageJson = JSON.parse(
     readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
   ) as { scripts?: Record<string, string> };
   const script = new URL("../../../scripts/activate-timezone-rollups.ts", import.meta.url);
 
   assert.match(instrumentation, /activatePersistedTimezoneRollupsNonBlocking\(\)/);
+  assert.doesNotMatch(instrumentation, /close(?:Pool|Storage)\(/);
+  assert.doesNotMatch(viewer, /close(?:Pool|Storage)\(/);
   assert.equal(packageJson.scripts?.["rollup:activate-timezones"], "tsx scripts/activate-timezone-rollups.ts");
   assert.equal(existsSync(script), true);
-  assert.match(readFileSync(script, "utf8"), /activatePersistedTimezoneRollups\(\)/);
+  const scriptSource = readFileSync(script, "utf8");
+  assert.match(scriptSource, /activatePersistedTimezoneRollups\(\)/);
+  assert.match(scriptSource, /finally\s*{[\s\S]*await closeStorage\(\)[\s\S]*await closePool\(\)/);
 });

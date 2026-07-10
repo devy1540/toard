@@ -14,9 +14,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage};
-use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
+use super::{
+    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage,
+};
 use crate::iso::iso_to_epoch_ms;
+use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
 
 pub struct Codex;
 
@@ -52,7 +54,9 @@ impl LogAdapter for Codex {
 fn parse_mcp_name(name: &str) -> Option<(String, String)> {
     let rest = name.strip_prefix("mcp__")?;
     let (server, tool) = rest.split_once("__")?;
-    if server.is_empty() || tool.is_empty() { return None; }
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
     let key = format!("{server}.{}", tool.replace("__", "."));
     Some((key.clone(), key))
 }
@@ -60,8 +64,11 @@ fn parse_mcp_name(name: &str) -> Option<(String, String)> {
 fn skill_names_from_input(input: &str) -> Vec<String> {
     let mut names = Vec::new();
     for token in input.split_whitespace() {
-        let path = token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | '}' | ']' | ')' | ',' | ';'));
-        if !path.ends_with("/SKILL.md") { continue; }
+        let path =
+            token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | '}' | ']' | ')' | ',' | ';'));
+        if !path.ends_with("/SKILL.md") {
+            continue;
+        }
         if !(path.contains("/.codex/skills/")
             || path.contains("/.agents/skills/")
             || path.contains("/.claude/skills/")
@@ -80,14 +87,20 @@ fn skill_names_from_input(input: &str) -> Vec<String> {
 
 fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
     let fallback = file_mtime_ms(path);
-    let Ok(bytes) = std::fs::read(path) else { return ParsedLog::default() };
+    let Ok(bytes) = std::fs::read(path) else {
+        return ParsedLog::default();
+    };
     let mut parsed = ParsedLog::default();
     let mut session_id: Option<String> = None;
     let mut model: Option<String> = None;
     let mut last_seen_total: Option<(u64, u64)> = None;
     for line in bytes.split(|byte| *byte == b'\n') {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else { continue };
-        let Some(obj) = value.as_object() else { continue };
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
         let ty = obj.get("type").and_then(Value::as_str);
         let payload = obj.get("payload").and_then(Value::as_object);
         let ts_ms = obj
@@ -103,7 +116,10 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             continue;
         }
         if ty == Some("turn_context") {
-            if let Some(value) = payload.and_then(|item| item.get("model")).and_then(Value::as_str) {
+            if let Some(value) = payload
+                .and_then(|item| item.get("model"))
+                .and_then(Value::as_str)
+            {
                 model = Some(value.to_string());
             }
             continue;
@@ -112,14 +128,20 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             let Some(item) = payload else { continue };
             match item.get("type").and_then(Value::as_str) {
                 Some("token_count") => {
-                    let Some(info) = item.get("info").and_then(Value::as_object) else { continue };
+                    let Some(info) = item.get("info").and_then(Value::as_object) else {
+                        continue;
+                    };
                     if let Some(total) = info.get("total_token_usage").and_then(Value::as_object) {
                         let count = |key: &str| total.get(key).and_then(Value::as_u64).unwrap_or(0);
                         let current = (count("input_tokens"), count("output_tokens"));
-                        if last_seen_total == Some(current) { continue; }
+                        if last_seen_total == Some(current) {
+                            continue;
+                        }
                         last_seen_total = Some(current);
                     }
-                    let Some(last) = info.get("last_token_usage").and_then(Value::as_object) else { continue };
+                    let Some(last) = info.get("last_token_usage").and_then(Value::as_object) else {
+                        continue;
+                    };
                     let count = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
                     let cached = count("cached_input_tokens");
                     let usage = RawUsage {
@@ -138,13 +160,22 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     }
                 }
                 Some("user_message" | "agent_message") if include_content => {
-                    let Some(text) = item.get("message").and_then(Value::as_str).map(str::trim) else { continue };
+                    let Some(text) = item.get("message").and_then(Value::as_str).map(str::trim)
+                    else {
+                        continue;
+                    };
                     if !text.is_empty() {
                         parsed.content.push(RawContent {
                             ts_ms,
                             session_id: session_id.clone(),
                             message_id: None,
-                            role: if item.get("type").and_then(Value::as_str) == Some("user_message") { "user" } else { "assistant" },
+                            role: if item.get("type").and_then(Value::as_str)
+                                == Some("user_message")
+                            {
+                                "user"
+                            } else {
+                                "assistant"
+                            },
                             text: text.to_string(),
                         });
                     }
@@ -153,11 +184,17 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             }
             continue;
         }
-        if !include_tools || ty != Some("response_item") { continue; }
+        if !include_tools || ty != Some("response_item") {
+            continue;
+        }
         let Some(item) = payload else { continue };
         let item_type = item.get("type").and_then(Value::as_str);
-        if !matches!(item_type, Some("function_call" | "custom_tool_call")) { continue; }
-        let Some(name) = item.get("name").and_then(Value::as_str) else { continue };
+        if !matches!(item_type, Some("function_call" | "custom_tool_call")) {
+            continue;
+        }
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
         let call_id = item
             .get("call_id")
             .or_else(|| item.get("id"))
@@ -181,11 +218,19 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                 detection: ToolDetection::Explicit,
             });
         }
-        if matches!(name, "exec_command" | "shell_command" | "exec" | "read_file") {
+        if matches!(
+            name,
+            "exec_command" | "shell_command" | "exec" | "read_file"
+        ) {
             let input = item
                 .get("arguments")
                 .or_else(|| item.get("input"))
-                .map(|value| value.as_str().map(str::to_string).unwrap_or_else(|| value.to_string()))
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string())
+                })
                 .unwrap_or_default();
             for skill in skill_names_from_input(&input) {
                 parsed.tools.push(RawToolActivity {

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 pub const DEFAULT_ENDPOINT: &str = "http://localhost:3000/api";
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Credentials {
     pub token: Option<String>,
     pub endpoint: Option<String>,
@@ -14,6 +14,20 @@ pub struct Credentials {
     /// 본문 백필 컷오프. 이 시점 이후 턴만 수집(§collect_content_since).
     /// ISO 날짜/`all`/미설정. 미설정 = "지금부터"(최초 활성화 시각을 state 에 기록).
     pub collect_content_since: Option<String>,
+    /// MCP·스킬·플러그인 메타데이터 수집. 기본 on, 로컬에서 명시적으로 끌 수 있다.
+    pub collect_tools: bool,
+}
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            token: None,
+            endpoint: None,
+            collect_content: false,
+            collect_content_since: None,
+            collect_tools: true,
+        }
+    }
 }
 
 pub fn read_credentials() -> Credentials {
@@ -37,6 +51,11 @@ pub fn read_credentials() -> Credentials {
             .ok()
             .and_then(non_empty)
             .or(file.collect_content_since),
+        collect_tools: match env::var("TOARD_SHIM_COLLECT_TOOLS").ok().as_deref() {
+            Some("0" | "false" | "off" | "no") => false,
+            Some("1" | "true" | "on" | "yes") => true,
+            _ => file.collect_tools,
+        },
     }
 }
 
@@ -61,6 +80,7 @@ pub fn parse(content: &str) -> Credentials {
                 "collect_content_since" if creds.collect_content_since.is_none() => {
                     creds.collect_content_since = Some(v.to_string())
                 }
+                "collect_tools" => creds.collect_tools = !matches!(v, "0" | "false" | "off" | "no"),
                 _ => {}
             }
         }
@@ -108,5 +128,13 @@ mod tests {
         assert!(!parse("agent_key=t\n").collect_content);
         assert!(!parse("collect_content=false\n").collect_content);
         assert!(!parse("collect_content=0\n").collect_content);
+    }
+
+    #[test]
+    fn collect_tools_defaults_on_and_supports_opt_out() {
+        assert!(parse("agent_key=t\n").collect_tools);
+        assert!(!parse("collect_tools=false\n").collect_tools);
+        assert!(!parse("collect_tools=0\n").collect_tools);
+        assert!(parse("collect_tools=true\n").collect_tools);
     }
 }

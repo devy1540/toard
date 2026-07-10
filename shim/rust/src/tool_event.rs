@@ -42,7 +42,7 @@ struct ToolActivityWire<'a> {
     detection: ToolDetection,
 }
 
-fn dedup_key(provider: &str, event: &RawToolActivity) -> String {
+pub fn dedup_key(provider: &str, event: &RawToolActivity) -> String {
     let mut hasher = Sha256::new();
     hasher.update(
         format!(
@@ -54,7 +54,11 @@ fn dedup_key(provider: &str, event: &RawToolActivity) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-pub fn to_tool_events_body(provider: &str, host: Option<&str>, events: &[RawToolActivity]) -> String {
+pub fn to_tool_events_body(
+    provider: &str,
+    host: Option<&str>,
+    events: &[RawToolActivity],
+) -> String {
     let values: Vec<ToolActivityWire<'_>> = events
         .iter()
         .map(|event| ToolActivityWire {

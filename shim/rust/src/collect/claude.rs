@@ -9,9 +9,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage};
-use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
+use super::{
+    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage,
+};
 use crate::iso::iso_to_epoch_ms;
+use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
 
 pub struct Claude;
 
@@ -74,15 +76,22 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
-        let Some(obj) = value.as_object() else { continue };
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
         let role = obj.get("type").and_then(Value::as_str);
-        let Some(message) = obj.get("message").and_then(Value::as_object) else { continue };
+        let Some(message) = obj.get("message").and_then(Value::as_object) else {
+            continue;
+        };
         let ts_ms = obj
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(iso_to_epoch_ms)
             .unwrap_or(fallback);
-        let session_id = obj.get("sessionId").and_then(Value::as_str).map(str::to_string);
+        let session_id = obj
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string);
 
         if role == Some("assistant") {
             if let Some(usage) = message.get("usage").and_then(Value::as_object) {
@@ -95,8 +104,14 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                     parsed.usage.push(RawUsage {
                         ts_ms,
                         session_id: session_id.clone(),
-                        model: message.get("model").and_then(Value::as_str).map(str::to_string),
-                        message_id: message.get("id").and_then(Value::as_str).map(str::to_string),
+                        model: message
+                            .get("model")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        message_id: message
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
                         input_tokens,
                         output_tokens,
                         cache_read_tokens,
@@ -113,18 +128,25 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
             if include_tools {
                 if let Some(blocks) = message.get("content").and_then(Value::as_array) {
                     for block in blocks {
-                        if block.get("type").and_then(Value::as_str) != Some("tool_use") { continue; }
-                        let Some(call_id) = block.get("id").and_then(Value::as_str) else { continue };
-                        let Some(name) = block.get("name").and_then(Value::as_str) else { continue };
-                        let activity = if let Some((item_key, display_name)) = parse_mcp_name(name) {
-                            Some((ToolActivityKind::Mcp, item_key, display_name, None))
-                        } else if name == "Skill" {
-                            block.get("input").and_then(skill_name).map(|skill| {
-                                (ToolActivityKind::Skill, skill.clone(), skill, None)
-                            })
-                        } else {
-                            None
+                        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                            continue;
+                        }
+                        let Some(call_id) = block.get("id").and_then(Value::as_str) else {
+                            continue;
                         };
+                        let Some(name) = block.get("name").and_then(Value::as_str) else {
+                            continue;
+                        };
+                        let activity =
+                            if let Some((item_key, display_name)) = parse_mcp_name(name) {
+                                Some((ToolActivityKind::Mcp, item_key, display_name, None))
+                            } else if name == "Skill" {
+                                block.get("input").and_then(skill_name).map(|skill| {
+                                    (ToolActivityKind::Skill, skill.clone(), skill, None)
+                                })
+                            } else {
+                                None
+                            };
                         if let Some((kind, item_key, display_name, plugin_key)) = activity {
                             let index = parsed.tools.len();
                             parsed.tools.push(RawToolActivity {
@@ -157,7 +179,11 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                         .and_then(Value::as_str)
                         .or_else(|| obj.get("uuid").and_then(Value::as_str))
                         .map(str::to_string),
-                    role: if role == Some("user") { "user" } else { "assistant" },
+                    role: if role == Some("user") {
+                        "user"
+                    } else {
+                        "assistant"
+                    },
                     text: text.to_string(),
                 });
             }
@@ -166,14 +192,21 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
         if include_tools && role == Some("user") {
             if let Some(blocks) = message.get("content").and_then(Value::as_array) {
                 for block in blocks {
-                    if block.get("type").and_then(Value::as_str) != Some("tool_result") { continue; }
-                    let Some(call_id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
-                    let Some(index) = pending.remove(call_id) else { continue };
-                    parsed.tools[index].outcome = match block.get("is_error").and_then(Value::as_bool) {
-                        Some(true) => ToolOutcome::Failure,
-                        Some(false) => ToolOutcome::Success,
-                        None => ToolOutcome::Unknown,
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                        continue;
+                    }
+                    let Some(call_id) = block.get("tool_use_id").and_then(Value::as_str) else {
+                        continue;
                     };
+                    let Some(index) = pending.remove(call_id) else {
+                        continue;
+                    };
+                    parsed.tools[index].outcome =
+                        match block.get("is_error").and_then(Value::as_bool) {
+                            Some(true) => ToolOutcome::Failure,
+                            Some(false) => ToolOutcome::Success,
+                            None => ToolOutcome::Unknown,
+                        };
                 }
             }
         }

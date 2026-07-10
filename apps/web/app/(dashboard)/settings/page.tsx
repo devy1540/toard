@@ -2,7 +2,6 @@ import { redirect } from "next/navigation";
 import { getLocale, getTranslations } from "next-intl/server";
 import { oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
-import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -93,19 +92,15 @@ async function AccountTab({
   const t = await getTranslations("settings");
   const googleConfigured = oauthProviders.includes("google");
   const googleLinked = linkedProviders.includes("google");
-  // 설정 행 리스트(A안) — 항목을 [라벨 | 컨트롤] 행으로 눕혀 죽은 공간 없이 폭을 채운다.
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("appearance.title")}</CardTitle>
           <CardDescription>{t("appearance.description")}</CardDescription>
         </CardHeader>
         <CardContent className="min-w-0 divide-y">
-          <AppearanceForm />
-          <SettingsRow label={t("timezone.title")} description={t("timezone.description")}>
-            <TimezoneForm initial={timezone} />
-          </SettingsRow>
+          <AppearanceForm timezoneControl={<TimezoneForm initial={timezone} />} />
         </CardContent>
       </Card>
 
@@ -115,33 +110,42 @@ async function AccountTab({
           <CardDescription>{t("loginMethods.description")}</CardDescription>
         </CardHeader>
         <CardContent className="min-w-0 divide-y">
-          <SettingsRow label={t("loginMethods.google")} description={t("loginMethods.googleDescription")}>
-            <Badge variant={googleLinked ? "secondary" : "outline"}>
-              {googleLinked ? t("loginMethods.connected") : t("loginMethods.notConnected")}
-            </Badge>
-            {googleConfigured && !googleLinked ? (
-              <form
-                action={async () => {
-                  "use server";
-                  await signIn("google", { redirectTo: "/settings?tab=account" });
-                }}
-              >
-                <Button type="submit" variant="outline" size="sm">
-                  {t("loginMethods.connectGoogle")}
-                </Button>
-              </form>
-            ) : null}
-            {!googleConfigured ? (
-              <span className="text-muted-foreground text-sm">{t("loginMethods.googleNotConfigured")}</span>
-            ) : null}
-          </SettingsRow>
-          <SettingsRow
-            label={hasPassword ? t("account.changeTitle") : t("account.setTitle")}
-            description={hasPassword ? t("account.changeDescription") : t("account.setDescription")}
-            wide
-          >
+          <section className="grid min-w-0 gap-4 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold">{t("loginMethods.google")}</h2>
+              <p className="text-muted-foreground mt-1 max-w-sm text-xs">{t("loginMethods.googleDescription")}</p>
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-2 self-center">
+              <Badge variant={googleLinked ? "secondary" : "outline"}>
+                {googleLinked ? t("loginMethods.connected") : t("loginMethods.notConnected")}
+              </Badge>
+              {googleConfigured && !googleLinked ? (
+                <form
+                  action={async () => {
+                    "use server";
+                    await signIn("google", { redirectTo: "/settings?tab=account" });
+                  }}
+                >
+                  <Button type="submit" variant="outline" size="sm">
+                    {t("loginMethods.connectGoogle")}
+                  </Button>
+                </form>
+              ) : null}
+              {!googleConfigured ? (
+                <span className="text-muted-foreground text-sm">{t("loginMethods.googleNotConfigured")}</span>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="grid min-w-0 gap-4 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
+            <div className="min-w-0">
+              <h2 className="text-sm font-semibold">{hasPassword ? t("account.changeTitle") : t("account.setTitle")}</h2>
+              <p className="text-muted-foreground mt-1 max-w-sm text-xs">
+                {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
+              </p>
+            </div>
             <PasswordForm hasPassword={hasPassword} />
-          </SettingsRow>
+          </section>
         </CardContent>
       </Card>
     </div>

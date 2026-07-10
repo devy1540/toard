@@ -34,7 +34,7 @@ export function TimezoneForm({ initial }: { initial: string | null }) {
   }
 
   return (
-    <form ref={formRef} action={action} className="flex flex-wrap items-center justify-end gap-2">
+    <form ref={formRef} action={action} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="timezone" value={value === AUTO ? "" : value} />
       {state.error ? <span className="text-destructive text-xs">{state.error}</span> : null}
       {!state.error && state.ok && !pending ? (

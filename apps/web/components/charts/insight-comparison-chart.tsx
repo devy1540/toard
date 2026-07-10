@@ -3,6 +3,7 @@
 import type { InsightTrendPoint } from "@toard/core";
 import { useFormatter, useTranslations } from "next-intl";
 import { useId } from "react";
+import { getInsightPositionDate } from "@/lib/insight-chart-date";
 import {
   Area,
   CartesianGrid,
@@ -25,15 +26,23 @@ const tooltipStyle = {
 export function InsightComparisonChart({
   data,
   metric,
+  currentFrom,
+  previousFrom,
+  timezone,
 }: {
   data: InsightTrendPoint[];
   metric: "cost" | "tokens";
+  currentFrom: string;
+  previousFrom: string;
+  timezone: string;
 }) {
   const t = useTranslations("insights");
   const format = useFormatter();
   const descriptionId = useId();
   const gradientId = `${descriptionId.replace(/:/g, "")}-current-fill`;
   const isCost = metric === "cost";
+  const currentStart = new Date(currentFrom);
+  const previousStart = new Date(previousFrom);
   const chartData = data.map(({ position, current, previous }) => ({
     position: position + 1,
     current: isCost ? current.costUsd : current.totalTokens,
@@ -43,6 +52,10 @@ export function InsightComparisonChart({
     isCost
       ? format.number(value, { style: "currency", currency: "USD", maximumFractionDigits: 4 })
       : format.number(value, { notation: "compact", maximumFractionDigits: 1 });
+  const formatDate = (date: Date) =>
+    format.dateTime(date, { month: "numeric", day: "numeric", timeZone: "UTC" });
+  const formatPositionDate = (start: Date, displayPosition: number) =>
+    formatDate(getInsightPositionDate(start, displayPosition - 1, timezone));
 
   return (
     <div className="w-full">
@@ -75,6 +88,7 @@ export function InsightComparisonChart({
             minTickGap={20}
             fontSize={12}
             stroke="var(--color-muted-foreground)"
+            tickFormatter={(position: number) => formatPositionDate(currentStart, position)}
           />
           <YAxis
             tickLine={false}
@@ -86,7 +100,12 @@ export function InsightComparisonChart({
           />
           <Tooltip
             contentStyle={tooltipStyle}
-            labelFormatter={(position: number) => t("chart.position", { position: format.number(position) })}
+            labelFormatter={(position: number) =>
+              t("chart.dateComparison", {
+                current: formatPositionDate(currentStart, position),
+                previous: formatPositionDate(previousStart, position),
+              })
+            }
             formatter={(value: number, name: string) => [
               formatValue(value),
               name === "current" ? t("chart.current") : t("chart.previous"),

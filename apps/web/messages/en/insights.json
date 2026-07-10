@@ -45,7 +45,7 @@
     "accessibleDescription": "Two lines compare current and previous period usage at each elapsed position.",
     "current": "Current period",
     "previous": "Previous period",
-    "position": "Position {position}"
+    "dateComparison": "Current {current} · Previous {previous}"
   },
   "comparison": {
     "current": "Current",

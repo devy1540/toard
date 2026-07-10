@@ -63,7 +63,7 @@ test("insights default to tokens while preserving explicit cost selection", () =
   const page = source("app/(dashboard)/insights/page.tsx");
   assert.match(page, /const metric = sp\.metric === "cost" \? "cost" : "tokens"/);
   assert.match(page, /generateInsightCandidates\(comparison, metric\)/);
-  assert.match(page, /<InsightComparisonChart data=\{comparison\.trend\} metric=\{metric\}/);
+  assert.match(page, /<InsightComparisonChart[\s\S]*data=\{comparison\.trend\}[\s\S]*metric=\{metric\}/);
   assert.match(page, /<InsightComposition[\s\S]*metric=\{metric\}/);
 });
 
@@ -116,14 +116,18 @@ test("insights page shows the period anchor and both localized comparison ranges
 test("Korean and English insight catalogs have the same shape and 10-minute delay copy", () => {
   const ko = JSON.parse(source("messages/ko/insights.json")) as {
     freshness?: { delay?: string };
+    chart?: { dateComparison?: string };
   };
   const en = JSON.parse(source("messages/en/insights.json")) as {
     freshness?: { delay?: string };
+    chart?: { dateComparison?: string };
   };
 
   assert.deepEqual(messageShape(ko), messageShape(en));
   assert.match(ko.freshness?.delay ?? "", /10분/);
   assert.match(en.freshness?.delay ?? "", /10 minutes/);
+  assert.equal(typeof ko.chart?.dateComparison, "string");
+  assert.equal(typeof en.chart?.dateComparison, "string");
 });
 
 test("insight filters reuse shared controls and update URL parameters", () => {
@@ -184,6 +188,17 @@ test("insight comparison chart fills only the current period with the approved g
 test("insight comparison chart preserves sparse numeric positions", () => {
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /<XAxis[\s\S]*type="number"[\s\S]*domain=\{\["dataMin", "dataMax"\]\}/);
+});
+
+test("insight comparison chart labels positions with current and previous dates", () => {
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+  const page = source("app/(dashboard)/insights/page.tsx");
+  assert.match(chart, /getInsightPositionDate/);
+  assert.match(chart, /tickFormatter=.*formatPositionDate/s);
+  assert.match(chart, /labelFormatter=.*chart\.dateComparison/s);
+  assert.match(page, /currentFrom=\{pair\.current\.from\.toISOString\(\)\}/);
+  assert.match(page, /previousFrom=\{pair\.previous\.from\.toISOString\(\)\}/);
+  assert.match(page, /timezone=\{pair\.timezone\}/);
 });
 
 test("insight comparison chart exposes its translated name without a nested image role", () => {

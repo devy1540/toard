@@ -227,7 +227,13 @@ export default async function InsightsPage({
               <CardDescription>{t("chart.description")}</CardDescription>
             </CardHeader>
             <CardContent>
-              <InsightComparisonChart data={comparison.trend} metric={metric} />
+              <InsightComparisonChart
+                data={comparison.trend}
+                metric={metric}
+                currentFrom={pair.current.from.toISOString()}
+                previousFrom={pair.previous.from.toISOString()}
+                timezone={pair.timezone}
+              />
             </CardContent>
           </Card>
 

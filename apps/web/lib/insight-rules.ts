@@ -95,16 +95,19 @@ export function generateInsightCandidates(
   };
 
   if (hasMinimumSample) {
-    add(rateCandidate("cost", comparison.current.costUsd, comparison.previous.costUsd));
     add(rateCandidate("sessions", comparison.current.sessions, comparison.previous.sessions));
-    add(rateCandidate("tokens", comparison.current.totalTokens, comparison.previous.totalTokens));
-    add(
-      rateCandidate(
-        "efficiency",
-        comparison.current.costUsd / comparison.current.sessions,
-        comparison.previous.costUsd / comparison.previous.sessions,
-      ),
-    );
+    if (metric === "cost") {
+      add(rateCandidate("cost", comparison.current.costUsd, comparison.previous.costUsd));
+      add(
+        rateCandidate(
+          "efficiency",
+          comparison.current.costUsd / comparison.current.sessions,
+          comparison.previous.costUsd / comparison.previous.sessions,
+        ),
+      );
+    } else {
+      add(rateCandidate("tokens", comparison.current.totalTokens, comparison.previous.totalTokens));
+    }
   }
 
   const totalCurrent = metric === "cost" ? comparison.current.costUsd : comparison.current.totalTokens;

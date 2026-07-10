@@ -19,6 +19,32 @@ test("10% 수치 변화는 포함하고 10% 미만은 제외한다", () => {
   assert.equal(keys.includes("tokens.increase"), false);
 });
 
+test("토큰 모드는 비용과 세션당 비용 후보를 제외한다", () => {
+  const keys = generateInsightCandidates(
+    base({
+      current: { costUsd: 200, sessions: 10, totalTokens: 120 },
+      previous: { costUsd: 100, sessions: 10, totalTokens: 100 },
+    }),
+    "tokens",
+  ).map((value) => value.key);
+
+  assert.deepEqual(keys, ["tokens.increase"]);
+});
+
+test("비용 모드는 토큰 후보를 제외하고 비용 효율 후보를 유지한다", () => {
+  const keys = generateInsightCandidates(
+    base({
+      current: { costUsd: 110, sessions: 10, totalTokens: 200 },
+      previous: { costUsd: 100, sessions: 10, totalTokens: 100 },
+    }),
+    "cost",
+  ).map((value) => value.key);
+
+  assert.equal(keys.includes("cost.increase"), true);
+  assert.equal(keys.includes("efficiency.increase"), true);
+  assert.equal(keys.includes("tokens.increase"), false);
+});
+
 test("0.10에서 0.11로 증가한 정확한 10% 비용 변화를 포함한다", () => {
   const result = generateInsightCandidates(
     base({

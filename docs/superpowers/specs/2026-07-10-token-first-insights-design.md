@@ -108,6 +108,9 @@
   - 토큰/비용 선택 순서.
   - 한 줄 툴바용 압축 표현.
   - 기존 URL 파라미터 갱신과 접근 가능한 이름 유지.
+- `apps/web/lib/insight-rules.ts`, `apps/web/lib/insight-rules.test.ts`
+  - 토큰 모드에서는 토큰·세션 후보, 비용 모드에서는 비용·세션·세션당 비용 후보만 생성.
+  - 반대 지표 변화가 핵심 문장에 섞이지 않는 회귀 테스트.
 - `apps/web/messages/ko/insights.json`, `apps/web/messages/en/insights.json`
   - 제거되는 설명 또는 시각 라벨 정리와 필요한 토큰 중심 문구 확인.
 - 기존 인사이트 페이지 및 규칙 테스트

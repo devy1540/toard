@@ -29,6 +29,10 @@
   - 인사이트 기간·provider·지표 URL 갱신과 인라인 컨트롤 표현을 담당한다.
 - Modify: `apps/web/lib/ui-commonization.test.ts`
   - 토큰 기본값, 정보 순서, 공통 헤더 밀도, 접근성 라벨의 정적 계약을 검증한다.
+- Modify: `apps/web/lib/insight-rules.ts`
+  - 선택된 지표에 맞는 사용량·효율 후보만 생성한다.
+- Modify: `apps/web/lib/insight-rules.test.ts`
+  - 토큰과 비용 모드에 반대 지표 후보가 섞이지 않는 동작을 검증한다.
 - Verify only: `apps/web/messages/ko/insights.json`, `apps/web/messages/en/insights.json`
   - 기존 라벨과 freshness 번역을 재사용하며 카탈로그 형태가 계속 일치하는지 기존 테스트로 확인한다.
 
@@ -305,6 +309,68 @@ git add apps/web/lib/ui-commonization.test.ts \
 git commit -m "style(insights): 대시보드 툴바 문법으로 정렬"
 ```
 
+### Task 2.5: 선택 지표와 핵심 변화 후보 일치
+
+**Files:**
+- Modify: `apps/web/lib/insight-rules.test.ts`
+- Modify: `apps/web/lib/insight-rules.ts`
+
+**Interfaces:**
+- Consumes: `generateInsightCandidates(comparison, metric)`의 기존 `InsightMetric` 입력.
+- Produces: 토큰 모드의 토큰·세션 후보, 비용 모드의 비용·세션·세션당 비용 후보, 선택 지표 기준 구성 후보.
+
+- [ ] **Step 1: 반대 지표 후보가 섞이는 실패 테스트를 작성한다**
+
+토큰 모드에서 비용과 효율 후보가 제외되고, 비용 모드에서 토큰 후보가 제외되는 fixture 두 개를 `apps/web/lib/insight-rules.test.ts`에 추가한다.
+
+- [ ] **Step 2: 집중 테스트를 실행해 두 fixture가 실패하는지 확인한다**
+
+```bash
+pnpm --filter @toard/web exec node --import tsx --test lib/insight-rules.test.ts
+```
+
+Expected: 토큰 모드 결과에 `cost.increase`, `efficiency.increase`가 포함되고 비용 모드 결과에 `tokens.increase`가 포함돼 2개 테스트가 실패한다.
+
+- [ ] **Step 3: 최소 표본 블록을 선택 지표별로 분기한다**
+
+```ts
+if (hasMinimumSample) {
+  add(rateCandidate("sessions", comparison.current.sessions, comparison.previous.sessions));
+  if (metric === "cost") {
+    add(rateCandidate("cost", comparison.current.costUsd, comparison.previous.costUsd));
+    add(
+      rateCandidate(
+        "efficiency",
+        comparison.current.costUsd / comparison.current.sessions,
+        comparison.previous.costUsd / comparison.previous.sessions,
+      ),
+    );
+  } else {
+    add(rateCandidate("tokens", comparison.current.totalTokens, comparison.previous.totalTokens));
+  }
+}
+```
+
+- [ ] **Step 4: 집중 테스트와 전체 웹 회귀를 실행한다**
+
+```bash
+pnpm --filter @toard/web exec node --import tsx --test lib/insight-rules.test.ts
+pnpm --filter @toard/web test
+pnpm --filter @toard/web typecheck
+git diff --check
+```
+
+Expected: 규칙 테스트 12개와 웹 전체 테스트 65개가 PASS하고 typecheck 및 diff check가 exit 0이다.
+
+- [ ] **Step 5: 리뷰 보정을 커밋한다**
+
+```bash
+git add apps/web/lib/insight-rules.ts apps/web/lib/insight-rules.test.ts \
+  docs/superpowers/specs/2026-07-10-token-first-insights-design.md \
+  docs/superpowers/plans/2026-07-10-token-first-insights.md
+git commit -m "fix(insights): 선택 지표와 핵심 변화 일치"
+```
+
 ### Task 3: 부하 회귀 및 실제 화면 검증
 
 **Files:**
@@ -324,7 +390,7 @@ Run:
 git diff 2c75b65..HEAD --name-only
 ```
 
-Expected: 설계 문서와 계획 문서를 제외한 구현 파일은 `apps/web/app/(dashboard)/insights/page.tsx`, `apps/web/components/dashboard/insight-filters.tsx`, `apps/web/lib/ui-commonization.test.ts`뿐이다. storage, core, ClickHouse, cache 파일은 없다.
+Expected: 설계 문서와 계획 문서를 제외한 구현 파일은 `apps/web/app/(dashboard)/insights/page.tsx`, `apps/web/components/dashboard/insight-filters.tsx`, `apps/web/lib/ui-commonization.test.ts`, `apps/web/lib/insight-rules.ts`, `apps/web/lib/insight-rules.test.ts`뿐이다. storage, core, ClickHouse, cache 파일은 없다.
 
 - [ ] **Step 2: 토큰 기본값과 비용 공유 URL을 HTTP 렌더 결과로 확인한다**
 

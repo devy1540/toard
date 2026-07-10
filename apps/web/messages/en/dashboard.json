@@ -43,6 +43,26 @@
   "byHostTitle": "Usage by device",
   "computer": "Device",
   "unknownHost": "(unknown)",
+  "summaryPrimaryHint": "Total cost for the selected period",
+  "topModel": "Top model",
+  "topDevice": "Top device",
+  "trendTitle": "Usage trend",
+  "compositionTitle": "Composition",
+  "compositionDescription": "Cost share by model and device",
+  "compositionToggleLabel": "Composition dimension",
+  "compositionModel": "Model",
+  "compositionDevice": "Device",
+  "compositionModelDescription": "Cost share by model",
+  "compositionDeviceDescription": "Cost share by device",
+  "noDeviceDataTitle": "No device data",
+  "moreDevices": "+{n} more devices",
+  "rhythmTitle": "Hourly rhythm",
+  "rhythmDescription": "Token density by weekday and hour",
+  "recentSessionsTitle": "Recent sessions",
+  "recentSessionsDescription": "Sessions with history enabled",
+  "recentSessionsUnavailable": "Content history is disabled, so recent session previews are not shown.",
+  "noRecentSessions": "No saved sessions in the selected period.",
+  "viewHistory": "History",
   "filters": {
     "periodToday": "Today",
     "periodWeek": "This week",
@@ -79,8 +99,8 @@
   },
   "view": {
     "label": "Dashboard view",
-    "classic": "Classic",
-    "stats": "Stats"
+    "overview": "Overview",
+    "classic": "Classic"
   },
   "stats": {
     "lessThanPrev": "{diff} less than the previous period ({prev})",

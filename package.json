@@ -19,7 +19,8 @@
     "migrate": "node-pg-migrate -j sql -m migrations -d DATABASE_URL up",
     "migrate:down": "node-pg-migrate -j sql -m migrations -d DATABASE_URL down",
     "seed": "tsx scripts/seed.ts",
-    "seed:demo": "tsx scripts/seed-demo.ts"
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "seed:dashboard-demo": "tsx scripts/seed-dashboard-demo.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

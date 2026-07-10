@@ -2,7 +2,7 @@ import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { Activity, ArrowUpDown, DollarSign, Inbox } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
-import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
+import type { ChartMetric } from "@/components/dashboard/metric-toggle";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -124,22 +124,6 @@ export async function ClassicView({
     <>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard
-          label={t(`costLabel.${period.preset}`)}
-          value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta}
-          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
-          spark={spark.cost}
-          icon={<DollarSign className="size-4" />}
-        />
-        <StatCard
-          label={t("statSessions")}
-          value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta}
-          hint={t("sessionsHint")}
-          spark={spark.sessions}
-          icon={<Activity className="size-4" />}
-        />
-        <StatCard
           label={t("statTokens")}
           value={fmtCompact(
             overview.totalInputTokens +
@@ -156,13 +140,28 @@ export async function ClassicView({
           spark={spark.tokens}
           icon={<ArrowUpDown className="size-4" />}
         />
+        <StatCard
+          label={t(`costLabel.${period.preset}`)}
+          value={fmtUsd(overview.totalCostUsd)}
+          delta={costDelta}
+          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
+          spark={spark.cost}
+          icon={<DollarSign className="size-4" />}
+        />
+        <StatCard
+          label={t("statSessions")}
+          value={fmtNum(overview.totalSessions)}
+          delta={sessionsDelta}
+          hint={t("sessionsHint")}
+          spark={spark.sessions}
+          icon={<Activity className="size-4" />}
+        />
       </div>
 
       {/* 시계열은 가로 해상도가 생명 — 차트가 풀폭 히어로, 분해(모델·기기)는 아래 반반 */}
       <Card className="min-w-0">
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <CardHeader>
           <CardTitle>{t(usageTitleKey(period.bucket))}</CardTitle>
-          <MetricToggle value={metric} />
         </CardHeader>
         <CardContent className="min-w-0">
           {daily.length > 0 ? (

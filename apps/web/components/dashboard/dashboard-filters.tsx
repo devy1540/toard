@@ -59,7 +59,9 @@ export function DashboardFilters({
   title,
   statusBadge,
   leading,
+  filterTrailing,
   trailing,
+  splitHeader = false,
 }: {
   providers: ProviderOption[];
   defaultPeriod?: string;
@@ -74,8 +76,12 @@ export function DashboardFilters({
   statusBadge?: { status: FeatureStatus; label: string };
   /** 제목 뒤 로컬 컨텍스트 (전체 현황의 개요/순위 탭 등) */
   leading?: React.ReactNode;
+  /** 필터 컨트롤 줄 뒤에 붙는 요소 (지표 토글 등) */
+  filterTrailing?: React.ReactNode;
   /** 우측 정렬 요소 (새로고침·안내 캡션 등) */
   trailing?: React.ReactNode;
+  /** 제목/상태와 필터 컨트롤을 두 줄로 분리한다. 내 사용량처럼 조작면이 많은 화면용. */
+  splitHeader?: boolean;
 }) {
   const t = useTranslations("dashboard");
   const locale = useLocale();
@@ -147,78 +153,93 @@ export function DashboardFilters({
     push({ period: "custom", from, to, bucket: from === to && isIntradayBucket(bucketParam) ? bucketParam : null });
   };
 
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
-        {title ? (
-          <div className="mr-2 flex shrink-0 items-center gap-2">
-            <h1 className="text-sm font-medium">{title}</h1>
-            {statusBadge ? (
-              <FeatureStatusBadge status={statusBadge.status}>{statusBadge.label}</FeatureStatusBadge>
-            ) : null}
-          </div>
-        ) : null}
-        {leading}
-        <div className="flex flex-wrap gap-1">
-          {periods.map((p) => (
-            <Button
-              key={p.v}
-              size="sm"
-              variant={!isCustom && !showCustom && period === p.v ? "default" : "outline"}
-              onClick={() => selectPreset(p.v)}
-            >
-              {t(p.key)}
-            </Button>
-          ))}
-          <Button
-            size="sm"
-            variant={isCustom || showCustom ? "default" : "outline"}
-            onClick={() => setShowCustom((s) => !s)}
-          >
-            {t("filters.customRange")}
-          </Button>
-        </div>
+  const titleNode = title ? (
+    <div className="mr-2 flex shrink-0 items-center gap-2">
+      <h1 className="text-sm font-medium">{title}</h1>
+      {statusBadge ? <FeatureStatusBadge status={statusBadge.status}>{statusBadge.label}</FeatureStatusBadge> : null}
+    </div>
+  ) : null;
 
-        <Select value={provider} onValueChange={(v) => push({ provider: v })}>
-          <SelectTrigger className="h-8 w-fit min-w-0 max-w-44 justify-start gap-1.5 px-2.5">
+  const filterControls = (
+    <>
+      <div className="flex flex-wrap gap-1">
+        {periods.map((p) => (
+          <Button
+            key={p.v}
+            size="sm"
+            variant={!isCustom && !showCustom && period === p.v ? "default" : "outline"}
+            onClick={() => selectPreset(p.v)}
+          >
+            {t(p.key)}
+          </Button>
+        ))}
+        <Button
+          size="sm"
+          variant={isCustom || showCustom ? "default" : "outline"}
+          onClick={() => setShowCustom((s) => !s)}
+        >
+          {t("filters.customRange")}
+        </Button>
+      </div>
+
+      <Select value={provider} onValueChange={(v) => push({ provider: v })}>
+        <SelectTrigger className="h-8 w-fit min-w-0 max-w-44 justify-start gap-1.5 px-2.5">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent className="max-w-[min(24rem,var(--radix-select-content-available-width))]">
+          <SelectItem value="all">{t("filters.allTools")}</SelectItem>
+          {providers.map((p) => (
+            <SelectItem key={p.key} value={p.key} title={p.label}>
+              {p.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {showBucket ? (
+        <Select value={selectedBucket} onValueChange={(v) => push({ bucket: v })}>
+          <SelectTrigger className="h-8 w-auto justify-start gap-1.5" aria-label={t("filters.bucketLabel")}>
             <SelectValue />
           </SelectTrigger>
-          <SelectContent className="max-w-[min(24rem,var(--radix-select-content-available-width))]">
-            <SelectItem value="all">{t("filters.allTools")}</SelectItem>
-            {providers.map((p) => (
-              <SelectItem key={p.key} value={p.key} title={p.label}>
-                {p.label}
+          <SelectContent>
+            {INTRADAY_BUCKETS.map((b) => (
+              <SelectItem key={b} value={b}>
+                {t(`filters.bucket.${b}`)}
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
+      ) : null}
 
-        {showBucket ? (
-          <Select value={selectedBucket} onValueChange={(v) => push({ bucket: v })}>
-            <SelectTrigger
-              className="h-8 w-auto justify-start gap-1.5"
-              aria-label={t("filters.bucketLabel")}
-            >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {INTRADAY_BUCKETS.map((b) => (
-                <SelectItem key={b} value={b}>
-                  {t(`filters.bucket.${b}`)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null}
+      {filterTrailing}
+      {rangeLabel ? <span className="text-muted-foreground text-xs tabular-nums">{rangeLabel}</span> : null}
+      {tzDiffers && (
+        <span className="text-muted-foreground text-xs" title={timezone}>
+          {t("filters.timezoneNote", { tz: timezone })}
+        </span>
+      )}
+    </>
+  );
 
-        {rangeLabel ? <span className="text-muted-foreground text-xs tabular-nums">{rangeLabel}</span> : null}
-        {tzDiffers && (
-          <span className="text-muted-foreground text-xs" title={timezone}>
-            {t("filters.timezoneNote", { tz: timezone })}
-          </span>
-        )}
-        {trailing ? <div className="ml-auto flex flex-wrap items-center gap-2">{trailing}</div> : null}
-      </div>
+  return (
+    <div className="flex flex-col gap-2">
+      {splitHeader ? (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            {titleNode}
+            {leading}
+            {trailing ? <div className="ml-auto flex flex-wrap items-center gap-2">{trailing}</div> : null}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">{filterControls}</div>
+        </>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          {titleNode}
+          {leading}
+          {filterControls}
+          {trailing ? <div className="ml-auto flex flex-wrap items-center gap-2">{trailing}</div> : null}
+        </div>
+      )}
 
       {showCustom && (
         <div className="flex flex-wrap items-center gap-1">

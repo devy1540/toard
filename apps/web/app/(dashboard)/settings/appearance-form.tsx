@@ -30,7 +30,7 @@ const THEMES = [
 ] as const;
 type ThemeValue = (typeof THEMES)[number]["value"];
 
-const VIEW_ICONS = { classic: LayoutGrid, stats: ChartColumn } as const;
+const VIEW_ICONS = { overview: ChartColumn, classic: LayoutGrid } as const;
 
 /**
  * 모양 설정 컨트롤 — 테마·브랜드 색·기본 대시보드 뷰 (전부 기기 단위 개인 설정).

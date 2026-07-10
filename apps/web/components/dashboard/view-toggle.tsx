@@ -6,7 +6,7 @@ import { ChartColumn, LayoutGrid } from "lucide-react";
 import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/segmented-control";
 import { DASHBOARD_VIEWS, VIEW_COOKIE, type DashboardView } from "@/lib/dashboard-view";
 
-const ICONS = { classic: LayoutGrid, stats: ChartColumn } as const;
+const ICONS = { overview: ChartColumn, classic: LayoutGrid } as const;
 
 /** 대시보드 뷰 토글 — 클릭 즉시 쿠키 저장 + refresh(SSR 분기). 설정의 "기본 뷰"와 같은 쿠키를 쓴다. */
 export function ViewToggle({ view }: { view: DashboardView }) {

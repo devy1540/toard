@@ -4,10 +4,10 @@
 
 export const VIEW_COOKIE = "toard.view";
 
-export const DASHBOARD_VIEWS = ["classic", "stats"] as const;
+export const DASHBOARD_VIEWS = ["overview", "classic"] as const;
 export type DashboardView = (typeof DASHBOARD_VIEWS)[number];
 
-export const DEFAULT_VIEW: DashboardView = "classic";
+export const DEFAULT_VIEW: DashboardView = "overview";
 
 export function isDashboardView(v: unknown): v is DashboardView {
   return typeof v === "string" && (DASHBOARD_VIEWS as readonly string[]).includes(v);

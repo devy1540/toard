@@ -3,10 +3,11 @@ import { cookies } from "next/headers";
 import { Inbox } from "lucide-react";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { ClassicView } from "@/components/dashboard/classic-view";
+import type { CompositionDimension } from "@/components/dashboard/composition-toggle";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
-import type { ChartMetric } from "@/components/dashboard/metric-toggle";
+import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
+import { OverviewView } from "@/components/dashboard/overview-view";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { StatsView } from "@/components/dashboard/stats-view";
 import { ViewToggle } from "@/components/dashboard/view-toggle";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
@@ -17,12 +18,14 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
 
+type MyUsageSearchParams = DashboardSearchParams & { composition?: string };
+
 /** 랜딩 = 내 사용량 (역할 축 개편 — 멤버가 매일 보는 건 자기 데이터). 전체 현황은 /org.
- *  뷰(클래식/스탯)는 쿠키 기반 개인 설정 — 툴바 토글·설정의 기본 뷰가 같은 쿠키를 쓴다. */
+ *  뷰(개요/클래식)는 쿠키 기반 개인 설정 — 툴바 토글·설정의 기본 뷰가 같은 쿠키를 쓴다. */
 export default async function MyUsagePage({
   searchParams,
 }: {
-  searchParams: Promise<DashboardSearchParams>;
+  searchParams: Promise<MyUsageSearchParams>;
 }) {
   const t = await getTranslations("dashboard");
   const userId = await getCurrentUserId();
@@ -43,6 +46,7 @@ export default async function MyUsagePage({
   const sp = await searchParams;
   const period = parseFilters(sp, await getViewerTimezone());
   const metric: ChartMetric = sp.metric === "cost" ? "cost" : "tokens";
+  const composition: CompositionDimension = sp.composition === "device" ? "device" : "model";
   const providers = await getEnabledProviders();
   const viewCookie = (await cookies()).get(VIEW_COOKIE)?.value;
   const view: DashboardView = isDashboardView(viewCookie) ? viewCookie : DEFAULT_VIEW;
@@ -53,7 +57,9 @@ export default async function MyUsagePage({
         providers={providers}
         timezone={period.timezone}
         showBucketControl
+        splitHeader
         title={t("myUsageTitle")}
+        filterTrailing={<MetricToggle value={metric} />}
         trailing={
           <>
             <ViewToggle view={view} />
@@ -64,10 +70,10 @@ export default async function MyUsagePage({
 
       <PricingNotice />
 
-      {view === "stats" ? (
-        <StatsView userId={userId} period={period} metric={metric} />
-      ) : (
+      {view === "classic" ? (
         <ClassicView userId={userId} period={period} metric={metric} />
+      ) : (
+        <OverviewView userId={userId} period={period} metric={metric} composition={composition} />
       )}
     </div>
   );

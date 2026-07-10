@@ -120,7 +120,7 @@
     "theme_system": "System",
     "color": "Color",
     "defaultView": "Dashboard view",
-    "view_classic": "Classic",
-    "view_stats": "Stats"
+    "view_overview": "Overview",
+    "view_classic": "Classic"
   }
 }

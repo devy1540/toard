@@ -2,7 +2,7 @@ import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import { Inbox, Laptop } from "lucide-react";
 import { ModelStackedBarChart, type StackedSeries } from "@/components/charts/model-stacked-bar-chart";
-import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
+import type { ChartMetric } from "@/components/dashboard/metric-toggle";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
@@ -188,16 +188,13 @@ export async function StatsView({
       <div className="min-w-0">
         <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <span className="text-muted-foreground text-xs tracking-wide uppercase">{t("stats.byModelDaily")}</span>
-          <div className="flex flex-wrap items-center gap-3 sm:gap-4">
-            <div className="hidden min-w-0 flex-wrap items-center gap-4 sm:flex">
-              {series.map((s) => (
-                <span key={s.key} className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                  <span className="size-2 rounded-[3px]" style={{ background: s.color }} />
-                  {s.label}
-                </span>
-              ))}
-            </div>
-            <MetricToggle value={metric} />
+          <div className="hidden min-w-0 flex-wrap items-center gap-4 sm:flex">
+            {series.map((s) => (
+              <span key={s.key} className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                <span className="size-2 rounded-[3px]" style={{ background: s.color }} />
+                {s.label}
+              </span>
+            ))}
           </div>
         </div>
         <div className="min-w-0">

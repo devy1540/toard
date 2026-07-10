@@ -76,13 +76,6 @@
     "syncNow": "Sync now",
     "syncedWithDay": "Sync complete — {count} models applied ({day})",
     "synced": "Sync complete — {count} models applied",
-    "repriceTitle": "Reprice all retained usage",
-    "repriceDescription": "Recalculates every retained event with the current LiteLLM pricing. Historic events retain input, output, and cache token counts only, so fast mode and one-hour cache creation use the default pricing fallback.",
-    "repriceConfirmLabel": "Type REPRICE to run",
-    "repriceConfirmPlaceholder": "REPRICE",
-    "repriceSubmit": "Reprice all retained usage",
-    "repricing": "Repricing…",
-    "repriced": "Repricing complete — {count} events · {unpriced} models without pricing",
     "contentTitle": "Prompt content",
     "contentBadgeOn": "Enabled",
     "contentBadgeOff": "Disabled",
@@ -130,9 +123,6 @@
     "lastAdminRequired": "The last administrator cannot be changed to member.",
     "pricingDownloadKept": "Pricing download failed, so the existing snapshot was kept — {error}",
     "pricingSyncFailed": "Sync failed — {error}",
-    "repriceConfirmationRequired": "Type REPRICE exactly to run full-retention repricing.",
-    "repriceClickHouseMaintenance": "ClickHouse requires rebuilding raw events plus hourly and 15-minute rollups together. Online repricing is blocked.",
-    "repriceFailed": "Retained-usage repricing failed — {error}",
     "autoSyncSaveFailed": "Failed to save auto sync setting: {error}"
   }
 }

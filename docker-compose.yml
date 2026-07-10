@@ -74,7 +74,7 @@ services:
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-toard}
       CLICKHOUSE_DB: ${CLICKHOUSE_DB:-toard}
       CLICKHOUSE_READ_FINAL: ${CLICKHOUSE_READ_FINAL:-} # 1/true/on 이면 CH read 에 FINAL 강제(기본 off, 중복 0 운영 기준 부하 완화)
-      CLICKHOUSE_READ_ROLLUP: ${CLICKHOUSE_READ_ROLLUP:-} # 1/true/on 이면 검증 완료된 CH hourly rollup 으로 대시보드 집계 조회
+      CLICKHOUSE_READ_ROLLUP: ${CLICKHOUSE_READ_ROLLUP:-} # deprecated alias: timezone cache guard+exact fallback으로만 이동; migration 후 unset
       CLICKHOUSE_15M_ROLLUP_COMPACTOR: ${CLICKHOUSE_15M_ROLLUP_COMPACTOR:-} # 1/true/on 이면 finalized 15분 rollup compactor 실행
       CLICKHOUSE_READ_15M_ROLLUP: ${CLICKHOUSE_READ_15M_ROLLUP:-} # 1/true/on 이면 검증 완료된 15분 rollup + raw tail 로 시계열 조회
       CLICKHOUSE_15M_V2_COMPACTOR: ${CLICKHOUSE_15M_V2_COMPACTOR:-} # 가격 provenance를 보존한 15분 v2 shadow compactor

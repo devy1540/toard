@@ -1,1 +1,7 @@
-export { ClickHouseStorage, createClickHouseStorage, pingClickHouse } from "./storage";
+export {
+  ClickHouseStorage,
+  createClickHouseStorage,
+  pingClickHouse,
+  resolveClickHouseRollupReadFlag,
+  type ClickHouseRollupReadFlag,
+} from "./storage";

@@ -153,6 +153,7 @@ async function verifyOperationalFixtures(): Promise<void> {
     watermark: "2026-07-10T11:45:00.000Z",
     lagSeconds: 0,
     pendingJobs: 10_000,
+    legacyFlagMigration: null,
   }, "healthy timezone readiness fixture");
   if (readinessQueries.length !== 2) throw new Error("timezone readiness must query watermark and pending jobs");
 
@@ -176,6 +177,7 @@ async function verifyOperationalFixtures(): Promise<void> {
     watermark: "2026-07-10T10:59:59.000Z",
     lagSeconds: 1_801,
     pendingJobs: 10_001,
+    legacyFlagMigration: null,
   }, "fallback timezone readiness fixture");
 
   const disabled = await getTimezoneRollupReadinessAt(
@@ -188,6 +190,7 @@ async function verifyOperationalFixtures(): Promise<void> {
     watermark: null,
     lagSeconds: null,
     pendingJobs: 0,
+    legacyFlagMigration: null,
   }, "disabled timezone readiness fixture");
 
   const cleanupQueries: Array<{ sql: string; params?: unknown[] }> = [];

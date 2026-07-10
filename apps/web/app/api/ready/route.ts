@@ -3,6 +3,7 @@ import { pingClickHouse } from "@toard/storage-clickhouse";
 import { getPool } from "../../../lib/db";
 import {
   getTimezoneRollupReadinessAt,
+  toTimezoneRollupReadyPayload,
   type TimezoneRollupReadiness,
 } from "../../../lib/clickhouse-outbox";
 
@@ -19,6 +20,7 @@ export async function GET() {
       watermark: null,
       lagSeconds: null,
       pendingJobs: 0,
+      legacyFlagMigration: null,
     };
     if (process.env.STORAGE_BACKEND === "clickhouse") {
       try {
@@ -30,17 +32,15 @@ export async function GET() {
           watermark: null,
           lagSeconds: null,
           pendingJobs: 0,
+          legacyFlagMigration: process.env.CLICKHOUSE_READ_ROLLUP?.trim()
+            ? "deprecated_alias"
+            : null,
         };
       }
     }
     return NextResponse.json({
       status: "ready",
-      rollups: {
-        timezone: timezoneRollup.status,
-        timezoneWatermark: timezoneRollup.watermark,
-        timezoneLagSeconds: timezoneRollup.lagSeconds,
-        timezonePendingJobs: timezoneRollup.pendingJobs,
-      },
+      rollups: toTimezoneRollupReadyPayload(timezoneRollup),
     });
   } catch {
     return NextResponse.json({ status: "not-ready" }, { status: 503 });

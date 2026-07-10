@@ -1,4 +1,5 @@
 import { CLICKHOUSE_RAW_RETENTION_DAYS } from "@toard/core";
+import { resolveClickHouseRollupReadFlag } from "@toard/storage-clickhouse";
 
 const STARTUP_DELAY_MS = 15_000;
 const TICK_MS = 30_000;
@@ -40,7 +41,28 @@ export type TimezoneRollupReadiness = {
   watermark: string | null;
   lagSeconds: number | null;
   pendingJobs: number;
+  legacyFlagMigration: "deprecated_alias" | null;
 };
+
+export type TimezoneRollupReadyPayload = {
+  timezone: TimezoneRollupReadiness["status"];
+  timezoneWatermark: string | null;
+  timezoneLagSeconds: number | null;
+  timezonePendingJobs: number;
+  legacyFlagMigration: "deprecated_alias" | null;
+};
+
+export function toTimezoneRollupReadyPayload(
+  readiness: TimezoneRollupReadiness,
+): TimezoneRollupReadyPayload {
+  return {
+    timezone: readiness.status,
+    timezoneWatermark: readiness.watermark,
+    timezoneLagSeconds: readiness.lagSeconds,
+    timezonePendingJobs: readiness.pendingJobs,
+    legacyFlagMigration: readiness.legacyFlagMigration,
+  };
+}
 
 type FlushableStorage = {
   flushUsageOutbox(limit?: number): Promise<{ batches: number; rows: number }>;
@@ -87,8 +109,15 @@ export async function getTimezoneRollupReadinessAt(
   env: ReadyEnvironment = process.env,
   now = new Date(),
 ): Promise<TimezoneRollupReadiness> {
-  if (!enabledIn(env, "CLICKHOUSE_READ_TIMEZONE_ROLLUP")) {
-    return { status: "disabled", watermark: null, lagSeconds: null, pendingJobs: 0 };
+  const rollupRead = resolveClickHouseRollupReadFlag(env);
+  if (!rollupRead.enabled) {
+    return {
+      status: rollupRead.legacyFlagMigration ? "fallback" : "disabled",
+      watermark: null,
+      lagSeconds: null,
+      pendingJobs: 0,
+      legacyFlagMigration: rollupRead.legacyFlagMigration,
+    };
   }
   const [watermarkResult, pendingResult] = await Promise.all([
     pool.query(
@@ -118,7 +147,8 @@ export async function getTimezoneRollupReadinessAt(
   const lagSeconds = watermark
     ? Math.max(0, Math.floor((eligibleWatermarkMs - watermark.getTime()) / 1_000))
     : null;
-  const fallback = lagSeconds == null
+  const fallback = rollupRead.legacyFlagMigration != null
+    || lagSeconds == null
     || lagSeconds > TIMEZONE_ROLLUP_MAX_LAG_SECONDS
     || pendingJobs > TIMEZONE_ROLLUP_MAX_PENDING_JOBS;
   return {
@@ -126,6 +156,7 @@ export async function getTimezoneRollupReadinessAt(
     watermark: watermark?.toISOString() ?? null,
     lagSeconds,
     pendingJobs,
+    legacyFlagMigration: rollupRead.legacyFlagMigration,
   };
 }
 

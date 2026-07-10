@@ -9,7 +9,10 @@ import {
   type FinalizedUsageEvent,
 } from "@toard/core";
 import type { Pool, PoolClient } from "pg";
-import { ClickHouseStorage } from "./storage";
+import {
+  ClickHouseStorage,
+  resolveClickHouseRollupReadFlag,
+} from "./storage";
 
 type InsertedRows = { table: string; values: Array<Record<string, unknown>> };
 
@@ -169,6 +172,7 @@ function sourceRouterFixture({
   jsonRows = [],
   jobs = [],
   watermark,
+  readRollup = true,
   read15mV2Rollup = true,
 }: {
   active?: boolean;
@@ -178,6 +182,7 @@ function sourceRouterFixture({
   jsonRows?: Array<Record<string, unknown>>;
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
+  readRollup?: boolean;
   read15mV2Rollup?: boolean;
 }) {
   const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
@@ -233,13 +238,49 @@ function sourceRouterFixture({
   } as unknown as ClickHouseClient;
   return {
     storage: new ClickHouseStorage(ch, pg, {
-      readRollup: true,
+      readRollup,
       read15mV2Rollup,
     }),
     queries,
     pgQueries,
   };
 }
+
+test("legacy rollup flag는 deprecated alias이며 새 flag의 명시값이 우선하고 경고는 process당 한 번이다", () => {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message?: unknown) => warnings.push(String(message));
+  try {
+    const legacy = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+    const repeated = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+    const explicitNewOff = resolveClickHouseRollupReadFlag({
+      CLICKHOUSE_READ_ROLLUP: "1",
+      CLICKHOUSE_READ_TIMEZONE_ROLLUP: "0",
+    });
+
+    assert.deepEqual(legacy, {
+      enabled: true,
+      legacyFlagMigration: "deprecated_alias",
+    });
+    assert.deepEqual(repeated, legacy);
+    assert.deepEqual(explicitNewOff, {
+      enabled: false,
+      legacyFlagMigration: "deprecated_alias",
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  const warning = JSON.parse(warnings[0]!) as Record<string, unknown>;
+  assert.equal(warning.event, "clickhouse_read_rollup_deprecated");
+  assert.equal(warning.legacyFlag, "CLICKHOUSE_READ_ROLLUP");
+  assert.equal(warning.replacementFlag, "CLICKHOUSE_READ_TIMEZONE_ROLLUP");
+  assert.match(String(warning.action), /rollup:activate-timezones/);
+  assert.match(String(warning.action), /shadow/);
+  assert.match(String(warning.action), /unset/);
+  assert.doesNotMatch(warnings[0]!, /CLICKHOUSE_PASSWORD|DATABASE_URL|AUTH_SECRET/);
+});
 
 function localDayRange(timezone: string, date: string, days: number) {
   const canonical = canonicalTimezoneId(timezone);
@@ -1044,6 +1085,69 @@ test("모든 dashboard 집계는 공통 router의 15분 v2 fallback을 사용한
     assert.match(query, /FROM[\s\S]*usage_15m_rollup_v2/);
     assert.doesNotMatch(query, /usage_hourly_rollup/);
   }
+});
+
+test("legacy flag만 켜져도 ready coverage가 있으면 guarded timezone source를 사용한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const flag = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    readRollup: flag.enabled,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Kathmandu",
+  });
+
+  assert.match(queries[0]!.query, /usage_daily_timezone_rollup FINAL/);
+  assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup/);
+  for (const guardTable of [
+    "clickhouse_rollup_timezones",
+    "clickhouse_rollup_watermarks",
+    "clickhouse_rollup_dirty_buckets",
+    "clickhouse_timezone_rollup_jobs",
+    "clickhouse_timezone_rollup_coverage",
+  ]) {
+    assert.ok(pgQueries.some(({ sql }) => sql.includes(guardTable)), `${guardTable} guard`);
+  }
+});
+
+test("legacy flag만 켜져도 coverage가 없으면 old hourly가 아니라 exact fallback한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const flag = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    coverageBuckets: [],
+    readRollup: flag.enabled,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Kathmandu",
+  });
+
+  assert.match(queries[0]!.query, /usage_15m_rollup_v2|usage_events/);
+  assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup|usage_hourly_rollup/);
+});
+
+test("compose와 운영 문서는 legacy hourly source를 활성 경로로 안내하지 않는다", () => {
+  const compose = readFileSync(new URL("../../../docker-compose.yml", import.meta.url), "utf8");
+  const runbook = readFileSync(new URL("../../../docs/clickhouse-exact-rollup-runbook.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+
+  assert.match(compose, /CLICKHOUSE_READ_ROLLUP:.*deprecated alias/);
+  assert.doesNotMatch(compose, /CLICKHOUSE_READ_ROLLUP:.*hourly rollup.*대시보드/);
+  assert.doesNotMatch(runbook, /CLICKHOUSE_READ_ROLLUP=1/);
+  assert.match(runbook, /schema.*rollup:activate-timezones.*worker.*coverage.*benchmark.*CLICKHOUSE_READ_TIMEZONE_ROLLUP.*unset/is);
+  assert.match(readme, /CLICKHOUSE_READ_ROLLUP.*deprecated alias/);
+  assert.match(readme, /schema.*activation CLI.*worker.*coverage.*benchmark.*new read flags.*legacy unset/is);
 });
 
 test("인사이트의 current·previous 집계도 공통 router의 ready timezone-day source를 사용한다", async () => {

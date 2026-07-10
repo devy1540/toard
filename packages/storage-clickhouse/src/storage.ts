@@ -1992,11 +1992,59 @@ function readEnvFlag(name: string, defaultValue = false): boolean {
   return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "on";
 }
 
+type RollupReadEnvironment = Record<string, string | undefined>;
+
+export type ClickHouseRollupReadFlag = {
+  enabled: boolean;
+  legacyFlagMigration: "deprecated_alias" | null;
+};
+
+let legacyRollupWarningEmitted = false;
+
+function envFlagValue(value: string | undefined, defaultValue = false): boolean {
+  if (value == null || value.trim() === "") return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "on";
+}
+
+/**
+ * 예전 hourly read 플래그는 새 timezone cache read 요청의 deprecated alias다.
+ * source 선택 자체는 ClickHouseStorage의 registry/coverage/dirty guard가 결정한다.
+ */
+export function resolveClickHouseRollupReadFlag(
+  env: RollupReadEnvironment = process.env,
+): ClickHouseRollupReadFlag {
+  const legacyValue = env.CLICKHOUSE_READ_ROLLUP?.trim();
+  const newValue = env.CLICKHOUSE_READ_TIMEZONE_ROLLUP?.trim();
+  const legacyPresent = legacyValue != null && legacyValue !== "";
+  const newExplicit = newValue != null && newValue !== "";
+
+  if (legacyPresent && !legacyRollupWarningEmitted) {
+    legacyRollupWarningEmitted = true;
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "clickhouse_read_rollup_deprecated",
+      legacyFlag: "CLICKHOUSE_READ_ROLLUP",
+      replacementFlag: "CLICKHOUSE_READ_TIMEZONE_ROLLUP",
+      message: "Legacy hourly rollup source was removed; the legacy flag now aliases guarded timezone cache reads with exact fallback.",
+      action: "Deploy schema, run pnpm rollup:activate-timezones, verify v2/timezone shadow worker coverage and benchmark, set CLICKHOUSE_READ_TIMEZONE_ROLLUP, then unset CLICKHOUSE_READ_ROLLUP.",
+    }));
+  }
+
+  return {
+    enabled: newExplicit
+      ? envFlagValue(newValue)
+      : envFlagValue(legacyValue),
+    legacyFlagMigration: legacyPresent ? "deprecated_alias" : null,
+  };
+}
+
 /** 환경변수로 CH 클라이언트를 구성해 스토리지를 만든다 (메타용 PG 풀은 주입). */
 export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
+  const rollupRead = resolveClickHouseRollupReadFlag();
   return new ClickHouseStorage(createClickHouseClient(), pg, {
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
-    readRollup: readEnvFlag("CLICKHOUSE_READ_TIMEZONE_ROLLUP", false),
+    readRollup: rollupRead.enabled,
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
     read15mV2Rollup: readEnvFlag("CLICKHOUSE_READ_15M_V2_ROLLUP", false),
     enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),

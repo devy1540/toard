@@ -5,14 +5,17 @@ import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
+  repriceUsageAction,
   setPricingAutoSyncAction,
   syncPricingAction,
   type AutoSyncToggleState,
+  type PricingRepriceState,
   type PricingSyncState,
 } from "./pricing-actions";
 
 const INITIAL: PricingSyncState = {};
 const INITIAL_TOGGLE: AutoSyncToggleState = {};
+const INITIAL_REPRICE: PricingRepriceState = {};
 
 /** 가격 동기화 상태 + 수동 실행 + 자동 동기화(일 1회) 토글 — 재시작 없이 여기서 등록/해지한다. */
 export function PricingSyncPanel({
@@ -34,6 +37,7 @@ export function PricingSyncPanel({
     setPricingAutoSyncAction,
     INITIAL_TOGGLE,
   );
+  const [repriceState, repriceAction, repricePending] = useActionState(repriceUsageAction, INITIAL_REPRICE);
   const toggleFormRef = useRef<HTMLFormElement>(null);
   const enabled = toggleState.enabled ?? autoSync;
 
@@ -79,8 +83,29 @@ export function PricingSyncPanel({
         <p className="text-muted-foreground text-xs">{t("system.autoSyncUnavailable")}</p>
       )}
 
+      <div className="border-t pt-3">
+        <p className="text-sm font-medium">{t("system.repriceTitle")}</p>
+        <p className="text-muted-foreground mt-0.5 text-xs">{t("system.repriceDescription")}</p>
+        <form action={repriceAction} className="mt-2 flex flex-wrap items-end gap-2">
+          <label className="grid gap-1 text-xs">
+            <span className="text-muted-foreground">{t("system.repriceConfirmLabel")}</span>
+            <input
+              name="confirm-reprice"
+              required
+              autoComplete="off"
+              placeholder={t("system.repriceConfirmPlaceholder")}
+              className="border-input bg-background h-8 w-28 rounded-md border px-2 font-mono text-sm"
+            />
+          </label>
+          <Button type="submit" variant="destructive" size="sm" disabled={repricePending}>
+            {repricePending ? t("system.repricing") : t("system.repriceSubmit")}
+          </Button>
+        </form>
+      </div>
+
       {toggleState.error ? <p className="text-destructive text-sm">{toggleState.error}</p> : null}
       {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
+      {repriceState.error ? <p className="text-destructive text-sm">{repriceState.error}</p> : null}
       {state.ok ? (
         <p className="text-sm text-emerald-600 dark:text-emerald-500">
           {state.day
@@ -89,6 +114,14 @@ export function PricingSyncPanel({
                 day: state.day,
               })
             : t("system.synced", { count: state.upserted?.toLocaleString() ?? "0" })}
+        </p>
+      ) : null}
+      {repriceState.ok ? (
+        <p className="text-sm text-emerald-600 dark:text-emerald-500">
+          {t("system.repriced", {
+            count: repriceState.repriced?.toLocaleString() ?? "0",
+            unpriced: repriceState.unpriced?.toLocaleString() ?? "0",
+          })}
         </p>
       ) : null}
     </div>

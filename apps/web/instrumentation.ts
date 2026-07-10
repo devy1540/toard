@@ -10,6 +10,8 @@ export async function register(): Promise<void> {
       startClickHouseOutboxFlush,
       startClickHouseTimezoneRollupCompaction,
     } = await import("./lib/clickhouse-outbox");
+    const { activatePersistedTimezoneRollupsNonBlocking } = await import("./lib/timezone-rollup");
+    activatePersistedTimezoneRollupsNonBlocking();
     startClickHouseOutboxFlush();
     startClickHouse15mV2Compaction();
     startClickHouseTimezoneRollupCompaction();

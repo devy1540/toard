@@ -1,7 +1,12 @@
-import type { FinalizedUsageEvent, UsageEvent } from "@toard/core";
+import {
+  USAGE_EVENT_LOGICAL_RETENTION_DAYS,
+  type FinalizedUsageEvent,
+  type UsageEvent,
+} from "@toard/core";
 import { resolveCostAt, type PricingSchedule } from "@toard/pricing";
 
-export const MAX_USAGE_EVENT_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+export const MAX_USAGE_EVENT_AGE_MS =
+  USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 export type FinalizationResult = {
   events: FinalizedUsageEvent[];

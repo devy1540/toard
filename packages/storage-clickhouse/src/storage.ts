@@ -32,6 +32,7 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
   localDateKey,
+  CLICKHOUSE_RAW_RETENTION_DAYS,
 } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
@@ -125,7 +126,7 @@ export interface ClickHouseStorageOptions {
   read15mRollup?: boolean;
   /** 가격 provenance를 보존한 v2 15분 rollup 조회를 사용할지 여부. 기본 false. */
   read15mV2Rollup?: boolean;
-  /** 원본 usage_events의 90일 TTL을 적용할지 여부. 명시적으로 활성화할 때만 true. */
+  /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
   enforceRetentionTtl?: boolean;
 }
 
@@ -375,7 +376,7 @@ const CLICKHOUSE_SCHEMA_DDL = [
 ] as const;
 
 const CLICKHOUSE_RAW_RETENTION_DDL =
-  "ALTER TABLE usage_events MODIFY TTL ts + INTERVAL 90 DAY DELETE";
+  `ALTER TABLE usage_events MODIFY TTL toDateTime(ts) + INTERVAL ${CLICKHOUSE_RAW_RETENTION_DAYS} DAY DELETE`;
 
 const CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS = 5;
 const CLICKHOUSE_TRANSIENT_RETRY_BASE_MS = 150;
@@ -1245,7 +1246,7 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  private async enqueueTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
+  private async invalidateTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
     if (buckets.length === 0) return;
     await client.query(
       `WITH affected(bucket) AS (
@@ -1325,7 +1326,7 @@ export class ClickHouseStorage implements StorageBackend {
         });
       }
       if (spec.name === USAGE_15M_V2.name) {
-        await this.enqueueTimezoneRollupJobs(client, buckets);
+        await this.invalidateTimezoneRollupJobs(client, buckets);
       }
 
       const newWatermark = contiguousBuckets.length > 0

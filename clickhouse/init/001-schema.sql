@@ -1,5 +1,6 @@
 -- ClickHouse 스키마 (설계 §4.3). 옵트인 모드: 이벤트·집계만, 메타는 PG.
 -- 팀 시점 귀속을 위해 team_id 를 비정규화(수집 시점 스냅샷)한다.
+-- raw TTL은 init에서 켜지 않는다. runtime opt-in 플래그가 90일 논리 기간 + 7일 grace = 97일을 적용한다.
 CREATE DATABASE IF NOT EXISTS toard;
 
 CREATE TABLE IF NOT EXISTS toard.usage_events

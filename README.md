@@ -179,9 +179,11 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 | `CLICKHOUSE_READ_15M_V2_ROLLUP` | 검증 완료된 15분 v2와 raw tail 조회 |
 | `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 활성 IANA 시간대별 hour/day cache 생성 |
 | `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | ready인 시간대별 hour/day cache 조회, 미완료 구간은 15분 v2 fallback |
-| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 모든 shadow/read 검증 뒤 raw 원본 90일 TTL 적용 |
+| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 모든 shadow/read 검증 뒤 raw 원본에 90일 논리 보정 기간 + 7일 safety grace(물리 97일) TTL 적용 |
 
-전환 순서는 **schema 배포 → 15분 v2 shadow → 조직 기본·저장된 사용자 시간대 shadow → raw diff·benchmark → timezone day/hour read → 15분 v2 read → raw TTL**이다. 성능 gate는 로컬 Docker에서 400일·100만 이벤트 fixture를 검증한 뒤 다섯 시간대를 각 100회 측정한다.
+전환 순서는 **schema 배포 → 15분 v2 shadow → 조직 기본·저장된 사용자 시간대 shadow → raw diff·benchmark → timezone day/hour read → 15분 v2 read → raw TTL**이다. 앱은 기동 시 `ORG_TIMEZONE`과 `users.timezone`의 고유 값을 canonicalize·ClickHouse capability-check해 비동기로 등록하며, rollout에서 즉시 seed하려면 ClickHouse 환경변수와 함께 `pnpm rollup:activate-timezones`를 실행한다. 신규·coverage-missing bucket만 day 최근 400 local days와 hour 최근 32 local days를 16-bucket chunk로 prewarm하므로 재시작·replica activation이 완료 coverage를 무효화하지 않는다.
+
+수집 API의 late-event cutoff와 대시보드 쿼리는 계속 90일을 논리 경계로 사용한다. 물리 raw TTL과 delivered outbox/batch만 97일 보존해 정확히 90일 경계에서 수락된 이벤트가 outbox flush와 v2 compactor를 거칠 7일의 안전 여유를 둔다. raw TTL은 위 opt-in 플래그를 켜기 전에는 init/runtime 어디에서도 적용하지 않는다.
 
 ```bash
 pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts

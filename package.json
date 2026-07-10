@@ -20,7 +20,8 @@
     "migrate:down": "node-pg-migrate -j sql -m migrations -d DATABASE_URL down",
     "seed": "tsx scripts/seed.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
-    "seed:dashboard-demo": "tsx scripts/seed-dashboard-demo.ts"
+    "seed:dashboard-demo": "tsx scripts/seed-dashboard-demo.ts",
+    "rollup:activate-timezones": "tsx scripts/activate-timezone-rollups.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

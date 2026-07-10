@@ -12,25 +12,45 @@ import { activateTimezoneRollupNonBlocking, resolveSupportedRollupTimezone } fro
 /** TimezoneSync(클라이언트)가 기록하는 브라우저 타임존 쿠키. 값은 raw IANA 이름. */
 export const TZ_COOKIE = "toard.tz";
 
+export async function resolveViewerTimezoneWith(args: {
+  savedTimezone: string | null;
+  cookieTimezone: string | null;
+  orgTimezone: string;
+  resolveTimezone: (timezone: string) => Promise<string | null>;
+  activate: (timezone: string) => void;
+}): Promise<string> {
+  for (const candidate of [
+    args.savedTimezone,
+    args.cookieTimezone,
+    args.orgTimezone,
+    "UTC",
+  ]) {
+    if (!candidate) continue;
+    const resolved = await args.resolveTimezone(candidate);
+    if (!resolved) continue;
+    args.activate(resolved);
+    return resolved;
+  }
+  return "UTC";
+}
+
 /** 뷰어 타임존 — 요청(렌더) 단위로 캐시되어 페이지·컴포넌트 어디서 불러도 1회만 해석. */
 export const getViewerTimezone = cache(async (): Promise<string> => {
   const userId = await getCurrentUserId();
+  let savedTimezone: string | null = null;
   if (userId) {
     const r = await getPool().query<{ timezone: string | null }>(
       "SELECT timezone FROM users WHERE id = $1",
       [userId],
     );
-    const set = r.rows[0]?.timezone;
-    const resolved = set ? await resolveSupportedRollupTimezone(set) : null;
-    if (resolved) return resolved;
+    savedTimezone = r.rows[0]?.timezone ?? null;
   }
 
-  const cookieTz = (await cookies()).get(TZ_COOKIE)?.value;
-  const resolvedCookie = cookieTz ? await resolveSupportedRollupTimezone(cookieTz) : null;
-  if (resolvedCookie) {
-    activateTimezoneRollupNonBlocking(resolvedCookie);
-    return resolvedCookie;
-  }
-
-  return await resolveSupportedRollupTimezone(getOrgTimezone()) ?? "UTC";
+  return resolveViewerTimezoneWith({
+    savedTimezone,
+    cookieTimezone: (await cookies()).get(TZ_COOKIE)?.value ?? null,
+    orgTimezone: getOrgTimezone(),
+    resolveTimezone: resolveSupportedRollupTimezone,
+    activate: activateTimezoneRollupNonBlocking,
+  });
 });

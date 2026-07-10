@@ -17,6 +17,7 @@ import {
 function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
   const jobs = new Map<string, TimezoneRollupJob>();
   const chunks: Date[][] = [];
+  const coverage = new Set<string>();
   const lockKeys: string[] = [];
   const activeTimezones = new Set<string>();
   let sequence = 0;
@@ -25,16 +26,19 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
     `${resolution}:${timezone}:${bucket.toISOString()}`;
 
   const repo: TimezoneRollupRepository = {
-    async activateTimezone(timezone, maximum) {
+    async ensureRegisteredTimezone(timezone, maximum) {
       assert.equal(maximum, MAX_ACTIVE_ROLLUP_TIMEZONES);
+      if (!(options.capacity ?? true)) return "capacity";
+      if (activeTimezones.has(timezone)) return "existing";
       activeTimezones.add(timezone);
-      return options.capacity ?? true;
+      return "created";
     },
-    async enqueueJobs(resolution, timezone, buckets) {
+    async prewarmMissingJobs(resolution, timezone, buckets) {
       chunks.push([...buckets]);
+      let inserted = 0;
       for (const bucket of buckets) {
         const jobKey = key(resolution, timezone, bucket);
-        if (!jobs.has(jobKey)) {
+        if (!jobs.has(jobKey) && !coverage.has(jobKey)) {
           jobs.set(jobKey, {
             id: `job-${++sequence}`,
             resolution,
@@ -42,8 +46,10 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
             bucket,
             status: "pending",
           });
+          inserted++;
         }
       }
+      return inserted;
     },
     async claimJobs(limit) {
       return [...jobs.values()]
@@ -66,7 +72,10 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
     async markDone(id) {
       assert.equal(lockHeld, false, "상태 갱신은 advisory lock client를 중첩 점유하지 않아야 함");
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
-      if (job) job.status = "done";
+      if (job) {
+        job.status = "done";
+        coverage.add(key(job.resolution, job.timezone, job.bucket));
+      }
     },
     async markPending(id) {
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
@@ -93,7 +102,7 @@ test("같은 시간대·해상도·버킷 작업은 한 번만 enqueue한다", a
   assert.equal(fixture.jobs.size, 1);
 });
 
-test("활성화는 최근 400개 로컬 일별 버킷을 최대 16개 chunk로 enqueue한다", async () => {
+test("활성화는 최근 400개 로컬 일별 버킷을 최대 16개 chunk로 prewarm한다", async () => {
   const fixture = fakeTimezoneRollupRepository();
 
   await activateTimezoneRollupWith(
@@ -102,11 +111,11 @@ test("활성화는 최근 400개 로컬 일별 버킷을 최대 16개 chunk로 e
     new Date("2026-03-10T12:00:00.000Z"),
   );
 
-  assert.equal(fixture.chunks.flat().length, 400);
-  assert.equal(fixture.chunks.length, 25);
+  const dayJobs = [...fixture.jobs.values()].filter((job) => job.resolution === "day");
+  assert.equal(dayJobs.length, 400);
   assert.ok(fixture.chunks.every((chunk) => chunk.length > 0 && chunk.length <= 16));
 
-  const starts = new Set(fixture.chunks.flat().map((bucket) => bucket.toISOString()));
+  const starts = new Set(dayJobs.map((job) => job.bucket.toISOString()));
   assert.equal(starts.has("2026-03-08T08:00:00.000Z"), true);
   assert.equal(starts.has("2026-03-09T07:00:00.000Z"), true);
   assert.equal(
@@ -143,7 +152,8 @@ test("alias activation은 canonical registry와 job key 하나로 합쳐진다",
   await activateTimezoneRollupWith(fixture.repo, "America/Los_Angeles", now);
 
   assert.deepEqual([...fixture.activeTimezones], ["America/Los_Angeles"]);
-  assert.equal(fixture.jobs.size, 400);
+  assert.equal([...fixture.jobs.values()].filter((job) => job.resolution === "day").length, 400);
+  assert.ok([...fixture.jobs.values()].some((job) => job.resolution === "hour"));
   assert.equal(canonicalTimezoneId("US/Pacific"), "America/Los_Angeles");
 });
 
@@ -187,7 +197,11 @@ test("Santiago 자정 gap 날짜 prewarm은 실제 local date 첫 instant를 사
     new Date("2026-07-10T12:00:00.000Z"),
   );
 
-  const starts = new Set(fixture.chunks.flat().map((bucket) => bucket.toISOString()));
+  const starts = new Set(
+    [...fixture.jobs.values()]
+      .filter((job) => job.resolution === "day")
+      .map((job) => job.bucket.toISOString()),
+  );
   assert.equal(starts.has("2025-09-07T04:00:00.000Z"), true);
   assert.equal(starts.has("2025-09-07T03:00:00.000Z"), false);
 });
@@ -254,7 +268,7 @@ test("ClickHouse capability가 사라진 timezone job은 한 tick에 drain되어
   assert.deepEqual(await runTimezoneRollupWorkerWith(fixture.repo, compactor), { jobs: 1, rows: 3 });
 });
 
-test("cookie activation gate는 같은 process의 동일 시간대 요청을 한 번만 실행한다", async () => {
+test("activation gate는 같은 process의 동일 시간대 요청을 한 번만 실행한다", async () => {
   let activations = 0;
   let resolveActivation: (() => void) | undefined;
   const gate = createTimezoneRollupActivationGate(async () => {
@@ -273,7 +287,7 @@ test("cookie activation gate는 같은 process의 동일 시간대 요청을 한
   assert.equal(activations, 1);
 });
 
-test("설정 저장과 cookie fallback은 DB 성공 뒤 non-blocking activation을 연결한다", () => {
+test("설정 저장·viewer resolver·startup은 non-blocking activation을 연결한다", () => {
   const actions = readFileSync(new URL("../app/(dashboard)/settings/actions.ts", import.meta.url), "utf8");
   const viewer = readFileSync(new URL("./viewer-time.ts", import.meta.url), "utf8");
   const outbox = readFileSync(new URL("./clickhouse-outbox.ts", import.meta.url), "utf8");
@@ -283,16 +297,17 @@ test("설정 저장과 cookie fallback은 DB 성공 뒤 non-blocking activation�
     actions,
     /await getPool\(\)\.query\("UPDATE users SET timezone[\s\S]*void activateTimezoneRollup\(tz\)/,
   );
-  assert.match(viewer, /activateTimezoneRollupNonBlocking\(resolvedCookie\)/);
+  assert.match(viewer, /activate:\s*activateTimezoneRollupNonBlocking/);
   assert.match(actions, /resolveSupportedRollupTimezone\(raw\)/);
-  assert.match(viewer, /resolveSupportedRollupTimezone\(cookieTz\)/);
+  assert.match(viewer, /resolveTimezone:\s*resolveSupportedRollupTimezone/);
+  assert.match(rollup, /SELECT DISTINCT timezone[\s\S]*FROM users/);
   assert.match(outbox, /compactClickHouseTimezoneRollups/);
   assert.match(
     rollup,
-    /ON CONFLICT \(resolution, timezone, bucket\) DO UPDATE[\s\S]*status = 'pending'/,
+    /ON CONFLICT \(resolution, timezone, bucket\) DO NOTHING/,
   );
   assert.match(rollup, /WHERE id = \$1[\s\S]*AND status = 'inflight'/);
-  assert.match(rollup, /DELETE FROM clickhouse_timezone_rollup_coverage/);
+  assert.doesNotMatch(rollup, /markPending[\s\S]*DELETE FROM clickhouse_timezone_rollup_coverage/);
   assert.match(
     rollup,
     /INSERT INTO clickhouse_timezone_rollup_coverage[\s\S]*FROM completed/,

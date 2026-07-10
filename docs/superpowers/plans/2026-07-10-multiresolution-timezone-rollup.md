@@ -4,7 +4,7 @@
 
 **Goal:** 이벤트 시각 기준 가격 확정, 90일 원본 보정, 400일 15분 기준 데이터, 실제 사용 IANA 시간대별 1시간·일별 가속 캐시로 최근 12개월 대시보드의 정합성과 P95 2초 목표를 함께 달성한다.
 
-**Architecture:** ClickHouse `usage_events`는 90일 동안만 원본 정합성 기준이고, 그 뒤에는 versioned 15분 rollup v2가 400일 동안 시간대 독립 기준 데이터가 된다. 활성 IANA 시간대의 시간·일별 rollup은 15분 기준 데이터를 다시 묶는 캐시이며, watermark·dirty job·읽기 플래그가 불완전하면 항상 더 세밀한 15분 또는 raw 소스로 fallback한다. 가격은 불변 revision schedule에서 `UsageEvent.ts` 이하의 최신 revision을 골라 서버에서 확정한다.
+**Architecture:** ClickHouse `usage_events`는 논리 90일 동안 원본 정합성 기준이고 물리적으로는 7일 grace를 더한 97일 보존되며, 그 뒤에는 versioned 15분 rollup v2가 400일 동안 시간대 독립 기준 데이터가 된다. 활성 IANA 시간대의 시간·일별 rollup은 15분 기준 데이터를 다시 묶는 캐시이며, watermark·dirty job·읽기 플래그가 불완전하면 항상 더 세밀한 15분 또는 raw 소스로 fallback한다. 가격은 불변 revision schedule에서 `UsageEvent.ts` 이하의 최신 revision을 골라 서버에서 확정한다.
 
 **Tech Stack:** TypeScript, Next.js 15 App Router, PostgreSQL 16, ClickHouse, `@clickhouse/client`, `node:test`, pnpm workspace, node-pg-migrate.
 
@@ -14,9 +14,9 @@
 - 두 수집 엔드포인트(`/api/v1/events`, `/api/v1/logs`) 모두 이벤트 발생 시각 기준 가격 확정과 90일 초과 이벤트의 `expired` 응답을 사용한다.
 - 원본·15분·시간대별 cache의 기간은 `[from, to)`이며 UTC `DateTime64(3)`을 사용한다.
 - 사용자가 보는 하루·시간 경계는 IANA 시간대 이름을 사용한다. UTC offset 숫자나 브라우저 locale 문자열을 저장하지 않는다.
-- 원본 90일, 15분·시간·일별 cache 400일, 활성 시간대 최대 64개, worker 60초 tick당 8개 16버킷 청크를 그대로 사용한다.
+- 원본 논리 cutoff 90일·물리 TTL 97일, 15분·시간·일별 cache 400일, 활성 시간대 최대 64개, worker 60초 tick당 8개 작업을 사용한다. activation prewarm은 day 최근 400 local days·hour 최근 32 local days를 16-bucket 청크로 추가한다.
 - 시간대별 cache는 정답 데이터가 아니다. 읽기는 watermark 완전성·dirty 상태를 확인하고 실패 시 15분 rollup으로 fallback한다.
-- `CLICKHOUSE_ENFORCE_RETENTION_TTL=1` 전에는 원본 `usage_events`의 90일 TTL을 켜지 않는다. v2와 시간대 cache table의 400일 TTL은 schema 생성 시부터 둔다.
+- `CLICKHOUSE_ENFORCE_RETENTION_TTL=1` 전에는 원본 `usage_events`의 물리 97일 TTL을 켜지 않는다. v2와 시간대 cache table의 400일 TTL은 schema 생성 시부터 둔다.
 - 장기 전체 재가격 계산 UI·action은 제거한다. migration 이전 비용은 기존 수치를 보존하되 `legacy`로 표시한다.
 - 가격 revision은 과거 행을 UPDATE·DELETE하지 않는다. 공급자 가격 파일에 실제 적용일이 없으면 최초 확인 시각부터 앞으로만 적용한다.
 - 새 의존성을 추가하지 않는다.
@@ -341,7 +341,7 @@ ALTER TABLE clickhouse_usage_outbox ADD COLUMN cost_status TEXT NOT NULL DEFAULT
 ORDER BY (bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status)
 ```
 
-`enqueueUsageEvents`, outbox SELECT, `insertOutboxRows`, `OutboxRow`, Postgres `saveUsageEvents`는 가격 revision과 상태를 끝까지 전달한다. 기존 원본 `usage_events`는 `CLICKHOUSE_ENFORCE_RETENTION_TTL=1`일 때만 `ALTER TABLE usage_events MODIFY TTL ts + INTERVAL 90 DAY DELETE`를 실행한다. 이 플래그가 비어 있으면 raw TTL을 추가·변경하지 않는다.
+`enqueueUsageEvents`, outbox SELECT, `insertOutboxRows`, `OutboxRow`, Postgres `saveUsageEvents`는 가격 revision과 상태를 끝까지 전달한다. 기존 원본 `usage_events`는 `CLICKHOUSE_ENFORCE_RETENTION_TTL=1`일 때만 `ALTER TABLE usage_events MODIFY TTL toDateTime(ts) + INTERVAL 97 DAY DELETE`를 실행한다. 이 플래그가 비어 있으면 raw TTL을 추가·변경하지 않는다.
 
 - [ ] **Step 4: 저장소 패키지 테스트와 타입 검사를 실행한다.**
 
@@ -378,7 +378,7 @@ async compactUsage15mV2(limitBuckets?: number): Promise<CompactUsage15mV2Result>
 - Consumes: v2 schema and outbox rows from Task 3.
 - Produces: dirty/watermark guarded 15분 source for later timezone cache and query routing.
 
-- [ ] **Step 1: dirty 재생성·90일 TTL 경계의 실패 테스트를 작성한다.**
+- [ ] **Step 1: dirty 재생성·90일 논리 경계와 97일 물리 TTL grace의 실패 테스트를 작성한다.**
 
 `verify-clickhouse-exact-rollup.ts`에 기준 시각을 고정하고 다음 assertions를 추가한다.
 
@@ -508,7 +508,7 @@ CREATE TABLE clickhouse_timezone_rollup_jobs (
 
 ClickHouse에는 `timezone LowCardinality(String)`, `bucket_start DateTime64(3, 'UTC')`, dimensions, `pricing_revision_id`, `cost_status`, metrics, `version`을 가진 두 `ReplacingMergeTree(version)` 테이블을 만든다. ORDER BY는 `(timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)`다. 두 table 모두 `TTL bucket_start + INTERVAL 400 DAY DELETE`를 사용한다.
 
-`activateTimezoneRollup()`은 IANA 검증 후 최대 64개 registry에 UPSERT하고, 400일 일별 prewarm을 16일 chunks로 enqueue한다. `saveTimezoneAction()`은 DB timezone UPDATE 성공 뒤 `void activateTimezoneRollup(tz)`를 호출한다. `getViewerTimezone()`의 cookie fallback timezone은 읽기 resolver가 처음 만났을 때 같은 activation을 non-blocking으로 호출한다.
+`activateTimezoneRollup()`은 IANA 검증 후 최대 64개 registry를 ensure하고, coverage가 없는 day 최근 400 local days와 hour 최근 32 local days만 16-bucket chunks로 `ON CONFLICT DO NOTHING` prewarm한다. 반복 activation은 done/coverage를 유지하며 v2 dirty propagation만 coverage 삭제와 pending 전환을 수행한다. `saveTimezoneAction()`은 DB timezone UPDATE 성공 뒤 activation을 호출하고, viewer resolver는 saved/cookie/`ORG_TIMEZONE` 선택을 process-local non-blocking gate로 활성화한다. startup은 `ORG_TIMEZONE`과 `SELECT DISTINCT timezone FROM users`를 비대화형으로 seed한다.
 
 worker는 `FOR UPDATE SKIP LOCKED`로 최대 8 jobs를 잡고, PG advisory lock `timezone-rollup:${resolution}:${timezone}`을 얻은 뒤 15분 v2 source를 `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, timezone)` 또는 `toStartOfDay(bucket_15m, timezone)`로 그룹화한다. 성공 후에만 job을 `done`으로 바꾸고, 실패하면 `pending`으로 되돌린다.
 
@@ -657,7 +657,7 @@ Expected: script missing으로 FAIL.
 
 - [ ] **Step 3: worker gate, cleanup, health, flags, benchmark를 구현한다.**
 
-`clickhouse-outbox.ts`는 flush, 15분 compactor, timezone worker를 독립 re-entrancy guard로 실행한다. timezone worker는 `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR=1`일 때만 실행한다. 읽기에는 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=1`을 사용한다. `pruneClickHouseUsageRetention()`은 90일보다 오래된 delivered outbox/batch와 7일보다 오래된 done timezone jobs만 삭제하며, pending/inflight row를 삭제하지 않는다.
+`clickhouse-outbox.ts`는 flush, 15분 compactor, timezone worker를 독립 re-entrancy guard로 실행한다. timezone worker는 `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR=1`일 때만 실행한다. 읽기에는 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=1`을 사용한다. `pruneClickHouseUsageRetention()`은 raw와 같은 97일보다 오래된 delivered outbox/batch와 7일보다 오래된 done timezone jobs만 삭제하며, pending/inflight row를 삭제하지 않는다.
 
 `/api/ready`는 ClickHouse 연결 성공 외에 `timezoneRollup` 상태를 `healthy`, `fallback`, `disabled`로 돌려준다. watermark가 15분 기준보다 30분 이상 뒤처지거나 pending job이 10,000개를 넘으면 `fallback`으로 표시하되 HTTP ready 자체는 200으로 유지한다.
 

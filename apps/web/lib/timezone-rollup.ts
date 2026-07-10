@@ -6,15 +6,17 @@ import {
 } from "@toard/core";
 import type { Pool } from "pg";
 import { getPool } from "./db";
+import { getOrgTimezone } from "./org-time";
 
 export const MAX_ACTIVE_ROLLUP_TIMEZONES = 64;
 export const TIMEZONE_ROLLUP_JOBS_PER_TICK = 8;
-
-const TIMEZONE_ROLLUP_PREWARM_DAYS = 400;
-const TIMEZONE_ROLLUP_PREWARM_CHUNK_DAYS = 16;
+export const TIMEZONE_ROLLUP_DAY_PREWARM_DAYS = 400;
+export const TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS = 32;
+export const TIMEZONE_ROLLUP_PREWARM_CHUNK_BUCKETS = 16;
 
 export type TimezoneRollupResolution = "hour" | "day";
 export type TimezoneRollupJobStatus = "pending" | "inflight" | "done";
+export type TimezoneRollupRegistration = "created" | "existing" | "capacity";
 
 export type TimezoneRollupJob = {
   id: string;
@@ -38,12 +40,12 @@ type TimezoneCapability = {
 };
 
 export type TimezoneRollupRepository = {
-  activateTimezone(timezone: string, maximum: number): Promise<boolean>;
-  enqueueJobs(
+  ensureRegisteredTimezone(timezone: string, maximum: number): Promise<TimezoneRollupRegistration>;
+  prewarmMissingJobs(
     resolution: TimezoneRollupResolution,
     timezone: string,
     buckets: readonly Date[],
-  ): Promise<void>;
+  ): Promise<number>;
   claimJobs(limit: number): Promise<TimezoneRollupJob[]>;
   withAdvisoryLock<T>(
     key: string,
@@ -65,12 +67,43 @@ function requireCanonicalTimezone(timezone: string): string {
 function dailyPrewarmBuckets(timezone: string, now: Date): Date[] {
   const today = localDateKey(now, timezone);
   return Array.from(
-    { length: TIMEZONE_ROLLUP_PREWARM_DAYS },
+    { length: TIMEZONE_ROLLUP_DAY_PREWARM_DAYS },
     (_, index) => firstInstantOfLocalDate(
-      addLocalCalendarDays(today, index - TIMEZONE_ROLLUP_PREWARM_DAYS + 1),
+      addLocalCalendarDays(today, index - TIMEZONE_ROLLUP_DAY_PREWARM_DAYS + 1),
       timezone,
     ),
   );
+}
+
+function hourlyPrewarmBuckets(timezone: string, now: Date): Date[] {
+  const today = localDateKey(now, timezone);
+  const from = firstInstantOfLocalDate(
+    addLocalCalendarDays(today, -TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS + 1),
+    timezone,
+  );
+  const to = firstInstantOfLocalDate(addLocalCalendarDays(today, 1), timezone);
+  const buckets: Date[] = [];
+  for (let cursor = from.getTime(); cursor < to.getTime(); cursor += 60 * 60 * 1_000) {
+    buckets.push(new Date(cursor));
+  }
+  return buckets;
+}
+
+async function prewarmMissingBuckets(
+  repository: TimezoneRollupRepository,
+  resolution: TimezoneRollupResolution,
+  timezone: string,
+  buckets: readonly Date[],
+): Promise<number> {
+  let inserted = 0;
+  for (let offset = 0; offset < buckets.length; offset += TIMEZONE_ROLLUP_PREWARM_CHUNK_BUCKETS) {
+    inserted += await repository.prewarmMissingJobs(
+      resolution,
+      timezone,
+      buckets.slice(offset, offset + TIMEZONE_ROLLUP_PREWARM_CHUNK_BUCKETS),
+    );
+  }
+  return inserted;
 }
 
 export async function enqueueTimezoneRollupWith(
@@ -81,7 +114,7 @@ export async function enqueueTimezoneRollupWith(
 ): Promise<void> {
   const canonical = requireCanonicalTimezone(timezone);
   if (!Number.isFinite(bucket.getTime())) throw new Error("유효한 시간대 rollup bucket이 아님");
-  await repository.enqueueJobs(resolution, canonical, [bucket]);
+  await repository.prewarmMissingJobs(resolution, canonical, [bucket]);
 }
 
 export async function activateTimezoneRollupWith(
@@ -89,24 +122,35 @@ export async function activateTimezoneRollupWith(
   timezone: string,
   now = new Date(),
   supportsTimezone: (timezone: string) => Promise<boolean> = async () => true,
-): Promise<void> {
+): Promise<{
+  registration: Exclude<TimezoneRollupRegistration, "capacity">;
+  prewarmed: Record<TimezoneRollupResolution, number>;
+}> {
   const canonical = requireCanonicalTimezone(timezone);
   if (!(await supportsTimezone(canonical))) {
     throw new Error(`ClickHouse가 지원하지 않는 IANA 시간대: ${canonical}`);
   }
-  const active = await repository.activateTimezone(canonical, MAX_ACTIVE_ROLLUP_TIMEZONES);
-  if (!active) {
+  const registration = await repository.ensureRegisteredTimezone(
+    canonical,
+    MAX_ACTIVE_ROLLUP_TIMEZONES,
+  );
+  if (registration === "capacity") {
     throw new Error(`활성 시간대는 최대 ${MAX_ACTIVE_ROLLUP_TIMEZONES}개까지 등록할 수 있음`);
   }
 
-  const buckets = dailyPrewarmBuckets(canonical, now);
-  for (let offset = 0; offset < buckets.length; offset += TIMEZONE_ROLLUP_PREWARM_CHUNK_DAYS) {
-    await repository.enqueueJobs(
-      "day",
-      canonical,
-      buckets.slice(offset, offset + TIMEZONE_ROLLUP_PREWARM_CHUNK_DAYS),
-    );
-  }
+  const day = await prewarmMissingBuckets(
+    repository,
+    "day",
+    canonical,
+    dailyPrewarmBuckets(canonical, now),
+  );
+  const hour = await prewarmMissingBuckets(
+    repository,
+    "hour",
+    canonical,
+    hourlyPrewarmBuckets(canonical, now),
+  );
+  return { registration, prewarmed: { day, hour } };
 }
 
 export async function runTimezoneRollupWorkerWith(
@@ -145,19 +189,23 @@ export async function runTimezoneRollupWorkerWith(
 class PgTimezoneRollupRepository implements TimezoneRollupRepository {
   constructor(private readonly pool: Pool) {}
 
-  async activateTimezone(timezone: string, maximum: number): Promise<boolean> {
+  async ensureRegisteredTimezone(
+    timezone: string,
+    maximum: number,
+  ): Promise<TimezoneRollupRegistration> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", ["timezone-rollup-registry"]);
       const existing = await client.query("SELECT 1 FROM clickhouse_rollup_timezones WHERE timezone = $1", [timezone]);
-      if (existing.rowCount === 0) {
+      const registration = existing.rowCount === 0 ? "created" : "existing";
+      if (registration === "created") {
         const count = await client.query<{ count: number }>(
           "SELECT count(*)::int AS count FROM clickhouse_rollup_timezones",
         );
         if ((count.rows[0]?.count ?? 0) >= maximum) {
           await client.query("COMMIT");
-          return false;
+          return "capacity";
         }
       }
       await client.query(
@@ -168,7 +216,7 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
         [timezone],
       );
       await client.query("COMMIT");
-      return true;
+      return registration;
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);
       throw error;
@@ -177,29 +225,33 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
     }
   }
 
-  async enqueueJobs(
+  async prewarmMissingJobs(
     resolution: TimezoneRollupResolution,
     timezone: string,
     buckets: readonly Date[],
-  ): Promise<void> {
-    if (buckets.length === 0) return;
-    await this.pool.query(
+  ): Promise<number> {
+    if (buckets.length === 0) return 0;
+    const inserted = await this.pool.query(
       `WITH requested(bucket) AS (
          SELECT unnest($3::timestamptz[])
-       ), invalidated AS (
-         DELETE FROM clickhouse_timezone_rollup_coverage AS coverage
-         USING requested
-         WHERE coverage.resolution = $1
-           AND coverage.timezone = $2
-           AND coverage.bucket = requested.bucket
+       ), missing AS (
+         SELECT requested.bucket
+         FROM requested
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM clickhouse_timezone_rollup_coverage AS coverage
+           WHERE coverage.resolution = $1
+             AND coverage.timezone = $2
+             AND coverage.bucket = requested.bucket
+         )
        )
        INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
        SELECT $1, $2, bucket
-       FROM requested
-       ON CONFLICT (resolution, timezone, bucket) DO UPDATE
-       SET status = 'pending', updated_at = now()`,
+       FROM missing
+       ON CONFLICT (resolution, timezone, bucket) DO NOTHING`,
       [resolution, timezone, buckets],
     );
+    return inserted.rowCount ?? 0;
   }
 
   async claimJobs(limit: number): Promise<TimezoneRollupJob[]> {
@@ -266,17 +318,9 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
 
   async markPending(id: string): Promise<void> {
     await this.pool.query(
-      `WITH pending AS (
-         UPDATE clickhouse_timezone_rollup_jobs
-         SET status = 'pending', updated_at = now()
-         WHERE id = $1
-         RETURNING resolution, timezone, bucket
-       )
-       DELETE FROM clickhouse_timezone_rollup_coverage AS coverage
-       USING pending
-       WHERE coverage.resolution = pending.resolution
-         AND coverage.timezone = pending.timezone
-         AND coverage.bucket = pending.bucket`,
+      `UPDATE clickhouse_timezone_rollup_jobs
+       SET status = 'pending', updated_at = now()
+       WHERE id = $1`,
       [id],
     );
   }
@@ -300,6 +344,10 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
       client.release();
     }
   }
+}
+
+export function createPgTimezoneRollupRepository(pool: Pool): TimezoneRollupRepository {
+  return new PgTimezoneRollupRepository(pool);
 }
 
 function isTimezoneRollupCompactor(storage: unknown): storage is TimezoneRollupCompactor {
@@ -337,6 +385,82 @@ export async function resolveSupportedRollupTimezone(
   const canonical = canonicalTimezoneId(timezone);
   if (!canonical) return null;
   return (await supportsTimezone(canonical)) ? canonical : null;
+}
+
+export type PersistedTimezoneRollupActivationResult = {
+  activated: string[];
+  skipped: string[];
+  failed: string[];
+};
+
+export async function activatePersistedTimezoneRollupsWith(
+  inputs: {
+    orgTimezone: string;
+    savedTimezones: readonly (string | null)[];
+  },
+  supportsTimezone: (timezone: string) => Promise<boolean> = productionSupportsTimezone,
+  activate: (timezone: string) => Promise<void> = activateTimezoneRollup,
+): Promise<PersistedTimezoneRollupActivationResult> {
+  const result: PersistedTimezoneRollupActivationResult = {
+    activated: [],
+    skipped: [],
+    failed: [],
+  };
+  const canonicalTimezones = new Set<string>();
+  for (const raw of [inputs.orgTimezone, ...inputs.savedTimezones]) {
+    if (!raw?.trim()) continue;
+    try {
+      const canonical = await resolveSupportedRollupTimezone(raw, supportsTimezone);
+      if (!canonical) {
+        result.skipped.push(raw);
+        continue;
+      }
+      canonicalTimezones.add(canonical);
+    } catch {
+      result.failed.push(raw);
+    }
+  }
+
+  for (const timezone of canonicalTimezones) {
+    try {
+      await activate(timezone);
+      result.activated.push(timezone);
+    } catch {
+      result.failed.push(timezone);
+    }
+  }
+  return result;
+}
+
+export async function activatePersistedTimezoneRollups(): Promise<PersistedTimezoneRollupActivationResult> {
+  if (process.env.STORAGE_BACKEND !== "clickhouse") {
+    return { activated: [], skipped: [], failed: [] };
+  }
+  const saved = await getPool().query<{ timezone: string }>(
+    `SELECT DISTINCT timezone
+     FROM users
+     WHERE timezone IS NOT NULL
+       AND btrim(timezone) != ''
+     ORDER BY timezone`,
+  );
+  return activatePersistedTimezoneRollupsWith({
+    orgTimezone: getOrgTimezone(),
+    savedTimezones: saved.rows.map(({ timezone }) => timezone),
+  });
+}
+
+export function activatePersistedTimezoneRollupsNonBlocking(): void {
+  void activatePersistedTimezoneRollups()
+    .then((result) => {
+      if (result.failed.length > 0) {
+        console.warn(
+          `[toard] timezone rollup startup activation incomplete — retry on next startup/read: ${result.failed.join(", ")}`,
+        );
+      }
+    })
+    .catch((error) => {
+      console.warn(`[toard] timezone rollup startup activation failed — retrying on next startup: ${String(error)}`);
+    });
 }
 
 export async function activateTimezoneRollup(timezone: string): Promise<void> {
@@ -386,5 +510,5 @@ export function createTimezoneRollupActivationGate(
 }
 
 export const activateTimezoneRollupNonBlocking = createTimezoneRollupActivationGate(
-  activateTimezoneRollup,
+  async (timezone) => { await activateTimezoneRollup(timezone); },
 );

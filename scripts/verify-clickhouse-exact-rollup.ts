@@ -4,9 +4,14 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
 } from "../packages/core/src/timezone";
+import {
+  CLICKHOUSE_RAW_RETENTION_DAYS,
+  USAGE_EVENT_LOGICAL_RETENTION_DAYS,
+} from "../packages/core/src/retention";
 import { ClickHouseStorage } from "../packages/storage-clickhouse/src/storage";
 import {
   activateTimezoneRollupWith,
+  createPgTimezoneRollupRepository,
   type TimezoneRollupRepository,
 } from "../apps/web/lib/timezone-rollup";
 import {
@@ -133,13 +138,13 @@ async function verifyOperationalFixtures(): Promise<void> {
   }
   assertEqual(
     cleanupQueries[outboxIndex]!.params?.[0],
-    new Date("2026-04-11T12:00:00.000Z"),
-    "delivered outbox 90-day cutoff",
+    new Date("2026-04-04T12:00:00.000Z"),
+    "delivered outbox 97-day safety cutoff",
   );
   assertEqual(
     cleanupQueries[batchIndex]!.params?.[0],
-    new Date("2026-04-11T12:00:00.000Z"),
-    "delivered batch 90-day cutoff",
+    new Date("2026-04-04T12:00:00.000Z"),
+    "delivered batch 97-day safety cutoff",
   );
   assertEqual(
     cleanupQueries[jobIndex]!.params?.[0],
@@ -284,25 +289,29 @@ function transactionalTimezoneRepository(
   enqueuedBuckets: Date[],
 ): TimezoneRollupRepository {
   return {
-    async activateTimezone(timezone) {
+    async ensureRegisteredTimezone(timezone) {
+      const existing = await client.query(
+        "SELECT 1 FROM clickhouse_rollup_timezones WHERE timezone = $1",
+        [timezone],
+      );
       await client.query(
         `INSERT INTO clickhouse_rollup_timezones (timezone)
          VALUES ($1)
          ON CONFLICT (timezone) DO UPDATE SET last_requested_at = now()`,
         [timezone],
       );
-      return true;
+      return existing.rowCount === 0 ? "created" : "existing";
     },
-    async enqueueJobs(resolution, timezone, buckets) {
+    async prewarmMissingJobs(resolution, timezone, buckets) {
       enqueuedBuckets.push(...buckets);
-      await client.query(
+      const inserted = await client.query(
         `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
          SELECT $1, $2, bucket
          FROM unnest($3::timestamptz[]) AS bucket
-         ON CONFLICT (resolution, timezone, bucket) DO UPDATE
-         SET status = 'pending', updated_at = now()`,
+         ON CONFLICT (resolution, timezone, bucket) DO NOTHING`,
         [resolution, timezone, buckets],
       );
+      return inserted.rowCount ?? 0;
     },
   } as unknown as TimezoneRollupRepository;
 }
@@ -441,9 +450,170 @@ async function verifyTimezoneReenqueueDedup(
       "SELECT count(*)::text AS count FROM clickhouse_timezone_rollup_coverage",
     );
     assertEqual(coverage.rows[0]?.count, "0", "same-hour timezone coverage invalidation");
+
+    await isolatedPool.query("TRUNCATE clickhouse_timezone_rollup_jobs, clickhouse_timezone_rollup_coverage, clickhouse_rollup_timezones");
+    const repository = createPgTimezoneRollupRepository(isolatedPool);
+    const activationNow = new Date("2026-03-10T12:00:00.000Z");
+    const first = await activateTimezoneRollupWith(repository, "America/Los_Angeles", activationNow);
+    if (first.prewarmed.hour === 0) throw new Error("production repository activation must prewarm hour jobs");
+    await isolatedPool.query(
+      `UPDATE clickhouse_timezone_rollup_jobs SET status = 'done', updated_at = now()`
+    );
+    await isolatedPool.query(
+      `INSERT INTO clickhouse_timezone_rollup_coverage (resolution, timezone, bucket)
+       SELECT resolution, timezone, bucket
+       FROM clickhouse_timezone_rollup_jobs
+       ON CONFLICT (resolution, timezone, bucket) DO NOTHING`,
+    );
+    const before = await isolatedPool.query<{ jobs: string; coverage: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM clickhouse_timezone_rollup_jobs) AS jobs,
+         (SELECT count(*)::text FROM clickhouse_timezone_rollup_coverage) AS coverage`,
+    );
+    const repeated = await activateTimezoneRollupWith(repository, "US/Pacific", activationNow);
+    const after = await isolatedPool.query<{ jobs: string; coverage: string; pending: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM clickhouse_timezone_rollup_jobs) AS jobs,
+         (SELECT count(*)::text FROM clickhouse_timezone_rollup_coverage) AS coverage,
+         (SELECT count(*)::text FROM clickhouse_timezone_rollup_jobs WHERE status != 'done') AS pending`,
+    );
+    assertEqual(repeated.registration, "existing", "repeat activation registration state");
+    assertEqual(repeated.prewarmed, { day: 0, hour: 0 }, "repeat activation missing-only prewarm");
+    assertEqual(after.rows[0]?.jobs, before.rows[0]?.jobs, "repeat activation preserves done jobs");
+    assertEqual(after.rows[0]?.coverage, before.rows[0]?.coverage, "repeat activation preserves coverage");
+    assertEqual(after.rows[0]?.pending, "0", "repeat activation does not requeue done jobs");
+
+    await isolatedPool.query("TRUNCATE clickhouse_timezone_rollup_jobs, clickhouse_timezone_rollup_coverage, clickhouse_rollup_timezones");
+    const supported = Intl.supportedValuesOf("timeZone");
+    const capacityTimezones = supported.slice(0, 64);
+    const overflowTimezone = supported[64];
+    if (capacityTimezones.length !== 64 || !overflowTimezone) {
+      throw new Error("runtime must expose at least 65 IANA timezones for capacity verification");
+    }
+    await isolatedPool.query(
+      "INSERT INTO clickhouse_rollup_timezones (timezone) SELECT unnest($1::text[])",
+      [capacityTimezones],
+    );
+    let capacityRejected = false;
+    try {
+      await activateTimezoneRollupWith(repository, overflowTimezone, activationNow);
+    } catch (error) {
+      capacityRejected = /64개/.test(String(error));
+    }
+    assertEqual(capacityRejected, true, "production repository 64 timezone capacity");
   } finally {
     await isolatedPool.end();
     await adminPool.query(`DROP SCHEMA ${quotedSchema} CASCADE`).catch(() => undefined);
+  }
+}
+
+async function verifyRawRetentionSafetyGrace(
+  ch: ReturnType<typeof createClient>,
+  pg: Pool,
+  runId: string,
+  providerKey: string,
+  userId: string,
+): Promise<void> {
+  const ddlResult = await ch.query({
+    query: `SELECT create_table_query AS ddl
+            FROM system.tables
+            WHERE database = currentDatabase() AND name = 'usage_events'`,
+    format: "JSONEachRow",
+  });
+  const originalDdl = (await ddlResult.json<{ ddl: string }>())[0]?.ddl ?? "";
+  const hadTtl = /\bTTL\b/.test(originalDdl);
+  const originalDays = originalDdl.match(
+    /TTL\s+(?:toDateTime\(ts\)|ts)\s*\+\s*(?:toIntervalDay\()?\s*(\d+)/i,
+  )?.[1];
+  if (hadTtl && !originalDays) {
+    throw new Error("local usage_events has an unsupported TTL expression; refusing to mutate it");
+  }
+
+  const storage = new ClickHouseStorage(ch, pg, {
+    timezone: "UTC",
+    read15mV2Rollup: true,
+    enforceRetentionTtl: true,
+  });
+  const now = new Date();
+  const boundary = new Date(now.getTime() - USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000);
+  const event = pricedEvent({
+    dedupKey: `${runId}:retention-boundary`,
+    providerKey,
+    userId,
+    sessionId: `${runId}:retention-session`,
+    model: "verify-retention-model",
+    ts: boundary,
+    inputTokens: 41,
+    outputTokens: 43,
+    costUsd: 0.7,
+    host: "verify-retention-host",
+  });
+
+  try {
+    assertEqual(await storage.saveUsageEvents([event]), { inserted: 1, deduped: 0 }, "90-day boundary save");
+    await storage.flushUsageOutbox(10);
+    const activeDdlResult = await ch.query({
+      query: `SELECT create_table_query AS ddl
+              FROM system.tables
+              WHERE database = currentDatabase() AND name = 'usage_events'`,
+      format: "JSONEachRow",
+    });
+    const activeDdl = (await activeDdlResult.json<{ ddl: string }>())[0]?.ddl ?? "";
+    if (!new RegExp(`TTL\\s+toDateTime\\(ts\\)\\s*\\+\\s*(?:toIntervalDay\\()?\\s*${CLICKHOUSE_RAW_RETENTION_DAYS}`, "i").test(activeDdl)) {
+      throw new Error(`raw TTL must include ${CLICKHOUSE_RAW_RETENTION_DAYS}-day safety retention`);
+    }
+
+    await ch.command({ query: "OPTIMIZE TABLE usage_events FINAL" });
+    const raw = await ch.query({
+      query: "SELECT count() AS rows FROM usage_events FINAL WHERE dedup_key = {key:String}",
+      query_params: { key: event.dedupKey },
+      format: "JSONEachRow",
+    });
+    assertEqual(Number((await raw.json<{ rows: string }>())[0]?.rows), 1, "90-day boundary survives raw TTL merge");
+
+    for (let attempt = 0; attempt < 32; attempt++) {
+      await storage.compactUsage15mV2(256);
+      const dirty = await pg.query<{ exists: boolean }>(
+        `SELECT EXISTS (
+           SELECT 1 FROM clickhouse_rollup_dirty_buckets
+           WHERE name = 'usage_15m_v2'
+             AND bucket = date_trunc('hour', $1::timestamptz)
+               + floor(extract(minute from $1::timestamptz) / 15) * interval '15 minutes'
+         ) AS exists`,
+        [boundary],
+      );
+      if (!dirty.rows[0]?.exists) break;
+      if (attempt === 31) throw new Error("90-day boundary dirty bucket was not compacted");
+    }
+    const v2 = await ch.query({
+      query: `SELECT sum(event_count) AS events
+              FROM usage_15m_rollup_v2 FINAL
+              WHERE provider_key = {provider:String}
+                AND model = {model:String}
+                AND session_id = {session:String}`,
+      query_params: {
+        provider: event.providerKey,
+        model: event.model,
+        session: event.sessionId,
+      },
+      format: "JSONEachRow",
+    });
+    assertEqual(Number((await v2.json<{ events: string }>())[0]?.events), 1, "90-day boundary reaches canonical v2 before TTL eligibility");
+  } finally {
+    if (hadTtl) {
+      await ch.command({ query: `ALTER TABLE usage_events MODIFY TTL toDateTime(ts) + INTERVAL ${originalDays} DAY DELETE` });
+    } else {
+      const currentDdlResult = await ch.query({
+        query: `SELECT create_table_query AS ddl
+                FROM system.tables
+                WHERE database = currentDatabase() AND name = 'usage_events'`,
+        format: "JSONEachRow",
+      });
+      const currentDdl = (await currentDdlResult.json<{ ddl: string }>())[0]?.ddl ?? "";
+      if (/\bTTL\b/.test(currentDdl)) {
+        await ch.command({ query: "ALTER TABLE usage_events REMOVE TTL" });
+      }
+    }
   }
 }
 
@@ -488,6 +658,7 @@ async function main(): Promise<void> {
     const v2 = new ClickHouseStorage(ch, pg, { timezone: "UTC", read15mV2Rollup: true });
 
     await verifyTimezoneReenqueueDedup(pg, databaseUrl, ch, runId);
+    await verifyRawRetentionSafetyGrace(ch, pg, runId, providerKey, userId);
 
     const duplicate = pricedEvent({
       dedupKey: `${runId}:duplicate`,
@@ -1145,8 +1316,7 @@ async function main(): Promise<void> {
     await pg.query(
       `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
        VALUES ('day', 'Asia/Seoul', $1)
-       ON CONFLICT (resolution, timezone, bucket) DO UPDATE
-       SET status = 'pending', updated_at = now()`,
+         ON CONFLICT (resolution, timezone, bucket) DO NOTHING`,
       [duplicateJobBucket],
     );
     const duplicateJobs = await pg.query<{ count: string; status: string }>(
@@ -1156,7 +1326,7 @@ async function main(): Promise<void> {
       [duplicateJobBucket],
     );
     assertEqual(Number(duplicateJobs.rows[0]?.count), 1, "timezone rollup duplicate PG job count");
-    assertEqual(duplicateJobs.rows[0]?.status, "pending", "timezone rollup completed job requeue status");
+    assertEqual(duplicateJobs.rows[0]?.status, "done", "timezone rollup prewarm preserves completed job status");
     await pg.query(
       `DELETE FROM clickhouse_timezone_rollup_jobs
        WHERE resolution = 'day' AND timezone = 'Asia/Seoul' AND bucket = $1`,

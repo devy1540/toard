@@ -2,8 +2,6 @@
 // 래핑 경로(claude/codex)에는 어떤 오버헤드도 더하지 않는다.
 
 use std::env;
-use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
 use std::process::Command;
 
 use crate::claude_env;
@@ -225,12 +223,14 @@ fn doctor() -> i32 {
 
     // 1. 자격 증명
     let creds = read_credentials();
-    let cred_path =
-        env::var_os("HOME").map(|h| PathBuf::from(h).join(".toard").join("credentials"));
+    let cred_path = fsx::home_dir().map(|h| h.join(".toard").join("credentials"));
     match &creds.token {
         Some(_) => {
             ok("토큰 로드됨 (~/.toard/credentials 또는 TOARD_INGEST_TOKEN)");
+            // 파일 퍼미션 점검은 Unix 전용 — Windows 는 ACL 모델이라 mode 비트가 무의미
+            #[cfg(unix)]
             if let Some(p) = cred_path.as_ref().filter(|p| p.is_file()) {
+                use std::os::unix::fs::PermissionsExt;
                 if let Ok(meta) = std::fs::metadata(p) {
                     if meta.permissions().mode() & 0o077 != 0 {
                         warn(&format!(
@@ -240,6 +240,8 @@ fn doctor() -> i32 {
                     }
                 }
             }
+            #[cfg(not(unix))]
+            let _ = &cred_path;
         }
         None => d.fail("자격 증명 없음 — 수집 비활성(순수 패스스루). ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정"),
     }
@@ -302,8 +304,8 @@ fn doctor() -> i32 {
     }
 
     // 4. codex config.toml 상태 — OTLP 는 experimental 로 강등(기본은 트랜스크립트 pull 로 수집)
-    if let Some(home) = env::var_os("HOME") {
-        let cfg = PathBuf::from(home).join(".codex").join("config.toml");
+    if let Some(home) = fsx::home_dir() {
+        let cfg = home.join(".codex").join("config.toml");
         if let Ok(existing) = std::fs::read_to_string(&cfg) {
             let base = codex::strip_toard_block(&existing);
             let has_toard_block = base != existing;
@@ -400,11 +402,12 @@ fn human_age(secs: u64) -> String {
 /// 빈 페이로드는 서버에서 레코드 0건으로 즉시 반환되므로 부작용이 없다.
 fn probe_ingest(endpoint: &str, token: &str) -> Result<u16, String> {
     let url = format!("{}/v1/logs", endpoint.trim_end_matches('/'));
+    let null_dev = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let out = Command::new("curl")
         .args([
             "-sS",
             "-o",
-            "/dev/null",
+            null_dev,
             "-w",
             "%{http_code}",
             "--max-time",

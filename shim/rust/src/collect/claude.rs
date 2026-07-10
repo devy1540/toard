@@ -292,7 +292,7 @@ fn parse_transcript_usage(path: &Path) -> Vec<RawUsage> {
 }
 
 fn projects_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude").join("projects"))
+    crate::fsx::home_dir().map(|h| h.join(".claude").join("projects"))
 }
 
 /// message.content(문자열 또는 블록 배열)에서 텍스트 추출.

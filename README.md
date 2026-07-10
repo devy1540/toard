@@ -156,7 +156,7 @@ curl -X POST http://localhost:3000/api/v1/logs \
 curl -fsSL <toard 주소>/install.sh | TOARD_INGEST_TOKEN=<내 토큰> sh
 ```
 
-**직접 설정(고급)** — 바이너리만 [GitHub 릴리스 install.sh](https://github.com/devy1540/toard/releases/latest/download/install.sh) 로 설치하고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 를 직접 작성 + `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 둔다. 사용량은 pull 로 자동 수집(Desktop·IDE 포함, env 불필요). 릴리스는 `v*` 태그 push 시 GitHub Actions 가 4-플랫폼 빌드 후 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정).
+**직접 설정(고급)** — 바이너리만 [GitHub 릴리스 install.sh](https://github.com/devy1540/toard/releases/latest/download/install.sh) 로 설치하고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 를 직접 작성 + `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 둔다. 사용량은 pull 로 자동 수집(Desktop·IDE 포함, env 불필요). 릴리스는 `v*` 태그 push 시 GitHub Actions 가 5-플랫폼(macOS·Linux arm64/x64, Windows x64) 빌드 후 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정). Windows 는 `install.sh` 대신 `npx @toard/shim` 으로 설치한다(주기 수집 데몬 등록은 아직 미지원).
 
 **제거** — `curl -fsSL <toard>/uninstall.sh | sh` (shim·자격증명·PATH·claude-env(`settings.json`)·codex `[otel]` 블록을 백업 남기고 되돌림. 진짜 claude/codex 는 그대로).
 

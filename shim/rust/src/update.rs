@@ -6,7 +6,6 @@
 // 다운로드는 install.sh 와 동일하게 curl + SHA256SUMS 검증, 교체는 rename(원자적).
 
 use std::env;
-use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
 use crate::bg;
@@ -35,6 +34,14 @@ const TARGET: &str = "x86_64-apple-darwin";
 const TARGET: &str = "aarch64-unknown-linux-gnu";
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 const TARGET: &str = "x86_64-unknown-linux-gnu";
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+const TARGET: &str = "x86_64-pc-windows-msvc";
+
+/// 릴리스 자산명 — Windows 만 `.exe` 접미(릴리스 워크플로 명명과 계약).
+fn asset_name() -> String {
+    let ext = if cfg!(windows) { ".exe" } else { "" };
+    format!("toard-shim-{TARGET}{ext}")
+}
 
 /// wrap 경로에서 호출 — exec 직전, 논블로킹.
 pub fn maybe_spawn_background_check() {
@@ -132,21 +139,13 @@ fn parse_sha_entry(sums: &str, asset: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 다운로드 파일 SHA256 — 외부 sha256sum/shasum 없이 내장(sha2) 계산이라 OS 무관.
 fn sha256_file(path: &std::path::Path) -> Result<String, String> {
-    for (cmd, args) in [("sha256sum", vec![]), ("shasum", vec!["-a", "256"])] {
-        let out = Command::new(cmd).args(&args).arg(path).output();
-        if let Ok(out) = out {
-            if out.status.success() {
-                if let Some(hash) = String::from_utf8_lossy(&out.stdout)
-                    .split_whitespace()
-                    .next()
-                {
-                    return Ok(hash.to_string());
-                }
-            }
-        }
-    }
-    Err("sha256sum/shasum 을 찾지 못했습니다".into())
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|e| format!("다운로드 파일 읽기 실패: {e}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// 다운로드 → SHA256 검증 → chmod 755 → rename 으로 자기 자신 교체(원자적).
@@ -156,7 +155,7 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
         .map_err(|e| format!("설치 경로 확인 실패: {e}"))?;
     let dir = exe.parent().ok_or("설치 디렉토리를 알 수 없습니다")?;
     let base = format!("{}/{}/releases/download/v{latest}", release_host(), repo());
-    let asset = format!("toard-shim-{TARGET}");
+    let asset = asset_name();
     let tmp = dir.join(format!(".{asset}.update-{}", std::process::id()));
 
     let dl = Command::new("curl")
@@ -190,10 +189,56 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
         )));
     }
 
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| cleanup_err(format!("권한 설정 실패: {e}")))?;
-    std::fs::rename(&tmp, &exe).map_err(|e| cleanup_err(format!("교체 실패: {e}")))?;
+    crate::fsx::set_mode(&tmp, 0o755).map_err(|e| cleanup_err(format!("권한 설정 실패: {e}")))?;
+    replace_exe(&tmp, &exe).map_err(&cleanup_err)?;
+    #[cfg(windows)]
+    sync_sibling_copies(&exe);
     Ok(exe.display().to_string())
+}
+
+#[cfg(unix)]
+fn replace_exe(tmp: &std::path::Path, exe: &std::path::Path) -> Result<(), String> {
+    std::fs::rename(tmp, exe).map_err(|e| format!("교체 실패: {e}"))
+}
+
+/// Windows 는 실행 중인 exe 를 덮어쓸 수 없다(삭제·overwrite 잠금) — 대신
+/// 실행 중에도 rename(이동)은 허용되므로 현재 exe 를 .old 로 비켜두고 새 파일을 앉힌다.
+/// .old 는 이번 프로세스가 살아 있는 동안 못 지우므로 다음 업데이트 때 정리한다.
+#[cfg(windows)]
+fn replace_exe(tmp: &std::path::Path, exe: &std::path::Path) -> Result<(), String> {
+    let old = exe.with_extension("exe.old");
+    let _ = std::fs::remove_file(&old); // 이전 업데이트 잔여물 — 실행 중이 아니면 지워진다
+    std::fs::rename(exe, &old).map_err(|e| format!("기존 exe 비켜두기 실패: {e}"))?;
+    std::fs::rename(tmp, exe).map_err(|e| {
+        // 새 파일 안착 실패 — 기존 exe 를 되돌려 실행 불능 상태를 막는다
+        let _ = std::fs::rename(&old, exe);
+        format!("교체 실패: {e}")
+    })
+}
+
+/// Windows 는 설치기(npm/install)가 symlink 대신 사본 3개(claude/codex/toard-shim.exe)를
+/// 두므로, 자기 자신만 교체하면 이름 간 버전이 갈라진다 — 같은 디렉토리의 다른 shim
+/// 사본도 새 바이너리로 갱신한다. 실행 중(잠김)인 사본은 조용히 건너뛴다(그 사본이
+/// 다음 자기 업데이트 때 따라잡는다).
+#[cfg(windows)]
+fn sync_sibling_copies(exe: &std::path::Path) {
+    let Some(dir) = exe.parent() else { return };
+    let self_name = exe.file_name().map(|n| n.to_ascii_lowercase());
+    for name in ["claude.exe", "codex.exe", "toard-shim.exe"] {
+        if self_name.as_deref() == Some(std::ffi::OsStr::new(name)) {
+            continue;
+        }
+        let sib = dir.join(name);
+        if !sib.is_file() {
+            continue;
+        }
+        let old = sib.with_extension("exe.old");
+        let _ = std::fs::remove_file(&old);
+        if std::fs::rename(&sib, &old).is_ok() && std::fs::copy(exe, &sib).is_err() {
+            // 새 사본 안착 실패 — 원본을 되돌린다
+            let _ = std::fs::rename(&old, &sib);
+        }
+    }
 }
 
 #[cfg(test)]

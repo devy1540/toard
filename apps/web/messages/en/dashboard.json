@@ -111,9 +111,16 @@
     "timezoneNote": "Times in {tz}"
   },
   "pricingNotice": {
-    "title": "Model pricing is not synced, so costs show as $0.",
-    "adminAction": "Run pricing sync from <link>Admin → System</link>. Daily auto-refresh requires registering the sync-pricing cron (see the scheduler section in the README).",
-    "memberAction": "Ask an administrator to run pricing sync (sync-pricing)."
+    "unpricedTitle": "Cost total is incomplete because {count} usage events have no confirmed price.",
+    "unpricedAdminAction": "Run pricing sync from <link>Admin → System</link>. Daily auto-refresh requires registering the sync-pricing cron (see the scheduler section in the README).",
+    "unpricedMemberAction": "Ask an administrator to run pricing sync (sync-pricing).",
+    "legacyTitle": "{count} usage events use stored legacy costs.",
+    "legacyDescription": "These costs are included in the total, but the legacy data has no pricing revision provenance."
+  },
+  "costCoverage": {
+    "partial": "Partial total",
+    "unpriced": "Price unconfirmed",
+    "legacy": "Stored legacy cost"
   },
   "chart": {
     "cost": "Cost",

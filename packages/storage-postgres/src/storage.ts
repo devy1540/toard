@@ -22,6 +22,7 @@ import type {
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
+  UsageCostCoverage,
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
@@ -30,6 +31,18 @@ import { Pool, type PoolClient } from "pg";
 
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
+
+type CostCoverageRow = {
+  priced_events?: string | number;
+  unpriced_events?: string | number;
+  legacy_events?: string | number;
+};
+
+const costCoverage = (row: CostCoverageRow): UsageCostCoverage => ({
+  pricedEvents: n(row.priced_events),
+  unpricedEvents: n(row.unpriced_events),
+  legacyEvents: n(row.legacy_events),
+});
 
 type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
 
@@ -227,11 +240,14 @@ export class PostgresStorage implements StorageBackend {
     const res = await this.pool.query(
       `SELECT COUNT(DISTINCT session_id) AS sessions,
               COUNT(DISTINCT user_id)    AS active_users,
-              COALESCE(SUM(cost_usd),0)  AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens),0)  AS input,
               COALESCE(SUM(output_tokens),0) AS output,
               COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
-              COALESCE(SUM(cache_creation_tokens),0) AS cache_creation
+              COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
+              COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
        FROM usage_events ${where}`,
       params,
     );
@@ -244,6 +260,7 @@ export class PostgresStorage implements StorageBackend {
       totalOutputTokens: n(r.output),
       totalCacheReadTokens: n(r.cache_read),
       totalCacheCreationTokens: n(r.cache_creation),
+      costCoverage: costCoverage(r),
     };
   }
 
@@ -277,15 +294,19 @@ export class PostgresStorage implements StorageBackend {
     const { where, params } = this.periodWhere(q);
     const res = await this.pool.query(
       `SELECT COALESCE(model,'(unknown)') AS model,
-              COALESCE(SUM(cost_usd),0)   AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
-              COUNT(DISTINCT session_id)  AS sessions
+              COUNT(DISTINCT session_id)  AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
        FROM usage_events ${where}
        GROUP BY 1 ORDER BY cost DESC`,
       params,
     );
     return res.rows.map((r) => ({
       model: r.model, costUsd: n(r.cost), totalTokens: n(r.tokens), sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -295,15 +316,19 @@ export class PostgresStorage implements StorageBackend {
     const { where, params } = this.periodWhere(q);
     const res = await this.pool.query(
       `SELECT host,
-              COALESCE(SUM(cost_usd),0)   AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
-              COUNT(DISTINCT session_id)  AS sessions
+              COUNT(DISTINCT session_id)  AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
        FROM usage_events ${where}
        GROUP BY host ORDER BY cost DESC`,
       params,
     );
     return res.rows.map((r) => ({
       host: r.host ?? null, costUsd: n(r.cost), totalTokens: n(r.tokens), sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -556,16 +581,22 @@ export class PostgresStorage implements StorageBackend {
     const sql =
       q.scope === "user"
         ? `SELECT u.id AS key, COALESCE(u.name, u.email) AS label,
-                  COALESCE(SUM(e.cost_usd),0) AS cost,
+                  COALESCE(SUM(e.cost_usd) FILTER (WHERE e.cost_status <> 'unpriced'),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
-                  COUNT(DISTINCT e.session_id) AS sessions
+                  COUNT(DISTINCT e.session_id) AS sessions,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'priced') AS priced_events,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'unpriced') AS unpriced_events,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'legacy') AS legacy_events
            FROM usage_events e JOIN users u ON u.id = e.user_id
            ${ePrefixed}
            GROUP BY u.id, label ORDER BY ${orderColumn} DESC LIMIT 100`
         : `SELECT d.id AS key, d.name AS label,
-                  COALESCE(SUM(e.cost_usd),0) AS cost,
+                  COALESCE(SUM(e.cost_usd) FILTER (WHERE e.cost_status <> 'unpriced'),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
-                  COUNT(DISTINCT e.session_id) AS sessions
+                  COUNT(DISTINCT e.session_id) AS sessions,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'priced') AS priced_events,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'unpriced') AS unpriced_events,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'legacy') AS legacy_events
            FROM usage_events e JOIN teams d ON d.id = e.team_id
            ${ePrefixed} AND e.team_id IS NOT NULL
            GROUP BY d.id, d.name ORDER BY ${orderColumn} DESC LIMIT 100`;
@@ -573,6 +604,7 @@ export class PostgresStorage implements StorageBackend {
     return res.rows.map((r) => ({
       key: String(r.key), label: r.label, costUsd: n(r.cost),
       totalTokens: n(r.tokens), sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -580,9 +612,12 @@ export class PostgresStorage implements StorageBackend {
     const { where, params } = this.periodWhere(q);
     const res = await this.pool.query(
       `SELECT provider_key,
-              COALESCE(SUM(cost_usd),0) AS cost,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
-              COUNT(DISTINCT session_id) AS sessions
+              COUNT(DISTINCT session_id) AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
        FROM usage_events ${where}
        GROUP BY provider_key ORDER BY tokens DESC`,
       params,
@@ -592,6 +627,7 @@ export class PostgresStorage implements StorageBackend {
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 }

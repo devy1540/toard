@@ -166,6 +166,7 @@ function sourceRouterFixture({
   coverageBuckets,
   dirtyBucket = null,
   failRegistryOnce = false,
+  jsonRows = [],
   jobs = [],
   watermark,
   read15mV2Rollup = true,
@@ -174,6 +175,7 @@ function sourceRouterFixture({
   coverageBuckets?: Date[];
   dirtyBucket?: Date | null;
   failRegistryOnce?: boolean;
+  jsonRows?: Array<Record<string, unknown>>;
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
   read15mV2Rollup?: boolean;
@@ -226,7 +228,7 @@ function sourceRouterFixture({
     command: async () => undefined,
     query: async (args: { query: string; query_params: Record<string, unknown> }) => {
       queries.push({ query: args.query, params: args.query_params });
-      return { json: async () => [] };
+      return { json: async () => jsonRows };
     },
   } as unknown as ClickHouseClient;
   return {
@@ -597,6 +599,121 @@ test("active all 요청은 완성 과거 day cache와 오늘의 exact 15분·raw
   assert.equal(query.params.tail_from, query.params.cache_to);
   assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
   assert.equal(query.params.from, undefined);
+});
+
+test("hybrid cache와 exact tail은 가격 상태 event count를 같은 schema로 보존한다", async () => {
+  const cached = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const to = new Date(cached.to.getTime() + 45 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: to,
+    jobs: cached.jobs,
+    jsonRows: [{
+      sessions: "2",
+      active_users: "1",
+      cost: "1.25000000",
+      input: "10",
+      output: "5",
+      cache_read: "0",
+      cache_creation: "0",
+      priced_events: "2",
+      unpriced_events: "3",
+      legacy_events: "4",
+    }],
+  });
+
+  const overview = await storage.getOverview({
+    from: cached.from,
+    to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  } as never);
+
+  const query = queries[0]!.query;
+  assert.match(query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(query, /usage_15m_rollup_v2/);
+  assert.ok((query.match(/cost_status/g) ?? []).length >= 3);
+  assert.ok((query.match(/event_count/g) ?? []).length >= 3);
+  assert.match(query, /sumIf\(event_count, cost_status = 'priced'\) AS priced_events/);
+  assert.match(query, /sumIf\(event_count, cost_status = 'unpriced'\) AS unpriced_events/);
+  assert.match(query, /sumIf\(event_count, cost_status = 'legacy'\) AS legacy_events/);
+  assert.deepEqual(overview.costCoverage, {
+    pricedEvents: 2,
+    unpricedEvents: 3,
+    legacyEvents: 4,
+  });
+});
+
+test("raw fallback도 event_count=1과 cost_status를 보존하고 unpriced 비용을 제외한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+    jsonRows: [{
+      sessions: "1",
+      active_users: "1",
+      cost: "0",
+      input: "10",
+      output: "0",
+      cache_read: "0",
+      cache_creation: "0",
+      priced_events: "0",
+      unpriced_events: "1",
+      legacy_events: "0",
+    }],
+  });
+
+  const overview = await storage.getOverview({ ...range, bucket: "day" } as never);
+
+  assert.match(queries[0]!.query, /1 AS event_count/);
+  assert.match(queries[0]!.query, /cost_status/);
+  assert.match(queries[0]!.query, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost/);
+  assert.equal(overview.totalCostUsd, 0);
+  assert.equal(overview.costCoverage.unpricedEvents, 1);
+});
+
+test("모델별 비용은 all-unpriced와 legacy-only provenance를 반환한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const { storage } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+    jsonRows: [
+      {
+        model: "unpriced-model",
+        cost: "0",
+        tokens: "10",
+        sessions: "1",
+        priced_events: "0",
+        unpriced_events: "2",
+        legacy_events: "0",
+      },
+      {
+        model: "legacy-model",
+        cost: "4.5",
+        tokens: "20",
+        sessions: "1",
+        priced_events: "0",
+        unpriced_events: "0",
+        legacy_events: "3",
+      },
+    ],
+  });
+
+  const usage = await storage.getUserUsage("user-1", { ...range, bucket: "day" });
+
+  assert.deepEqual(usage.byModel.map(({ model, costUsd, costCoverage }) => ({ model, costUsd, costCoverage })), [
+    {
+      model: "unpriced-model",
+      costUsd: 0,
+      costCoverage: { pricedEvents: 0, unpricedEvents: 2, legacyEvents: 0 },
+    },
+    {
+      model: "legacy-model",
+      costUsd: 4.5,
+      costCoverage: { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 3 },
+    },
+  ]);
 });
 
 test("unaligned 요청은 exact head·ready day cache·exact tail을 겹침 없이 같은 schema로 합친다", async () => {

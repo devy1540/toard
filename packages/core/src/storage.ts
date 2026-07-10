@@ -81,6 +81,13 @@ export interface UsageEvent {
 
 export type UsageCostStatus = "priced" | "unpriced" | "legacy";
 
+/** 비용 합계가 어떤 가격 확정 상태의 이벤트로 구성됐는지 설명한다. */
+export interface UsageCostCoverage {
+  pricedEvents: number;
+  unpricedEvents: number;
+  legacyEvents: number;
+}
+
 /** 서버가 이벤트 시각 기준 가격 revision으로 비용을 확정한 저장 계약. */
 export interface FinalizedUsageEvent extends UsageEvent {
   pricingRevisionId: string | null;
@@ -97,6 +104,7 @@ export interface OverviewStats {
   /** 캐시 토큰 — input/output 과 별개 합계. 토큰 카드의 "토큰 대비 비용" 힌트용. */
   totalCacheReadTokens: number;
   totalCacheCreationTokens: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 시계열 버킷 단위 — 하루짜리 기간은 분/시간 단위로 내려 점 하나 대신 곡선을 그린다. */
@@ -147,6 +155,7 @@ export interface ModelBreakdown {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 프로바이더별 사용량 분해 — 워크스페이스 전체 기간 범위. */
@@ -156,6 +165,7 @@ export interface ProviderBreakdown {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 컴퓨터(호스트)별 사용량 분해 — 기간-스코프. host=null 은 "(알 수 없음)"(라벨링은 UI). */
@@ -165,6 +175,7 @@ export interface HostBreakdown {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 내 기기 목록 1행 — 기간 무관(유휴 기기도 노출). host=null 은 "(알 수 없음)". */
@@ -213,6 +224,7 @@ export interface LeaderRow {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 export type LeaderScope = "user" | "team";

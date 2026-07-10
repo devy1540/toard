@@ -1,3 +1,4 @@
+import type { UsageCostCoverage } from "@toard/core";
 import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "@toard/pricing";
 import { getAppSetting } from "./app-settings";
 import { getPool } from "./db";
@@ -20,6 +21,29 @@ type PricingRevisionQuery = (sql: string) => Promise<{ rows: PricingRevisionRow[
 const TTL_MS = 60 * 60 * 1000;
 
 export const PRICING_SYNC_STATUS_SETTING_KEY = "pricing_sync_status";
+
+export type CostCoverageState = "complete" | "partial" | "unpriced" | "legacy";
+
+/** 비용 숫자를 그대로 완전 합계로 표시해도 되는지 결정하는 순수 표시 상태. */
+export function costCoverageState(coverage: UsageCostCoverage): CostCoverageState {
+  if (coverage.unpricedEvents > 0) {
+    return coverage.pricedEvents + coverage.legacyEvents > 0 ? "partial" : "unpriced";
+  }
+  if (coverage.legacyEvents > 0) return "legacy";
+  return "complete";
+}
+
+export function formatCostForCoverage(
+  cost: string,
+  coverage: UsageCostCoverage,
+  labels: { partial: string; unpriced: string; legacy: string },
+): string {
+  const state = costCoverageState(coverage);
+  if (state === "unpriced") return labels.unpriced;
+  if (state === "partial") return `${cost} · ${labels.partial}`;
+  if (state === "legacy") return `${cost} · ${labels.legacy}`;
+  return cost;
+}
 
 export type PricingSyncStatus = {
   day: string;

@@ -7,7 +7,6 @@ import type { CompositionDimension } from "@/components/dashboard/composition-to
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { OverviewView } from "@/components/dashboard/overview-view";
-import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { ViewToggle } from "@/components/dashboard/view-toggle";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
@@ -68,8 +67,6 @@ export default async function MyUsagePage({
           </>
         }
       />
-
-      <PricingNotice />
 
       {view === "classic" ? (
         <ClassicView userId={userId} period={period} metric={metric} />

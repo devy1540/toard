@@ -23,6 +23,7 @@ import {
   usagePerActiveUser,
 } from "@/lib/org-overview";
 import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
+import { formatCostForCoverage } from "@/lib/pricing";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -54,23 +55,23 @@ function usageTitleKey(bucket: OrgPeriod["bucket"]): "dailyUsage" | "hourlyUsage
   return "usage15m";
 }
 
-function safeAverage(total: number, count: number): string {
-  return count > 0 ? fmtUsd(total / count) : "—";
-}
-
 function RankRow({
   row,
   rank,
   totalCost,
   maxCost,
+  costLabels,
 }: {
   row: LeaderRow;
   rank: number;
   totalCost: number;
   maxCost: number;
+  costLabels: { partial: string; unpriced: string; legacy: string };
 }) {
   const width = maxCost > 0 ? Math.max(3, Math.round((row.costUsd / maxCost) * 100)) : 0;
-  const share = totalCost > 0 ? Math.round((row.costUsd / totalCost) * 100) : null;
+  const share = row.costCoverage.unpricedEvents === 0 && totalCost > 0
+    ? Math.round((row.costUsd / totalCost) * 100)
+    : null;
 
   return (
     <div className="space-y-1.5">
@@ -79,7 +80,9 @@ function RankRow({
         <span className="truncate font-medium" title={row.label}>
           {row.label}
         </span>
-        <span className="ml-auto shrink-0 font-medium tabular-nums">{fmtUsd(row.costUsd)}</span>
+        <span className="ml-auto shrink-0 font-medium tabular-nums">
+          {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+        </span>
       </div>
       <div className="ml-7 flex items-center gap-2">
         <div className="bg-muted h-1.5 min-w-0 flex-1 overflow-hidden rounded-full">
@@ -101,6 +104,7 @@ function LeaderboardPreview({
   totalCost,
   icon,
   trailing,
+  costLabels,
 }: {
   title: string;
   description: string;
@@ -109,6 +113,7 @@ function LeaderboardPreview({
   totalCost: number;
   icon: ReactNode;
   trailing?: ReactNode;
+  costLabels: { partial: string; unpriced: string; legacy: string };
 }) {
   const shown = rows.slice(0, 5);
   const maxCost = shown[0]?.costUsd ?? 0;
@@ -129,7 +134,7 @@ function LeaderboardPreview({
         {shown.length > 0 ? (
           <div className="space-y-4">
             {shown.map((row, i) => (
-              <RankRow key={row.key} row={row} rank={i + 1} totalCost={totalCost} maxCost={maxCost} />
+              <RankRow key={row.key} row={row} rank={i + 1} totalCost={totalCost} maxCost={maxCost} costLabels={costLabels} />
             ))}
           </div>
         ) : (
@@ -206,6 +211,7 @@ function OrgHero({
   tokenComparison,
   costLabel,
   costComparison,
+  costValue,
   activeUsersLabel,
   activeUsersSub,
 }: {
@@ -215,6 +221,7 @@ function OrgHero({
   tokenComparison: string;
   costLabel: string;
   costComparison: string;
+  costValue: string;
   activeUsersLabel: string;
   activeUsersSub: string;
 }) {
@@ -249,7 +256,7 @@ function OrgHero({
         </div>
 
         <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-auto xl:min-w-[390px]">
-          <SummaryTile label={costLabel} value={fmtUsd(overview.totalCostUsd)} sub={costComparison} />
+          <SummaryTile label={costLabel} value={costValue} sub={costComparison} />
           <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
         </div>
       </div>
@@ -408,8 +415,6 @@ export default async function OrgPage({
         trailing={<AutoRefresh />}
       />
 
-      <PricingNotice />
-
       <OverviewTab sp={sp} period={period} providers={providers} canSeeTeamRanking={canSeeTeamRanking} />
     </div>
   );
@@ -426,7 +431,7 @@ async function OverviewTab({
   providers: ProviderOption[];
   canSeeTeamRanking: boolean;
 }) {
-  const t = await getTranslations("org");
+  const [t, dashboardT] = await Promise.all([getTranslations("org"), getTranslations("dashboard")]);
   const metric: ChartMetric = getOrgChartMetric(sp.metric);
   const storage = getStorage();
   const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown, toolActivity] = await Promise.all([
@@ -440,6 +445,12 @@ async function OverviewTab({
   ]);
 
   const series = fillSeriesGaps(daily, period);
+  const costLabels = {
+    partial: dashboardT("costCoverage.partial"),
+    unpriced: dashboardT("costCoverage.unpriced"),
+    legacy: dashboardT("costCoverage.legacy"),
+  };
+  const costValue = formatCostForCoverage(fmtUsd(overview.totalCostUsd), overview.costCoverage, costLabels);
   const tokens = totalUsageTokens({
     input: overview.totalInputTokens,
     output: overview.totalOutputTokens,
@@ -465,14 +476,18 @@ async function OverviewTab({
         })
       : t("hero.noTokenComparison");
   const costComparison =
-    prevOverview.totalCostUsd > 0
+    overview.costCoverage.unpricedEvents > 0 || prevOverview.costCoverage.unpricedEvents > 0
+      ? dashboardT("costCoverage.partial")
+      : prevOverview.totalCostUsd > 0
       ? t(overview.totalCostUsd <= prevOverview.totalCostUsd ? "hero.lessThanPrev" : "hero.moreThanPrev", {
           prev: fmtUsd(prevOverview.totalCostUsd),
           diff: fmtUsd(costDiff),
         })
       : t("hero.noComparison");
   const topThreeCost = topUsers.slice(0, 3).reduce((sum, row) => sum + row.costUsd, 0);
-  const topThreeShare = sharePercent(topThreeCost, overview.totalCostUsd);
+  const topThreeShare = overview.costCoverage.unpricedEvents > 0
+    ? null
+    : sharePercent(topThreeCost, overview.totalCostUsd);
   const peakUsage = findPeakTokenBucket(
     series.map((point) => ({
       day: point.day,
@@ -482,7 +497,9 @@ async function OverviewTab({
       cacheCreation: point.cacheCreationTokens,
     })),
   );
-  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
+  const costDelta = overview.costCoverage.unpricedEvents === 0 && prevOverview.costCoverage.unpricedEvents === 0
+    ? pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)
+    : null;
   const workspaceSignals = [
     {
       label: t("signal.topThreeCostShare"),
@@ -502,7 +519,9 @@ async function OverviewTab({
   ];
 
   return (
-    <div className="space-y-6">
+    <div data-dashboard-ready="org-overview" className="space-y-6">
+      <PricingNotice coverage={overview.costCoverage} />
+
       <OrgHero
         overview={overview}
         prevOverview={prevOverview}
@@ -510,6 +529,7 @@ async function OverviewTab({
         tokenComparison={tokenComparison}
         costLabel={t("totalCost")}
         costComparison={costComparison}
+        costValue={costValue}
         activeUsersLabel={t("hero.activeUsers")}
         activeUsersSub={t("hero.activeUsersWithSessions", { count: fmtNum(overview.totalSessions) })}
       />
@@ -523,7 +543,9 @@ async function OverviewTab({
         />
         <SupportingMetric
           label={t("costPerUser")}
-          value={safeAverage(overview.totalCostUsd, overview.activeUsers)}
+          value={overview.activeUsers > 0
+            ? formatCostForCoverage(fmtUsd(overview.totalCostUsd / overview.activeUsers), overview.costCoverage, costLabels)
+            : "—"}
           sub={t("hero.activeUsersSub")}
           icon={<DollarSign className="size-4" />}
         />
@@ -581,6 +603,7 @@ async function OverviewTab({
           rows={topUsers}
           totalCost={overview.totalCostUsd}
           icon={<Users className="text-muted-foreground size-4" />}
+          costLabels={costLabels}
         />
       </div>
 
@@ -593,6 +616,7 @@ async function OverviewTab({
             rows={topTeams}
             totalCost={overview.totalCostUsd}
             icon={<Building2 className="text-muted-foreground size-4" />}
+            costLabels={costLabels}
             trailing={
               <Button asChild variant="ghost" size="sm" className="text-muted-foreground -my-1">
                 <Link href={hrefWith(sp, "/org/teams")}>{t("openTeams")}</Link>

@@ -16,6 +16,7 @@ import { getPool } from "@/lib/db";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { cacheSharePercent, findPeakTokenBucket, sharePercent, totalUsageTokens, usagePerActiveUser } from "@/lib/org-overview";
 import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
+import { formatCostForCoverage } from "@/lib/pricing";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -28,6 +29,7 @@ export const dynamic = "force-dynamic";
 type TeamStatusSearchParams = DashboardSearchParams & { team?: string };
 type TeamPeriod = ReturnType<typeof parseDashboardPeriod>;
 type TeamOption = { id: string; name: string };
+type CostLabels = { partial: string; unpriced: string; legacy: string };
 
 function overviewTokens(overview: OverviewStats): number {
   return totalUsageTokens({
@@ -73,6 +75,7 @@ function TeamHero({
   activeUsersLabel,
   sessionsLabel,
   activeUsersSub,
+  costLabels,
 }: {
   overview: OverviewStats;
   previousTokens: number;
@@ -81,6 +84,7 @@ function TeamHero({
   activeUsersLabel: string;
   sessionsLabel: string;
   activeUsersSub: string;
+  costLabels: CostLabels;
 }) {
   const tokens = overviewTokens(overview);
   const delta = pctDelta(tokens, previousTokens);
@@ -101,7 +105,10 @@ function TeamHero({
         </div>
 
         <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
-          <SummaryTile label={costLabel} value={fmtUsd(overview.totalCostUsd)} />
+          <SummaryTile
+            label={costLabel}
+            value={formatCostForCoverage(fmtUsd(overview.totalCostUsd), overview.costCoverage, costLabels)}
+          />
           <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
           <SummaryTile label={sessionsLabel} value={fmtNum(overview.totalSessions)} />
         </div>
@@ -132,6 +139,7 @@ function TeamRankRow({
   color,
   sessionsLabel,
   secondaryLabel,
+  costLabels,
 }: {
   row: LeaderRow;
   rank: number;
@@ -141,9 +149,11 @@ function TeamRankRow({
   color: string;
   sessionsLabel: string;
   secondaryLabel: string;
+  costLabels: CostLabels;
 }) {
   const value = metric === "tokens" ? row.totalTokens : row.costUsd;
-  const secondary = metric === "tokens" ? fmtUsd(row.costUsd) : fmtCompact(row.totalTokens);
+  const cost = formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels);
+  const secondary = metric === "tokens" ? cost : fmtCompact(row.totalTokens);
   const share = sharePercent(value, total);
   const width = max > 0 ? Math.max(3, Math.round((value / max) * 100)) : 0;
 
@@ -156,7 +166,7 @@ function TeamRankRow({
           {row.label}
         </span>
         <span className="ml-auto shrink-0 font-medium tabular-nums">
-          {metric === "tokens" ? fmtCompact(row.totalTokens) : fmtUsd(row.costUsd)}
+          {metric === "tokens" ? fmtCompact(row.totalTokens) : cost}
         </span>
       </div>
       <div className="ml-7 space-y-1.5">
@@ -187,6 +197,7 @@ function TeamMembersCard({
   emptyDescription,
   sessionsLabel,
   secondaryLabel,
+  costLabels,
 }: {
   rows: LeaderRow[];
   metric: ChartMetric;
@@ -197,6 +208,7 @@ function TeamMembersCard({
   emptyDescription: string;
   sessionsLabel: string;
   secondaryLabel: string;
+  costLabels: CostLabels;
 }) {
   const shown = rows.slice(0, 5);
   const max = shown.length > 0 ? (metric === "tokens" ? shown[0]!.totalTokens : shown[0]!.costUsd) : 0;
@@ -224,6 +236,7 @@ function TeamMembersCard({
                 color={TEAM_MEMBER_COLORS[index % TEAM_MEMBER_COLORS.length] ?? TEAM_MEMBER_COLORS[0]}
                 sessionsLabel={sessionsLabel}
                 secondaryLabel={secondaryLabel}
+                costLabels={costLabels}
               />
             ))}
           </div>
@@ -368,8 +381,6 @@ export default async function TeamStatusPage({
         trailing={<AutoRefresh />}
       />
 
-      <PricingNotice />
-
       <TeamDetailOverview period={period} sp={sp} teamId={selectedTeam?.id ?? null} isAdmin={isAdmin} providers={providers} />
     </div>
   );
@@ -388,7 +399,7 @@ async function TeamDetailOverview({
   isAdmin: boolean;
   providers: ProviderOption[];
 }) {
-  const t = await getTranslations("org");
+  const [t, dashboardT] = await Promise.all([getTranslations("org"), getTranslations("dashboard")]);
   if (!teamId) {
     return (
       <Card className="min-w-0">
@@ -423,6 +434,11 @@ async function TeamDetailOverview({
     storage.getProviderBreakdown(scoped),
   ]);
   const series = fillSeriesGaps(daily, period);
+  const costLabels = {
+    partial: dashboardT("costCoverage.partial"),
+    unpriced: dashboardT("costCoverage.unpriced"),
+    legacy: dashboardT("costCoverage.legacy"),
+  };
   const shownMembers = members.slice(0, 5);
   const memberPoints = await storage.getTeamMemberTimeseries({
     ...period,
@@ -462,13 +478,17 @@ async function TeamDetailOverview({
     },
     {
       label: t("signal.costChange"),
-      value: pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)?.pct ?? "—",
+      value: overview.costCoverage.unpricedEvents > 0 || prevOverview.costCoverage.unpricedEvents > 0
+        ? "—"
+        : pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)?.pct ?? "—",
       sub: t("signal.costChangeSub"),
     },
   ];
 
   return (
-    <div className="space-y-6">
+    <div data-dashboard-ready="team-overview" className="space-y-6">
+      <PricingNotice coverage={overview.costCoverage} />
+
       <TeamHero
         overview={overview}
         previousTokens={previousTokens}
@@ -477,6 +497,7 @@ async function TeamDetailOverview({
         activeUsersLabel={t("activeUsers")}
         sessionsLabel={t("sessions")}
         activeUsersSub={t("hero.activeUsersSub")}
+        costLabels={costLabels}
       />
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -488,7 +509,9 @@ async function TeamDetailOverview({
         />
         <SupportingMetric
           label={t("costPerUser")}
-          value={overview.activeUsers > 0 ? fmtUsd(overview.totalCostUsd / overview.activeUsers) : "—"}
+          value={overview.activeUsers > 0
+            ? formatCostForCoverage(fmtUsd(overview.totalCostUsd / overview.activeUsers), overview.costCoverage, costLabels)
+            : "—"}
           sub={t("hero.activeUsersSub")}
           icon={<DollarSign className="size-4" />}
         />
@@ -542,6 +565,7 @@ async function TeamDetailOverview({
           emptyDescription={t("teamNoUsageDescription")}
           sessionsLabel={t("sessionsCol")}
           secondaryLabel={metric === "tokens" ? t("cost") : t("tokensCol")}
+          costLabels={costLabels}
         />
       </div>
 

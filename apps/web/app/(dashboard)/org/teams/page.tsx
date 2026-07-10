@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { parseDashboardPeriod, type DashboardSearchParams } from "@/lib/period";
+import { formatCostForCoverage } from "@/lib/pricing";
 import { getEnabledProviders } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
@@ -20,6 +21,7 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 export const dynamic = "force-dynamic";
 
 type TeamPeriod = ReturnType<typeof parseDashboardPeriod>;
+type CostLabels = { partial: string; unpriced: string; legacy: string };
 
 function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
   const q = new URLSearchParams();
@@ -73,6 +75,7 @@ function PodiumCard({
   totalTokens,
   sessionsLabel,
   tokensLabel,
+  costLabels,
 }: {
   row: LeaderRow;
   rank: number;
@@ -80,6 +83,7 @@ function PodiumCard({
   totalTokens: number;
   sessionsLabel: string;
   tokensLabel: string;
+  costLabels: CostLabels;
 }) {
   return (
     <div
@@ -96,8 +100,12 @@ function PodiumCard({
           </div>
         </div>
         <div className="text-right">
-          <div className="font-semibold tabular-nums">{fmtUsd(row.costUsd)}</div>
-          <div className="text-muted-foreground text-xs tabular-nums">{shareText(row.costUsd, totalCost)}</div>
+          <div className="font-semibold tabular-nums">
+            {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+          </div>
+          <div className="text-muted-foreground text-xs tabular-nums">
+            {row.costCoverage.unpricedEvents > 0 ? "—" : shareText(row.costUsd, totalCost)}
+          </div>
         </div>
       </div>
       <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
@@ -128,6 +136,7 @@ function RankingListRow({
   sessionsLabel,
   tokensLabel,
   costShareLabel,
+  costLabels,
 }: {
   row: LeaderRow;
   rank: number;
@@ -136,6 +145,7 @@ function RankingListRow({
   sessionsLabel: string;
   tokensLabel: string;
   costShareLabel: string;
+  costLabels: CostLabels;
 }) {
   const width = maxCost > 0 ? Math.max(3, Math.round((row.costUsd / maxCost) * 100)) : 0;
 
@@ -157,9 +167,11 @@ function RankingListRow({
           </div>
         </div>
         <div className="sm:text-right">
-          <div className="font-semibold tabular-nums">{fmtUsd(row.costUsd)}</div>
+          <div className="font-semibold tabular-nums">
+            {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+          </div>
           <div className="text-muted-foreground text-xs tabular-nums">
-            {costShareLabel}: {shareText(row.costUsd, totalCost)}
+            {costShareLabel}: {row.costCoverage.unpricedEvents > 0 ? "—" : shareText(row.costUsd, totalCost)}
           </div>
         </div>
       </div>
@@ -197,15 +209,13 @@ export default async function TeamUsagePage({
         trailing={<AutoRefresh />}
       />
 
-      <PricingNotice />
-
       <AllTeamsOverview period={period} />
     </div>
   );
 }
 
 async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
-  const t = await getTranslations("org");
+  const [t, dashboardT] = await Promise.all([getTranslations("org"), getTranslations("dashboard")]);
   const rows = await getStorage().getLeaderboard({ ...period, scope: "team" });
   const scopeLabel = t("scope.team");
   const rankedCost = rows.reduce((sum, row) => sum + row.costUsd, 0);
@@ -213,13 +223,28 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
   const rankedSessions = rows.reduce((sum, row) => sum + row.sessions, 0);
   const maxCost = rows[0]?.costUsd ?? 0;
   const topRows = rows.slice(0, 3);
+  const coverage = rows.reduce(
+    (total, row) => ({
+      pricedEvents: total.pricedEvents + row.costCoverage.pricedEvents,
+      unpricedEvents: total.unpricedEvents + row.costCoverage.unpricedEvents,
+      legacyEvents: total.legacyEvents + row.costCoverage.legacyEvents,
+    }),
+    { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 0 },
+  );
+  const costLabels = {
+    partial: dashboardT("costCoverage.partial"),
+    unpriced: dashboardT("costCoverage.unpriced"),
+    legacy: dashboardT("costCoverage.legacy"),
+  };
 
   return (
-    <>
+    <div data-dashboard-ready="team-overview" className="contents">
+      <PricingNotice coverage={coverage} />
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryTile
           label={t("ranking.totalCost")}
-          value={fmtUsd(rankedCost)}
+          value={formatCostForCoverage(fmtUsd(rankedCost), coverage, costLabels)}
           sub={t("ranking.totalCostSub", { scope: scopeLabel })}
           icon={<DollarSign className="size-3.5" />}
         />
@@ -237,7 +262,7 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
         />
         <SummaryTile
           label={t("ranking.topShare")}
-          value={rows[0] ? shareText(rows[0].costUsd, rankedCost) : "—"}
+          value={rows[0] && coverage.unpricedEvents === 0 ? shareText(rows[0].costUsd, rankedCost) : "—"}
           sub={rows[0] ? t("ranking.topShareSub", { name: rows[0].label }) : t("ranking.noLeader")}
           icon={<TrendingUp className="size-3.5" />}
         />
@@ -262,6 +287,7 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
                       totalTokens={rankedTokens}
                       sessionsLabel={t("sessionsCol")}
                       tokensLabel={t("tokensCol")}
+                      costLabels={costLabels}
                     />
                   ))}
                 </div>
@@ -296,6 +322,7 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
                     sessionsLabel={t("sessionsCol")}
                     tokensLabel={t("tokensCol")}
                     costShareLabel={t("ranking.costShare")}
+                    costLabels={costLabels}
                   />
                 ))}
               </div>
@@ -317,6 +344,6 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
           </CardContent>
         </Card>
       )}
-    </>
+    </div>
   );
 }

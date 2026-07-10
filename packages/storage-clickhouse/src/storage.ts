@@ -23,6 +23,7 @@ import type {
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
+  UsageCostCoverage,
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
@@ -136,7 +137,13 @@ function safeTimezone(tz: string | undefined, fallback = "UTC"): string {
   return tz;
 }
 
-interface AggRow {
+interface CostCoverageRow {
+  priced_events?: string;
+  unpriced_events?: string;
+  legacy_events?: string;
+}
+
+interface AggRow extends CostCoverageRow {
   sessions?: string;
   active_users?: string;
   cost?: string;
@@ -145,6 +152,12 @@ interface AggRow {
   cache_read?: string;
   cache_creation?: string;
 }
+
+const costCoverage = (row: CostCoverageRow | undefined): UsageCostCoverage => ({
+  pricedEvents: n(row?.priced_events),
+  unpricedEvents: n(row?.unpriced_events),
+  legacyEvents: n(row?.legacy_events),
+});
 
 interface OutboxBatch {
   id: string;
@@ -510,7 +523,8 @@ export class ClickHouseStorage implements StorageBackend {
     const { where, params } = this.periodWhere(q);
     return {
       source: `(SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-                       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+                       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                       cost_status, 1 AS event_count
                 FROM ${this.usageEventsSource} ${where})`,
       params,
       resolution: "raw",
@@ -537,7 +551,8 @@ export class ClickHouseStorage implements StorageBackend {
   ): TimeseriesSource {
     if (parts.length === 1) return parts[0]!.source;
     const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
-                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd`;
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                     cost_status, event_count`;
     const namespaced = parts.map(({ name, source }) => ({
       name,
       source: this.namespaceTimeseriesSource(source, name),
@@ -692,7 +707,8 @@ export class ClickHouseStorage implements StorageBackend {
       : "usage_daily_timezone_rollup";
     return {
       source: `(SELECT bucket_start, bucket_start AS ts, provider_key, user_id, team_id, session_id, model, host,
-                       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+                       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                       cost_status, event_count
                 FROM ${table} FINAL
                 WHERE timezone = {timezone:String}
                   AND bucket_start >= {from:DateTime64(3)}
@@ -778,6 +794,9 @@ export class ClickHouseStorage implements StorageBackend {
     const v2Dimensions = spec.name === USAGE_15M_V2.name
       ? ", pricing_revision_id, cost_status"
       : "";
+    const costStatusSelect = spec.name === USAGE_15M_V2.name
+      ? "cost_status"
+      : "'legacy' AS cost_status";
     const params = {
       from: chTs(q.from),
       rollupFrom: chTs(window.rollupFrom),
@@ -787,14 +806,16 @@ export class ClickHouseStorage implements StorageBackend {
     };
     const source = `(
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+             cost_status, 1 AS event_count
       FROM ${this.usageEventsSource}
       WHERE ts >= {from:DateTime64(3)}
         AND ts < {rollupFrom:DateTime64(3)}
         ${filter.sql}
       UNION ALL
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+             cost_status, event_count
       FROM (
         SELECT bucket_15m AS ts,
                provider_key,
@@ -807,7 +828,9 @@ export class ClickHouseStorage implements StorageBackend {
                argMax(output_tokens, version) AS output_tokens,
                argMax(cache_read_tokens, version) AS cache_read_tokens,
                argMax(cache_creation_tokens, version) AS cache_creation_tokens,
-               argMax(cost_usd, version) AS cost_usd
+               argMax(cost_usd, version) AS cost_usd,
+               ${costStatusSelect},
+               argMax(event_count, version) AS event_count
         FROM ${spec.table}
         WHERE ${spec.bucketColumn} >= {rollupFrom:DateTime64(3)}
           AND ${spec.bucketColumn} < {rollupTo:DateTime64(3)}
@@ -816,7 +839,8 @@ export class ClickHouseStorage implements StorageBackend {
       )
       UNION ALL
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+             cost_status, 1 AS event_count
       FROM ${this.usageEventsSource}
       WHERE ts >= {rollupTo:DateTime64(3)}
         AND ts < {to:DateTime64(3)}
@@ -871,7 +895,8 @@ export class ClickHouseStorage implements StorageBackend {
       this.insightPeriodSource({ ...q.current, providerKey: q.providerKey, userId }, "current", timezone),
     ]);
     const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
-                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd`;
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                     cost_status, event_count`;
     return {
       source: `(
         SELECT 'previous' AS period, ${columns}
@@ -1499,11 +1524,14 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<AggRow>(
       `SELECT uniqExactIf(session_id, session_id != '') AS sessions,
               uniqExactIf(user_id, user_id != '')       AS active_users,
-              sum(cost_usd)     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
-              sum(cache_creation_tokens) AS cache_creation
+              sum(cache_creation_tokens) AS cache_creation,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
        FROM ${source.source}`,
       source.params,
     );
@@ -1516,6 +1544,7 @@ export class ClickHouseStorage implements StorageBackend {
       totalOutputTokens: n(r?.output),
       totalCacheReadTokens: n(r?.cache_read),
       totalCacheCreationTokens: n(r?.cache_creation),
+      costCoverage: costCoverage(r),
     };
   }
 
@@ -1529,7 +1558,7 @@ export class ClickHouseStorage implements StorageBackend {
       `SELECT ${bucketExpr}                                   AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
               uniqExactIf(user_id, user_id != '')             AS active_users,
-              sum(cost_usd)     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
@@ -1553,11 +1582,14 @@ export class ClickHouseStorage implements StorageBackend {
   private async modelBreakdown(q: ScopedQuery & Partial<BucketOptions>): Promise<ModelBreakdown[]> {
     const timezone = safeTimezone(q.timezone, this.tz);
     const source = await this.resolveTimeseriesSource(q, q.bucket, timezone);
-    const rows = await this.queryJson<{ model: string; cost?: string; tokens?: string; sessions?: string }>(
+    const rows = await this.queryJson<{ model: string; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT if(model = '', '(unknown)', model)               AS model,
-              sum(cost_usd)                                     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '')         AS sessions
+              uniqExactIf(session_id, session_id != '')         AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
        FROM ${source.source}
        GROUP BY model ORDER BY cost DESC`,
       source.params,
@@ -1567,6 +1599,7 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1579,7 +1612,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<{ day: string; model: string; cost?: string; tokens?: string }>(
       `SELECT ${bucketExpr}                                    AS day,
               if(model = '', '(unknown)', model)               AS model,
-              sum(cost_usd)                                     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
        FROM ${source.source}
        GROUP BY day, model ORDER BY day, cost DESC`,
@@ -1598,11 +1631,14 @@ export class ClickHouseStorage implements StorageBackend {
   private async hostBreakdown(q: ScopedQuery & Partial<BucketOptions>): Promise<HostBreakdown[]> {
     const timezone = safeTimezone(q.timezone, this.tz);
     const source = await this.resolveTimeseriesSource(q, q.bucket, timezone);
-    const rows = await this.queryJson<{ host: string | null; cost?: string; tokens?: string; sessions?: string }>(
+    const rows = await this.queryJson<{ host: string | null; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT nullIf(host, '')                                 AS host,
-              sum(cost_usd)                                     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '')         AS sessions
+              uniqExactIf(session_id, session_id != '')         AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
        FROM ${source.source}
        GROUP BY host ORDER BY cost DESC`,
       source.params,
@@ -1612,6 +1648,7 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1637,7 +1674,7 @@ export class ClickHouseStorage implements StorageBackend {
               user_id,
               uniqExactIf(session_id, session_id != '')       AS sessions,
               uniqExactIf(user_id, user_id != '')             AS active_users,
-              sum(cost_usd)     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
@@ -1853,11 +1890,14 @@ export class ClickHouseStorage implements StorageBackend {
     const source = await this.resolveTimeseriesSource(dashboardQuery, dashboardQuery.bucket, timezone);
     const col = q.scope === "user" ? "user_id" : "team_id";
     const orderColumn = q.orderBy === "tokens" ? "tokens" : "cost";
-    const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string }>(
+    const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT ${col} AS key,
-              sum(cost_usd)                             AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '') AS sessions
+              uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
        FROM ${source.source} WHERE ${col} != ''
        GROUP BY key ORDER BY ${orderColumn} DESC LIMIT 100`,
       source.params,
@@ -1872,6 +1912,7 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1879,11 +1920,14 @@ export class ClickHouseStorage implements StorageBackend {
     const dashboardQuery = q as ScopedQuery & Partial<BucketOptions>;
     const timezone = safeTimezone(dashboardQuery.timezone, this.tz);
     const source = await this.resolveTimeseriesSource(dashboardQuery, dashboardQuery.bucket, timezone);
-    const rows = await this.queryJson<{ provider_key: string; cost?: string; tokens?: string; sessions?: string }>(
+    const rows = await this.queryJson<{ provider_key: string; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT provider_key,
-              sum(cost_usd) AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '') AS sessions
+              uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
        FROM ${source.source}
        GROUP BY provider_key ORDER BY tokens DESC`,
       source.params,
@@ -1893,6 +1937,7 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 

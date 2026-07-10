@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { PricingMap, PricingSchedule } from "@toard/pricing";
 import { pricingSyncDueToday } from "./pricing-auto-sync";
@@ -208,6 +209,43 @@ test("schedule 로더는 과거 revision을 시간순으로 보존한다", async
       },
     },
   ]);
+});
+
+test("비용 표시 상태는 mixed, all-unpriced, legacy-only를 구분한다", async () => {
+  const pricing = await import("./pricing") as unknown as Record<string, unknown>;
+  assert.equal(typeof pricing.costCoverageState, "function");
+  const state = pricing.costCoverageState as (coverage: {
+    pricedEvents: number;
+    unpricedEvents: number;
+    legacyEvents: number;
+  }) => string;
+
+  assert.equal(state({ pricedEvents: 2, unpricedEvents: 1, legacyEvents: 0 }), "partial");
+  assert.equal(state({ pricedEvents: 0, unpricedEvents: 3, legacyEvents: 0 }), "unpriced");
+  assert.equal(state({ pricedEvents: 0, unpricedEvents: 0, legacyEvents: 4 }), "legacy");
+  assert.equal(state({ pricedEvents: 2, unpricedEvents: 0, legacyEvents: 0 }), "complete");
+
+  assert.equal(typeof pricing.formatCostForCoverage, "function");
+  const format = pricing.formatCostForCoverage as (
+    cost: string,
+    coverage: { pricedEvents: number; unpricedEvents: number; legacyEvents: number },
+    labels: { partial: string; unpriced: string; legacy: string },
+  ) => string;
+  const labels = { partial: "부분 합계", unpriced: "가격 미확정", legacy: "기존 저장 비용" };
+  assert.equal(format("$0.00", { pricedEvents: 0, unpricedEvents: 3, legacyEvents: 0 }, labels), "가격 미확정");
+  assert.equal(format("$1.25", { pricedEvents: 2, unpricedEvents: 1, legacyEvents: 0 }, labels), "$1.25 · 부분 합계");
+  assert.equal(format("$4.50", { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 4 }, labels), "$4.50 · 기존 저장 비용");
+});
+
+test("한영 UI는 미확정 건수, 부분 합계, legacy 근거를 명시한다", () => {
+  for (const locale of ["ko", "en"] as const) {
+    const messages = JSON.parse(readFileSync(new URL(`../messages/${locale}/dashboard.json`, import.meta.url), "utf8"));
+    assert.match(messages.pricingNotice.unpricedTitle, /\{count\}/);
+    assert.equal(typeof messages.pricingNotice.legacyTitle, "string");
+    assert.equal(typeof messages.costCoverage.partial, "string");
+    assert.equal(typeof messages.costCoverage.unpriced, "string");
+    assert.equal(typeof messages.costCoverage.legacy, "string");
+  }
 });
 
 test("sync를 건너뛴 replica도 공유 generation이 바뀌면 TTL 전에 schedule을 다시 읽는다", async () => {

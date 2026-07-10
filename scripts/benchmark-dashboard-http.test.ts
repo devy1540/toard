@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  assertAppCgroupLimits,
+  assertBenchmarkTarget,
   assertDashboardResponse,
   assertLocalBenchmarkTarget,
   assertNonProductionBenchmarkEnvironment,
+  assertReferenceContainerLimits,
+  benchmarkExecutionMode,
   benchmarkPercentiles,
   dashboardFixtureStart,
+  effectiveNanoCpus,
   parseDashboardBenchmarkOptions,
+  REFERENCE_RESOURCE_LIMITS,
 } from "./benchmark-dashboard-http-lib";
 
 test("dashboard benchmark only accepts the fixed release-gate fixture", () => {
@@ -74,6 +80,63 @@ test("dashboard benchmark rejects login redirects and missing page markers", asy
     /expected page marker/,
   );
   await assert.doesNotReject(
-    () => assertDashboardResponse(new Response("<html>data-page=org</html>"), "data-page=org"),
+    () => assertDashboardResponse(
+      new Response('<html><main data-dashboard-ready="org-overview">ready</main></html>'),
+      'data-dashboard-ready="org-overview"',
+    ),
+  );
+  await assert.rejects(
+    () => assertDashboardResponse(
+      new Response('<nav>Overview</nav><main data-dashboard-error>temporarily unavailable</main>'),
+      "Overview",
+    ),
+    /streamed dashboard error/,
+  );
+});
+
+test("release benchmark requires exact Docker reference limits", () => {
+  assert.doesNotThrow(() => assertReferenceContainerLimits(REFERENCE_RESOURCE_LIMITS));
+  assert.throws(
+    () => assertReferenceContainerLimits([
+      ...REFERENCE_RESOURCE_LIMITS.filter(({ service }) => service !== "clickhouse"),
+      { service: "clickhouse", nanoCpus: 1_500_000_000, memoryBytes: 2 * 1024 ** 3 },
+    ]),
+    /resource limit mismatch/,
+  );
+  assert.equal(effectiveNanoCpus({ NanoCpus: 1_500_000_000 }), 1_500_000_000);
+  assert.equal(effectiveNanoCpus({ CpuQuota: 150_000, CpuPeriod: 100_000 }), 1_500_000_000);
+});
+
+test("release app rechecks its own cgroup and verified execution mode", () => {
+  assert.doesNotThrow(() => assertAppCgroupLimits("150000 100000\n", `${2 * 1024 ** 3}\n`));
+  assert.throws(() => assertAppCgroupLimits("max 100000", `${2 * 1024 ** 3}`), /app cgroup CPU/);
+  assert.equal(benchmarkExecutionMode({}), "diagnostic");
+  assert.equal(
+    benchmarkExecutionMode({ BENCHMARK_RELEASE_MODE: "1", BENCHMARK_LIMITS_VERIFIED: "docker-inspect" }),
+    "release",
+  );
+  assert.throws(
+    () => benchmarkExecutionMode({ BENCHMARK_RELEASE_MODE: "1" }),
+    /Docker limits were not verified/,
+  );
+});
+
+test("release mode only accepts compose services and a localhost app URL", () => {
+  assert.equal(
+    assertBenchmarkTarget("DATABASE_URL", "postgresql://toard:toard@postgres:5432/toard", "release"),
+    "postgresql://toard:toard@postgres:5432/toard",
+  );
+  assert.equal(
+    assertBenchmarkTarget("CLICKHOUSE_URL", "http://clickhouse:8123", "release"),
+    "http://clickhouse:8123",
+  );
+  assert.equal(assertBenchmarkTarget("APP_BASE_URL", "http://localhost:3117", "release"), "http://localhost:3117");
+  assert.throws(
+    () => assertBenchmarkTarget("DATABASE_URL", "postgresql://prod.example.com/toard", "release"),
+    /benchmark compose service/,
+  );
+  assert.throws(
+    () => assertBenchmarkTarget("CLICKHOUSE_URL", "https://clickhouse.example.com", "diagnostic"),
+    /localhost/,
   );
 });

@@ -190,9 +190,9 @@ pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts
 pnpm benchmark:dashboard-http
 ```
 
-릴리스 성능 gate는 credentials로 로그인한 production Next 앱의 실제 대시보드 HTTP 응답을 측정한다. 400일·100만 event 고정 fixture를 격리된 localhost Postgres schema와 ClickHouse database에 만들고, raw → 15분 v2 compactor → 시간대 activation/worker → durable coverage 경로를 통과시킨다. 각 요청은 ClickHouse query/uncompressed/mark cache를 비우고 고유 URL로 앱 응답 cache를 우회한다. `AUTH_MODE=open`은 사용하지 않는다.
+릴리스 성능 gate는 전용 Compose profile로 app·Postgres·ClickHouse를 실제 기동하고 Docker inspect로 합계 4 vCPU/8 GiB 제한을 확인한 뒤, app 컨테이너 안에서 credentials 로그인 production Next HTTP 응답을 측정한다. 400일·100만 event 고정 fixture는 tmpfs 기반 격리 stack에서 raw → 15분 v2 compactor → 시간대 activation/worker → durable coverage 경로를 통과한다. 각 요청은 ClickHouse query/uncompressed/mark cache를 비우고 고유 URL로 앱 응답 cache를 우회한다. `AUTH_MODE=open`은 사용하지 않는다.
 
-`pnpm benchmark:rollup:micro`는 ClickHouse 단일 SQL만 재는 진단용 microbenchmark이며 릴리스 gate가 아니다. 참조 자원 상한은 `docker-compose.benchmark.yml`(app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB)을 `docker-compose.yml`과 함께 적용한다. 스크립트가 localhost host process로 실행돼 이 제한을 직접 강제하지 못한 경우 결과에 그 차이를 명시한다.
+`pnpm benchmark:dashboard-http:diagnostic`은 host localhost 측정이라 release PASS 근거가 아니며, `pnpm benchmark:rollup:micro`도 ClickHouse 단일 SQL 진단용이다. 실제 release 명령은 `pnpm benchmark:dashboard-http` 하나이며 app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB가 아니면 fixture 생성 전에 실패한다.
 
 read 전환 뒤 문제가 생기면 해당 `CLICKHOUSE_READ_*` 값만 비우고 앱만 재생성한다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다.
 

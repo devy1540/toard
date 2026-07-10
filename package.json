@@ -22,7 +22,9 @@
     "seed:demo": "tsx scripts/seed-demo.ts",
     "seed:dashboard-demo": "tsx scripts/seed-dashboard-demo.ts",
     "rollup:activate-timezones": "tsx scripts/activate-timezone-rollups.ts",
-    "benchmark:dashboard-http": "tsx scripts/benchmark-dashboard-http.ts",
+    "benchmark:dashboard-http": "tsx scripts/benchmark-dashboard-release.ts",
+    "benchmark:dashboard-http:inner": "tsx scripts/benchmark-dashboard-http.ts",
+    "benchmark:dashboard-http:diagnostic": "tsx scripts/benchmark-dashboard-http.ts",
     "benchmark:rollup:micro": "tsx scripts/benchmark-timezone-rollup.ts",
     "test:benchmark-dashboard-http": "node --import tsx --test scripts/benchmark-dashboard-http.test.ts"
   },

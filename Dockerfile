@@ -27,6 +27,15 @@ COPY packages/updater/package.json ./packages/updater/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile
 
+# ---- benchmark: source + deps + production build tools ----
+# HTTP SLO 참조 측정은 이 컨테이너 안에서 fixture 준비와 production Next start를 모두 실행한다.
+# Compose가 이 stage에 app 1.5 vCPU / 2 GiB 제한을 적용한다.
+FROM deps AS benchmark
+COPY . .
+ENV HOME=/tmp \
+    NEXT_TELEMETRY_DISABLED=1
+CMD ["sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600; done"]
+
 # ---- builder: next build → standalone 산출 ----
 FROM deps AS builder
 COPY . .

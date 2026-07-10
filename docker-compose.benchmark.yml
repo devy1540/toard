@@ -1,12 +1,68 @@
-# 다중 해상도 dashboard HTTP benchmark의 참조 자원 상한.
-# docker-compose.yml과 함께 사용하며 세 서비스 합계가 4 vCPU / 8 GiB다.
+# 격리된 dashboard HTTP release benchmark stack.
+# app(benchmark runner + production Next)·Postgres·ClickHouse 합계: 4 vCPU / 8 GiB.
+name: toard-benchmark
+
 services:
   app:
+    image: toard-benchmark-app:local
+    build:
+      context: .
+      target: benchmark
+    command: ["sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 3600; done"]
+    profiles: ["benchmark"]
+    environment:
+      DATABASE_URL: postgresql://toard:toard@postgres:5432/toard
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: toard
+      CLICKHOUSE_PASSWORD: toard
+      CLICKHOUSE_DB: toard
+      APP_BASE_URL: http://localhost:3117
+      BENCHMARK_RELEASE_MODE: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
     cpus: 1.5
     mem_limit: 2g
+
   postgres:
+    image: postgres:16-alpine
+    profiles: ["benchmark"]
+    environment:
+      POSTGRES_USER: toard
+      POSTGRES_PASSWORD: toard
+      POSTGRES_DB: toard
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U toard -d toard"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     cpus: 1.0
     mem_limit: 2g
+
   clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    profiles: ["benchmark"]
+    environment:
+      CLICKHOUSE_USER: toard
+      CLICKHOUSE_PASSWORD: toard
+      CLICKHOUSE_DB: toard
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    tmpfs:
+      - /var/lib/clickhouse
+    volumes:
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
     cpus: 1.5
     mem_limit: 4g

@@ -389,22 +389,23 @@ DATABASE_URL=postgres://toard:toard@localhost:5432/toard \
 CLICKHOUSE_URL=http://localhost:8123 \
 pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts
 
-CLICKHOUSE_URL=http://localhost:8123 \
 pnpm benchmark:dashboard-http
 ```
 
-릴리스 gate는 localhost와 비-production marker만 허용하며, 시작 전에 둘 중 하나라도 위반하면 fixture 생성 없이 실패한다. 매 실행마다 격리된 Postgres schema와 ClickHouse database를 만들고 400일·이벤트 1,000,000건·사용자 100명·provider 5개·model 10개·고정 UUID 사용자/팀 fixture를 검증한다. cache는 direct INSERT하지 않고 raw → 15분 v2 compactor → 다섯 IANA 시간대 activation → bounded worker → durable coverage의 production code path로 만든다. 종료 시 benchmark 전용 schema/database만 정리한다.
+릴리스 gate는 `docker-compose.benchmark.yml`의 전용 profile로 tmpfs 기반 app·Postgres·ClickHouse를 실제 기동한다. host runner가 Docker inspect의 `NanoCpus`/quota와 `Memory`를 검증해 app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB가 정확히 적용된 경우에만 app 컨테이너 내부 측정을 시작한다. app도 자기 cgroup의 `cpu.max`와 `memory.max`를 다시 확인한다. 제한이 다르거나 컨테이너가 없으면 fixture 생성 전에 실패한다.
+
+매 실행마다 격리된 Postgres schema와 ClickHouse database를 만들고 400일·이벤트 1,000,000건·사용자 100명·provider 5개·model 10개·고정 UUID 사용자/팀 fixture를 검증한다. cache는 direct INSERT하지 않고 raw → 15분 v2 compactor → 다섯 IANA 시간대 activation → bounded worker → durable coverage의 production code path로 만든다. 종료 시 benchmark schema/database와 전용 Compose 컨테이너를 정리한다. Postgres/ClickHouse 데이터 디렉터리는 benchmark tmpfs라 운영 volume에 접근하지 않는다.
 
 스크립트는 임의 local credentials admin과 JWT 세션을 만들어 `AUTH_MODE=oauth`, `AUTH_CREDENTIALS_ENABLED=true`인 production `next build/start`를 localhost 별도 포트(기본 3117)에 띄운다. 비밀번호·`AUTH_SECRET`은 출력하지 않는다. `Asia/Seoul`, `America/Los_Angeles`, `Asia/Kolkata`, `Asia/Kathmandu`, `Europe/London`의 조직 최근 12개월, provider filter, 팀, 개인 대시보드를 각각 100회 요청한다. 각 요청 전에 ClickHouse query/uncompressed/mark cache를 비우고 고유 cache-busting URL과 `no-cache` header를 사용한다. 로그인 redirect, HTTP 200 이외 응답, 기대 page marker 누락은 즉시 실패다. 응답 본문을 끝까지 읽은 duration을 정렬해 `p50=sorted[49]`, `p95=sorted[94]`로 판정하고 하나라도 P50 1,000ms 또는 P95 2,000ms를 넘으면 종료 코드 1이다.
 
-참조 자원 제한은 다음 override로 app·Postgres·ClickHouse 합계 4 vCPU/8 GiB를 적용한다. 현재 host localhost 측정이 이 제한을 직접 쓰지 않으면 스크립트가 명확히 출력하므로, release 판정 전 동일 override 환경에서 재실행한다.
+release 실행과 merged Compose 확인은 다음과 같다.
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.benchmark.yml --profile clickhouse config
+docker compose -f docker-compose.benchmark.yml --profile benchmark config
 pnpm benchmark:dashboard-http
 ```
 
-`pnpm benchmark:rollup:micro`는 timezone cache table의 ClickHouse SQL만 100회 재는 하위 진단 도구다. 인증, Next 렌더링, Postgres readiness, source router, response serialization을 포함하지 않으므로 release 통과 근거로 사용하지 않는다.
+`pnpm benchmark:dashboard-http:diagnostic`은 같은 HTTP fixture를 host localhost에서 점검하지만 결과를 `DIAGNOSTIC_PASS`로만 출력한다. `pnpm benchmark:rollup:micro`는 timezone cache table의 ClickHouse SQL만 100회 재는 하위 진단 도구다. 둘 다 reference resource limit 전체를 검증하지 않으므로 release 통과 근거로 사용하지 않는다.
 
 exact verifier는 localhost에서 raw TTL을 잠시 97일로 적용한 뒤 원래 상태로 복원한다. 실제 90일 경계 이벤트를 저장하고 TTL merge 후 raw 생존과 15분 v2 반영을 확인하므로, 운영 DB가 아닌 격리된 로컬 데이터에서만 실행한다.
 

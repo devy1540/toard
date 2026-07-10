@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import bcrypt from "bcryptjs";
 import { createClient, type ClickHouseClient } from "../packages/storage-clickhouse/node_modules/@clickhouse/client/dist/index.js";
@@ -13,8 +14,10 @@ import {
 } from "../apps/web/lib/timezone-rollup";
 import {
   assertDashboardResponse,
-  assertLocalBenchmarkTarget,
+  assertAppCgroupLimits,
+  assertBenchmarkTarget,
   assertNonProductionBenchmarkEnvironment,
+  benchmarkExecutionMode,
   benchmarkPercentiles,
   dashboardFixtureStart,
   parseDashboardBenchmarkOptions,
@@ -559,18 +562,29 @@ async function benchmarkScenario(
 async function main(): Promise<void> {
   parseDashboardBenchmarkOptions(process.argv.slice(2));
   assertNonProductionBenchmarkEnvironment(process.env);
-  const baseDatabaseUrl = assertLocalBenchmarkTarget(
+  const mode = benchmarkExecutionMode(process.env);
+  const baseDatabaseUrl = assertBenchmarkTarget(
     "DATABASE_URL",
     process.env.DATABASE_URL ?? "postgresql://toard:toard@localhost:5432/toard",
+    mode,
   );
-  const clickHouseUrl = assertLocalBenchmarkTarget(
+  const clickHouseUrl = assertBenchmarkTarget(
     "CLICKHOUSE_URL",
     process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
+    mode,
   );
-  const appBaseUrl = assertLocalBenchmarkTarget(
+  const appBaseUrl = assertBenchmarkTarget(
     "APP_BASE_URL",
     process.env.APP_BASE_URL ?? "http://localhost:3117",
+    mode,
   );
+  if (mode === "release") {
+    const [cpuMax, memoryMax] = await Promise.all([
+      readFile("/sys/fs/cgroup/cpu.max", "utf8"),
+      readFile("/sys/fs/cgroup/memory.max", "utf8"),
+    ]);
+    assertAppCgroupLimits(cpuMax, memoryMax);
+  }
   const port = Number(new URL(appBaseUrl).port || "80");
   const runSuffix = `${process.pid}_${Date.now()}`;
   const pgSchema = `toard_benchmark_http_${runSuffix}`;
@@ -586,9 +600,10 @@ async function main(): Promise<void> {
   let ch: ClickHouseClient | undefined;
   let app: ChildProcess | undefined;
 
-  console.log("[dashboard-http] release gate: authenticated HTTP request through completed response body");
-  console.log("[dashboard-http] target reference: Docker Compose total 4 vCPU / 8 GiB");
-  console.log("[dashboard-http] current environment: localhost limits not enforced; compare with the reference override before release");
+  console.log(`[dashboard-http] mode=${mode}: authenticated HTTP request through completed response body`);
+  console.log(mode === "release"
+    ? "[dashboard-http] release reference limits verified: Docker Compose total 4 vCPU / 8 GiB"
+    : "[dashboard-http] diagnostic only: host limits are not a release PASS");
 
   try {
     const isolatedPg = await createIsolatedPostgres(baseDatabaseUrl, pgSchema);
@@ -652,35 +667,39 @@ async function main(): Promise<void> {
         name: `org-${timezone}`,
         timezone,
         path: "/org?period=year",
-        marker: "Overview",
+        marker: 'data-dashboard-ready="org-overview"',
       })),
       {
         name: "org-provider-filter",
         timezone: "Asia/Seoul",
         path: `/org?period=year&provider=${encodeURIComponent(providerKey(0))}`,
-        marker: "Overview",
+        marker: 'data-dashboard-ready="org-overview"',
       },
       {
         name: "team-view",
         timezone: "Asia/Seoul",
         path: `/org/team?period=year&team=${TEAM_ID}`,
-        marker: "Benchmark Team status",
+        marker: 'data-dashboard-ready="team-overview"',
       },
       {
         name: "individual-dashboard",
         timezone: "Asia/Seoul",
         path: "/?period=year",
-        marker: "My Usage",
+        marker: 'data-dashboard-ready="user-overview"',
       },
     ];
 
     let failed = false;
     for (const scenario of scenarios) {
       const result = await benchmarkScenario(scenario, appBaseUrl, jar, pg, ch);
-      console.log(
-        `[dashboard-http] ${result.name} timezone=${result.timezone} runs=${EXPECTED_RUNS} p50=${result.p50.toFixed(2)}ms p95=${result.p95.toFixed(2)}ms ${result.passed ? "PASS" : "FAIL"}`,
-      );
+      const verdict = result.passed ? (mode === "release" ? "PASS" : "DIAGNOSTIC_PASS") : "FAIL";
+      console.log(`[dashboard-http] ${result.name} timezone=${result.timezone} runs=${EXPECTED_RUNS} p50=${result.p50.toFixed(2)}ms p95=${result.p95.toFixed(2)}ms ${verdict}`);
       if (!result.passed) failed = true;
+    }
+    if (!failed) {
+      console.log(mode === "release"
+        ? "[dashboard-http] RELEASE_PASS: all authenticated dashboard scenarios met the reference SLO"
+        : "[dashboard-http] diagnostic complete: run pnpm benchmark:dashboard-http for release evidence");
     }
     if (failed) process.exitCode = 1;
   } finally {

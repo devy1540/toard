@@ -76,6 +76,13 @@
     "syncNow": "지금 동기화",
     "syncedWithDay": "동기화 완료 — {count}개 모델 반영 ({day})",
     "synced": "동기화 완료 — {count}개 모델 반영",
+    "repriceTitle": "보존 비용 전체 재평가",
+    "repriceDescription": "보존 기간 전체 이벤트의 비용을 현재 LiteLLM 가격으로 다시 계산합니다. 입력·출력·캐시 토큰만 보존되어 과거 fast·1시간 캐시 생성 구분은 기본 단가로 계산됩니다.",
+    "repriceConfirmLabel": "실행하려면 REPRICE 입력",
+    "repriceConfirmPlaceholder": "REPRICE",
+    "repriceSubmit": "전체 재평가 실행",
+    "repricing": "재평가 중…",
+    "repriced": "재평가 완료 — 이벤트 {count}건 · 가격 미등록 {unpriced}건",
     "contentTitle": "본문 수집",
     "contentBadgeOn": "활성",
     "contentBadgeOff": "비활성",
@@ -123,6 +130,9 @@
     "lastAdminRequired": "마지막 관리자는 member로 변경할 수 없습니다.",
     "pricingDownloadKept": "가격 다운로드에 실패해 기존 스냅샷을 유지했습니다 — {error}",
     "pricingSyncFailed": "동기화 실패 — {error}",
+    "repriceConfirmationRequired": "전체 재평가를 실행하려면 REPRICE를 정확히 입력하세요.",
+    "repriceClickHouseMaintenance": "ClickHouse 사용 중에는 원시 이벤트와 시간별·15분 롤업을 함께 다시 만들어야 합니다. 온라인 재평가는 차단되었습니다.",
+    "repriceFailed": "보존 비용 재평가 실패 — {error}",
     "autoSyncSaveFailed": "자동 동기화 설정 저장 실패: {error}"
   }
 }

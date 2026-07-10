@@ -407,6 +407,12 @@ pnpm benchmark:dashboard-http
 
 `pnpm benchmark:dashboard-http:diagnostic`은 같은 HTTP fixture를 host localhost에서 점검하지만 결과를 `DIAGNOSTIC_PASS`로만 출력한다. `pnpm benchmark:rollup:micro`는 timezone cache table의 ClickHouse SQL만 100회 재는 하위 진단 도구다. 둘 다 reference resource limit 전체를 검증하지 않으므로 release 통과 근거로 사용하지 않는다.
 
+wrapper는 active Docker child에 `SIGINT`/`SIGTERM`을 전달한 뒤 idempotent `docker compose down --remove-orphans`를 기다리고 각각 exit 130/143으로 종료한다. 같은 signal이 반복되거나 정상 `finally`와 signal handler가 경쟁해도 down은 한 번만 실행한다. 정상 benchmark 뒤 down이 실패하면 exit 1이고, benchmark와 down이 모두 실패하면 `AggregateError`에 두 원인을 보존한다. 실제 제한 stack을 중단한 뒤 container/network가 남지 않는지는 다음으로 검증한다.
+
+```bash
+pnpm test:benchmark-dashboard-signal
+```
+
 exact verifier는 localhost에서 raw TTL을 잠시 97일로 적용한 뒤 원래 상태로 복원한다. 실제 90일 경계 이벤트를 저장하고 TTL merge 후 raw 생존과 15분 v2 반영을 확인하므로, 운영 DB가 아닌 격리된 로컬 데이터에서만 실행한다.
 
 ### 9.3 read rollback

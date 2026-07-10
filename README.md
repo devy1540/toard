@@ -194,6 +194,8 @@ pnpm benchmark:dashboard-http
 
 `pnpm benchmark:dashboard-http:diagnostic`은 host localhost 측정이라 release PASS 근거가 아니며, `pnpm benchmark:rollup:micro`도 ClickHouse 단일 SQL 진단용이다. 실제 release 명령은 `pnpm benchmark:dashboard-http` 하나이며 app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB가 아니면 fixture 생성 전에 실패한다.
 
+release wrapper는 정상·실패·중단 경로에서 전용 Compose project를 한 번만 정리한다. cleanup 자체가 실패하면 release 성공으로 종료하지 않으며, benchmark와 cleanup이 모두 실패하면 두 오류를 함께 출력한다. `SIGINT`/`SIGTERM`은 실행 중인 child에 전달하고 cleanup 완료를 기다린 뒤 각각 130/143으로 종료한다. 실제 signal 정리 회귀는 `pnpm test:benchmark-dashboard-signal`로 확인한다.
+
 read 전환 뒤 문제가 생기면 해당 `CLICKHOUSE_READ_*` 값만 비우고 앱만 재생성한다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다.
 
 ```bash

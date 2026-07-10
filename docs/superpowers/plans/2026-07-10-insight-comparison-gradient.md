@@ -49,12 +49,12 @@ test("insight comparison chart fills only the current period with the approved g
   assert.match(chart, /<linearGradient id=\{gradientId\}[\s\S]*stopOpacity=\{0\.32\}[\s\S]*stopOpacity=\{0\.04\}/);
   assert.match(
     chart,
-    /<Area[\s\S]*dataKey="current"[\s\S]*stroke="var\(--color-chart-1\)"[\s\S]*fill=\{`url\(#\$\{gradientId\}\)`\}[\s\S]*isAnimationActive=\{false\}/,
+    /<Area[^>]*dataKey="current"[^>]*stroke="var\(--color-chart-1\)"[^>]*fill=\{`url\(#\$\{gradientId\}\)`\}[^>]*isAnimationActive=\{false\}/s,
   );
-  assert.doesNotMatch(chart, /<Area[\s\S]*dataKey="previous"/);
+  assert.doesNotMatch(chart, /<Area[^>]*dataKey="previous"/s);
   assert.match(
     chart,
-    /<Line[\s\S]*dataKey="previous"[\s\S]*stroke="var\(--color-muted-foreground\)"[\s\S]*strokeDasharray="4 4"[\s\S]*isAnimationActive=\{false\}/,
+    /<Line[^>]*dataKey="previous"[^>]*stroke="var\(--color-muted-foreground\)"[^>]*strokeDasharray="4 4"[^>]*isAnimationActive=\{false\}/s,
   );
 });
 ```

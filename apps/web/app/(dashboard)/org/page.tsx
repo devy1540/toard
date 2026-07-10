@@ -3,7 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
 import type { LeaderRow, OverviewStats, ProviderBreakdown } from "@toard/core";
-import { Building2, DollarSign, Inbox, Layers3, Trophy, Users } from "lucide-react";
+import { Blocks, Building2, DollarSign, Inbox, Layers3, Puzzle, Trophy, Users, Wrench } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
@@ -27,6 +27,7 @@ import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
+import { getOrgToolSummary } from "@/lib/tool-metadata";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
@@ -427,13 +428,14 @@ async function OverviewTab({
   const t = await getTranslations("org");
   const metric: ChartMetric = getOrgChartMetric(sp.metric);
   const storage = getStorage();
-  const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown] = await Promise.all([
+  const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown, toolActivity] = await Promise.all([
     storage.getOverview(period),
     storage.getOverview(previousPeriod(period)),
     storage.getDailyTimeseries(period),
     storage.getLeaderboard({ ...period, scope: "user" }),
     canSeeTeamRanking ? storage.getLeaderboard({ ...period, scope: "team" }) : Promise.resolve([]),
     storage.getProviderBreakdown(period),
+    getOrgToolSummary(period),
   ]);
 
   const series = fillSeriesGaps(daily, period);
@@ -531,6 +533,17 @@ async function OverviewTab({
           icon={<Layers3 className="size-4" />}
         />
       </div>
+
+      <Card>
+        <CardHeader><CardTitle>{t("toolActivity.title")}</CardTitle><CardDescription>{t("toolActivity.description")}</CardDescription></CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <SummaryTile label={t("toolActivity.mcp")} value={fmtNum(toolActivity.mcpCalls)} icon={<Wrench className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.skills")} value={fmtNum(toolActivity.distinctSkills)} icon={<Blocks className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.plugins")} value={fmtNum(toolActivity.distinctPlugins)} icon={<Puzzle className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.users")} value={fmtNum(toolActivity.activeUsers ?? 0)} icon={<Users className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.devices")} value={fmtNum(toolActivity.activeDevices ?? 0)} />
+        </CardContent>
+      </Card>
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
         <Card className="min-w-0">

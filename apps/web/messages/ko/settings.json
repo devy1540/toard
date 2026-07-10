@@ -34,6 +34,13 @@
     "shimUnreported": "미보고 (구 shim)",
     "shimOutdated": "업데이트 필요",
     "deviceCommandCopied": "명령을 복사했습니다.",
+    "inventory": {
+      "missing": "AI 도구 인벤토리 미수신",
+      "fresh": "최신",
+      "stale": "지연",
+      "summary": "MCP {mcp} · 스킬 {skills} · 플러그인 {plugins}",
+      "kind": { "mcp": "MCP", "skill": "스킬", "plugin": "플러그인" }
+    },
     "deviceAction": {
       "collect": "수신 확인",
       "doctor": "진단",

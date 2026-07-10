@@ -52,3 +52,15 @@ test("overview adds tool activity as a secondary card", () => {
   assert.match(overview, /ToolActivityCard/);
   assert.match(overview, /<ToolActivityCard[^>]*\/>/s);
 });
+
+test("device inventory is current state, not period activity", () => {
+  const inventory = source("app/(dashboard)/settings/device-inventory.tsx");
+  assert.match(inventory, /DeviceToolInventory/);
+  assert.doesNotMatch(inventory, /fromDate|toDate|DashboardPeriod/);
+});
+
+test("organization page uses anonymous tool summary without drilldown", () => {
+  const org = source("app/(dashboard)/org/page.tsx");
+  assert.match(org, /getOrgToolSummary/);
+  assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
+});

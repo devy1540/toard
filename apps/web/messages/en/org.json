@@ -79,6 +79,15 @@
   "providerComposition": "Tool composition",
   "providerCompositionDescription": "Token share by provider.",
   "noProviderTitle": "No provider usage",
+  "toolActivity": {
+    "title": "AI tool activity",
+    "description": "Workspace totals without personal names or device details.",
+    "mcp": "MCP calls",
+    "skills": "Skill activity",
+    "plugins": "Plugin activity",
+    "users": "Active users",
+    "devices": "Active devices"
+  },
   "teamDailyUsage": "Team daily usage",
   "teamHourlyUsage": "Team hourly usage",
   "teamUsage30m": "Team 30-minute usage",

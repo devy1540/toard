@@ -9,6 +9,7 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
+  ProviderBreakdown,
   SaveResult,
   SessionUsageEventRow,
   SessionUsageSummary,
@@ -1136,6 +1137,25 @@ export class ClickHouseStorage implements StorageBackend {
     return rows.map((r) => ({
       key: r.key,
       label: labels.get(r.key) ?? r.key,
+      costUsd: n(r.cost),
+      totalTokens: n(r.tokens),
+      sessions: n(r.sessions),
+    }));
+  }
+
+  async getProviderBreakdown(q: PeriodQuery): Promise<ProviderBreakdown[]> {
+    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
+    const rows = await this.queryJson<{ provider_key: string; cost?: string; tokens?: string; sessions?: string }>(
+      `SELECT provider_key,
+              sum(cost_usd) AS cost,
+              sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+              uniqExactIf(session_id, session_id != '') AS sessions
+       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+       GROUP BY provider_key ORDER BY tokens DESC`,
+      params,
+    );
+    return rows.map((r) => ({
+      providerKey: r.provider_key,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),

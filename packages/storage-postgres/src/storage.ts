@@ -8,6 +8,7 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
+  ProviderBreakdown,
   SaveResult,
   SessionUsageEventRow,
   SessionUsageSummary,
@@ -434,6 +435,25 @@ export class PostgresStorage implements StorageBackend {
     return res.rows.map((r) => ({
       key: String(r.key), label: r.label, costUsd: n(r.cost),
       totalTokens: n(r.tokens), sessions: n(r.sessions),
+    }));
+  }
+
+  async getProviderBreakdown(q: PeriodQuery): Promise<ProviderBreakdown[]> {
+    const { where, params } = this.periodWhere(q);
+    const res = await this.pool.query(
+      `SELECT provider_key,
+              COALESCE(SUM(cost_usd),0) AS cost,
+              COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
+              COUNT(DISTINCT session_id) AS sessions
+       FROM usage_events ${where}
+       GROUP BY provider_key ORDER BY tokens DESC`,
+      params,
+    );
+    return res.rows.map((r) => ({
+      providerKey: r.provider_key,
+      costUsd: n(r.cost),
+      totalTokens: n(r.tokens),
+      sessions: n(r.sessions),
     }));
   }
 }

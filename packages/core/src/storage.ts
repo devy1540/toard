@@ -103,6 +103,15 @@ export interface ModelBreakdown {
   sessions: number;
 }
 
+/** 프로바이더별 사용량 분해 — 워크스페이스 전체 기간 범위. */
+export interface ProviderBreakdown {
+  providerKey: string;
+  costUsd: number;
+  /** 총 소모 토큰 = input+output+cache_read+cache_creation */
+  totalTokens: number;
+  sessions: number;
+}
+
 /** 컴퓨터(호스트)별 사용량 분해 — 기간-스코프. host=null 은 "(알 수 없음)"(라벨링은 UI). */
 export interface HostBreakdown {
   host: string | null;
@@ -197,6 +206,8 @@ export interface StorageBackend {
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */
   getUserHourlyTimeseries(userId: string, q: PeriodQuery & { timezone?: string }): Promise<DailyPoint[]>;
   getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]>;
+  /** 워크스페이스 전체의 프로바이더별 분해 — 기간·provider 필터 적용. */
+  getProviderBreakdown(q: PeriodQuery): Promise<ProviderBreakdown[]>;
   /** 내 기기 목록 — 기간 무관 전체 이력(유휴 기기도 노출, §design-host-breakdown). */
   getUserHosts(userId: string): Promise<DeviceInfo[]>;
   /** 내 세션들의 사용량 요약 — 히스토리 목록의 앱레벨 조인. sessionIds 는 페이지 단위 소량 전제. */

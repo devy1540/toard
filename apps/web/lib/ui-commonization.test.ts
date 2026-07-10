@@ -74,11 +74,13 @@ test("insight comparison chart preserves sparse numeric positions", () => {
   assert.match(chart, /<XAxis[\s\S]*type="number"[\s\S]*domain=\{\["dataMin", "dataMax"\]\}/);
 });
 
-test("insight comparison chart has a translated accessible name and description", () => {
+test("insight comparison chart exposes its translated name without a nested image role", () => {
   const chart = source("components/charts/insight-comparison-chart.tsx");
-  assert.match(chart, /role="img"/);
-  assert.match(chart, /aria-label=\{t\("chart\.accessibleLabel"\)\}/);
-  assert.match(chart, /aria-describedby=\{descriptionId\}/);
+  assert.doesNotMatch(chart, /role="img"/);
+  assert.match(
+    chart,
+    /<LineChart[\s\S]*aria-label=\{t\("chart\.accessibleLabel"\)\}[\s\S]*aria-describedby=\{descriptionId\}/,
+  );
   assert.match(chart, /id=\{descriptionId\}[\s\S]*t\("chart\.accessibleDescription"\)/);
 });
 

@@ -35,17 +35,18 @@ export function InsightComparisonChart({
       : format.number(value, { notation: "compact", maximumFractionDigits: 1 });
 
   return (
-    <div
-      className="w-full"
-      role="img"
-      aria-label={t("chart.accessibleLabel")}
-      aria-describedby={descriptionId}
-    >
+    <div className="w-full">
       <p id={descriptionId} className="sr-only">
         {t("chart.accessibleDescription")}
       </p>
       <ResponsiveContainer width="100%" height={280}>
-        <LineChart data={chartData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} accessibilityLayer>
+        <LineChart
+          data={chartData}
+          margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+          accessibilityLayer
+          aria-label={t("chart.accessibleLabel")}
+          aria-describedby={descriptionId}
+        >
           <CartesianGrid vertical={false} stroke="var(--color-border)" />
           <XAxis
             dataKey="position"

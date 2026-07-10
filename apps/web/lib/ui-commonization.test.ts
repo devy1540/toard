@@ -198,9 +198,16 @@ test("insight comparison chart labels positions with current and previous dates"
   assert.match(chart, /getInsightPositionDate/);
   assert.match(chart, /tickFormatter=.*formatPositionDate/s);
   assert.match(chart, /labelFormatter=.*chart\.dateComparison/s);
+  assert.match(chart, /const currentEnd = new Date\(currentTo\)/);
+  assert.match(
+    chart,
+    /const currentDate = getInsightPositionDate\([\s\S]*currentStart,[\s\S]*position,[\s\S]*timezone,[\s\S]*currentEnd,[\s\S]*\)/,
+  );
+  assert.match(chart, /if \(currentDate === null\) return \[\];/);
   assert.match(chart, /previous: previousDate === null \? undefined :/);
   assert.match(chart, /chart\.comparisonUnavailable/);
   assert.match(page, /currentFrom=\{pair\.current\.from\.toISOString\(\)\}/);
+  assert.match(page, /currentTo=\{pair\.current\.to\.toISOString\(\)\}/);
   assert.match(page, /previousFrom=\{pair\.previous\.from\.toISOString\(\)\}/);
   assert.match(page, /previousTo=\{pair\.previous\.to\.toISOString\(\)\}/);
   assert.match(page, /timezone=\{pair\.timezone\}/);

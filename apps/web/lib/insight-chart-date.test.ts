@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { getInsightPositionDate } from "./insight-chart-date";
+import { buildInsightPeriodPair } from "./insight-period";
 
 test("최근 7일의 position 0부터 7까지 실제 캘린더 날짜로 변환한다", () => {
   const from = new Date("2026-07-03T05:30:00.000Z");
@@ -43,5 +44,32 @@ test("DST 전환 기간의 exclusive 종료일도 캘린더 날짜 경계로 판
   assert.equal(
     getInsightPositionDate(previousFrom, 3, "America/Los_Angeles", previousTo),
     null,
+  );
+});
+
+test("LA 가을 DST 종료에는 이전 position만 유효해도 현재 범위 밖 position을 제외한다", () => {
+  const pair = buildInsightPeriodPair(
+    "week",
+    "America/Los_Angeles",
+    new Date("2026-11-02T07:30:00.000Z"),
+  );
+
+  assert.equal(
+    getInsightPositionDate(
+      pair.current.from,
+      1,
+      pair.timezone,
+      pair.current.to,
+    ),
+    null,
+  );
+  assert.equal(
+    getInsightPositionDate(
+      pair.previous.from,
+      1,
+      pair.timezone,
+      pair.previous.to,
+    )?.toISOString(),
+    "2026-10-26T12:00:00.000Z",
   );
 });

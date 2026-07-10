@@ -27,6 +27,7 @@ export function InsightComparisonChart({
   data,
   metric,
   currentFrom,
+  currentTo,
   previousFrom,
   previousTo,
   timezone,
@@ -34,6 +35,7 @@ export function InsightComparisonChart({
   data: InsightTrendPoint[];
   metric: "cost" | "tokens";
   currentFrom: string;
+  currentTo: string;
   previousFrom: string;
   previousTo: string;
   timezone: string;
@@ -44,9 +46,17 @@ export function InsightComparisonChart({
   const gradientId = `${descriptionId.replace(/:/g, "")}-current-fill`;
   const isCost = metric === "cost";
   const currentStart = new Date(currentFrom);
+  const currentEnd = new Date(currentTo);
   const previousStart = new Date(previousFrom);
   const previousEnd = new Date(previousTo);
-  const chartData = data.map(({ position, current, previous }) => {
+  const chartData = data.flatMap(({ position, current, previous }) => {
+    const currentDate = getInsightPositionDate(
+      currentStart,
+      position,
+      timezone,
+      currentEnd,
+    );
+    if (currentDate === null) return [];
     const previousDate = getInsightPositionDate(previousStart, position, timezone, previousEnd);
     return {
       position: position + 1,

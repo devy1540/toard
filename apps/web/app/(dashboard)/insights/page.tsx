@@ -231,6 +231,7 @@ export default async function InsightsPage({
                 data={comparison.trend}
                 metric={metric}
                 currentFrom={pair.current.from.toISOString()}
+                currentTo={pair.current.to.toISOString()}
                 previousFrom={pair.previous.from.toISOString()}
                 previousTo={pair.previous.to.toISOString()}
                 timezone={pair.timezone}

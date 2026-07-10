@@ -12,6 +12,7 @@ pub mod post;
 pub mod qwen;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -87,7 +88,7 @@ pub struct RawContent {
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawToolActivity {
     pub ts_ms: i64,
-    pub session_id: Option<String>,
+    pub session_id: Option<Arc<str>>,
     pub call_id: String,
     pub kind: ToolActivityKind,
     pub item_key: String,

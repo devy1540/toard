@@ -31,7 +31,7 @@ pub enum ToolDetection {
 struct ToolActivityWire<'a> {
     dedup_key: String,
     provider_key: &'a str,
-    session_id: &'a Option<String>,
+    session_id: Option<&'a str>,
     host: Option<&'a str>,
     ts: String,
     activity_kind: ToolActivityKind,
@@ -64,7 +64,7 @@ pub fn to_tool_events_body(
         .map(|event| ToolActivityWire {
             dedup_key: dedup_key(provider, event),
             provider_key: provider,
-            session_id: &event.session_id,
+            session_id: event.session_id.as_deref(),
             host,
             ts: iso::epoch_ms_to_iso(event.ts_ms),
             activity_kind: event.kind,

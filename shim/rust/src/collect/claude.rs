@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -96,10 +97,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
             .and_then(Value::as_str)
             .and_then(iso_to_epoch_ms)
             .unwrap_or(fallback);
-        let session_id = obj
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
+        let session_id = obj.get("sessionId").and_then(Value::as_str).map(Arc::from);
 
         if role == Some("assistant") {
             if let Some(usage) = message.get("usage").and_then(Value::as_object) {
@@ -111,7 +109,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                 if input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens > 0 {
                     parsed.usage.push(RawUsage {
                         ts_ms,
-                        session_id: session_id.clone(),
+                        session_id: session_id.as_deref().map(str::to_string),
                         model: message
                             .get("model")
                             .and_then(Value::as_str)
@@ -180,7 +178,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
             if !text.is_empty() {
                 parsed.content.push(RawContent {
                     ts_ms,
-                    session_id: session_id.clone(),
+                    session_id: session_id.as_deref().map(str::to_string),
                     message_id: message
                         .get("id")
                         .and_then(Value::as_str)

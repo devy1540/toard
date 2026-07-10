@@ -11,6 +11,7 @@
 // 최상위 crate::codex(=OTEL config.toml 주입기)와는 다른 모듈(collect::codex).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -113,7 +114,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
         return ParsedLog::default();
     };
     let mut parsed = ParsedLog::default();
-    let mut session_id: Option<String> = None;
+    let mut session_id: Option<Arc<str>> = None;
     let mut model: Option<String> = None;
     let mut last_seen_total: Option<(u64, u64)> = None;
     for line in bytes.split(|byte| *byte == b'\n') {
@@ -134,7 +135,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             session_id = payload
                 .and_then(|item| item.get("session_id"))
                 .and_then(Value::as_str)
-                .map(str::to_string);
+                .map(Arc::from);
             continue;
         }
         if ty == Some("turn_context") {
@@ -168,7 +169,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     let cached = count("cached_input_tokens");
                     let usage = RawUsage {
                         ts_ms,
-                        session_id: session_id.clone(),
+                        session_id: session_id.as_deref().map(str::to_string),
                         model: model.clone(),
                         message_id: None,
                         input_tokens: count("input_tokens").saturating_sub(cached),
@@ -189,7 +190,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     if !text.is_empty() {
                         parsed.content.push(RawContent {
                             ts_ms,
-                            session_id: session_id.clone(),
+                            session_id: session_id.as_deref().map(str::to_string),
                             message_id: None,
                             role: if item.get("type").and_then(Value::as_str)
                                 == Some("user_message")
@@ -587,7 +588,8 @@ mod tests {
         let tmp = TempDir::new("codex-benchmark");
         let mut lines =
             vec![r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string()];
-        for index in 1..=2_000 {
+        const RECORDS: usize = 5_000;
+        for index in 1..=RECORDS {
             lines.push(
                 serde_json::json!({
                     "timestamp": "2026-07-10T00:00:00Z",
@@ -625,24 +627,46 @@ mod tests {
         }
         let path = tmp.write("sessions/bench.jsonl", &lines.join("\n"));
 
-        let mut baseline = Vec::new();
-        let mut feature = Vec::new();
-        for _ in 0..15 {
+        let baseline = || {
             let start = Instant::now();
-            assert_eq!(Codex.parse_file(&path).len(), 2_000);
-            baseline.push(start.elapsed().as_nanos());
+            assert_eq!(Codex.parse_file(&path).len(), RECORDS);
+            start.elapsed().as_nanos()
+        };
+        let feature = || {
             let start = Instant::now();
             let parsed = Codex.parse_changed(&path, false, true);
-            assert_eq!(parsed.tools.len(), 2_000);
-            feature.push(start.elapsed().as_nanos());
+            assert_eq!(parsed.tools.len(), RECORDS);
+            start.elapsed().as_nanos()
+        };
+
+        for _ in 0..3 {
+            let _ = baseline();
+            let _ = feature();
         }
-        baseline.sort_unstable();
-        feature.sort_unstable();
-        let base = baseline[baseline.len() / 2];
-        let with_tools = feature[feature.len() / 2];
-        eprintln!("baseline_ns={base} feature_ns={with_tools}");
+
+        let mut baseline_times = Vec::new();
+        let mut feature_times = Vec::new();
+        for index in 0..31 {
+            let (base, with_tools) = if index % 2 == 0 {
+                (baseline(), feature())
+            } else {
+                let with_tools = feature();
+                (baseline(), with_tools)
+            };
+            baseline_times.push(base);
+            feature_times.push(with_tools);
+        }
+        baseline_times.sort_unstable();
+        feature_times.sort_unstable();
+        let baseline_total: u128 = baseline_times[5..26].iter().sum();
+        let feature_total: u128 = feature_times[5..26].iter().sum();
+        let trimmed_ratio = feature_total as f64 / baseline_total as f64;
+        eprintln!(
+            "trimmed_mean_overhead={:.2}%",
+            (trimmed_ratio - 1.0) * 100.0
+        );
         assert!(
-            with_tools <= base * 110 / 100,
+            trimmed_ratio <= 1.10,
             "도구 파서 CPU 증가가 10%를 초과했습니다"
         );
     }

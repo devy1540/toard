@@ -121,20 +121,17 @@ export default async function InsightsPage({
 
   return (
     <div className="space-y-6">
-      <header className="space-y-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-          <p className="text-muted-foreground mt-1 text-sm">{t("description")}</p>
-        </div>
-        <div className="flex flex-wrap items-end justify-between gap-4">
+      <header className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="mr-2 text-sm font-medium">{t("title")}</h1>
           <InsightFilters
             preset={preset}
             metric={metric}
             provider={providerKey ?? "all"}
             providers={providers}
           />
-          <div className="text-muted-foreground space-y-1 text-xs sm:text-right">
-            <div className="flex items-center gap-1.5 sm:justify-end">
+          <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:ml-auto sm:justify-end">
+            <span className="flex items-center gap-1.5">
               <Clock3 className="size-3.5" />
               {t("freshness.dataThrough", {
                 time: format.dateTime(pair.current.to, {
@@ -143,8 +140,8 @@ export default async function InsightsPage({
                   timeZone: timezone,
                 }),
               })}
-            </div>
-            <p>{t("freshness.delay")}</p>
+            </span>
+            <span>{t("freshness.delay")}</span>
           </div>
         </div>
         <div className="bg-muted/30 text-muted-foreground grid gap-1 rounded-lg px-3 py-2 text-xs sm:grid-cols-2 sm:gap-4">

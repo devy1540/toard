@@ -37,43 +37,37 @@ export function InsightFilters({ preset, metric, provider, providers }: InsightF
   ];
 
   return (
-    <div className="flex flex-wrap items-end gap-3">
-      <div className="space-y-1.5">
-        <div className="text-muted-foreground text-xs">{t("presets.label")}</div>
-        <SegmentedControl
-          value={preset}
-          items={presets}
-          onValueChange={(value) => update("period", value)}
-          aria-label={t("presets.label")}
-        />
-      </div>
+    <div className="flex flex-wrap items-center gap-2">
+      <SegmentedControl
+        value={preset}
+        items={presets}
+        onValueChange={(value) => update("period", value)}
+        aria-label={t("presets.label")}
+      />
 
-      <div className="space-y-1.5">
-        <div className="text-muted-foreground text-xs">{t("filters.providerLabel")}</div>
-        <Select value={provider} onValueChange={(value) => update("provider", value)}>
-          <SelectTrigger className="h-8 w-fit min-w-0 max-w-44 justify-start gap-1.5 px-2.5" aria-label={t("filters.providerLabel")}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="max-w-[min(24rem,var(--radix-select-content-available-width))]">
-            <SelectItem value="all">{t("filters.allProviders")}</SelectItem>
-            {providers.map((option) => (
-              <SelectItem key={option.key} value={option.key} title={option.label}>
-                {option.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
+      <Select value={provider} onValueChange={(value) => update("provider", value)}>
+        <SelectTrigger
+          className="h-8 w-fit min-w-0 max-w-44 justify-start gap-1.5 px-2.5"
+          aria-label={t("filters.providerLabel")}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent className="max-w-[min(24rem,var(--radix-select-content-available-width))]">
+          <SelectItem value="all">{t("filters.allProviders")}</SelectItem>
+          {providers.map((option) => (
+            <SelectItem key={option.key} value={option.key} title={option.label}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
 
-      <div className="space-y-1.5">
-        <div className="text-muted-foreground text-xs">{t("filters.metricLabel")}</div>
-        <SegmentedControl
-          value={metric}
-          items={metrics}
-          onValueChange={(value) => update("metric", value)}
-          aria-label={t("filters.metricLabel")}
-        />
-      </div>
+      <SegmentedControl
+        value={metric}
+        items={metrics}
+        onValueChange={(value) => update("metric", value)}
+        aria-label={t("filters.metricLabel")}
+      />
     </div>
   );
 }

@@ -133,6 +133,23 @@ test("insight filters reuse shared controls and update URL parameters", () => {
   assert.match(filters, /new URLSearchParams\(searchParams\.toString\(\)\)/);
 });
 
+test("insights use the compact dashboard toolbar while preserving accessible labels", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const filters = source("components/dashboard/insight-filters.tsx");
+
+  assert.match(page, /<h1 className="[^\"]*text-sm font-medium[^\"]*">\{t\("title"\)\}<\/h1>/);
+  assert.doesNotMatch(page, /<h1 className="text-2xl/);
+  assert.match(page, /flex flex-wrap items-center gap-2[\s\S]*<InsightFilters/);
+  assert.match(page, /sm:ml-auto[\s\S]*t\("freshness\.dataThrough"/);
+  assert.match(filters, /<div className="flex flex-wrap items-center gap-2">/);
+  assert.doesNotMatch(filters, /className="text-muted-foreground text-xs">\{t\("presets\.label"\)\}/);
+  assert.doesNotMatch(filters, /className="text-muted-foreground text-xs">\{t\("filters\.providerLabel"\)\}/);
+  assert.doesNotMatch(filters, /className="text-muted-foreground text-xs">\{t\("filters\.metricLabel"\)\}/);
+  assert.match(filters, /aria-label=\{t\("presets\.label"\)\}/);
+  assert.match(filters, /aria-label=\{t\("filters\.providerLabel"\)\}/);
+  assert.match(filters, /aria-label=\{t\("filters\.metricLabel"\)\}/);
+});
+
 test("insight comparison chart renders current and previous without animation", () => {
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);

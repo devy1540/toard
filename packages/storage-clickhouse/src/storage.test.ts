@@ -165,6 +165,7 @@ function sourceRouterFixture({
   active = true,
   coverageBuckets,
   dirtyBucket = null,
+  failRegistryOnce = false,
   jobs = [],
   watermark,
   read15mV2Rollup = true,
@@ -172,16 +173,22 @@ function sourceRouterFixture({
   active?: boolean;
   coverageBuckets?: Date[];
   dirtyBucket?: Date | null;
+  failRegistryOnce?: boolean;
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
   read15mV2Rollup?: boolean;
 }) {
   const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  let registryFailures = failRegistryOnce ? 1 : 0;
   const pg = {
     query: async (sql: string, params: unknown[] = []) => {
       pgQueries.push({ sql, params });
       if (sql.includes("FROM clickhouse_rollup_timezones")) {
+        if (registryFailures > 0) {
+          registryFailures--;
+          throw new Error("transient registry failure");
+        }
         return { rows: active ? [{ timezone: params[0] }] : [], rowCount: active ? 1 : 0 };
       }
       if (sql.includes("FROM clickhouse_rollup_watermarks")) {
@@ -702,6 +709,92 @@ test("7일 cleanup으로 done job이 사라져도 실제 cache bucket coverage�
   );
   assert.match(queries.at(-1)!.query, /usage_daily_timezone_rollup FINAL/);
   assert.doesNotMatch(queries.at(-1)!.query, /usage_15m_rollup_v2|usage_events/);
+});
+
+test("동시 dashboard 집계는 readiness snapshot 한 세트만 공유하고 settle 뒤 새 상태를 조회한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
+  const fixture = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+  const period = { ...range, bucket: "day" as const, timezone: "Asia/Seoul" };
+
+  await Promise.all([
+    fixture.storage.getOverview(period),
+    fixture.storage.getDailyTimeseries(period),
+    fixture.storage.getLeaderboard({ ...period, scope: "user" }),
+    fixture.storage.getLeaderboard({ ...period, scope: "team" }),
+    fixture.storage.getProviderBreakdown(period),
+    fixture.storage.getUserModelTimeseries("user-1", period),
+    fixture.storage.getTeamMemberTimeseries({ ...period, teamId: "team-1", userIds: ["user-1"] }),
+  ]);
+
+  for (const table of [
+    "clickhouse_rollup_timezones",
+    "clickhouse_rollup_watermarks",
+    "clickhouse_rollup_dirty_buckets",
+    "clickhouse_timezone_rollup_jobs",
+    "clickhouse_timezone_rollup_coverage",
+  ]) {
+    assert.equal(
+      fixture.pgQueries.filter(({ sql }) => sql.includes(`FROM ${table}`)).length,
+      1,
+      `${table} concurrent snapshot query count`,
+    );
+  }
+
+  await fixture.storage.getOverview(period);
+  assert.equal(
+    fixture.pgQueries.filter(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones")).length,
+    2,
+    "settled snapshot is not reused by a later request",
+  );
+});
+
+test("동일한 timezone 기간의 순수 calendar bucket 계획은 bounded cache에서 재사용한다", () => {
+  const range = localDayRange("Europe/London", "2025-07-01", 2);
+  const { storage } = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+  const planner = storage as unknown as {
+    timezoneCacheBuckets(
+      resolution: "hour" | "day",
+      timezone: string,
+      query: { from: Date; to: Date },
+    ): Array<{ from: Date; to: Date }>;
+  };
+
+  const first = planner.timezoneCacheBuckets("day", "Europe/London", range);
+  const repeated = planner.timezoneCacheBuckets("day", "Europe/London", range);
+  const otherResolution = planner.timezoneCacheBuckets("hour", "Europe/London", range);
+
+  assert.strictEqual(repeated, first);
+  assert.notStrictEqual(otherResolution, first);
+
+  for (let index = 0; index < 65; index++) {
+    const from = new Date(range.from.getTime() + index * 86_400_000);
+    planner.timezoneCacheBuckets("day", "Europe/London", {
+      from,
+      to: new Date(from.getTime() + 2 * 86_400_000),
+    });
+  }
+  const plans = (storage as unknown as { timezoneBucketPlans: Map<string, unknown> }).timezoneBucketPlans;
+  assert.equal(plans.size, 64);
+});
+
+test("readiness snapshot 오류도 in-flight cache에서 제거되어 다음 호출이 재시도한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
+  const fixture = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    failRegistryOnce: true,
+  });
+  const period = { ...range, bucket: "day" as const, timezone: "Asia/Seoul" };
+
+  await fixture.storage.getOverview(period);
+  await fixture.storage.getOverview(period);
+
+  assert.equal(
+    fixture.pgQueries.filter(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones")).length,
+    2,
+  );
+  assert.match(fixture.queries[0]!.query, /usage_15m_rollup_v2|usage_events/);
+  assert.match(fixture.queries[1]!.query, /usage_daily_timezone_rollup FINAL/);
 });
 
 test("done job과 coverage 없는 mixed snapshot은 durable 완료 근거가 아니므로 exact fallback한다", async () => {

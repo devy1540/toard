@@ -1,0 +1,12 @@
+# 다중 해상도 dashboard HTTP benchmark의 참조 자원 상한.
+# docker-compose.yml과 함께 사용하며 세 서비스 합계가 4 vCPU / 8 GiB다.
+services:
+  app:
+    cpus: 1.5
+    mem_limit: 2g
+  postgres:
+    cpus: 1.0
+    mem_limit: 2g
+  clickhouse:
+    cpus: 1.5
+    mem_limit: 4g

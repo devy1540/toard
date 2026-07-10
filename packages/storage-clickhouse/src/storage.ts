@@ -422,6 +422,8 @@ export class ClickHouseStorage implements StorageBackend {
   private readonly read15mRollup: boolean;
   private readonly read15mV2Rollup: boolean;
   private readonly enforceRetentionTtl: boolean;
+  private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
+  private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
   private schemaReady: Promise<void> | undefined;
 
   constructor(
@@ -552,6 +554,9 @@ export class ClickHouseStorage implements StorageBackend {
     timezone: string,
     q: ScopedQuery,
   ): CacheBucket[] {
+    const planKey = [resolution, timezone, q.from.toISOString(), q.to.toISOString()].join("|");
+    const cached = resolution === "day" ? this.timezoneBucketPlans.get(planKey) : undefined;
+    if (cached) return cached;
     if (q.to <= q.from) return [];
     const buckets: CacheBucket[] = [];
     let cursor = firstInstantOfLocalDate(localDateKey(q.from, timezone), timezone);
@@ -570,7 +575,79 @@ export class ClickHouseStorage implements StorageBackend {
       buckets.push({ from: cursor, to: next });
       cursor = next;
     }
+    if (resolution === "day" && this.timezoneBucketPlans.size >= 64) {
+      const oldest = this.timezoneBucketPlans.keys().next().value;
+      if (oldest) this.timezoneBucketPlans.delete(oldest);
+    }
+    if (resolution === "day") this.timezoneBucketPlans.set(planKey, buckets);
     return buckets;
+  }
+
+  private async readCacheReadySnapshot(
+    resolution: "hour" | "day",
+    timezone: string,
+    q: ScopedQuery,
+  ): Promise<CacheWindow | null> {
+    const expected = this.timezoneCacheBuckets(resolution, timezone, q);
+    if (expected.length === 0) return null;
+    const registry = await this.pg.query(
+      "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
+      [timezone],
+    );
+    if (registry.rowCount !== 1) return null;
+
+    const [watermark, dirty, jobs, coverage] = await Promise.all([
+      this.pg.query<{ watermark: Date }>(
+        "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
+        [USAGE_15M_V2.name],
+      ),
+      this.pg.query<{ bucket: Date }>(
+        `SELECT min(bucket) AS bucket
+         FROM clickhouse_rollup_dirty_buckets
+         WHERE name = $1
+           AND bucket >= $2
+           AND bucket < $3`,
+        [USAGE_15M_V2.name, expected[0]!.from, expected.at(-1)!.to],
+      ),
+      this.pg.query<{ bucket: Date; status: "pending" | "inflight" | "done" }>(
+        `SELECT bucket, status
+         FROM clickhouse_timezone_rollup_jobs
+         WHERE resolution = $1
+           AND timezone = $2
+           AND bucket >= $3
+           AND bucket < $4
+         ORDER BY bucket`,
+        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
+      ),
+      this.pg.query<{ bucket: Date }>(
+        `SELECT bucket
+         FROM clickhouse_timezone_rollup_coverage
+         WHERE resolution = $1
+           AND timezone = $2
+           AND bucket >= $3
+           AND bucket < $4
+         ORDER BY bucket`,
+        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
+      ),
+    ]);
+    const coveredTo = watermark.rows[0]?.watermark;
+    if (!coveredTo) return null;
+    const dirtyBucket = dirty.rows[0]?.bucket;
+    const jobStatus = new Map(
+      jobs.rows.map((job) => [new Date(job.bucket).getTime(), job.status]),
+    );
+    const covered = new Set(
+      coverage.rows.map(({ bucket }) => new Date(bucket).getTime()),
+    );
+    let cacheTo: Date | null = null;
+    for (const bucket of expected) {
+      if (bucket.to > coveredTo) break;
+      if (dirtyBucket && dirtyBucket < bucket.to) break;
+      const status = jobStatus.get(bucket.from.getTime());
+      if (!covered.has(bucket.from.getTime()) || (status != null && status !== "done")) break;
+      cacheTo = bucket.to;
+    }
+    return cacheTo ? { from: expected[0]!.from, to: cacheTo } : null;
   }
 
   private async cacheReady(
@@ -581,67 +658,24 @@ export class ClickHouseStorage implements StorageBackend {
     if (!this.readRollup) return null;
     const timezone = canonicalTimezoneId(timezoneInput);
     if (!timezone) return null;
+    const key = [
+      resolution,
+      timezone,
+      q.from.toISOString(),
+      q.to.toISOString(),
+      this.readRollup ? "rollup" : "exact",
+    ].join("|");
+    let snapshot = this.cacheReadyInFlight.get(key);
+    if (!snapshot) {
+      snapshot = this.readCacheReadySnapshot(resolution, timezone, q);
+      this.cacheReadyInFlight.set(key, snapshot);
+      const settled = (): void => {
+        if (this.cacheReadyInFlight.get(key) === snapshot) this.cacheReadyInFlight.delete(key);
+      };
+      void snapshot.then(settled, settled);
+    }
     try {
-      const expected = this.timezoneCacheBuckets(resolution, timezone, q);
-      if (expected.length === 0) return null;
-      const registry = await this.pg.query(
-        "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
-        [timezone],
-      );
-      if (registry.rowCount !== 1) return null;
-
-      const watermark = await this.pg.query<{ watermark: Date }>(
-        "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
-        [USAGE_15M_V2.name],
-      );
-      const coveredTo = watermark.rows[0]?.watermark;
-      if (!coveredTo) return null;
-
-      const dirty = await this.pg.query<{ bucket: Date }>(
-        `SELECT min(bucket) AS bucket
-         FROM clickhouse_rollup_dirty_buckets
-         WHERE name = $1
-           AND bucket >= $2
-           AND bucket < $3`,
-        [USAGE_15M_V2.name, expected[0]!.from, expected.at(-1)!.to],
-      );
-      const dirtyBucket = dirty.rows[0]?.bucket;
-
-      const jobs = await this.pg.query<{ bucket: Date; status: "pending" | "inflight" | "done" }>(
-        `SELECT bucket, status
-         FROM clickhouse_timezone_rollup_jobs
-         WHERE resolution = $1
-           AND timezone = $2
-           AND bucket >= $3
-           AND bucket < $4
-         ORDER BY bucket`,
-        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
-      );
-      const coverage = await this.pg.query<{ bucket: Date }>(
-        `SELECT bucket
-         FROM clickhouse_timezone_rollup_coverage
-         WHERE resolution = $1
-           AND timezone = $2
-           AND bucket >= $3
-           AND bucket < $4
-         ORDER BY bucket`,
-        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
-      );
-      const jobStatus = new Map(
-        jobs.rows.map((job) => [new Date(job.bucket).getTime(), job.status]),
-      );
-      const covered = new Set(
-        coverage.rows.map(({ bucket }) => new Date(bucket).getTime()),
-      );
-      let cacheTo: Date | null = null;
-      for (const bucket of expected) {
-        if (bucket.to > coveredTo) break;
-        if (dirtyBucket && dirtyBucket < bucket.to) break;
-        const status = jobStatus.get(bucket.from.getTime());
-        if (!covered.has(bucket.from.getTime()) || (status != null && status !== "done")) break;
-        cacheTo = bucket.to;
-      }
-      return cacheTo ? { from: expected[0]!.from, to: cacheTo } : null;
+      return await snapshot;
     } catch {
       return null;
     }
@@ -1627,10 +1661,12 @@ export class ClickHouseStorage implements StorageBackend {
 
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
     const scoped = { ...q, userId }; // bucket/timezone 은 dailyQuery 만 소비, 나머지 쿼리는 무시
-    const overview = await this.overviewQuery(scoped);
-    const daily = await this.dailyQuery(scoped);
-    const byModel = await this.modelBreakdown(scoped);
-    const byHost = await this.hostBreakdown(scoped);
+    const [overview, daily, byModel, byHost] = await Promise.all([
+      this.overviewQuery(scoped),
+      this.dailyQuery(scoped),
+      this.modelBreakdown(scoped),
+      this.hostBreakdown(scoped),
+    ]);
     return { overview, daily, byModel, byHost };
   }
 

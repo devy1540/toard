@@ -188,7 +188,7 @@ async function seedEvents(ch: ReturnType<typeof createClient>, fixtureStart: Dat
         fixtureStart: clickHouseTimestamp(fixtureStart),
       },
     });
-    console.log(`[benchmark] raw fixture seed ${offset + count}/${EXPECTED_EVENTS}`);
+    console.log(`[microbenchmark:clickhouse] raw fixture seed ${offset + count}/${EXPECTED_EVENTS}`);
   }
 }
 
@@ -199,7 +199,7 @@ async function validateFixture(ch: ReturnType<typeof createClient>): Promise<voi
       `invalid ${FIXTURE_ID} fixture: expected events=${EXPECTED_EVENTS}, days=${EXPECTED_DAYS}, users=${EXPECTED_USERS}, providers=${EXPECTED_PROVIDERS}, models=${EXPECTED_MODELS}; actual=${JSON.stringify(stats ?? null)}`,
     );
   }
-  console.log(`[benchmark] fixture validated ${JSON.stringify(stats)}`);
+  console.log(`[microbenchmark:clickhouse] fixture validated ${JSON.stringify(stats)}`);
 }
 
 async function timezoneCacheRows(
@@ -225,7 +225,7 @@ async function ensureTimezoneCaches(
   for (const timezone of TIMEZONES) {
     const existingRows = await timezoneCacheRows(ch, timezone);
     if (existingRows >= EXPECTED_DAYS * EXPECTED_USERS && seedMode !== "always") {
-      console.log(`[benchmark] timezone cache validated ${timezone} rows=${existingRows}`);
+      console.log(`[microbenchmark:clickhouse] timezone cache validated ${timezone} rows=${existingRows}`);
       continue;
     }
     if (seedMode === "never") {
@@ -267,7 +267,7 @@ async function ensureTimezoneCaches(
     if (rows < EXPECTED_DAYS * EXPECTED_USERS) {
       throw new Error(`${timezone} cache fixture is incomplete: ${rows} rows`);
     }
-    console.log(`[benchmark] timezone cache ${timezone} rows=${rows}`);
+    console.log(`[microbenchmark:clickhouse] timezone cache ${timezone} rows=${rows}`);
   }
 }
 
@@ -321,6 +321,7 @@ async function benchmarkTimezone(
 async function main(): Promise<void> {
   const options = parseBenchmarkOptions(process.argv.slice(2));
   assertDevelopmentEnvironment();
+  console.log("[microbenchmark:clickhouse] diagnostic only: direct ClickHouse SQL, not the dashboard HTTP release gate");
   const clickhouseUrl = assertLocalUrl(
     "CLICKHOUSE_URL",
     process.env.CLICKHOUSE_URL ?? "http://localhost:8123",
@@ -351,7 +352,7 @@ async function main(): Promise<void> {
     for (const timezone of TIMEZONES) {
       const { p50, p95 } = await benchmarkTimezone(ch, timezone, from, to);
       const passed = p50 <= P50_MAX_MS && p95 <= P95_MAX_MS;
-      console.log(`${timezone} runs=${EXPECTED_RUNS} p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms ${passed ? "PASS" : "FAIL"}`);
+      console.log(`[microbenchmark:clickhouse] ${timezone} runs=${EXPECTED_RUNS} p50=${p50.toFixed(2)}ms p95=${p95.toFixed(2)}ms ${passed ? "PASS" : "FAIL"}`);
       if (!passed) failed = true;
     }
     if (failed) process.exitCode = 1;

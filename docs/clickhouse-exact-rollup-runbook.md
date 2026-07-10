@@ -390,10 +390,21 @@ CLICKHOUSE_URL=http://localhost:8123 \
 pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts
 
 CLICKHOUSE_URL=http://localhost:8123 \
-pnpm exec tsx scripts/benchmark-timezone-rollup.ts
+pnpm benchmark:dashboard-http
 ```
 
-benchmark는 localhost Docker와 비-production 환경만 허용한다. `timezone-rollup-v1` fixture가 400일·이벤트 1,000,000건·사용자 100명·provider 5개·model 10개인지 먼저 검증하고, `Asia/Seoul`, `America/Los_Angeles`, `Asia/Kolkata`, `Asia/Kathmandu`, `Europe/London`의 최근 12개월 일별 cache를 각각 100회 cache-miss로 측정한다. 정렬된 duration의 `p50=sorted[49]`, `p95=sorted[94]`를 사용하며 어느 시간대든 P50 1,000ms 또는 P95 2,000ms를 넘으면 실패다. 로컬 fixture를 재사용만 하고 seed를 금지하려면 `--seed=never`를 붙인다.
+릴리스 gate는 localhost와 비-production marker만 허용하며, 시작 전에 둘 중 하나라도 위반하면 fixture 생성 없이 실패한다. 매 실행마다 격리된 Postgres schema와 ClickHouse database를 만들고 400일·이벤트 1,000,000건·사용자 100명·provider 5개·model 10개·고정 UUID 사용자/팀 fixture를 검증한다. cache는 direct INSERT하지 않고 raw → 15분 v2 compactor → 다섯 IANA 시간대 activation → bounded worker → durable coverage의 production code path로 만든다. 종료 시 benchmark 전용 schema/database만 정리한다.
+
+스크립트는 임의 local credentials admin과 JWT 세션을 만들어 `AUTH_MODE=oauth`, `AUTH_CREDENTIALS_ENABLED=true`인 production `next build/start`를 localhost 별도 포트(기본 3117)에 띄운다. 비밀번호·`AUTH_SECRET`은 출력하지 않는다. `Asia/Seoul`, `America/Los_Angeles`, `Asia/Kolkata`, `Asia/Kathmandu`, `Europe/London`의 조직 최근 12개월, provider filter, 팀, 개인 대시보드를 각각 100회 요청한다. 각 요청 전에 ClickHouse query/uncompressed/mark cache를 비우고 고유 cache-busting URL과 `no-cache` header를 사용한다. 로그인 redirect, HTTP 200 이외 응답, 기대 page marker 누락은 즉시 실패다. 응답 본문을 끝까지 읽은 duration을 정렬해 `p50=sorted[49]`, `p95=sorted[94]`로 판정하고 하나라도 P50 1,000ms 또는 P95 2,000ms를 넘으면 종료 코드 1이다.
+
+참조 자원 제한은 다음 override로 app·Postgres·ClickHouse 합계 4 vCPU/8 GiB를 적용한다. 현재 host localhost 측정이 이 제한을 직접 쓰지 않으면 스크립트가 명확히 출력하므로, release 판정 전 동일 override 환경에서 재실행한다.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.benchmark.yml --profile clickhouse config
+pnpm benchmark:dashboard-http
+```
+
+`pnpm benchmark:rollup:micro`는 timezone cache table의 ClickHouse SQL만 100회 재는 하위 진단 도구다. 인증, Next 렌더링, Postgres readiness, source router, response serialization을 포함하지 않으므로 release 통과 근거로 사용하지 않는다.
 
 exact verifier는 localhost에서 raw TTL을 잠시 97일로 적용한 뒤 원래 상태로 복원한다. 실제 90일 경계 이벤트를 저장하고 TTL merge 후 raw 생존과 15분 v2 반영을 확인하므로, 운영 DB가 아닌 격리된 로컬 데이터에서만 실행한다.
 

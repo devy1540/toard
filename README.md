@@ -187,8 +187,12 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 ```bash
 pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts
-pnpm exec tsx scripts/benchmark-timezone-rollup.ts
+pnpm benchmark:dashboard-http
 ```
+
+릴리스 성능 gate는 credentials로 로그인한 production Next 앱의 실제 대시보드 HTTP 응답을 측정한다. 400일·100만 event 고정 fixture를 격리된 localhost Postgres schema와 ClickHouse database에 만들고, raw → 15분 v2 compactor → 시간대 activation/worker → durable coverage 경로를 통과시킨다. 각 요청은 ClickHouse query/uncompressed/mark cache를 비우고 고유 URL로 앱 응답 cache를 우회한다. `AUTH_MODE=open`은 사용하지 않는다.
+
+`pnpm benchmark:rollup:micro`는 ClickHouse 단일 SQL만 재는 진단용 microbenchmark이며 릴리스 gate가 아니다. 참조 자원 상한은 `docker-compose.benchmark.yml`(app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB)을 `docker-compose.yml`과 함께 적용한다. 스크립트가 localhost host process로 실행돼 이 제한을 직접 강제하지 못한 경우 결과에 그 차이를 명시한다.
 
 read 전환 뒤 문제가 생기면 해당 `CLICKHOUSE_READ_*` 값만 비우고 앱만 재생성한다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다.
 

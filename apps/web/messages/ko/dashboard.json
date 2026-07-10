@@ -43,6 +43,26 @@
   "byHostTitle": "기기별 사용량",
   "computer": "기기",
   "unknownHost": "(알 수 없음)",
+  "summaryPrimaryHint": "선택한 기간의 총 비용",
+  "topModel": "주 사용 모델",
+  "topDevice": "주 사용 기기",
+  "trendTitle": "사용량 추이",
+  "compositionTitle": "구성",
+  "compositionDescription": "모델·기기별 비용 비중",
+  "compositionToggleLabel": "구성 기준",
+  "compositionModel": "모델",
+  "compositionDevice": "기기",
+  "compositionModelDescription": "모델별 비용 비중",
+  "compositionDeviceDescription": "기기별 비용 비중",
+  "noDeviceDataTitle": "기기 데이터 없음",
+  "moreDevices": "외 {n}개 기기",
+  "rhythmTitle": "시간대 리듬",
+  "rhythmDescription": "요일과 시간대별 토큰 사용 밀도",
+  "recentSessionsTitle": "최근 세션",
+  "recentSessionsDescription": "본문 히스토리가 켜진 세션",
+  "recentSessionsUnavailable": "본문 히스토리가 비활성화되어 최근 세션 미리보기를 표시하지 않습니다.",
+  "noRecentSessions": "선택한 기간에 저장된 세션이 없습니다.",
+  "viewHistory": "히스토리",
   "filters": {
     "periodToday": "오늘",
     "periodWeek": "이번 주",
@@ -79,8 +99,8 @@
   },
   "view": {
     "label": "대시보드 뷰",
-    "classic": "클래식",
-    "stats": "스탯"
+    "overview": "개요",
+    "classic": "클래식"
   },
   "stats": {
     "lessThanPrev": "직전 기간({prev})보다 {diff} 적게 썼습니다",

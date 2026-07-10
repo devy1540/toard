@@ -120,7 +120,7 @@
     "theme_system": "시스템",
     "color": "색상",
     "defaultView": "대시보드 뷰",
-    "view_classic": "클래식",
-    "view_stats": "스탯"
+    "view_overview": "개요",
+    "view_classic": "클래식"
   }
 }

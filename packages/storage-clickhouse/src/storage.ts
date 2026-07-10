@@ -3,6 +3,7 @@ import type {
   BucketOptions,
   DailyPoint,
   DeviceInfo,
+  FinalizedUsageEvent,
   HostBreakdown,
   InsightAggregateRow,
   InsightComparisonQuery,
@@ -96,6 +97,8 @@ export interface ClickHouseStorageOptions {
   readRollup?: boolean;
   /** finalized 15분 rollup + 최근 raw tail hybrid 시계열 조회를 사용할지 여부. 기본 false. */
   read15mRollup?: boolean;
+  /** 원본 usage_events의 90일 TTL을 적용할지 여부. 명시적으로 활성화할 때만 true. */
+  enforceRetentionTtl?: boolean;
 }
 
 /** CH 쿼리에 리터럴로 들어가므로 IANA 형식만 허용(주입 방지). 무효 시 fallback. */
@@ -132,6 +135,8 @@ interface OutboxRow {
   cache_read_tokens: string;
   cache_creation_tokens: string;
   cost_usd: string;
+  pricing_revision_id: string | null;
+  cost_status: FinalizedUsageEvent["costStatus"];
   log_adapter: string | null;
   host: string | null;
 }
@@ -197,8 +202,16 @@ export interface CompactUsage15mRollupResult {
   watermark: string;
 }
 
+export interface CompactUsage15mV2Result {
+  buckets: number;
+  rows: number;
+  watermark: string;
+}
+
 const CLICKHOUSE_SCHEMA_DDL = [
   "ALTER TABLE usage_events MODIFY SETTING non_replicated_deduplication_window = 10000",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS pricing_revision_id String DEFAULT '' AFTER cost_usd",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_status LowCardinality(String) DEFAULT 'legacy' AFTER pricing_revision_id",
   "DROP VIEW IF EXISTS usage_hourly_rollup_mv",
   `CREATE TABLE IF NOT EXISTS usage_hourly_rollup
    (
@@ -241,7 +254,33 @@ const CLICKHOUSE_SCHEMA_DDL = [
    ENGINE = ReplacingMergeTree(version)
    PARTITION BY toYYYYMM(bucket_15m)
    ORDER BY (bucket_15m, user_id, team_id, provider_key, model, host, session_id)`,
+  `CREATE TABLE IF NOT EXISTS usage_15m_rollup_v2
+   (
+     bucket_15m            DateTime64(3, 'UTC'),
+     provider_key          LowCardinality(String),
+     user_id               String,
+     team_id               String,
+     session_id            String,
+     model                 LowCardinality(String),
+     host                  LowCardinality(String),
+     pricing_revision_id   String,
+     cost_status           LowCardinality(String),
+     event_count           UInt64,
+     input_tokens          UInt64,
+     output_tokens         UInt64,
+     cache_read_tokens     UInt64,
+     cache_creation_tokens UInt64,
+     cost_usd              Decimal(18, 8),
+     version               UInt64
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_15m)
+   ORDER BY (bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status)
+   TTL bucket_15m + INTERVAL 400 DAY DELETE`,
 ] as const;
+
+const CLICKHOUSE_RAW_RETENTION_DDL =
+  "ALTER TABLE usage_events MODIFY TTL ts + INTERVAL 90 DAY DELETE";
 
 const CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS = 5;
 const CLICKHOUSE_TRANSIENT_RETRY_BASE_MS = 150;
@@ -269,6 +308,7 @@ export class ClickHouseStorage implements StorageBackend {
   private readonly usageEventsSource: string;
   private readonly readRollup: boolean;
   private readonly read15mRollup: boolean;
+  private readonly enforceRetentionTtl: boolean;
   private schemaReady: Promise<void> | undefined;
 
   constructor(
@@ -280,6 +320,7 @@ export class ClickHouseStorage implements StorageBackend {
     this.usageEventsSource = opts.readFinal ? "usage_events FINAL" : "usage_events";
     this.readRollup = opts.readRollup ?? false;
     this.read15mRollup = opts.read15mRollup ?? false;
+    this.enforceRetentionTtl = opts.enforceRetentionTtl ?? false;
   }
 
   // ── 공통 ──
@@ -499,6 +540,9 @@ export class ClickHouseStorage implements StorageBackend {
     for (const query of CLICKHOUSE_SCHEMA_DDL) {
       await this.ch.command({ query });
     }
+    if (this.enforceRetentionTtl) {
+      await this.ch.command({ query: CLICKHOUSE_RAW_RETENTION_DDL });
+    }
   }
 
   private ensureSchema(): Promise<void> {
@@ -532,7 +576,7 @@ export class ClickHouseStorage implements StorageBackend {
     return id;
   }
 
-  async saveUsageEvents(events: UsageEvent[]): Promise<SaveResult> {
+  async saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
     const res = await this.enqueueUsageEvents(events);
     if (res.inserted > 0) {
@@ -545,7 +589,7 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: res.inserted, deduped: res.deduped };
   }
 
-  private async enqueueUsageEvents(events: UsageEvent[]): Promise<EnqueueResult> {
+  private async enqueueUsageEvents(events: FinalizedUsageEvent[]): Promise<EnqueueResult> {
     const client = await this.pg.connect();
     try {
       await client.query("BEGIN");
@@ -567,8 +611,8 @@ export class ClickHouseStorage implements StorageBackend {
           `INSERT INTO clickhouse_usage_outbox
              (dedup_key, batch_id, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter, host)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+              log_adapter, host, pricing_revision_id, cost_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey,
@@ -586,6 +630,8 @@ export class ClickHouseStorage implements StorageBackend {
             e.costUsd,
             e.logAdapter ?? null,
             e.host ?? null,
+            e.pricingRevisionId,
+            e.costStatus,
           ],
         );
         if (r.rowCount === 1) inserted++;
@@ -636,7 +682,8 @@ export class ClickHouseStorage implements StorageBackend {
         const batchRows = await client.query<OutboxRow>(
           `SELECT dedup_key, provider_key, user_id::text, team_id::text, session_id, model, ts,
                   input_tokens::text, output_tokens::text, cache_read_tokens::text,
-                  cache_creation_tokens::text, cost_usd::text, log_adapter, host
+                  cache_creation_tokens::text, cost_usd::text, log_adapter, host,
+                  pricing_revision_id::text, cost_status
            FROM clickhouse_usage_outbox
            WHERE batch_id = $1
            ORDER BY dedup_key`,
@@ -700,6 +747,8 @@ export class ClickHouseStorage implements StorageBackend {
       cache_read_tokens: Number(e.cache_read_tokens),
       cache_creation_tokens: Number(e.cache_creation_tokens),
       cost_usd: e.cost_usd,
+      pricing_revision_id: e.pricing_revision_id ?? "",
+      cost_status: e.cost_status,
       log_adapter: e.log_adapter ?? "",
       host: e.host ?? "",
     }));
@@ -1390,6 +1439,7 @@ export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
     readRollup: readEnvFlag("CLICKHOUSE_READ_ROLLUP", false),
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
+    enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),
     ...opts,
   });
 }

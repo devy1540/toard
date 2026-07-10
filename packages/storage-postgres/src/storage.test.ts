@@ -1,7 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { Pool } from "pg";
+import type { FinalizedUsageEvent } from "@toard/core";
+import type { Pool, PoolClient } from "pg";
 import { PostgresStorage } from "./storage";
+
+function finalizedEvent(
+  overrides: Partial<FinalizedUsageEvent> = {},
+): FinalizedUsageEvent {
+  return {
+    dedupKey: "event-1",
+    providerKey: "anthropic",
+    userId: null,
+    sessionId: "session-1",
+    model: "claude-sonnet-4",
+    ts: new Date("2026-07-10T10:05:00.000Z"),
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 5,
+    cacheCreationTokens: 3,
+    costUsd: 0.0123,
+    pricingRevisionId: "rev-1",
+    costStatus: "priced",
+    ...overrides,
+  };
+}
 
 test("PostgresStorage groups team member usage by bucket and user", async () => {
   let capturedSql = "";
@@ -54,4 +76,41 @@ test("PostgresStorage groups team member usage by bucket and user", async () => 
       cacheCreationTokens: 0,
     },
   ]);
+});
+
+test("Postgres usage_events는 pricing revision과 모든 cost status를 보존한다", async () => {
+  const usageInserts: Array<{ sql: string; params: unknown[] }> = [];
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("INSERT INTO usage_events")) {
+        usageInserts.push({ sql, params });
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const pool = {
+    connect: async () => client,
+  } as unknown as Pool;
+  const storage = new PostgresStorage(pool);
+
+  await storage.saveUsageEvents([
+    finalizedEvent(),
+    finalizedEvent({ dedupKey: "event-2", pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    finalizedEvent({ dedupKey: "event-3", pricingRevisionId: null, costStatus: "legacy" }),
+  ]);
+
+  assert.equal(usageInserts.length, 3);
+  for (const { sql } of usageInserts) {
+    assert.match(sql, /pricing_revision_id, cost_status/);
+  }
+  assert.deepEqual(
+    usageInserts.map(({ params }) => params.slice(-2)),
+    [
+      ["rev-1", "priced"],
+      [null, "unpriced"],
+      [null, "legacy"],
+    ],
+  );
 });

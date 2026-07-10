@@ -2,6 +2,7 @@ import type {
   BucketOptions,
   DailyPoint,
   DeviceInfo,
+  FinalizedUsageEvent,
   HostBreakdown,
   InsightAggregateRow,
   InsightComparisonQuery,
@@ -90,7 +91,7 @@ export class PostgresStorage implements StorageBackend {
     return Number(res.rows[0]!.id);
   }
 
-  async saveUsageEvents(events: UsageEvent[]): Promise<SaveResult> {
+  async saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
     const client = await this.pool.connect();
     try {
@@ -106,8 +107,8 @@ export class PostgresStorage implements StorageBackend {
           `INSERT INTO usage_events
              (dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter, host)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+              log_adapter, host, pricing_revision_id, cost_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
@@ -115,6 +116,7 @@ export class PostgresStorage implements StorageBackend {
             e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
             e.logAdapter ?? null, e.host ?? null,
+            e.pricingRevisionId, e.costStatus,
           ],
         );
         if (r.rowCount === 1) {

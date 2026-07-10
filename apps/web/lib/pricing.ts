@@ -1,4 +1,5 @@
 import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "@toard/pricing";
+import { getAppSetting } from "./app-settings";
 import { getPool } from "./db";
 
 type PricingRevisionRow = {
@@ -83,12 +84,33 @@ export function invalidatePricingCache(): void {
   cache = undefined;
 }
 
+export const PRICING_SYNC_STATUS_SETTING_KEY = "pricing_sync_status";
+
+export type PricingSyncStatus = {
+  day: string;
+  syncedAt: string;
+};
+
 export type PricingStatus = { models: number; lastDay: string | null };
 
-/** 가격 스냅샷 현황 — 관리 시스템 탭 표시·미동기화($0 비용 함정) 경고용. */
+export async function loadPricingStatus(
+  query: (sql: string) => Promise<{ rows: Array<{ models: string }> }>,
+  readSetting: (key: string) => Promise<PricingSyncStatus | undefined>,
+): Promise<PricingStatus> {
+  const [revisions, sync] = await Promise.all([
+    query("SELECT count(DISTINCT model_id) AS models FROM pricing_revisions"),
+    readSetting(PRICING_SYNC_STATUS_SETTING_KEY),
+  ]);
+  return {
+    models: Number(revisions.rows[0]?.models ?? 0),
+    lastDay: sync?.day ?? null,
+  };
+}
+
+/** 가격 현황 — 모델 수는 revision, 마지막 성공일은 app_settings의 sync 상태가 권위 소스다. */
 export async function getPricingStatus(): Promise<PricingStatus> {
-  const r = await getPool().query<{ models: string; last_day: string | null }>(
-    "SELECT count(DISTINCT model_id) AS models, max(effective_at)::date::text AS last_day FROM pricing_revisions",
+  return loadPricingStatus(
+    (sql) => getPool().query<{ models: string }>(sql),
+    (key) => getAppSetting<PricingSyncStatus>(key),
   );
-  return { models: Number(r.rows[0]?.models ?? 0), lastDay: r.rows[0]?.last_day ?? null };
 }

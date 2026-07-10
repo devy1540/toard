@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PricingMap } from "@toard/pricing";
-import { loadPricingSchedule } from "./pricing";
-import { syncPricingRevisions } from "./pricing-sync";
+import { pricingSyncDueToday } from "./pricing-auto-sync";
+import {
+  loadPricingSchedule,
+  loadPricingStatus,
+  PRICING_SYNC_STATUS_SETTING_KEY,
+} from "./pricing";
+import { runPricingSyncTransaction, syncPricingRevisions } from "./pricing-sync";
 
 type Query = { sql: string; params?: unknown[] };
 
@@ -31,6 +36,73 @@ function latestRow(overrides: Record<string, unknown> = {}): Record<string, unkn
     output_price_above_200k_per_mtok: null,
     fast_multiplier: "1",
     ...overrides,
+  };
+}
+
+function createConcurrentSyncClients() {
+  let latest = [latestRow()];
+  let insertCount = 0;
+  let lockTail = Promise.resolve();
+  let unlockedSelects = 0;
+  let releaseSelectBarrier!: () => void;
+  const selectBarrier = new Promise<void>((resolve) => {
+    releaseSelectBarrier = resolve;
+  });
+  const events: string[] = [];
+
+  function client(label: string) {
+    let releaseLock: (() => void) | undefined;
+    let hasLock = false;
+    return {
+      async query(sql: string, params?: unknown[]) {
+        if (sql.includes("pg_advisory_xact_lock")) {
+          events.push(`${label}:lock-requested`);
+          const previous = lockTail;
+          lockTail = new Promise<void>((resolve) => {
+            releaseLock = resolve;
+          });
+          await previous;
+          hasLock = true;
+          events.push(`${label}:lock-acquired`);
+          return { rows: [] };
+        }
+        if (sql.includes("SELECT DISTINCT ON")) {
+          const snapshot = latest.map((row) => ({ ...row }));
+          if (!hasLock) {
+            unlockedSelects += 1;
+            if (unlockedSelects === 2) releaseSelectBarrier();
+            await selectBarrier;
+          }
+          return { rows: snapshot };
+        }
+        if (sql.includes("INSERT INTO pricing_revisions")) {
+          insertCount += 1;
+          latest = [latestRow({
+            model_id: params?.[1],
+            input_price_per_mtok: params?.[2],
+            output_price_per_mtok: params?.[3],
+            cache_read_price_per_mtok: params?.[4],
+            cache_creation_price_per_mtok: params?.[5],
+            input_price_above_200k_per_mtok: params?.[6],
+            output_price_above_200k_per_mtok: params?.[7],
+            fast_multiplier: params?.[8],
+          })];
+        }
+        if (sql === "COMMIT" || sql === "ROLLBACK") {
+          releaseLock?.();
+          releaseLock = undefined;
+        }
+        return { rows: [] };
+      },
+    };
+  }
+
+  return {
+    client,
+    events,
+    get insertCount() {
+      return insertCount;
+    },
   };
 }
 
@@ -120,4 +192,66 @@ test("가격 sync는 가격이 바뀐 모델만 현재 시각 revision으로 INS
   assert.deepEqual(insert.params?.[0], effectiveAt);
   assert.deepEqual(insert.params?.filter((value) => value === "model-a" || value === "model-b"), ["model-a", "model-b"]);
   assert.doesNotMatch(insert.sql, /ON CONFLICT[\s\S]*DO UPDATE/);
+});
+
+test("가격이 같아 revision이 0개여도 성공 조직 날짜를 기록해 다음 tick을 건너뛴다", async () => {
+  const fixture = createSyncClient([latestRow()]);
+  const pricing: PricingMap = new Map([["model-a", { inputPerM: 1, outputPerM: 2 }]]);
+  const effectiveAt = new Date("2026-07-10T12:00:00Z");
+
+  const inserted = await runPricingSyncTransaction(
+    fixture.client,
+    async () => pricing,
+    "2026-07-10",
+    effectiveAt,
+  );
+
+  assert.equal(inserted, 0);
+  const settingQuery = fixture.queries.find((query) => query.sql.includes("INSERT INTO app_settings"));
+  assert.ok(settingQuery);
+  assert.equal(settingQuery.params?.[0], PRICING_SYNC_STATUS_SETTING_KEY);
+  const saved = JSON.parse(String(settingQuery.params?.[1]));
+  assert.deepEqual(saved, {
+    day: "2026-07-10",
+    syncedAt: "2026-07-10T12:00:00.000Z",
+  });
+
+  const status = await loadPricingStatus(
+    async () => ({ rows: [{ models: "1" }] }),
+    async (key) => {
+      assert.equal(key, PRICING_SYNC_STATUS_SETTING_KEY);
+      return saved;
+    },
+  );
+  assert.deepEqual(status, { models: 1, lastDay: "2026-07-10" });
+  assert.equal(pricingSyncDueToday(status.lastDay, "2026-07-10"), false);
+});
+
+test("동시 가격 sync는 transaction advisory lock으로 단일 revision만 만든다", async () => {
+  const fixture = createConcurrentSyncClients();
+  const pricing: PricingMap = new Map([["model-a", { inputPerM: 3, outputPerM: 4 }]]);
+  const run = (label: string, effectiveAt: Date) => runPricingSyncTransaction(
+    fixture.client(label),
+    async () => {
+      fixture.events.push(`${label}:fetch`);
+      return pricing;
+    },
+    "2026-07-10",
+    effectiveAt,
+  );
+
+  const results = await Promise.all([
+    run("first", new Date("2026-07-10T12:00:00.000Z")),
+    run("second", new Date("2026-07-10T12:00:00.001Z")),
+  ]);
+
+  assert.deepEqual([...results].sort(), [0, 1]);
+  assert.equal(fixture.insertCount, 1);
+  for (const label of ["first", "second"]) {
+    const lockIndex = fixture.events.indexOf(`${label}:lock-acquired`);
+    const fetchIndex = fixture.events.indexOf(`${label}:fetch`);
+    assert.notEqual(lockIndex, -1);
+    assert.notEqual(fetchIndex, -1);
+    assert.ok(lockIndex < fetchIndex);
+  }
 });

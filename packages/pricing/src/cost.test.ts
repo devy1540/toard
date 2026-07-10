@@ -114,3 +114,21 @@ test("resolveCostAt은 기존 모델 alias 정규화를 사용한다", () => {
     mode: "calculate",
   }), { costUsd: 3, pricingRevisionId: "aliased", status: "priced" });
 });
+
+test("resolveCostAt은 auto 모드에서도 제공 비용 대신 revision 가격을 확정한다", () => {
+  const schedule: PricingSchedule = new Map([["model-a", [
+    { id: "rev-1", modelId: "model-a", effectiveAt: new Date("2026-07-01T00:00:00Z"), pricing: { inputPerM: 1, outputPerM: 1 } },
+  ]] ]);
+
+  assert.deepEqual(resolveCostAt({
+    model: "model-a",
+    occurredAt: new Date("2026-07-10T00:00:00Z"),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    providedCostUsd: 99,
+    schedule,
+    mode: "auto",
+  }), { costUsd: 1, pricingRevisionId: "rev-1", status: "priced" });
+});

@@ -1,10 +1,11 @@
 import { fetchLiteLLMPricing, type ModelPricing, type PricingMap } from "@toard/pricing";
 import { getPool } from "./db";
 import { orgDate } from "./org-time";
-import { invalidatePricingCache } from "./pricing";
+import { invalidatePricingCache, PRICING_SYNC_STATUS_SETTING_KEY } from "./pricing";
 
 const DEFAULT_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const PRICING_SYNC_LOCK_KEY = "pricing-sync";
 
 export type PricingSyncResult =
   | { ok: true; upserted: number; day: string }
@@ -95,6 +96,34 @@ export async function syncPricingRevisions(
   return changed.length;
 }
 
+/** 가격 fetch부터 성공 상태 기록까지 하나의 DB transaction으로 확정한다. */
+export async function runPricingSyncTransaction(
+  client: PricingSyncQueryClient,
+  fetchPricing: () => Promise<PricingMap>,
+  day: string,
+  effectiveAt: Date,
+): Promise<number> {
+  await client.query("BEGIN");
+  try {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [PRICING_SYNC_LOCK_KEY]);
+    const pricing = await fetchPricing();
+    const upserted = await syncPricingRevisions(client, pricing, effectiveAt);
+    await client.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [
+        PRICING_SYNC_STATUS_SETTING_KEY,
+        JSON.stringify({ day, syncedAt: effectiveAt.toISOString() }),
+      ],
+    );
+    await client.query("COMMIT");
+    return upserted;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+}
+
 /**
  * LiteLLM 가격 동기화 코어 (설계 §6.2) — cron 라우트와 admin 수동 동기화가 공유.
  * fetch → per-million 변환 → 가격이 달라진 모델만 현재 시각 revision으로 INSERT.
@@ -102,24 +131,27 @@ export async function syncPricingRevisions(
  */
 export async function runPricingSync(): Promise<PricingSyncResult> {
   const url = process.env.LITELLM_PRICING_URL ?? DEFAULT_URL;
-  let pricing;
-  try {
-    pricing = await fetchLiteLLMPricing(url);
-  } catch (e) {
-    return { ok: false, error: String(e), kept: true };
-  }
-
   const day = orgDate(0);
   const effectiveAt = new Date();
   const client = await getPool().connect();
   let upserted = 0;
+  let fetchFailed = false;
   try {
-    await client.query("BEGIN");
-    upserted = await syncPricingRevisions(client, pricing, effectiveAt);
-    await client.query("COMMIT");
+    upserted = await runPricingSyncTransaction(
+      client,
+      async () => {
+        try {
+          return await fetchLiteLLMPricing(url);
+        } catch (error) {
+          fetchFailed = true;
+          throw error;
+        }
+      },
+      day,
+      effectiveAt,
+    );
   } catch (e) {
-    await client.query("ROLLBACK");
-    return { ok: false, error: String(e), kept: false };
+    return { ok: false, error: String(e), kept: fetchFailed };
   } finally {
     client.release();
   }

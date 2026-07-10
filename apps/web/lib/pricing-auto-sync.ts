@@ -7,7 +7,7 @@ import { runPricingSync } from "./pricing-sync";
 // 없이도 `docker compose up` 만으로 LiteLLM 가격 동기화가 일 1회 돌게 앱 기동 시 등록한다.
 // on/off 는 admin 시스템 탭 토글이 DB(app_settings)에 저장하고 매 틱마다 다시 읽으므로
 // 재시작 없이 반영된다(최대 1시간). env PRICING_AUTO_SYNC 는 인프라용 — off=킬스위치, on=dev 강제.
-// 다중 replica 는 각자 틱을 돌지만 "오늘 이미 동기화됐으면 스킵" + UPSERT 멱등이라 무해.
+// 다중 replica 는 각자 틱을 돌지만 성공 조직 날짜로 스킵하고, 동시 실행은 transaction advisory lock으로 직렬화한다.
 
 export const AUTO_SYNC_SETTING_KEY = "pricing_auto_sync";
 
@@ -38,10 +38,14 @@ export async function setAutoSyncEnabled(enabled: boolean): Promise<void> {
   await setAppSetting(AUTO_SYNC_SETTING_KEY, { enabled });
 }
 
-/** 오늘(조직 타임존) 아직 동기화 전이면 true — 수동 동기화·다른 replica 와 자연스럽게 중복 제거. */
+export function pricingSyncDueToday(lastDay: string | null, today = orgDate(0)): boolean {
+  return lastDay !== today;
+}
+
+/** 오늘(조직 타임존) 아직 성공 동기화 전이면 true. */
 async function dueToday(): Promise<boolean> {
   const { lastDay } = await getPricingStatus();
-  return lastDay !== orgDate(0);
+  return pricingSyncDueToday(lastDay);
 }
 
 async function tick(): Promise<void> {

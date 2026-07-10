@@ -91,6 +91,8 @@ export function resolveCostAt(
     costUsd: resolveCost({
       ...costArgs,
       pricing: new Map([[selected.modelId, selected.pricing]]),
+      // FinalizedUsageEvent의 provenance는 선택한 revision이므로 제공 비용으로 덮지 않는다.
+      mode: "calculate",
     }),
     pricingRevisionId: selected.id,
     status: "priced",

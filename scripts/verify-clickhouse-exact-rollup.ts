@@ -326,6 +326,29 @@ async function main(): Promise<void> {
     );
     await raw.compactUsage15mRollup(256);
 
+    const insightQuery = {
+      previous: { from: new Date("2019-12-31T00:00:00Z"), to: from },
+      current: { from, to },
+      providerKey,
+      timezone: "UTC",
+    };
+    assertEqual(
+      await rollup15m.getUserInsightComparison(userId, insightQuery),
+      await raw.getUserInsightComparison(userId, insightQuery),
+      "insights raw vs hybrid rollup",
+    );
+    const unalignedInsightQuery = {
+      previous: { from, to: new Date("2020-01-01T01:17:00.000Z") },
+      current: { from: new Date("2020-01-01T01:23:00.000Z"), to: new Date("2020-01-01T04:00:00.000Z") },
+      providerKey,
+      timezone: "UTC",
+    };
+    assertEqual(
+      await rollup15m.getUserInsightComparison(userId, unalignedInsightQuery),
+      await raw.getUserInsightComparison(userId, unalignedInsightQuery),
+      "insights unaligned period boundaries raw vs hybrid rollup",
+    );
+
     assertEqual(await rollup.getOverview(period), await raw.getOverview(period), "overview raw vs rollup");
     assertEqual(
       await rollup.getDailyTimeseries({ ...period, bucket: "hour", timezone: "UTC" }),

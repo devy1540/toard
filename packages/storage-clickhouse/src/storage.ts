@@ -4,6 +4,9 @@ import type {
   DailyPoint,
   DeviceInfo,
   HostBreakdown,
+  InsightAggregateRow,
+  InsightComparisonQuery,
+  InsightCompositionRow,
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
@@ -20,7 +23,9 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UserUsage,
+  UserInsightComparison,
 } from "@toard/core";
+import { buildUserInsightComparison } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
 /** CH/PG 는 큰 수·Decimal 을 string 으로 반환 → number 변환 */
@@ -77,6 +82,10 @@ function chDate(s: string): Date {
 
 type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
 type Params = Record<string, unknown>;
+type InsightSourcePart =
+  | { kind: "hybrid"; source: string; params: Params }
+  | { kind: "raw"; source: string; where: string; params: Params };
+type InsightSource = { source: string; params: Params };
 
 export interface ClickHouseStorageOptions {
   /** 조직 타임존 (IANA, ADR-008) — 쿼리에 timezone 미지정 시 버킷 폴백. 기본 UTC. */
@@ -431,6 +440,59 @@ export class ClickHouseStorage implements StorageBackend {
         ${filter.sql}
     )`;
     return { source, params };
+  }
+
+  private namespaceInsightSource(
+    part: InsightSourcePart,
+    prefix: "previous" | "current",
+  ): { source: string; where: string; params: Params } {
+    let source = part.source;
+    let where = part.kind === "raw" ? part.where : "";
+    const params: Params = {};
+    for (const [key, value] of Object.entries(part.params)) {
+      const namespaced = `${prefix}_${key}`;
+      source = source.replaceAll(`{${key}:`, `{${namespaced}:`);
+      where = where.replaceAll(`{${key}:`, `{${namespaced}:`);
+      params[namespaced] = value;
+    }
+    return { source, where, params };
+  }
+
+  private async insightPeriodSource(
+    q: ScopedQuery,
+    prefix: "previous" | "current",
+  ): Promise<{ source: string; where: string; params: Params }> {
+    const hybrid = await this.rollup15mTimeseriesSource(q);
+    if (hybrid) {
+      return this.namespaceInsightSource(
+        { kind: "hybrid", source: hybrid.source, params: hybrid.params },
+        prefix,
+      );
+    }
+    const raw = this.periodWhere(q);
+    return this.namespaceInsightSource(
+      { kind: "raw", source: this.usageEventsSource, where: raw.where, params: raw.params },
+      prefix,
+    );
+  }
+
+  private async insightSource(q: InsightComparisonQuery, userId: string): Promise<InsightSource> {
+    const [previous, current] = await Promise.all([
+      this.insightPeriodSource({ ...q.previous, providerKey: q.providerKey, userId }, "previous"),
+      this.insightPeriodSource({ ...q.current, providerKey: q.providerKey, userId }, "current"),
+    ]);
+    const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd`;
+    return {
+      source: `(
+        SELECT 'previous' AS period, ${columns}
+        FROM ${previous.source} ${previous.where}
+        UNION ALL
+        SELECT 'current' AS period, ${columns}
+        FROM ${current.source} ${current.where}
+      )`,
+      params: { ...previous.params, ...current.params },
+    };
   }
 
   private async ensureClickHouseSchema(): Promise<void> {
@@ -1072,6 +1134,88 @@ export class ClickHouseStorage implements StorageBackend {
     const byModel = await this.modelBreakdown(scoped);
     const byHost = await this.hostBreakdown(scoped);
     return { overview, daily, byModel, byHost };
+  }
+
+  async getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison> {
+    const source = await this.insightSource(q, userId);
+    const tz = safeTimezone(q.timezone, this.tz);
+    const [aggregateRows, compositionRows] = await Promise.all([
+      this.queryJson<{
+        kind: "summary" | "trend";
+        period: "current" | "previous";
+        position: string | null;
+        cost?: string;
+        sessions?: string;
+        tokens?: string;
+      }>(
+        `WITH '/* user-insights */' AS query_tag,
+         tagged AS (
+           SELECT period,
+                  if(period = 'current',
+                     dateDiff('day', {current_from:DateTime64(3)}, ts, '${tz}'),
+                     dateDiff('day', {previous_from:DateTime64(3)}, ts, '${tz}')) AS position,
+                  session_id,
+                  cost_usd,
+                  input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
+           FROM ${source.source}
+         )
+         SELECT 'summary' AS kind, period, CAST(NULL AS Nullable(Int64)) AS position,
+                sum(cost_usd) AS cost,
+                uniqExactIf(session_id, session_id != '') AS sessions,
+                sum(tokens) AS tokens
+         FROM tagged GROUP BY period
+         UNION ALL
+         SELECT 'trend' AS kind, period, position,
+                sum(cost_usd) AS cost,
+                uniqExactIf(session_id, session_id != '') AS sessions,
+                sum(tokens) AS tokens
+         FROM tagged GROUP BY period, position
+         ORDER BY kind, position, period`,
+        source.params,
+      ),
+      this.queryJson<{
+        dimension: "model" | "provider";
+        key: string;
+        period: "current" | "previous";
+        cost?: string;
+        tokens?: string;
+      }>(
+        `WITH '/* user-insights */' AS query_tag,
+         scoped AS (
+           SELECT period,
+                  if(model = '', '(unknown)', model) AS model,
+                  provider_key,
+                  cost_usd,
+                  input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
+           FROM ${source.source}
+         )
+         SELECT 'model' AS dimension, model AS key, period,
+                sum(cost_usd) AS cost, sum(tokens) AS tokens
+         FROM scoped GROUP BY model, period
+         UNION ALL
+         SELECT 'provider' AS dimension, provider_key AS key, period,
+                sum(cost_usd) AS cost, sum(tokens) AS tokens
+         FROM scoped GROUP BY provider_key, period`,
+        source.params,
+      ),
+    ]);
+
+    const aggregates: InsightAggregateRow[] = aggregateRows.map((r) => ({
+      kind: r.kind,
+      period: r.period,
+      position: r.position == null ? null : n(r.position),
+      costUsd: n(r.cost),
+      sessions: n(r.sessions),
+      totalTokens: n(r.tokens),
+    }));
+    const compositions: InsightCompositionRow[] = compositionRows.map((r) => ({
+      dimension: r.dimension,
+      key: r.key,
+      period: r.period,
+      costUsd: n(r.cost),
+      totalTokens: n(r.tokens),
+    }));
+    return buildUserInsightComparison(aggregates, compositions);
   }
 
   // 내 기기 목록 — 기간·provider 무관 전체 이력(유휴 기기도 노출). '' → NULL 정규화.

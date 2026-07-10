@@ -1,0 +1,95 @@
+{
+  "title": "Insights",
+  "description": "Compare the current period with the preceding period of the same length.",
+  "presets": {
+    "label": "Comparison period",
+    "sevenDays": "Last 7 days",
+    "week": "This week",
+    "month": "This month"
+  },
+  "filters": {
+    "providerLabel": "Provider",
+    "allProviders": "All providers",
+    "metricLabel": "Metric",
+    "cost": "Cost",
+    "tokens": "Tokens"
+  },
+  "freshness": {
+    "dataThrough": "Data through {time}",
+    "delay": "Data can be delayed by up to 10 minutes."
+  },
+  "ranges": {
+    "current": "Current period: {range}",
+    "previous": "Previous period: {range}"
+  },
+  "loginRequired": {
+    "title": "Login required",
+    "description": "Sign in to view your personal insights."
+  },
+  "summary": {
+    "title": "Key changes",
+    "description": "Notable changes compared with the previous period.",
+    "empty": "No changes exceeded the highlight thresholds."
+  },
+  "kpi": {
+    "cost": "Cost",
+    "sessions": "Sessions",
+    "tokens": "Tokens",
+    "vsPrevious": "{delta} vs previous period",
+    "noPrevious": "No previous-period data is available for comparison."
+  },
+  "chart": {
+    "title": "Current and previous trends",
+    "description": "Compare matching elapsed positions across both periods.",
+    "accessibleLabel": "Current and previous period usage comparison chart",
+    "accessibleDescription": "Two lines compare current and previous period usage at each elapsed position.",
+    "current": "Current period",
+    "previous": "Previous period",
+    "comparisonUnavailable": "Comparison data unavailable",
+    "dateComparison": "Current {current} · Previous {previous}"
+  },
+  "comparison": {
+    "current": "Current",
+    "previous": "Previous"
+  },
+  "composition": {
+    "title": "Composition changes",
+    "description": "Items with the largest share changes are shown first.",
+    "label": "Composition dimension",
+    "model": "Model",
+    "provider": "Provider",
+    "currentShare": "Current {share}%",
+    "previousShare": "Previous {share}%",
+    "empty": "No composition data is available."
+  },
+  "empty": {
+    "title": "No usage data",
+    "description": "No cost, session, or token usage was found for the selected period and provider."
+  },
+  "rules": {
+    "usage": {
+      "new": "Usage started after no sessions in the previous period."
+    },
+    "cost": {
+      "increase": "Cost increased by {delta}% from the previous period.",
+      "decrease": "Cost decreased by {delta}% from the previous period."
+    },
+    "sessions": {
+      "increase": "Sessions increased by {delta}% from the previous period.",
+      "decrease": "Sessions decreased by {delta}% from the previous period."
+    },
+    "tokens": {
+      "increase": "Token usage increased by {delta}% from the previous period.",
+      "decrease": "Token usage decreased by {delta}% from the previous period."
+    },
+    "efficiency": {
+      "increase": "Cost per session increased by {delta}% from the previous period.",
+      "decrease": "Cost per session decreased by {delta}% from the previous period."
+    },
+    "composition": {
+      "increase": "The share of {name} in {dimension} increased by {delta} percentage points.",
+      "decrease": "The share of {name} in {dimension} decreased by {delta} percentage points.",
+      "new": "{name} newly appeared in the {dimension} composition."
+    }
+  }
+}

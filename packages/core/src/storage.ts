@@ -10,6 +10,39 @@ export interface PeriodQuery {
   providerKey?: string;
 }
 
+export interface InsightComparisonQuery {
+  current: { from: Date; to: Date };
+  previous: { from: Date; to: Date };
+  providerKey?: string;
+  timezone: string;
+}
+
+export interface InsightMetricSummary {
+  costUsd: number;
+  sessions: number;
+  totalTokens: number;
+}
+
+export interface InsightTrendPoint {
+  position: number;
+  current: InsightMetricSummary;
+  previous: InsightMetricSummary;
+}
+
+export interface InsightCompositionChange {
+  key: string;
+  current: { costUsd: number; totalTokens: number };
+  previous: { costUsd: number; totalTokens: number };
+}
+
+export interface UserInsightComparison {
+  current: InsightMetricSummary;
+  previous: InsightMetricSummary;
+  trend: InsightTrendPoint[];
+  byModel: InsightCompositionChange[];
+  byProvider: InsightCompositionChange[];
+}
+
 /**
  * 정규화된 사용 이벤트 — 모든 프로바이더가 이 형태로 수렴.
  *
@@ -211,6 +244,7 @@ export interface StorageBackend {
     q: PeriodQuery & BucketOptions & { teamId: string; userIds: string[] },
   ): Promise<TeamMemberTimeseriesPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
+  getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */

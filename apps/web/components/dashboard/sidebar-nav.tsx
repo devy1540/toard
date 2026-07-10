@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { Building2, ChartBar, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
+import { Building2, ChartBar, Lightbulb, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import { featureStatusBadgeClassName } from "./feature-status-badge";
 
-type NavKey = "myUsage" | "history" | "org" | "orgTeams" | "myTeam" | "settings" | "admin";
+type NavKey = "myUsage" | "insights" | "history" | "org" | "orgTeams" | "myTeam" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
 type NavBadge = "preview" | "beta";
 type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
@@ -37,6 +37,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
       label: "groupPersonal",
       items: [
         { href: "/", key: "myUsage", icon: User },
+        { href: "/insights", key: "insights", icon: Lightbulb },
         { href: "/history", key: "history", icon: MessageSquare, badge: "preview" },
       ],
     },

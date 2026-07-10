@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Clock3, Inbox, Lightbulb } from "lucide-react";
 import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { InsightComparisonChart } from "@/components/charts/insight-comparison-chart";
+import { DashboardToolbar } from "@/components/dashboard/dashboard-toolbar";
 import { InsightComposition } from "@/components/dashboard/insight-composition";
 import { InsightFilters } from "@/components/dashboard/insight-filters";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,7 +48,12 @@ export default async function InsightsPage({
 }: {
   searchParams: Promise<InsightSearchParams>;
 }) {
-  const [t, format, locale] = await Promise.all([getTranslations("insights"), getFormatter(), getLocale()]);
+  const [t, navT, format, locale] = await Promise.all([
+    getTranslations("insights"),
+    getTranslations("nav"),
+    getFormatter(),
+    getLocale(),
+  ]);
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -122,28 +128,34 @@ export default async function InsightsPage({
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="mr-2 text-sm font-medium">{t("title")}</h1>
-          <InsightFilters
-            preset={preset}
-            metric={metric}
-            provider={providerKey ?? "all"}
-            providers={providers}
-          />
-          <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:ml-auto sm:justify-end">
-            <span className="flex items-center gap-1.5">
-              <Clock3 className="size-3.5" />
-              {t("freshness.dataThrough", {
-                time: format.dateTime(pair.current.to, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                  timeZone: timezone,
-                }),
-              })}
-            </span>
-            <span>{t("freshness.delay")}</span>
-          </div>
-        </div>
+        <DashboardToolbar
+          title={t("title")}
+          statusBadge={{ status: "beta", label: navT("badge.beta") }}
+          filters={
+            <InsightFilters
+              preset={preset}
+              metric={metric}
+              provider={providerKey ?? "all"}
+              providers={providers}
+            />
+          }
+          trailing={
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="flex items-center gap-1.5">
+                <Clock3 className="size-3.5" />
+                {t("freshness.dataThrough", {
+                  time: format.dateTime(pair.current.to, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                    timeZone: timezone,
+                  }),
+                })}
+              </span>
+              <span>{t("freshness.delay")}</span>
+            </div>
+          }
+          splitHeader
+        />
         <div className="bg-muted/30 text-muted-foreground grid gap-1 rounded-lg px-3 py-2 text-xs sm:grid-cols-2 sm:gap-4">
           <p>
             {t("ranges.current", {

@@ -37,7 +37,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
       label: "groupPersonal",
       items: [
         { href: "/", key: "myUsage", icon: User },
-        { href: "/insights", key: "insights", icon: Lightbulb },
+        { href: "/insights", key: "insights", icon: Lightbulb, badge: "beta" },
         { href: "/history", key: "history", icon: MessageSquare, badge: "preview" },
       ],
     },

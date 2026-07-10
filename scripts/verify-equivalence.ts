@@ -51,6 +51,13 @@ async function main(): Promise<void> {
   await cmp("getLeaderboard(user)", (s) => s.getLeaderboard({ ...period, scope: "user" }));
   await cmp("getLeaderboard(team)", (s) => s.getLeaderboard({ ...period, scope: "team" }));
   await cmp("getUserUsage", (s) => s.getUserUsage(u0, period));
+  const insightQuery = {
+    previous: { from: new Date("2027-09-14T00:00:00Z"), to: new Date("2027-09-15T00:00:00Z") },
+    current: { from: new Date("2027-09-15T00:00:00Z"), to: new Date("2027-09-16T00:00:00Z") },
+    providerKey: pk,
+    timezone: "UTC",
+  };
+  await cmp("getUserInsightComparison", (s) => s.getUserInsightComparison(u0, insightQuery));
   // scope=team: PG/CH 둘 다 team_id 비정규화로 필터(7a057b6 이후) → 일치해야 함
   await cmp("getDailyTimeseries(scope=team)", (s) => s.getDailyTimeseries({ ...period, scope: "team", teamId: dept0 }));
 

@@ -225,6 +225,7 @@ export interface StorageBackend {
     q: PeriodQuery & BucketOptions & { scope?: TimeseriesScope; teamId?: string },
   ): Promise<DailyPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
+  getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */

@@ -3,6 +3,9 @@ import type {
   DailyPoint,
   DeviceInfo,
   HostBreakdown,
+  InsightAggregateRow,
+  InsightComparisonQuery,
+  InsightCompositionRow,
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
@@ -17,7 +20,9 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UserUsage,
+  UserInsightComparison,
 } from "@toard/core";
+import { buildUserInsightComparison } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
@@ -314,6 +319,101 @@ export class PostgresStorage implements StorageBackend {
       this.hostBreakdown(scoped),
     ]);
     return { overview, daily, byModel, byHost };
+  }
+
+  async getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison> {
+    const params = [
+      q.previous.from,
+      q.previous.to,
+      q.current.from,
+      q.current.to,
+      userId,
+      q.providerKey ?? null,
+    ];
+    const [aggregateResult, compositionResult] = await Promise.all([
+      this.pool.query<{
+        kind: "summary" | "trend";
+        period: "current" | "previous";
+        position: number | null;
+        cost: string;
+        sessions: string;
+        tokens: string;
+      }>(
+        `WITH scoped AS MATERIALIZED (
+           SELECT
+             CASE WHEN ts >= $3 AND ts < $4 THEN 'current' ELSE 'previous' END AS period,
+             ts,
+             session_id,
+             cost_usd,
+             input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
+           FROM usage_events
+           WHERE ts >= $1 AND ts < $4
+             AND ((ts >= $1 AND ts < $2) OR (ts >= $3 AND ts < $4))
+             AND user_id = $5
+             AND ($6::text IS NULL OR provider_key = $6)
+         ), tagged AS (
+           SELECT *,
+             CASE WHEN period = 'current'
+               THEN FLOOR(EXTRACT(EPOCH FROM (ts - $3)) / 86400)::int
+               ELSE FLOOR(EXTRACT(EPOCH FROM (ts - $1)) / 86400)::int
+             END AS position
+           FROM scoped
+         )
+         SELECT 'summary' AS kind, period, NULL::int AS position,
+                COALESCE(SUM(cost_usd), 0) AS cost,
+                COUNT(DISTINCT session_id) AS sessions,
+                COALESCE(SUM(tokens), 0) AS tokens
+         FROM tagged GROUP BY period
+         UNION ALL
+         SELECT 'trend' AS kind, period, position,
+                COALESCE(SUM(cost_usd), 0), COUNT(DISTINCT session_id), COALESCE(SUM(tokens), 0)
+         FROM tagged GROUP BY period, position
+         ORDER BY kind, position, period`,
+        params,
+      ),
+      this.pool.query<{
+        dimension: "model" | "provider";
+        key: string;
+        period: "current" | "previous";
+        cost: string;
+        tokens: string;
+      }>(
+        `WITH scoped AS MATERIALIZED (
+           SELECT CASE WHEN ts >= $3 AND ts < $4 THEN 'current' ELSE 'previous' END AS period,
+                  COALESCE(model, '(unknown)') AS model,
+                  provider_key,
+                  cost_usd,
+                  input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
+           FROM usage_events
+           WHERE user_id = $5
+             AND ((ts >= $1 AND ts < $2) OR (ts >= $3 AND ts < $4))
+             AND ($6::text IS NULL OR provider_key = $6)
+         )
+         SELECT 'model' AS dimension, model AS key, period, SUM(cost_usd) AS cost, SUM(tokens) AS tokens
+         FROM scoped GROUP BY model, period
+         UNION ALL
+         SELECT 'provider' AS dimension, provider_key AS key, period, SUM(cost_usd), SUM(tokens)
+         FROM scoped GROUP BY provider_key, period`,
+        params,
+      ),
+    ]);
+
+    const aggregates: InsightAggregateRow[] = aggregateResult.rows.map((r) => ({
+      kind: r.kind,
+      period: r.period,
+      position: r.position,
+      costUsd: n(r.cost),
+      sessions: n(r.sessions),
+      totalTokens: n(r.tokens),
+    }));
+    const compositions: InsightCompositionRow[] = compositionResult.rows.map((r) => ({
+      dimension: r.dimension,
+      key: r.key,
+      period: r.period,
+      costUsd: n(r.cost),
+      totalTokens: n(r.tokens),
+    }));
+    return buildUserInsightComparison(aggregates, compositions);
   }
 
   // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)

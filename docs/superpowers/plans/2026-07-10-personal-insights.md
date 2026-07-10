@@ -291,12 +291,6 @@ export interface UserInsightComparison {
 }
 ```
 
-Add to `StorageBackend`:
-
-```ts
-getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison>;
-```
-
 Create `packages/core/src/insights.ts` with exported row types and a deterministic assembler that:
 
 ```ts
@@ -548,7 +542,13 @@ assertEqual(
 
 - [ ] **Step 2: Run typecheck and verify both storage classes miss the interface method**
 
-Run: `pnpm --filter @toard/storage-postgres typecheck && pnpm --filter @toard/storage-clickhouse typecheck`
+Add the method to `StorageBackend` in `packages/core/src/storage.ts`:
+
+```ts
+getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison>;
+```
+
+Then run: `pnpm --filter @toard/storage-postgres typecheck && pnpm --filter @toard/storage-clickhouse typecheck`
 
 Expected: FAIL with `Property 'getUserInsightComparison' is missing`.
 
@@ -646,7 +646,7 @@ type InsightSource =
 
 - [ ] **Step 6: Implement the two ClickHouse insight queries**
 
-The summary/trend request must tag rows with `if(ts >= {currentFrom}, 'current', 'previous')`, filter out any gap, and compute `position` with `dateDiff('day', start, ts, timezone)`. The composition request must return model and provider rows using `UNION ALL`. Both queries use the normalized source from Step 5, bind `currentFrom/currentTo/previousFrom/previousTo`, and map results through `buildUserInsightComparison()`.
+The summary/trend request must start with the stable query comment `/* user-insights */`, tag rows with `if(ts >= {currentFrom}, 'current', 'previous')`, filter out any gap, and compute `position` with `dateDiff('day', start, ts, timezone)`. The composition request must use the same query comment and return model and provider rows using `UNION ALL`. Both queries use the normalized source from Step 5, bind `currentFrom/currentTo/previousFrom/previousTo`, and map results through `buildUserInsightComparison()`.
 
 Use ClickHouse expressions:
 

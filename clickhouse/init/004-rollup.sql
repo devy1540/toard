@@ -83,4 +83,4 @@ CREATE TABLE IF NOT EXISTS toard.usage_15m_rollup_v2
 ENGINE = ReplacingMergeTree(version)
 PARTITION BY toYYYYMM(bucket_15m)
 ORDER BY (bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status)
-TTL bucket_15m + INTERVAL 400 DAY DELETE;
+TTL toDateTime(bucket_15m) + INTERVAL 400 DAY DELETE;

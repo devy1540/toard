@@ -116,11 +116,11 @@ test("insights page shows the period anchor and both localized comparison ranges
 test("Korean and English insight catalogs have the same shape and 10-minute delay copy", () => {
   const ko = JSON.parse(source("messages/ko/insights.json")) as {
     freshness?: { delay?: string };
-    chart?: { dateComparison?: string };
+    chart?: { dateComparison?: string; comparisonUnavailable?: string };
   };
   const en = JSON.parse(source("messages/en/insights.json")) as {
     freshness?: { delay?: string };
-    chart?: { dateComparison?: string };
+    chart?: { dateComparison?: string; comparisonUnavailable?: string };
   };
 
   assert.deepEqual(messageShape(ko), messageShape(en));
@@ -128,6 +128,8 @@ test("Korean and English insight catalogs have the same shape and 10-minute dela
   assert.match(en.freshness?.delay ?? "", /10 minutes/);
   assert.equal(typeof ko.chart?.dateComparison, "string");
   assert.equal(typeof en.chart?.dateComparison, "string");
+  assert.equal(ko.chart?.comparisonUnavailable, "비교 데이터 없음");
+  assert.equal(en.chart?.comparisonUnavailable, "Comparison data unavailable");
 });
 
 test("insight filters reuse shared controls and update URL parameters", () => {
@@ -196,8 +198,11 @@ test("insight comparison chart labels positions with current and previous dates"
   assert.match(chart, /getInsightPositionDate/);
   assert.match(chart, /tickFormatter=.*formatPositionDate/s);
   assert.match(chart, /labelFormatter=.*chart\.dateComparison/s);
+  assert.match(chart, /previous: previousDate === null \? undefined :/);
+  assert.match(chart, /chart\.comparisonUnavailable/);
   assert.match(page, /currentFrom=\{pair\.current\.from\.toISOString\(\)\}/);
   assert.match(page, /previousFrom=\{pair\.previous\.from\.toISOString\(\)\}/);
+  assert.match(page, /previousTo=\{pair\.previous\.to\.toISOString\(\)\}/);
   assert.match(page, /timezone=\{pair\.timezone\}/);
 });
 

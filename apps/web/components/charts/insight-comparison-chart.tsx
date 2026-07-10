@@ -28,12 +28,14 @@ export function InsightComparisonChart({
   metric,
   currentFrom,
   previousFrom,
+  previousTo,
   timezone,
 }: {
   data: InsightTrendPoint[];
   metric: "cost" | "tokens";
   currentFrom: string;
   previousFrom: string;
+  previousTo: string;
   timezone: string;
 }) {
   const t = useTranslations("insights");
@@ -43,11 +45,15 @@ export function InsightComparisonChart({
   const isCost = metric === "cost";
   const currentStart = new Date(currentFrom);
   const previousStart = new Date(previousFrom);
-  const chartData = data.map(({ position, current, previous }) => ({
-    position: position + 1,
-    current: isCost ? current.costUsd : current.totalTokens,
-    previous: isCost ? previous.costUsd : previous.totalTokens,
-  }));
+  const previousEnd = new Date(previousTo);
+  const chartData = data.map(({ position, current, previous }) => {
+    const previousDate = getInsightPositionDate(previousStart, position, timezone, previousEnd);
+    return {
+      position: position + 1,
+      current: isCost ? current.costUsd : current.totalTokens,
+      previous: previousDate === null ? undefined : isCost ? previous.costUsd : previous.totalTokens,
+    };
+  });
   const formatValue = (value: number) =>
     isCost
       ? format.number(value, { style: "currency", currency: "USD", maximumFractionDigits: 4 })
@@ -56,6 +62,15 @@ export function InsightComparisonChart({
     format.dateTime(date, { month: "numeric", day: "numeric", timeZone: "UTC" });
   const formatPositionDate = (start: Date, displayPosition: number) =>
     formatDate(getInsightPositionDate(start, displayPosition - 1, timezone));
+  const formatPreviousPositionDate = (displayPosition: number) => {
+    const date = getInsightPositionDate(
+      previousStart,
+      displayPosition - 1,
+      timezone,
+      previousEnd,
+    );
+    return date === null ? null : formatDate(date);
+  };
 
   return (
     <div className="w-full">
@@ -100,12 +115,13 @@ export function InsightComparisonChart({
           />
           <Tooltip
             contentStyle={tooltipStyle}
-            labelFormatter={(position: number) =>
-              t("chart.dateComparison", {
+            labelFormatter={(position: number) => {
+              const previousDate = formatPreviousPositionDate(position);
+              return t("chart.dateComparison", {
                 current: formatPositionDate(currentStart, position),
-                previous: formatPositionDate(previousStart, position),
-              })
-            }
+                previous: previousDate ?? t("chart.comparisonUnavailable"),
+              });
+            }}
             formatter={(value: number, name: string) => [
               formatValue(value),
               name === "current" ? t("chart.current") : t("chart.previous"),

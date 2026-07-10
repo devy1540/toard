@@ -232,6 +232,7 @@ export default async function InsightsPage({
                 metric={metric}
                 currentFrom={pair.current.from.toISOString()}
                 previousFrom={pair.previous.from.toISOString()}
+                previousTo={pair.previous.to.toISOString()}
                 timezone={pair.timezone}
               />
             </CardContent>

@@ -6,8 +6,10 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { CompositionToggle, type CompositionDimension } from "@/components/dashboard/composition-toggle";
 import type { ChartMetric } from "@/components/dashboard/metric-toggle";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
+import { ToolActivityCard } from "@/components/dashboard/tool-activity-card";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { orderByTokens, tokenShare } from "@/lib/composition";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
@@ -16,13 +18,6 @@ import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
-
-/** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */
-function shareOf(cost: number, tokens: number, costSum: number, tokenSum: number): number {
-  if (costSum > 0) return cost / costSum;
-  if (tokenSum > 0) return tokens / tokenSum;
-  return 0;
-}
 
 function ShareBar({ share }: { share: number }) {
   const pct = share > 0 ? Math.max(2, Math.round(share * 100)) : 0;
@@ -65,16 +60,18 @@ function CompositionRow({
   name,
   hoverTitle,
   muted = false,
+  tokens,
   cost,
-  sub,
+  sessions,
   share,
   marker,
 }: {
   name: string;
   hoverTitle?: string;
   muted?: boolean;
+  tokens: string;
   cost: string;
-  sub: string;
+  sessions: string;
   share: number;
   marker: React.ReactNode;
 }) {
@@ -85,12 +82,16 @@ function CompositionRow({
         <span className={cn("truncate", muted ? "text-muted-foreground" : "font-medium")} title={hoverTitle}>
           {name}
         </span>
-        <span className="ml-auto shrink-0 font-medium tabular-nums">{cost}</span>
+        <span className="ml-auto shrink-0 font-medium tabular-nums">{tokens}</span>
         <span className="text-muted-foreground w-9 shrink-0 text-right text-xs tabular-nums">
           {Math.round(share * 100)}%
         </span>
       </div>
-      <div className="text-muted-foreground mt-0.5 truncate pl-5 text-xs">{sub}</div>
+      <div className="text-muted-foreground mt-0.5 truncate pl-5 text-xs">
+        <span className="text-foreground font-medium tabular-nums">{cost}</span>
+        {" · "}
+        {sessions}
+      </div>
       <div className="mt-1.5 pl-5">
         <ShareBar share={share} />
       </div>
@@ -163,15 +164,15 @@ export async function OverviewView({
   const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
   const tokensDelta = pctDelta(totalTokens, prevTokens);
 
-  const topModel = byModel[0];
+  const modelComposition = orderByTokens(byModel);
+  const hostComposition = orderByTokens(byHost);
+  const topModel = modelComposition[0];
   const topModelName = topModel ? (formatModelName(topModel.model) ?? topModel.model) : "—";
-  const namedHosts = byHost.filter((h) => h.host != null);
+  const namedHosts = hostComposition.filter((h) => h.host != null);
   const hasNamedHost = namedHosts.length > 0;
   const topHost = namedHosts[0]?.host ?? "—";
-  const modelCostSum = byModel.reduce((s, m) => s + m.costUsd, 0);
-  const modelTokenSum = byModel.reduce((s, m) => s + m.totalTokens, 0);
-  const hostCostSum = byHost.reduce((s, h) => s + h.costUsd, 0);
-  const hostTokenSum = byHost.reduce((s, h) => s + h.totalTokens, 0);
+  const modelTokenSum = modelComposition.reduce((s, m) => s + m.totalTokens, 0);
+  const hostTokenSum = hostComposition.reduce((s, h) => s + h.totalTokens, 0);
 
   const timeFmt = new Intl.DateTimeFormat(locale, {
     timeZone: period.timezone,
@@ -292,21 +293,22 @@ export async function OverviewView({
           </div>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
             {composition === "model" ? (
-              byModel.length > 0 ? (
+              modelComposition.length > 0 ? (
                 <>
-                  {byModel.slice(0, MODELS_SHOWN).map((m, i) => (
+                  {modelComposition.slice(0, MODELS_SHOWN).map((m, i) => (
                     <CompositionRow
                       key={m.model}
                       name={formatModelName(m.model) ?? m.model}
                       hoverTitle={m.model}
+                      tokens={fmtCompact(m.totalTokens)}
                       cost={fmtUsd(m.costUsd)}
-                      sub={t("breakdownSub", { tokens: fmtCompact(m.totalTokens), sessions: fmtNum(m.sessions) })}
-                      share={shareOf(m.costUsd, m.totalTokens, modelCostSum, modelTokenSum)}
+                      sessions={t("sessionCount", { count: fmtNum(m.sessions) })}
+                      share={tokenShare(m.totalTokens, modelTokenSum)}
                       marker={<span className="bg-chart-1 inline-block size-2 rounded-[3px]" style={{ opacity: Math.max(0.35, 1 - i * 0.12) }} />}
                     />
                   ))}
-                  {byModel.length > MODELS_SHOWN ? (
-                    <div className="text-muted-foreground pl-5 text-xs">{t("moreModels", { n: byModel.length - MODELS_SHOWN })}</div>
+                  {modelComposition.length > MODELS_SHOWN ? (
+                    <div className="text-muted-foreground pl-5 text-xs">{t("moreModels", { n: modelComposition.length - MODELS_SHOWN })}</div>
                   ) : null}
                 </>
               ) : (
@@ -314,19 +316,20 @@ export async function OverviewView({
               )
             ) : hasNamedHost ? (
               <>
-                {byHost.slice(0, HOSTS_SHOWN).map((h) => (
+                {hostComposition.slice(0, HOSTS_SHOWN).map((h) => (
                   <CompositionRow
                     key={h.host ?? "__unknown__"}
                     name={h.host ?? t("unknownHost")}
                     muted={h.host == null}
+                    tokens={fmtCompact(h.totalTokens)}
                     cost={fmtUsd(h.costUsd)}
-                    sub={t("breakdownSub", { tokens: fmtCompact(h.totalTokens), sessions: fmtNum(h.sessions) })}
-                    share={shareOf(h.costUsd, h.totalTokens, hostCostSum, hostTokenSum)}
+                    sessions={t("sessionCount", { count: fmtNum(h.sessions) })}
+                    share={tokenShare(h.totalTokens, hostTokenSum)}
                     marker={<Laptop className="text-muted-foreground size-3.5" />}
                   />
                 ))}
-                {byHost.length > HOSTS_SHOWN ? (
-                  <div className="text-muted-foreground pl-5 text-xs">{t("moreDevices", { n: byHost.length - HOSTS_SHOWN })}</div>
+                {hostComposition.length > HOSTS_SHOWN ? (
+                  <div className="text-muted-foreground pl-5 text-xs">{t("moreDevices", { n: hostComposition.length - HOSTS_SHOWN })}</div>
                 ) : null}
               </>
             ) : (
@@ -335,6 +338,8 @@ export async function OverviewView({
           </div>
         </aside>
       </div>
+
+      <ToolActivityCard userId={userId} period={period} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
         <section className="min-w-0 rounded-lg border p-4">

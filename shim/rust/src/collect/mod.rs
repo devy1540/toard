@@ -7,10 +7,12 @@ pub mod codex;
 pub mod cursor;
 pub mod gemini;
 pub mod gemini_family;
+pub mod inventory;
 pub mod post;
 pub mod qwen;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
@@ -18,6 +20,7 @@ use crate::bg;
 use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
 use crate::fsx;
 use crate::iso;
+use crate::tool_event::{to_tool_events_body, ToolActivityKind, ToolDetection, ToolOutcome};
 use crate::usage_event::{to_events_body, UsageEvent};
 
 /// 내부 argv — wrap 실행에 편승하는 백그라운드 수집 (자동 업데이트와 동일 패턴)
@@ -82,6 +85,25 @@ pub struct RawContent {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawToolActivity {
+    pub ts_ms: i64,
+    pub session_id: Option<Arc<str>>,
+    pub call_id: String,
+    pub kind: ToolActivityKind,
+    pub item_key: String,
+    pub plugin_key: Option<String>,
+    pub outcome: ToolOutcome,
+    pub detection: ToolDetection,
+}
+
+#[derive(Debug, Default)]
+pub struct ParsedLog {
+    pub usage: Vec<RawUsage>,
+    pub content: Vec<RawContent>,
+    pub tools: Vec<RawToolActivity>,
+}
+
 pub trait LogAdapter {
     /// provider_key 이자 log_adapter 식별자
     fn key(&self) -> &'static str;
@@ -97,6 +119,17 @@ pub trait LogAdapter {
     fn parse_content(&self, _path: &Path) -> Vec<RawContent> {
         Vec::new()
     }
+    fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
+        ParsedLog {
+            usage: self.parse_file(path),
+            content: if include_content {
+                self.parse_content(path)
+            } else {
+                Vec::new()
+            },
+            tools: Vec::new(),
+        }
+    }
 }
 
 pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
@@ -106,6 +139,48 @@ pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
         Box::new(claude::Claude),
         Box::new(codex::Codex),
     ]
+}
+
+fn seed_tool_baseline(files: &[(String, cursor::FileStamp)]) -> cursor::Cursor {
+    let mut cursor = cursor::Cursor::default();
+    for (path, stamp) in files {
+        cursor.files.insert(
+            path.clone(),
+            cursor::FileState {
+                mtime_ms: stamp.mtime_ms,
+                size: stamp.size,
+                sent: 0,
+                sent_hash: String::new(),
+            },
+        );
+    }
+    cursor
+}
+
+fn tool_since_ms(dry_run: bool) -> i64 {
+    let now = (bg::now_unix() * 1000) as i64;
+    let Some(path) = fsx::state_dir().map(|dir| dir.join("tool-since")) else {
+        return now;
+    };
+    if let Ok(value) = std::fs::read_to_string(&path) {
+        if let Ok(parsed) = value.trim().parse::<i64>() {
+            return parsed;
+        }
+    }
+    if !dry_run {
+        let _ = fsx::write_atomic(&path, &format!("{now}\n"), 0o644);
+    }
+    now
+}
+
+fn should_parse_tool_file(
+    collect_tools: bool,
+    probe_due: bool,
+    first_tool_run: bool,
+    usage_same: bool,
+    tools_same: bool,
+) -> bool {
+    !usage_same || (collect_tools && probe_due && !first_tool_run && !tools_same)
 }
 
 /// 디렉토리를 재귀 순회하며 확장자가 일치하는 파일 수집 (심링크 루프 방지 깊이 캡).
@@ -339,6 +414,8 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
 
     // host 라벨은 수집 실행당 1회만 계산(hostname 명령 fork 최소화 — 컴퓨터별 구분, §design-host-breakdown)
     let host = crate::host::host_label();
+    let collect_tools = creds.collect_tools;
+    let tools_since = tool_since_ms(dry_run);
 
     let mut failed = false;
     let mut matched = false;
@@ -356,36 +433,66 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
 
         let files = adapter.discover_files();
         let mut cur = cursor::load(key);
-        // 파일별로 파싱 → 전송 필터(resume_index) 적용: 이전에 보낸 prefix 가 그대로면
-        // 신규분만 전송 대상에 올린다. 활성 세션 파일이 매 주기 변경돼도 전체 재전송하지 않음.
+        let tool_cursor_key = format!("{key}-tools");
+        let mut tool_cur = cursor::load(&tool_cursor_key);
+        let first_tool_run = collect_tools && tool_cur.files.is_empty();
+        let tool_probe_due = collect_tools && post::unsupported_probe_due("tool-events");
+        let tool_active = tool_probe_due && !first_tool_run;
+        if first_tool_run {
+            let stamps = files
+                .iter()
+                .filter_map(|file| {
+                    cursor::stamp(file).map(|stamp| (file.display().to_string(), stamp))
+                })
+                .collect::<Vec<_>>();
+            tool_cur = seed_tool_baseline(&stamps);
+            if !dry_run {
+                cursor::save(&tool_cursor_key, &tool_cur);
+            }
+        }
+
         let mut changed = 0usize;
         let mut parsed_total = 0usize;
         let mut events: Vec<UsageEvent> = Vec::new();
+        let mut tool_events: Vec<RawToolActivity> = Vec::new();
         let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
+        let mut tool_updates: Vec<(String, cursor::FileState)> = Vec::new();
         for file in &files {
             let Some(stamp) = cursor::stamp(file) else {
                 continue;
             };
             let path = file.display().to_string();
-            if cur.files.get(&path).map(|s| s.stamp()) == Some(stamp) {
+            let usage_same = cur.files.get(&path).map(|state| state.stamp()) == Some(stamp);
+            let tools_same = tool_cur.files.get(&path).map(|state| state.stamp()) == Some(stamp);
+            if !should_parse_tool_file(
+                collect_tools,
+                tool_probe_due,
+                first_tool_run,
+                usage_same,
+                tools_same,
+            ) {
                 continue;
             }
             changed += 1;
-            let file_events: Vec<UsageEvent> = adapter
-                .parse_file(file)
+            let parsed = adapter.parse_changed(file, false, tool_active);
+            let file_events: Vec<UsageEvent> = parsed
+                .usage
                 .iter()
                 .map(|raw| to_usage_event(key, raw, host.as_deref()))
                 .collect();
             parsed_total += file_events.len();
-            let keys: Vec<&str> = file_events.iter().map(|e| e.dedup_key.as_str()).collect();
-            let prev = cur.files.get(&path);
+            let keys: Vec<&str> = file_events
+                .iter()
+                .map(|event| event.dedup_key.as_str())
+                .collect();
+            let previous = cur.files.get(&path);
             let start = resume_index(
-                prev.map_or(0, |s| s.sent),
-                prev.map_or("", |s| s.sent_hash.as_str()),
+                previous.map_or(0, |state| state.sent),
+                previous.map_or("", |state| state.sent_hash.as_str()),
                 &keys,
             );
             updates.push((
-                path,
+                path.clone(),
                 cursor::FileState {
                     mtime_ms: stamp.mtime_ms,
                     size: stamp.size,
@@ -394,16 +501,49 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 },
             ));
             events.extend(file_events.into_iter().skip(start));
+
+            if tool_active {
+                let file_tools = parsed
+                    .tools
+                    .into_iter()
+                    .filter(|event| event.ts_ms >= tools_since)
+                    .collect::<Vec<_>>();
+                let tool_keys = file_tools
+                    .iter()
+                    .map(|event| crate::tool_event::dedup_key(key, event))
+                    .collect::<Vec<_>>();
+                let tool_refs = tool_keys.iter().map(String::as_str).collect::<Vec<_>>();
+                let previous = tool_cur.files.get(&path);
+                let start = resume_index(
+                    previous.map_or(0, |state| state.sent),
+                    previous.map_or("", |state| state.sent_hash.as_str()),
+                    &tool_refs,
+                );
+                tool_updates.push((
+                    path,
+                    cursor::FileState {
+                        mtime_ms: stamp.mtime_ms,
+                        size: stamp.size,
+                        sent: tool_refs.len() as u64,
+                        sent_hash: keys_hash(&tool_refs),
+                    },
+                ));
+                tool_events.extend(file_tools.into_iter().skip(start));
+            }
         }
 
         if dry_run {
             println!(
                 "{key}: 파일 {}개 (변경 {changed}개) → 이벤트 {parsed_total}건, 전송 대상 {}건 [dry-run]",
-                files.len(),
-                events.len()
+                files.len(), events.len()
             );
+            if collect_tools {
+                println!("{key} 도구: 전송 대상 {}건 [dry-run]", tool_events.len());
+            }
             continue;
         }
+
+        let mut usage_ok = true;
         if events.is_empty() {
             if !quiet {
                 println!(
@@ -411,43 +551,92 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                     files.len()
                 );
             }
-            // 이벤트 0건이어도 stamp·전송 진행은 갱신해 다음 실행의 재파싱을 줄인다
         } else {
             let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
             let (mut inserted, mut deduped) = (0u64, 0u64);
-            let mut post_failed = false;
             for chunk in events.chunks(CHUNK) {
                 match post::post_events(&endpoint, token, &to_events_body(chunk)) {
-                    Ok(r) => {
-                        inserted += r.inserted;
-                        deduped += r.deduped;
+                    Ok(result) => {
+                        inserted += result.inserted;
+                        deduped += result.deduped;
                     }
-                    Err(e) => {
-                        eprintln!("toard-shim: {key} 전송 실패 — {e}");
-                        post_failed = true;
+                    Err(error) => {
+                        eprintln!("toard-shim: {key} 전송 실패 — {error}");
+                        usage_ok = false;
+                        failed = true;
                         break;
                     }
                 }
             }
-            if post_failed {
-                // 커서를 갱신하지 않음 → 다음 실행에서 재시도 (dedup 이 중복 흡수)
-                failed = true;
-                continue;
+            if usage_ok {
+                println!(
+                    "{key}: 이벤트 {}건 전송 (신규 {inserted} · 중복 {deduped})",
+                    events.len()
+                );
             }
-            println!(
-                "{key}: 이벤트 {}건 전송 (신규 {inserted} · 중복 {deduped})",
-                events.len()
-            );
+        }
+        if usage_ok {
+            for (path, state) in updates {
+                cur.files.insert(path, state);
+            }
+            let alive = files
+                .iter()
+                .map(|file| file.display().to_string())
+                .collect::<std::collections::HashSet<_>>();
+            cur.files.retain(|path, _| alive.contains(path));
+            cursor::save(key, &cur);
         }
 
-        for (path, state) in updates {
-            cur.files.insert(path, state);
+        if tool_active {
+            let mut tools_ok = true;
+            if !tool_events.is_empty() {
+                let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
+                for chunk in tool_events.chunks(CHUNK) {
+                    match post::post_tool_events(
+                        &endpoint,
+                        token,
+                        &to_tool_events_body(key, host.as_deref(), chunk),
+                    ) {
+                        post::EndpointResult::Ok(result) => println!(
+                            "{key} 도구: {}건 전송 (신규 {} · 중복 {})",
+                            chunk.len(),
+                            result.inserted,
+                            result.deduped
+                        ),
+                        post::EndpointResult::Unsupported => {
+                            post::mark_unsupported("tool-events");
+                            tools_ok = false;
+                            break;
+                        }
+                        post::EndpointResult::Unauthorized => {
+                            eprintln!(
+                                "toard-shim: {key} 도구 전송 실패 — 토큰이 유효하지 않습니다"
+                            );
+                            tools_ok = false;
+                            failed = true;
+                            break;
+                        }
+                        post::EndpointResult::Err(error) => {
+                            eprintln!("toard-shim: {key} 도구 전송 실패 — {error}");
+                            tools_ok = false;
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if tools_ok {
+                for (path, state) in tool_updates {
+                    tool_cur.files.insert(path, state);
+                }
+                let alive = files
+                    .iter()
+                    .map(|file| file.display().to_string())
+                    .collect::<std::collections::HashSet<_>>();
+                tool_cur.files.retain(|path, _| alive.contains(path));
+                cursor::save(&tool_cursor_key, &tool_cur);
+            }
         }
-        // 사라진 파일의 커서 정리
-        let alive: std::collections::HashSet<String> =
-            files.iter().map(|f| f.display().to_string()).collect();
-        cur.files.retain(|k, _| alive.contains(k));
-        cursor::save(key, &cur);
     }
 
     // 본문 수집(opt-in) — usage 경로와 완전 분리된 커서·엔드포인트. usage 루프는 무영향.
@@ -468,6 +657,31 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 since_ms,
             ) {
                 failed = true;
+            }
+        }
+    }
+
+    if collect_tools && only.is_none() && post::unsupported_probe_due("tool-inventory") {
+        if let Some(pending) = inventory::prepare_inventory(host.as_deref(), dry_run) {
+            if dry_run {
+                println!("도구 인벤토리: 변경 감지 → 전송 대상 [dry-run]");
+            } else {
+                let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
+                match post::put_tool_inventory(&endpoint, token, &pending.body) {
+                    post::EndpointResult::Ok(_) => {
+                        inventory::commit_inventory(pending);
+                        println!("도구 인벤토리: 최신 스냅샷 전송");
+                    }
+                    post::EndpointResult::Unsupported => post::mark_unsupported("tool-inventory"),
+                    post::EndpointResult::Unauthorized => {
+                        eprintln!("toard-shim: 도구 인벤토리 전송 실패 — 토큰이 유효하지 않습니다");
+                        failed = true;
+                    }
+                    post::EndpointResult::Err(error) => {
+                        eprintln!("toard-shim: 도구 인벤토리 전송 실패 — {error}");
+                        failed = true;
+                    }
+                }
             }
         }
     }
@@ -825,6 +1039,36 @@ mod tests {
             let _g = EnvGuard::set("TOARD_SHIM_COLLECT_CONTENT", OsStr::new("off"));
             assert!(!content_enabled(), "env off → 꺼짐(credentials 무시)");
         }
+    }
+
+    #[test]
+    fn tool_baseline_seeds_stamps_without_events() {
+        let files = vec![
+            (
+                "/tmp/a.jsonl".to_string(),
+                cursor::FileStamp {
+                    mtime_ms: 1,
+                    size: 10,
+                },
+            ),
+            (
+                "/tmp/b.jsonl".to_string(),
+                cursor::FileStamp {
+                    mtime_ms: 2,
+                    size: 20,
+                },
+            ),
+        ];
+        let cursor = seed_tool_baseline(&files);
+        assert_eq!(cursor.files.len(), 2);
+        assert_eq!(cursor.files["/tmp/a.jsonl"].sent, 0);
+    }
+
+    #[test]
+    fn unsupported_backoff_skips_tool_parse_until_probe_is_due() {
+        assert!(!should_parse_tool_file(true, false, false, true, false));
+        assert!(should_parse_tool_file(true, true, false, true, false));
+        assert!(!should_parse_tool_file(true, true, false, true, true));
     }
 
     #[test]

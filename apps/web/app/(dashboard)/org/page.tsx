@@ -2,45 +2,50 @@ import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { ReactNode } from "react";
-import type { LeaderRow, OverviewStats } from "@toard/core";
-import { Activity, ArrowUpDown, Building2, DollarSign, Inbox, Trophy, Users } from "lucide-react";
+import type { LeaderRow, OverviewStats, ProviderBreakdown } from "@toard/core";
+import { Blocks, Building2, DollarSign, Inbox, Layers3, Puzzle, Trophy, Users, Wrench } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { DeltaBadge, StatCard } from "@/components/dashboard/stat-card";
+import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
+import {
+  cacheSharePercent,
+  findPeakTokenBucket,
+  getOrgChartMetric,
+  sharePercent,
+  totalUsageTokens,
+  usagePerActiveUser,
+} from "@/lib/org-overview";
 import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
-import { getEnabledProviders } from "@/lib/providers";
+import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
+import { getOrgToolSummary } from "@/lib/tool-metadata";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
 
 type OrgSearchParams = DashboardSearchParams & { tab?: string; scope?: string };
 type OrgPeriod = ReturnType<typeof parseFilters>;
-const costLabelKey = {
-  today: "costLabel.today",
-  week: "costLabel.week",
-  month: "costLabel.month",
-  quarter: "costLabel.quarter",
-  year: "costLabel.year",
-  "7": "costLabel.7",
-  "30": "costLabel.30",
-  "90": "costLabel.90",
-  custom: "costLabel.custom",
-  all: "costLabel.all",
+const tokenLabelKey = {
+  today: "tokenLabel.today",
+  week: "tokenLabel.week",
+  month: "tokenLabel.month",
+  quarter: "tokenLabel.quarter",
+  year: "tokenLabel.year",
+  "7": "tokenLabel.7",
+  "30": "tokenLabel.30",
+  "90": "tokenLabel.90",
+  custom: "tokenLabel.custom",
+  all: "tokenLabel.all",
 } as const;
-
-function totalTokens(s: OverviewStats): number {
-  return s.totalInputTokens + s.totalOutputTokens + s.totalCacheReadTokens + s.totalCacheCreationTokens;
-}
 
 function usageTitleKey(bucket: OrgPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
   if (bucket === "day") return "dailyUsage";
@@ -92,20 +97,18 @@ function LeaderboardPreview({
   title,
   description,
   emptyTitle,
-  actionLabel,
   rows,
   totalCost,
-  href,
   icon,
+  trailing,
 }: {
   title: string;
   description: string;
   emptyTitle: string;
-  actionLabel?: string;
   rows: LeaderRow[];
   totalCost: number;
-  href?: string;
   icon: ReactNode;
+  trailing?: ReactNode;
 }) {
   const shown = rows.slice(0, 5);
   const maxCost = shown[0]?.costUsd ?? 0;
@@ -120,11 +123,7 @@ function LeaderboardPreview({
           </CardTitle>
           <CardDescription>{description}</CardDescription>
         </div>
-        {href && actionLabel ? (
-          <Button asChild variant="ghost" size="sm" className="text-muted-foreground -my-1 shrink-0">
-            <Link href={href}>{actionLabel}</Link>
-          </Button>
-        ) : null}
+        {trailing ? <div className="shrink-0">{trailing}</div> : null}
       </CardHeader>
       <CardContent>
         {shown.length > 0 ? (
@@ -203,59 +202,165 @@ function SummaryTile({
 function OrgHero({
   overview,
   prevOverview,
+  tokenLabel,
+  tokenComparison,
   costLabel,
-  comparison,
+  costComparison,
   activeUsersLabel,
   activeUsersSub,
-  avgPerUserLabel,
-  avgPerSessionLabel,
-  topUserSub,
-  topTeamSub,
 }: {
   overview: OverviewStats;
   prevOverview: OverviewStats;
+  tokenLabel: string;
+  tokenComparison: string;
   costLabel: string;
-  comparison: string;
+  costComparison: string;
   activeUsersLabel: string;
   activeUsersSub: string;
-  avgPerUserLabel: string;
-  avgPerSessionLabel: string;
-  topUserSub: string;
-  topTeamSub: string;
 }) {
-  const delta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
+  const tokens = totalUsageTokens({
+    input: overview.totalInputTokens,
+    output: overview.totalOutputTokens,
+    cacheRead: overview.totalCacheReadTokens,
+    cacheCreation: overview.totalCacheCreationTokens,
+  });
+  const previousTokens = totalUsageTokens({
+    input: prevOverview.totalInputTokens,
+    output: prevOverview.totalOutputTokens,
+    cacheRead: prevOverview.totalCacheReadTokens,
+    cacheCreation: prevOverview.totalCacheCreationTokens,
+  });
+  const delta = pctDelta(tokens, previousTokens);
 
   return (
     <section className="border-border/80 bg-card rounded-xl border px-5 py-5">
       <div className="flex flex-wrap items-end justify-between gap-6">
         <div className="min-w-0">
-          <div className="text-muted-foreground text-xs tracking-wide uppercase">{costLabel}</div>
+          <div className="text-muted-foreground text-xs tracking-wide uppercase">{tokenLabel}</div>
           <div className="mt-2 flex flex-wrap items-center gap-3">
-            <span className="text-4xl font-semibold tracking-tight tabular-nums">{fmtUsd(overview.totalCostUsd)}</span>
+            <span className="text-4xl font-semibold tracking-tight tabular-nums">{fmtCompact(tokens)}</span>
             {delta ? (
               <span className="text-xs">
                 <DeltaBadge delta={delta} />
               </span>
             ) : null}
           </div>
-          <p className="text-muted-foreground mt-1 text-sm">{comparison}</p>
+          <p className="text-muted-foreground mt-1 text-sm">{tokenComparison}</p>
         </div>
 
-        <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
+        <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-auto xl:min-w-[390px]">
+          <SummaryTile label={costLabel} value={fmtUsd(overview.totalCostUsd)} sub={costComparison} />
           <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
-          <SummaryTile
-            label={avgPerUserLabel}
-            value={safeAverage(overview.totalCostUsd, overview.activeUsers)}
-            sub={topUserSub}
-          />
-          <SummaryTile
-            label={avgPerSessionLabel}
-            value={safeAverage(overview.totalCostUsd, overview.totalSessions)}
-            sub={topTeamSub}
-          />
         </div>
       </div>
     </section>
+  );
+}
+
+function SupportingMetric({ label, value, sub, icon }: { label: string; value: string; sub: string; icon: ReactNode }) {
+  return (
+    <div className="border-border/80 bg-card min-w-0 rounded-xl border px-4 py-4 shadow-sm">
+      <div className="text-muted-foreground flex items-center gap-2 text-sm">
+        {icon}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className="mt-2 truncate text-2xl font-bold tracking-tight tabular-nums">{value}</div>
+      <div className="text-muted-foreground mt-1 truncate text-xs">{sub}</div>
+    </div>
+  );
+}
+
+function WorkspaceSignalsCard({
+  title,
+  description,
+  signals,
+}: {
+  title: string;
+  description: string;
+  signals: Array<{ label: string; value: string; sub: string }>;
+}) {
+  return (
+    <Card className="min-w-0 gap-4">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Trophy className="text-muted-foreground size-4" />
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+          {signals.map((signal) => (
+            <SummaryTile key={signal.label} {...signal} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const providerBarClasses = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-4", "bg-chart-5"] as const;
+
+function ProviderCompositionCard({
+  title,
+  description,
+  emptyTitle,
+  rows,
+  totalTokens,
+  providers,
+}: {
+  title: string;
+  description: string;
+  emptyTitle: string;
+  rows: ProviderBreakdown[];
+  totalTokens: number;
+  providers: ProviderOption[];
+}) {
+  const shown = rows.slice(0, 5);
+  const labels = new Map(providers.map((provider) => [provider.key, provider.label]));
+
+  return (
+    <Card className="min-w-0 gap-4">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Layers3 className="text-muted-foreground size-4" />
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {shown.length > 0 ? (
+          <div className="space-y-3">
+            {shown.map((row, index) => {
+              const share = sharePercent(row.totalTokens, totalTokens);
+              return (
+                <div key={row.providerKey} className="grid min-w-0 grid-cols-[minmax(6rem,0.8fr)_minmax(0,1.6fr)_auto] items-center gap-3">
+                  <span className="truncate text-sm font-medium" title={labels.get(row.providerKey) ?? row.providerKey}>
+                    {labels.get(row.providerKey) ?? row.providerKey}
+                  </span>
+                  <div className="bg-muted h-1.5 min-w-0 overflow-hidden rounded-full">
+                    <div
+                      className={`${providerBarClasses[index] ?? "bg-chart-5"} h-full rounded-full`}
+                      style={{ width: `${share ?? 0}%` }}
+                    />
+                  </div>
+                  <span className="text-muted-foreground text-right text-xs tabular-nums">{share == null ? "—" : `${share}%`}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Inbox />
+              </EmptyMedia>
+              <EmptyTitle>{emptyTitle}</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -298,13 +403,13 @@ export default async function OrgPage({
         timezone={period.timezone}
         showBucketControl
         title={t("title")}
-        statusBadge={{ status: "beta", label: navT("badge.beta") }}
+        statusBadge={{ status: "preview", label: navT("badge.preview") }}
         trailing={<AutoRefresh />}
       />
 
       <PricingNotice />
 
-      <OverviewTab sp={sp} period={period} canSeeTeamRanking={canSeeTeamRanking} />
+      <OverviewTab sp={sp} period={period} providers={providers} canSeeTeamRanking={canSeeTeamRanking} />
     </div>
   );
 }
@@ -312,103 +417,133 @@ export default async function OrgPage({
 async function OverviewTab({
   sp,
   period,
+  providers,
   canSeeTeamRanking,
 }: {
   sp: OrgSearchParams;
   period: OrgPeriod;
+  providers: ProviderOption[];
   canSeeTeamRanking: boolean;
 }) {
   const t = await getTranslations("org");
-  const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
+  const metric: ChartMetric = getOrgChartMetric(sp.metric);
   const storage = getStorage();
-  const overview = await storage.getOverview(period);
-  const prevOverview = await storage.getOverview(previousPeriod(period));
-  const daily = await storage.getDailyTimeseries(period);
-  const topUsers = await storage.getLeaderboard({ ...period, scope: "user" });
-  const topTeams = canSeeTeamRanking ? await storage.getLeaderboard({ ...period, scope: "team" }) : [];
+  const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown, toolActivity] = await Promise.all([
+    storage.getOverview(period),
+    storage.getOverview(previousPeriod(period)),
+    storage.getDailyTimeseries(period),
+    storage.getLeaderboard({ ...period, scope: "user" }),
+    canSeeTeamRanking ? storage.getLeaderboard({ ...period, scope: "team" }) : Promise.resolve([]),
+    storage.getProviderBreakdown(period),
+    getOrgToolSummary(period),
+  ]);
 
-  // 차트·스파크라인이 같은 시리즈를 공유 — 내 사용량과 동형 (추가 조회 없음)
   const series = fillSeriesGaps(daily, period);
-  const tokens = totalTokens(overview);
-  const spark = {
-    cost: series.map((d) => d.costUsd),
-    sessions: series.map((d) => d.sessions),
-    users: series.map((d) => d.activeUsers),
-    tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
-  };
-  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
-  const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
-  const usersDelta = pctDelta(overview.activeUsers, prevOverview.activeUsers);
-  const tokensDelta = pctDelta(
-    totalTokens(overview),
-    totalTokens(prevOverview),
-  );
+  const tokens = totalUsageTokens({
+    input: overview.totalInputTokens,
+    output: overview.totalOutputTokens,
+    cacheRead: overview.totalCacheReadTokens,
+    cacheCreation: overview.totalCacheCreationTokens,
+  });
+  const previousTokens = totalUsageTokens({
+    input: prevOverview.totalInputTokens,
+    output: prevOverview.totalOutputTokens,
+    cacheRead: prevOverview.totalCacheReadTokens,
+    cacheCreation: prevOverview.totalCacheCreationTokens,
+  });
+  const cacheTokens = overview.totalCacheReadTokens + overview.totalCacheCreationTokens;
+  const cacheShare = cacheSharePercent(cacheTokens, tokens);
+  const tokensPerUser = usagePerActiveUser(tokens, overview.activeUsers);
+  const tokenDiff = Math.abs(tokens - previousTokens);
   const costDiff = Math.abs(overview.totalCostUsd - prevOverview.totalCostUsd);
-  const heroComparison =
+  const tokenComparison =
+    previousTokens > 0
+      ? t(tokens <= previousTokens ? "hero.tokenLessThanPrev" : "hero.tokenMoreThanPrev", {
+          prev: fmtCompact(previousTokens),
+          diff: fmtCompact(tokenDiff),
+        })
+      : t("hero.noTokenComparison");
+  const costComparison =
     prevOverview.totalCostUsd > 0
       ? t(overview.totalCostUsd <= prevOverview.totalCostUsd ? "hero.lessThanPrev" : "hero.moreThanPrev", {
           prev: fmtUsd(prevOverview.totalCostUsd),
           diff: fmtUsd(costDiff),
         })
       : t("hero.noComparison");
+  const topThreeCost = topUsers.slice(0, 3).reduce((sum, row) => sum + row.costUsd, 0);
+  const topThreeShare = sharePercent(topThreeCost, overview.totalCostUsd);
+  const peakUsage = findPeakTokenBucket(
+    series.map((point) => ({
+      day: point.day,
+      input: point.inputTokens,
+      output: point.outputTokens,
+      cacheRead: point.cacheReadTokens,
+      cacheCreation: point.cacheCreationTokens,
+    })),
+  );
+  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
+  const workspaceSignals = [
+    {
+      label: t("signal.topThreeCostShare"),
+      value: topThreeShare == null ? "—" : `${topThreeShare}%`,
+      sub: t("signal.topThreeCostShareSub"),
+    },
+    {
+      label: t("signal.peakTokenBucket"),
+      value: peakUsage ? peakUsage.day.slice(5) : "—",
+      sub: t("signal.peakTokenBucketSub"),
+    },
+    {
+      label: t("signal.costChange"),
+      value: costDelta?.pct ?? "—",
+      sub: t("signal.costChangeSub"),
+    },
+  ];
 
   return (
     <div className="space-y-6">
       <OrgHero
         overview={overview}
         prevOverview={prevOverview}
-        costLabel={t(costLabelKey[period.preset])}
-        comparison={heroComparison}
+        tokenLabel={t(tokenLabelKey[period.preset])}
+        tokenComparison={tokenComparison}
+        costLabel={t("totalCost")}
+        costComparison={costComparison}
         activeUsersLabel={t("hero.activeUsers")}
-        activeUsersSub={t("hero.activeUsersSub")}
-        avgPerUserLabel={t("hero.avgPerUser")}
-        avgPerSessionLabel={t("hero.avgPerSession")}
-        topUserSub={topUsers[0] ? t("hero.topUser", { name: topUsers[0].label }) : t("hero.noTopUser")}
-        topTeamSub={
-          canSeeTeamRanking
-            ? topTeams[0]
-              ? t("hero.topTeam", { name: topTeams[0].label })
-              : t("hero.noTopTeam")
-            : t("hero.teamRestricted")
-        }
+        activeUsersSub={t("hero.activeUsersWithSessions", { count: fmtNum(overview.totalSessions) })}
       />
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label={t("totalCost")}
-          value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta}
-          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
-          spark={spark.cost}
-          icon={<DollarSign className="size-4" />}
-        />
-        <StatCard
-          label={t("sessions")}
-          value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta}
-          spark={spark.sessions}
-          icon={<Activity className="size-4" />}
-        />
-        <StatCard
-          label={t("activeUsers")}
-          value={fmtNum(overview.activeUsers)}
-          delta={usersDelta}
-          spark={spark.users}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <SupportingMetric
+          label={t("tokensPerUser")}
+          value={tokensPerUser == null ? "—" : fmtCompact(tokensPerUser)}
+          sub={t("hero.activeUsersSub")}
           icon={<Users className="size-4" />}
         />
-        <StatCard
-          label={t("totalTokens")}
-          value={fmtCompact(tokens)}
-          delta={tokensDelta}
-          hint={t("tokenHint", {
-            in: fmtCompact(overview.totalInputTokens),
-            out: fmtCompact(overview.totalOutputTokens),
-            cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
-          })}
-          spark={spark.tokens}
-          icon={<ArrowUpDown className="size-4" />}
+        <SupportingMetric
+          label={t("costPerUser")}
+          value={safeAverage(overview.totalCostUsd, overview.activeUsers)}
+          sub={t("hero.activeUsersSub")}
+          icon={<DollarSign className="size-4" />}
+        />
+        <SupportingMetric
+          label={t("signal.cacheShare")}
+          value={cacheShare == null ? "—" : `${cacheShare}%`}
+          sub={t("signal.cacheShareSub", { cache: fmtCompact(cacheTokens) })}
+          icon={<Layers3 className="size-4" />}
         />
       </div>
+
+      <Card>
+        <CardHeader><CardTitle>{t("toolActivity.title")}</CardTitle><CardDescription>{t("toolActivity.description")}</CardDescription></CardHeader>
+        <CardContent className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+          <SummaryTile label={t("toolActivity.mcp")} value={fmtNum(toolActivity.mcpCalls)} icon={<Wrench className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.skills")} value={fmtNum(toolActivity.distinctSkills)} icon={<Blocks className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.plugins")} value={fmtNum(toolActivity.distinctPlugins)} icon={<Puzzle className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.users")} value={fmtNum(toolActivity.activeUsers ?? 0)} icon={<Users className="size-3.5" />} />
+          <SummaryTile label={t("toolActivity.devices")} value={fmtNum(toolActivity.activeDevices ?? 0)} />
+        </CardContent>
+      </Card>
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
         <Card className="min-w-0">
@@ -448,53 +583,51 @@ async function OverviewTab({
         />
       </div>
 
-      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-        {canSeeTeamRanking ? (
+      {canSeeTeamRanking ? (
+        <div className="grid min-w-0 gap-4 lg:grid-cols-2">
           <LeaderboardPreview
             title={t("topTeams")}
             description={t("topTeamsDescription")}
             emptyTitle={t("noTeamsTitle")}
-            actionLabel={t("openRanking")}
             rows={topTeams}
             totalCost={overview.totalCostUsd}
-            href={hrefWith(sp, "/org/teams")}
             icon={<Building2 className="text-muted-foreground size-4" />}
+            trailing={
+              <Button asChild variant="ghost" size="sm" className="text-muted-foreground -my-1">
+                <Link href={hrefWith(sp, "/org/teams")}>{t("openTeams")}</Link>
+              </Button>
+            }
           />
-        ) : (
+          <WorkspaceSignalsCard
+            title={t("workspaceSignals")}
+            description={t("workspaceSignalsDescription")}
+            signals={workspaceSignals}
+          />
+        </div>
+      ) : (
+        <div className="grid min-w-0 gap-4 lg:grid-cols-2">
           <TeamAccessCard
             title={t("teamAccess.title")}
             description={t("teamAccess.memberDescription")}
             actionLabel={t("teamAccess.openMyTeam")}
             href={hrefWith(sp, "/org/team")}
           />
-        )}
-        <Card className="min-w-0 gap-4">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Trophy className="text-muted-foreground size-4" />
-              {t("workspaceSignals")}
-            </CardTitle>
-            <CardDescription>{t("workspaceSignalsDescription")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid min-w-0 gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-              <SummaryTile label={t("signal.totalSessions")} value={fmtNum(overview.totalSessions)} sub={t("signal.totalSessionsSub")} />
-              <SummaryTile label={t("signal.totalTokens")} value={fmtCompact(tokens)} sub={t("signal.totalTokensSub")} />
-              <SummaryTile
-                label={t("signal.leaders")}
-                value={topUsers.length > 0 ? fmtNum(topUsers.length) : "0"}
-                sub={
-                  canSeeTeamRanking
-                    ? topTeams.length > 0
-                      ? t("signal.teamLeaders", { count: topTeams.length })
-                      : t("signal.noTeamLeaders")
-                    : t("signal.teamRestricted")
-                }
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+          <WorkspaceSignalsCard
+            title={t("workspaceSignals")}
+            description={t("workspaceSignalsDescription")}
+            signals={workspaceSignals}
+          />
+        </div>
+      )}
+
+      <ProviderCompositionCard
+        title={t("providerComposition")}
+        description={t("providerCompositionDescription")}
+        emptyTitle={t("noProviderTitle")}
+        rows={providerBreakdown}
+        totalTokens={tokens}
+        providers={providers}
+      />
     </div>
   );
 }

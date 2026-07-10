@@ -20,6 +20,7 @@ npm-debug.log*
 # shim build artifacts
 shim/**/target/
 shim/dist/
+.superpowers/
 
 # k8s 실제 시크릿 (secret.example.yaml 을 복사해 생성)
 k8s/secret.yaml

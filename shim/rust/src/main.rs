@@ -19,6 +19,7 @@ mod iso;
 mod json;
 mod otel;
 mod resolve;
+mod tool_event;
 mod update;
 mod usage_event;
 

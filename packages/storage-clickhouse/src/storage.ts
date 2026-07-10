@@ -12,11 +12,13 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
+  ProviderBreakdown,
   SaveResult,
   SessionUsageEventRow,
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TeamMemberTimeseriesPoint,
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
@@ -78,7 +80,7 @@ function chDate(s: string): Date {
   return new Date(`${s.replace(" ", "T")}Z`);
 }
 
-type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
+type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
 type Params = Record<string, unknown>;
 type InsightSourcePart =
   | { kind: "hybrid"; source: string; params: Params }
@@ -296,6 +298,10 @@ export class ClickHouseStorage implements StorageBackend {
       conds.push("team_id = {did:String}");
       params.did = q.teamId;
     }
+    if (q.userIds?.length) {
+      conds.push("user_id IN {userIds:Array(String)}");
+      params.userIds = q.userIds;
+    }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
 
@@ -314,6 +320,10 @@ export class ClickHouseStorage implements StorageBackend {
       conds.push("team_id = {did:String}");
       params.did = q.teamId;
     }
+    if (q.userIds?.length) {
+      conds.push("user_id IN {userIds:Array(String)}");
+      params.userIds = q.userIds;
+    }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
 
@@ -331,6 +341,10 @@ export class ClickHouseStorage implements StorageBackend {
     if (q.teamId) {
       conds.push("team_id = {did:String}");
       params.did = q.teamId;
+    }
+    if (q.userIds?.length) {
+      conds.push("user_id IN {userIds:Array(String)}");
+      params.userIds = q.userIds;
     }
     return { sql: conds.length > 0 ? ` AND ${conds.join(" AND ")}` : "", params };
   }
@@ -1075,6 +1089,44 @@ export class ClickHouseStorage implements StorageBackend {
     return this.dailyQuery(q);
   }
 
+  async getTeamMemberTimeseries(
+    q: PeriodQuery & BucketOptions & { teamId: string; userIds: string[] },
+  ): Promise<TeamMemberTimeseriesPoint[]> {
+    if (q.userIds.length === 0) return [];
+    const hybrid = await this.rollup15mTimeseriesSource(q);
+    const readRollup = !hybrid && this.canUseRollup(q.bucket);
+    const { where, params } = hybrid ? { where: "", params: hybrid.params } : readRollup ? this.rollupWhere(q) : this.periodWhere(q);
+    const tz = safeTimezone(q.timezone, this.tz);
+    const timeCol = hybrid || !readRollup ? "ts" : "bucket_hour";
+    const source = hybrid?.source ?? (readRollup ? "usage_hourly_rollup" : this.usageEventsSource);
+    const bucketExpr = this.bucketExpr(q.bucket, timeCol, tz);
+    const rows = await this.queryJson<{ day: string; user_id: string } & AggRow>(
+      `SELECT ${bucketExpr}                                   AS day,
+              user_id,
+              uniqExactIf(session_id, session_id != '')       AS sessions,
+              uniqExactIf(user_id, user_id != '')             AS active_users,
+              sum(cost_usd)     AS cost,
+              sum(input_tokens) AS input,
+              sum(output_tokens) AS output,
+              sum(cache_read_tokens)     AS cache_read,
+              sum(cache_creation_tokens) AS cache_creation
+       FROM ${source} ${where}
+       GROUP BY day, user_id ORDER BY day, user_id`,
+      params,
+    );
+    return rows.map((r) => ({
+      userId: r.user_id,
+      day: r.day,
+      sessions: n(r.sessions),
+      activeUsers: n(r.active_users),
+      costUsd: n(r.cost),
+      inputTokens: n(r.input),
+      outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read),
+      cacheCreationTokens: n(r.cache_creation),
+    }));
+  }
+
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
     const scoped = { ...q, userId }; // bucket/timezone 은 dailyQuery 만 소비, 나머지 쿼리는 무시
     const overview = await this.overviewQuery(scoped);
@@ -1261,16 +1313,17 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]> {
+  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string; orderBy?: "cost" | "tokens" }): Promise<LeaderRow[]> {
     const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
     const col = q.scope === "user" ? "user_id" : "team_id";
+    const orderColumn = q.orderBy === "tokens" ? "tokens" : "cost";
     const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string }>(
       `SELECT ${col} AS key,
               sum(cost_usd)                             AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '') AS sessions
        FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where} AND ${col} != ''
-       GROUP BY key ORDER BY cost DESC LIMIT 100`,
+       GROUP BY key ORDER BY ${orderColumn} DESC LIMIT 100`,
       params,
     );
     const labels = await this.labelMap(
@@ -1280,6 +1333,25 @@ export class ClickHouseStorage implements StorageBackend {
     return rows.map((r) => ({
       key: r.key,
       label: labels.get(r.key) ?? r.key,
+      costUsd: n(r.cost),
+      totalTokens: n(r.tokens),
+      sessions: n(r.sessions),
+    }));
+  }
+
+  async getProviderBreakdown(q: PeriodQuery & { teamId?: string }): Promise<ProviderBreakdown[]> {
+    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
+    const rows = await this.queryJson<{ provider_key: string; cost?: string; tokens?: string; sessions?: string }>(
+      `SELECT provider_key,
+              sum(cost_usd) AS cost,
+              sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+              uniqExactIf(session_id, session_id != '') AS sessions
+       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+       GROUP BY provider_key ORDER BY tokens DESC`,
+      params,
+    );
+    return rows.map((r) => ({
+      providerKey: r.provider_key,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),

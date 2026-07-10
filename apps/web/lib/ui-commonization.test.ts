@@ -243,3 +243,36 @@ test("insight composition uses shared tabs and limits rows", () => {
   assert.match(composition, /@\/components\/ui\/segmented-control/);
   assert.match(composition, /\.slice\(0, 5\)/);
 });
+
+test("tool activity copy distinguishes explicit calls from loads", () => {
+  const ko = JSON.parse(source("messages/ko/dashboard.json"));
+  assert.equal(ko.toolActivity.skillLabel, "스킬 활동");
+  assert.equal(ko.toolActivity.explicitBadge, "명시 호출");
+  assert.equal(ko.toolActivity.loadedBadge, "로드");
+  assert.doesNotMatch(JSON.stringify(ko.toolActivity), /사용한 스킬/);
+});
+
+test("overview adds tool activity as a secondary card", () => {
+  const overview = source("components/dashboard/overview-view.tsx");
+  assert.match(overview, /ToolActivityCard/);
+  assert.match(overview, /<ToolActivityCard[^>]*\/>/s);
+});
+
+test("tool activity card marks the feature as beta", () => {
+  const card = source("components/dashboard/tool-activity-card.tsx");
+  assert.match(card, /FeatureStatusBadge/);
+  assert.match(card, /status="beta"/);
+  assert.match(card, /navT\("badge\.beta"\)/);
+});
+
+test("device inventory is current state, not period activity", () => {
+  const inventory = source("app/(dashboard)/settings/device-inventory.tsx");
+  assert.match(inventory, /DeviceToolInventory/);
+  assert.doesNotMatch(inventory, /fromDate|toDate|DashboardPeriod/);
+});
+
+test("organization page uses anonymous tool summary without drilldown", () => {
+  const org = source("app/(dashboard)/org/page.tsx");
+  assert.match(org, /getOrgToolSummary/);
+  assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
+});

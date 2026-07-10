@@ -26,8 +26,8 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
   const { setOpenMobile } = useSidebar();
   const workspaceItems: NavItem[] = [
-    { href: "/org", key: "org", icon: ChartBar, badge: "beta" },
-    ...(isAdmin ? ([{ href: "/org/teams", key: "orgTeams", icon: Building2, badge: "beta" }] satisfies NavItem[]) : []),
+    { href: "/org", key: "org", icon: ChartBar, badge: "preview" },
+    ...(isAdmin ? ([{ href: "/org/teams", key: "orgTeams", icon: Building2, badge: "preview" }] satisfies NavItem[]) : []),
     { href: "/org/team", key: "myTeam", icon: Building2, badge: "beta" },
   ];
 

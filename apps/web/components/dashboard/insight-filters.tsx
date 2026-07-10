@@ -32,8 +32,8 @@ export function InsightFilters({ preset, metric, provider, providers }: InsightF
     { value: "month", label: t("presets.month") },
   ];
   const metrics: SegmentedControlItem<"cost" | "tokens">[] = [
-    { value: "cost", label: t("filters.cost") },
     { value: "tokens", label: t("filters.tokens") },
+    { value: "cost", label: t("filters.cost") },
   ];
 
   return (

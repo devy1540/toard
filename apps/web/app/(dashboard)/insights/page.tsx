@@ -66,7 +66,7 @@ export default async function InsightsPage({
   const sp = await searchParams;
   const preset = parseInsightPreset(sp.period);
   const timezone = await getViewerTimezone();
-  const metric = sp.metric === "tokens" ? "tokens" : "cost";
+  const metric = sp.metric === "cost" ? "cost" : "tokens";
   const anchor = getInsightPeriodAnchor();
   const pair = buildInsightPeriodPair(preset, timezone, anchor);
   const providers = await getEnabledProviders();
@@ -188,7 +188,7 @@ export default async function InsightsPage({
                 </CardContent>
               </Card>
             ) : (
-              <div className="grid gap-3 lg:grid-cols-3">
+              <div className="grid gap-4 lg:grid-cols-3">
                 {candidates.map((candidate, index) => (
                   <Card key={`${candidate.key}-${index}`} className="border-chart-1/30 bg-muted/30 gap-3 py-5">
                     <CardContent className="flex items-start gap-2 px-5 text-sm leading-relaxed">
@@ -201,7 +201,17 @@ export default async function InsightsPage({
             )}
           </section>
 
-          <section className="grid gap-3 sm:grid-cols-3" aria-label={t("comparison.current")}>
+          <section className="grid gap-4 sm:grid-cols-3" aria-label={t("comparison.current")}>
+            <KpiCard
+              label={t("kpi.tokens")}
+              value={format.number(comparison.current.totalTokens)}
+              comparison={formatComparison(comparison.current.totalTokens, comparison.previous.totalTokens)}
+            />
+            <KpiCard
+              label={t("kpi.sessions")}
+              value={format.number(comparison.current.sessions)}
+              comparison={formatComparison(comparison.current.sessions, comparison.previous.sessions)}
+            />
             <KpiCard
               label={t("kpi.cost")}
               value={format.number(comparison.current.costUsd, {
@@ -211,16 +221,6 @@ export default async function InsightsPage({
                 maximumFractionDigits: 4,
               })}
               comparison={formatComparison(comparison.current.costUsd, comparison.previous.costUsd)}
-            />
-            <KpiCard
-              label={t("kpi.sessions")}
-              value={format.number(comparison.current.sessions)}
-              comparison={formatComparison(comparison.current.sessions, comparison.previous.sessions)}
-            />
-            <KpiCard
-              label={t("kpi.tokens")}
-              value={format.number(comparison.current.totalTokens)}
-              comparison={formatComparison(comparison.current.totalTokens, comparison.previous.totalTokens)}
             />
           </section>
 

@@ -59,6 +59,32 @@ test("insights page uses the cached comparison and shared cards", () => {
   assert.match(page, /@\/components\/ui\/card/);
 });
 
+test("insights default to tokens while preserving explicit cost selection", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  assert.match(page, /const metric = sp\.metric === "cost" \? "cost" : "tokens"/);
+  assert.match(page, /generateInsightCandidates\(comparison, metric\)/);
+  assert.match(page, /<InsightComparisonChart data=\{comparison\.trend\} metric=\{metric\}/);
+  assert.match(page, /<InsightComposition[\s\S]*metric=\{metric\}/);
+});
+
+test("insights keep token-first KPI and metric-control order", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const filters = source("components/dashboard/insight-filters.tsx");
+  const tokenKpi = page.indexOf('label={t("kpi.tokens")}');
+  const sessionKpi = page.indexOf('label={t("kpi.sessions")}');
+  const costKpi = page.indexOf('label={t("kpi.cost")}');
+  const tokenMetric = filters.indexOf('{ value: "tokens", label: t("filters.tokens") }');
+  const costMetric = filters.indexOf('{ value: "cost", label: t("filters.cost") }');
+
+  assert.notEqual(tokenKpi, -1);
+  assert.notEqual(sessionKpi, -1);
+  assert.notEqual(costKpi, -1);
+  assert.equal(tokenKpi < sessionKpi && sessionKpi < costKpi, true);
+  assert.notEqual(tokenMetric, -1);
+  assert.notEqual(costMetric, -1);
+  assert.equal(tokenMetric < costMetric, true);
+});
+
 test("insights page builds cache arguments from a stable period anchor", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   assert.match(page, /const anchor = getInsightPeriodAnchor\(\)/);

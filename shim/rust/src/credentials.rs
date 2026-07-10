@@ -1,7 +1,6 @@
 // ~/.toard/credentials (key=value) 로딩. env(TOARD_INGEST_TOKEN/TOARD_INGEST_ENDPOINT)가 파일보다 우선.
 
 use std::env;
-use std::path::PathBuf;
 
 pub const DEFAULT_ENDPOINT: &str = "http://localhost:3000/api";
 
@@ -31,8 +30,8 @@ impl Default for Credentials {
 }
 
 pub fn read_credentials() -> Credentials {
-    let file = env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".toard").join("credentials"))
+    let file = crate::fsx::home_dir()
+        .map(|h| h.join(".toard").join("credentials"))
         .and_then(|p| std::fs::read_to_string(p).ok())
         .map(|c| parse(&c))
         .unwrap_or_default();

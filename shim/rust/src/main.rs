@@ -25,17 +25,22 @@ mod usage_event;
 
 use std::env;
 use std::ffi::OsString;
-use std::os::unix::process::CommandExt;
 use std::process::Command;
 
 use credentials::{read_credentials, DEFAULT_ENDPOINT};
 use otel::notice;
 use resolve::{find_real_binary, tool_name_from};
 
-/// 재귀 exec 가드. exec 는 PID 를 보존하므로, 같은 PID 로 shim 이 다시 시작됐다면
+/// 재귀 실행 가드.
+/// Unix: exec 는 PID 를 보존하므로, 같은 PID 로 shim 이 다시 시작됐다면
 /// (current_exe 판별 실패 또는 PATH 의 shim 사본 간 핑퐁) 무한 exec 루프다.
 /// fork 로 태어난 진짜 하위 프로세스는 PID 가 달라 오탐하지 않는다.
+/// Windows: exec 가 없어 spawn 마다 PID 가 바뀌므로 PID 비교가 불가능하다 —
+/// 대신 shim 경유 깊이를 세서 상한을 넘으면 핑퐁으로 판정한다(정상 사용은
+/// claude 가 하위 claude 를 띄우는 중첩이라도 이 깊이에 도달하지 않는다).
 const GUARD_ENV: &str = "TOARD_SHIM_GUARD_PID";
+#[cfg(windows)]
+const GUARD_MAX_DEPTH: u32 = 64;
 
 fn main() {
     // 백그라운드 작업 내부 재진입 — argv0 과 무관하게 최우선 분기
@@ -55,13 +60,7 @@ fn main() {
         cli::run(&args);
     }
 
-    let pid = std::process::id().to_string();
-    if env::var(GUARD_ENV).ok().as_deref() == Some(pid.as_str()) {
-        eprintln!(
-            "toard-shim: 재귀 실행 감지 — 진짜 도구 대신 shim 이 자기 자신을 다시 실행했습니다. PATH 의 shim 사본을 정리하세요."
-        );
-        std::process::exit(127);
-    }
+    guard_against_recursion();
 
     let creds = read_credentials();
 
@@ -94,9 +93,55 @@ fn main() {
     update::maybe_spawn_background_check(); // 6h: 자동 업데이트
     collect::maybe_spawn_background(); // 10m: 비-OTEL 로컬 로그 수집 (§5.6)
 
-    env::set_var(GUARD_ENV, &pid);
     let args: Vec<OsString> = env::args_os().skip(1).collect();
-    let err = Command::new(&real).args(&args).exec();
+    run_real(&real, &args);
+}
+
+fn recursion_bail() -> ! {
+    eprintln!(
+        "toard-shim: 재귀 실행 감지 — 진짜 도구 대신 shim 이 자기 자신을 다시 실행했습니다. PATH 의 shim 사본을 정리하세요."
+    );
+    std::process::exit(127);
+}
+
+#[cfg(unix)]
+fn guard_against_recursion() {
+    let pid = std::process::id().to_string();
+    if env::var(GUARD_ENV).ok().as_deref() == Some(pid.as_str()) {
+        recursion_bail();
+    }
+    env::set_var(GUARD_ENV, pid);
+}
+
+#[cfg(windows)]
+fn guard_against_recursion() {
+    let depth: u32 = env::var(GUARD_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if depth >= GUARD_MAX_DEPTH {
+        recursion_bail();
+    }
+    env::set_var(GUARD_ENV, (depth + 1).to_string());
+}
+
+/// 진짜 도구 실행. Unix 는 exec(프로세스 교체 — PID·시그널·TTY 그대로),
+/// Windows 는 exec 가 없어 spawn 후 종료 코드를 전파한다.
+#[cfg(unix)]
+fn run_real(real: &std::path::Path, args: &[OsString]) -> ! {
+    use std::os::unix::process::CommandExt;
+    let err = Command::new(real).args(args).exec();
     eprintln!("toard-shim: exec 실패 ({}): {err}", real.display());
     std::process::exit(1);
+}
+
+#[cfg(windows)]
+fn run_real(real: &std::path::Path, args: &[OsString]) -> ! {
+    match Command::new(real).args(args).status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(err) => {
+            eprintln!("toard-shim: 실행 실패 ({}): {err}", real.display());
+            std::process::exit(1);
+        }
+    }
 }

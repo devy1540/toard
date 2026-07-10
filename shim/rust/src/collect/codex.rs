@@ -378,7 +378,7 @@ fn sessions_dir() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("CODEX_HOME") {
         return Some(PathBuf::from(h).join("sessions"));
     }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex").join("sessions"))
+    crate::fsx::home_dir().map(|h| h.join(".codex").join("sessions"))
 }
 
 /// 롤아웃 jsonl → user/assistant 본문 레코드. event_msg(user_message/agent_message)만 정본으로 사용.

@@ -70,6 +70,23 @@ test("insights page uses the cached comparison and shared cards", () => {
   assert.match(page, /@\/components\/ui\/card/);
 });
 
+test("insight KPI deltas use the shared dashboard badge and calculation", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const ko = JSON.parse(source("messages/ko/insights.json"));
+  const en = JSON.parse(source("messages/en/insights.json"));
+
+  assert.match(page, /@\/components\/dashboard\/stat-card/);
+  assert.match(page, /@\/lib\/stat-delta/);
+  assert.match(page, /<DeltaBadge delta=\{delta\}/);
+  assert.match(page, /const tokenDelta = pctDelta\(/);
+  assert.match(page, /const sessionsDelta = pctDelta\(/);
+  assert.match(page, /const costDelta = pctDelta\(/);
+  assert.doesNotMatch(page, /const formatComparison/);
+  assert.doesNotMatch(page, /signDisplay: "always"/);
+  assert.equal(ko.kpi.previousPeriod, "이전 기간 대비");
+  assert.equal(en.kpi.previousPeriod, "vs previous period");
+});
+
 test("insights default to tokens while preserving explicit cost selection", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   assert.match(page, /const metric = sp\.metric === "cost" \? "cost" : "tokens"/);

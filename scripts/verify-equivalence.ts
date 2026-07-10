@@ -26,6 +26,7 @@ async function main(): Promise<void> {
   const events = [
     { dedupKey: "eqv-e1", providerKey: pk, userId: u0, sessionId: "eqv-se1", model: "claude-sonnet-4-5", ts: base, inputTokens: 1000, outputTokens: 500, cacheReadTokens: 200, cacheCreationTokens: 100, costUsd: 0.03 },
     { dedupKey: "eqv-e2", providerKey: pk, userId: u1, sessionId: "eqv-se2", model: "gpt-5", ts: new Date(base.getTime() + 3_600_000), inputTokens: 2000, outputTokens: 800, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.05 },
+    { dedupKey: `eqv-dst-fall-back:${u0}`, providerKey: pk, userId: u0, sessionId: `eqv-dst-session:${u0}`, model: "claude-sonnet-4-5", ts: new Date("2027-11-08T04:30:00.000Z"), inputTokens: 300, outputTokens: 100, cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0.01 },
   ];
 
   console.log("save PG:", await pgS.saveUsageEvents(events));
@@ -58,12 +59,19 @@ async function main(): Promise<void> {
     timezone: "UTC",
   };
   await cmp("getUserInsightComparison", (s) => s.getUserInsightComparison(u0, insightQuery));
+  const dstInsightQuery = {
+    previous: { from: new Date("2027-11-06T04:00:00Z"), to: new Date("2027-11-07T04:00:00Z") },
+    current: { from: new Date("2027-11-07T04:00:00Z"), to: new Date("2027-11-08T05:00:00Z") },
+    providerKey: pk,
+    timezone: "America/New_York",
+  };
+  await cmp("getUserInsightComparison(DST fall-back)", (s) => s.getUserInsightComparison(u0, dstInsightQuery));
   // scope=team: PG/CH 둘 다 team_id 비정규화로 필터(7a057b6 이후) → 일치해야 함
   await cmp("getDailyTimeseries(scope=team)", (s) => s.getDailyTimeseries({ ...period, scope: "team", teamId: dept0 }));
 
   console.log(mismatches === 0 ? "\n전부 일치" : `\n${mismatches}건 불일치 (위 ✗)`);
   await pg.end();
-  process.exit(0);
+  process.exit(mismatches === 0 ? 0 : 1);
 }
 
 main().catch((e) => {

@@ -330,6 +330,7 @@ export class PostgresStorage implements StorageBackend {
       userId,
       q.providerKey ?? null,
     ];
+    const aggregateParams = [...params, q.timezone];
     const [aggregateResult, compositionResult] = await Promise.all([
       this.pool.query<{
         kind: "summary" | "trend";
@@ -354,8 +355,8 @@ export class PostgresStorage implements StorageBackend {
          ), tagged AS (
            SELECT *,
              CASE WHEN period = 'current'
-               THEN FLOOR(EXTRACT(EPOCH FROM (ts - $3)) / 86400)::int
-               ELSE FLOOR(EXTRACT(EPOCH FROM (ts - $1)) / 86400)::int
+               THEN ((ts AT TIME ZONE $7::text)::date - ($3 AT TIME ZONE $7::text)::date)::int
+               ELSE ((ts AT TIME ZONE $7::text)::date - ($1 AT TIME ZONE $7::text)::date)::int
              END AS position
            FROM scoped
          )
@@ -369,7 +370,7 @@ export class PostgresStorage implements StorageBackend {
                 COALESCE(SUM(cost_usd), 0), COUNT(DISTINCT session_id), COALESCE(SUM(tokens), 0)
          FROM tagged GROUP BY period, position
          ORDER BY kind, position, period`,
-        params,
+        aggregateParams,
       ),
       this.pool.query<{
         dimension: "model" | "provider";

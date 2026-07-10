@@ -337,6 +337,17 @@ async function main(): Promise<void> {
       await raw.getUserInsightComparison(userId, insightQuery),
       "insights raw vs hybrid rollup",
     );
+    const unalignedInsightQuery = {
+      previous: { from, to: new Date("2020-01-01T01:17:00.000Z") },
+      current: { from: new Date("2020-01-01T01:23:00.000Z"), to: new Date("2020-01-01T04:00:00.000Z") },
+      providerKey,
+      timezone: "UTC",
+    };
+    assertEqual(
+      await rollup15m.getUserInsightComparison(userId, unalignedInsightQuery),
+      await raw.getUserInsightComparison(userId, unalignedInsightQuery),
+      "insights unaligned period boundaries raw vs hybrid rollup",
+    );
 
     assertEqual(await rollup.getOverview(period), await raw.getOverview(period), "overview raw vs rollup");
     assertEqual(

@@ -80,9 +80,10 @@ function chDate(s: string): Date {
 
 type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
 type Params = Record<string, unknown>;
-type InsightSource =
+type InsightSourcePart =
   | { kind: "hybrid"; source: string; params: Params }
   | { kind: "raw"; source: string; where: string; params: Params };
+type InsightSource = { source: string; params: Params };
 
 export interface ClickHouseStorageOptions {
   /** 조직 타임존 (IANA, ADR-008) — 쿼리에 timezone 미지정 시 버킷 폴백. 기본 UTC. */
@@ -427,17 +428,57 @@ export class ClickHouseStorage implements StorageBackend {
     return { source, params };
   }
 
+  private namespaceInsightSource(
+    part: InsightSourcePart,
+    prefix: "previous" | "current",
+  ): { source: string; where: string; params: Params } {
+    let source = part.source;
+    let where = part.kind === "raw" ? part.where : "";
+    const params: Params = {};
+    for (const [key, value] of Object.entries(part.params)) {
+      const namespaced = `${prefix}_${key}`;
+      source = source.replaceAll(`{${key}:`, `{${namespaced}:`);
+      where = where.replaceAll(`{${key}:`, `{${namespaced}:`);
+      params[namespaced] = value;
+    }
+    return { source, where, params };
+  }
+
+  private async insightPeriodSource(
+    q: ScopedQuery,
+    prefix: "previous" | "current",
+  ): Promise<{ source: string; where: string; params: Params }> {
+    const hybrid = await this.rollup15mTimeseriesSource(q);
+    if (hybrid) {
+      return this.namespaceInsightSource(
+        { kind: "hybrid", source: hybrid.source, params: hybrid.params },
+        prefix,
+      );
+    }
+    const raw = this.periodWhere(q);
+    return this.namespaceInsightSource(
+      { kind: "raw", source: this.usageEventsSource, where: raw.where, params: raw.params },
+      prefix,
+    );
+  }
+
   private async insightSource(q: InsightComparisonQuery, userId: string): Promise<InsightSource> {
-    const combined = {
-      from: q.previous.from,
-      to: q.current.to,
-      providerKey: q.providerKey,
-      userId,
+    const [previous, current] = await Promise.all([
+      this.insightPeriodSource({ ...q.previous, providerKey: q.providerKey, userId }, "previous"),
+      this.insightPeriodSource({ ...q.current, providerKey: q.providerKey, userId }, "current"),
+    ]);
+    const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd`;
+    return {
+      source: `(
+        SELECT 'previous' AS period, ${columns}
+        FROM ${previous.source} ${previous.where}
+        UNION ALL
+        SELECT 'current' AS period, ${columns}
+        FROM ${current.source} ${current.where}
+      )`,
+      params: { ...previous.params, ...current.params },
     };
-    const hybrid = await this.rollup15mTimeseriesSource(combined);
-    if (hybrid) return { kind: "hybrid", source: hybrid.source, params: hybrid.params };
-    const raw = this.periodWhere(combined);
-    return { kind: "raw", source: this.usageEventsSource, where: raw.where, params: raw.params };
   }
 
   private async ensureClickHouseSchema(): Promise<void> {
@@ -1045,16 +1086,6 @@ export class ClickHouseStorage implements StorageBackend {
 
   async getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison> {
     const source = await this.insightSource(q, userId);
-    const periodFilter = `((ts >= {previousFrom:DateTime64(3)} AND ts < {previousTo:DateTime64(3)})
-                          OR (ts >= {currentFrom:DateTime64(3)} AND ts < {currentTo:DateTime64(3)}))`;
-    const where = source.kind === "hybrid" ? `WHERE ${periodFilter}` : `${source.where} AND ${periodFilter}`;
-    const params = {
-      ...source.params,
-      previousFrom: chTs(q.previous.from),
-      previousTo: chTs(q.previous.to),
-      currentFrom: chTs(q.current.from),
-      currentTo: chTs(q.current.to),
-    };
     const tz = safeTimezone(q.timezone, this.tz);
     const [aggregateRows, compositionRows] = await Promise.all([
       this.queryJson<{
@@ -1067,14 +1098,14 @@ export class ClickHouseStorage implements StorageBackend {
       }>(
         `/* user-insights */
          WITH tagged AS (
-           SELECT if(ts >= {currentFrom:DateTime64(3)}, 'current', 'previous') AS period,
+           SELECT period,
                   if(period = 'current',
-                     dateDiff('day', {currentFrom:DateTime64(3)}, ts, '${tz}'),
-                     dateDiff('day', {previousFrom:DateTime64(3)}, ts, '${tz}')) AS position,
+                     dateDiff('day', {current_from:DateTime64(3)}, ts, '${tz}'),
+                     dateDiff('day', {previous_from:DateTime64(3)}, ts, '${tz}')) AS position,
                   session_id,
                   cost_usd,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
-           FROM ${source.source} ${where}
+           FROM ${source.source}
          )
          SELECT 'summary' AS kind, period, CAST(NULL AS Nullable(Int64)) AS position,
                 sum(cost_usd) AS cost,
@@ -1088,7 +1119,7 @@ export class ClickHouseStorage implements StorageBackend {
                 sum(tokens) AS tokens
          FROM tagged GROUP BY period, position
          ORDER BY kind, position, period`,
-        params,
+        source.params,
       ),
       this.queryJson<{
         dimension: "model" | "provider";
@@ -1099,12 +1130,12 @@ export class ClickHouseStorage implements StorageBackend {
       }>(
         `/* user-insights */
          WITH scoped AS (
-           SELECT if(ts >= {currentFrom:DateTime64(3)}, 'current', 'previous') AS period,
+           SELECT period,
                   if(model = '', '(unknown)', model) AS model,
                   provider_key,
                   cost_usd,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
-           FROM ${source.source} ${where}
+           FROM ${source.source}
          )
          SELECT 'model' AS dimension, model AS key, period,
                 sum(cost_usd) AS cost, sum(tokens) AS tokens
@@ -1113,7 +1144,7 @@ export class ClickHouseStorage implements StorageBackend {
          SELECT 'provider' AS dimension, provider_key AS key, period,
                 sum(cost_usd) AS cost, sum(tokens) AS tokens
          FROM scoped GROUP BY provider_key, period`,
-        params,
+        source.params,
       ),
     ]);
 

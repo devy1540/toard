@@ -2,6 +2,7 @@ import type { InsightCompositionChange, UserInsightComparison } from "@toard/cor
 
 export type InsightMetric = "cost" | "tokens";
 export type InsightRuleKey =
+  | "usage.new"
   | "cost.increase"
   | "cost.decrease"
   | "sessions.increase"
@@ -41,6 +42,7 @@ function compositionCandidates(
   totalPrevious: number,
   metric: InsightMetric,
   dimension: "model" | "provider",
+  allowShareChanges: boolean,
 ): InsightCandidate[] {
   return rows.flatMap<InsightCandidate>((row) => {
     const current = metric === "cost" ? row.current.costUsd : row.current.totalTokens;
@@ -48,6 +50,7 @@ function compositionCandidates(
     if (previous === 0 && current > 0) {
       return [{ key: "composition.new", score: 100, values: { name: row.key, dimension } }];
     }
+    if (!allowShareChanges) return [];
     if (totalCurrent === 0 || totalPrevious === 0) return [];
 
     const delta = (current / totalCurrent - previous / totalPrevious) * 100;
@@ -80,15 +83,21 @@ export function generateInsightCandidates(
   comparison: UserInsightComparison,
   metric: InsightMetric,
 ): InsightCandidate[] {
+  if (comparison.previous.sessions === 0 && comparison.current.sessions > 0) {
+    return [{ key: "usage.new", score: 100, values: {} }];
+  }
+
   const candidates: InsightCandidate[] = [];
+  const hasMinimumSample =
+    comparison.current.sessions >= MIN_SESSIONS && comparison.previous.sessions >= MIN_SESSIONS;
   const add = (candidate: InsightCandidate | null) => {
     if (candidate) candidates.push(candidate);
   };
 
-  add(rateCandidate("cost", comparison.current.costUsd, comparison.previous.costUsd));
-  add(rateCandidate("sessions", comparison.current.sessions, comparison.previous.sessions));
-  add(rateCandidate("tokens", comparison.current.totalTokens, comparison.previous.totalTokens));
-  if (comparison.current.sessions >= MIN_SESSIONS && comparison.previous.sessions >= MIN_SESSIONS) {
+  if (hasMinimumSample) {
+    add(rateCandidate("cost", comparison.current.costUsd, comparison.previous.costUsd));
+    add(rateCandidate("sessions", comparison.current.sessions, comparison.previous.sessions));
+    add(rateCandidate("tokens", comparison.current.totalTokens, comparison.previous.totalTokens));
     add(
       rateCandidate(
         "efficiency",
@@ -101,8 +110,8 @@ export function generateInsightCandidates(
   const totalCurrent = metric === "cost" ? comparison.current.costUsd : comparison.current.totalTokens;
   const totalPrevious = metric === "cost" ? comparison.previous.costUsd : comparison.previous.totalTokens;
   candidates.push(
-    ...compositionCandidates(comparison.byModel, totalCurrent, totalPrevious, metric, "model"),
-    ...compositionCandidates(comparison.byProvider, totalCurrent, totalPrevious, metric, "provider"),
+    ...compositionCandidates(comparison.byModel, totalCurrent, totalPrevious, metric, "model", hasMinimumSample),
+    ...compositionCandidates(comparison.byProvider, totalCurrent, totalPrevious, metric, "provider", hasMinimumSample),
   );
 
   return candidates.sort((a, b) => b.score - a.score).slice(0, MAX_INSIGHTS);

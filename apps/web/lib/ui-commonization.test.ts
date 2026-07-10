@@ -6,6 +6,15 @@ function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
+function messageShape(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return typeof value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, nested]) => [key, messageShape(nested)]),
+  );
+}
+
 test("dashboard and settings segmented choices use the shared segmented control", () => {
   assert.match(source("components/ui/segmented-control.tsx"), /function SegmentedControl/);
   assert.match(source("components/dashboard/view-toggle.tsx"), /@\/components\/ui\/segmented-control/);
@@ -56,6 +65,41 @@ test("insights page builds cache arguments from a stable period anchor", () => {
   assert.match(page, /buildInsightPeriodPair\(preset, timezone, anchor\)/);
 });
 
+test("insights page validates provider before reading the comparison cache", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const providersIndex = page.indexOf("const providers = await getEnabledProviders()");
+  const comparisonIndex = page.indexOf("const comparison = await getCachedUserInsights(");
+
+  assert.notEqual(providersIndex, -1);
+  assert.notEqual(comparisonIndex, -1);
+  assert.equal(providersIndex < comparisonIndex, true);
+  assert.match(page, /resolveInsightProvider\(sp\.provider, providers\)/);
+  assert.match(page, /provider=\{providerKey \?\? "all"\}/);
+});
+
+test("insights page shows the period anchor and both localized comparison ranges", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+
+  assert.match(page, /t\("freshness\.dataThrough", \{[\s\S]*format\.dateTime\(pair\.current\.to/);
+  assert.match(page, /t\("freshness\.delay"\)/);
+  assert.match(page, /t\("ranges\.current", \{[\s\S]*formatInsightPeriodRange\(pair\.current, locale, timezone\)/);
+  assert.match(page, /t\("ranges\.previous", \{[\s\S]*formatInsightPeriodRange\(pair\.previous, locale, timezone\)/);
+  assert.doesNotMatch(page, /new Date\(comparison\.calculatedAt\)/);
+});
+
+test("Korean and English insight catalogs have the same shape and 10-minute delay copy", () => {
+  const ko = JSON.parse(source("messages/ko/insights.json")) as {
+    freshness?: { delay?: string };
+  };
+  const en = JSON.parse(source("messages/en/insights.json")) as {
+    freshness?: { delay?: string };
+  };
+
+  assert.deepEqual(messageShape(ko), messageShape(en));
+  assert.match(ko.freshness?.delay ?? "", /10분/);
+  assert.match(en.freshness?.delay ?? "", /10 minutes/);
+});
+
 test("insight filters reuse shared controls and update URL parameters", () => {
   const filters = source("components/dashboard/insight-filters.tsx");
   assert.match(filters, /@\/components\/ui\/segmented-control/);
@@ -87,6 +131,16 @@ test("insight comparison chart exposes its translated name without a nested imag
 test("insights page separates login-required and usage-empty states", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   assert.match(page, /if \(!userId\)[\s\S]*loginRequired\.title[\s\S]*loginRequired\.description/);
+});
+
+test("insights page translates the new-usage rule in its exhaustive switch", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const ko = JSON.parse(source("messages/ko/insights.json")) as { rules?: { usage?: { new?: string } } };
+  const en = JSON.parse(source("messages/en/insights.json")) as { rules?: { usage?: { new?: string } } };
+
+  assert.match(page, /case "usage\.new":[\s\S]*t\("rules\.usage\.new"/);
+  assert.equal(typeof ko.rules?.usage?.new, "string");
+  assert.equal(typeof en.rules?.usage?.new, "string");
 });
 
 test("insight composition uses shared tabs and limits rows", () => {

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildInsightPeriodPair, getInsightPeriodAnchor, parseInsightPreset } from "./insight-period";
+import {
+  buildInsightPeriodPair,
+  formatInsightPeriodRange,
+  getInsightPeriodAnchor,
+  parseInsightPreset,
+} from "./insight-period";
 
 test("parseInsightPreset는 세 프리셋 외 값을 최근 7일로 폴백한다", () => {
   assert.equal(parseInsightPreset("week"), "week");
@@ -50,4 +55,17 @@ test("다음 10분 버킷은 다른 인사이트 anchor를 사용한다", () => 
 
   assert.notEqual(next.toISOString(), current.toISOString());
   assert.equal(next.toISOString(), "2026-07-10T04:30:00.000Z");
+});
+
+test("인사이트 기간 범위는 locale과 viewer timezone으로 날짜와 시각을 포맷한다", () => {
+  const period = {
+    from: new Date("2026-07-03T00:00:00.000Z"),
+    to: new Date("2026-07-10T00:00:00.000Z"),
+  };
+  const ko = formatInsightPeriodRange(period, "ko", "Asia/Seoul");
+  const en = formatInsightPeriodRange(period, "en", "Asia/Seoul");
+
+  assert.match(ko, /2026.*7.*3.*9:00.*2026.*7.*10.*9:00/);
+  assert.match(en, /Jul 3, 2026.*9:00.*Jul 10, 2026.*9:00/);
+  assert.notEqual(ko, en);
 });

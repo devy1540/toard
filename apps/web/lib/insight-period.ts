@@ -21,6 +21,14 @@ export function getInsightPeriodAnchor(now = new Date()): Date {
   return new Date(Math.floor(now.getTime() / INSIGHT_ANCHOR_MS) * INSIGHT_ANCHOR_MS);
 }
 
+export function formatInsightPeriodRange(period: PeriodQuery, locale: string, timezone: string): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: timezone,
+  }).formatRange(period.from, period.to);
+}
+
 function dateKey(at: Date, timezone: string): string {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: timezone,

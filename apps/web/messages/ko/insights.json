@@ -14,8 +14,13 @@
     "cost": "비용",
     "tokens": "토큰"
   },
-  "cache": {
-    "calculatedAt": "{time} 기준 계산"
+  "freshness": {
+    "dataThrough": "데이터 기준 {time}",
+    "delay": "데이터는 최대 10분 지연될 수 있습니다."
+  },
+  "ranges": {
+    "current": "현재 기간: {range}",
+    "previous": "이전 기간: {range}"
   },
   "loginRequired": {
     "title": "로그인이 필요합니다",
@@ -61,6 +66,9 @@
     "description": "선택한 기간과 프로바이더에서 비용, 세션, 토큰 사용이 확인되지 않습니다."
   },
   "rules": {
+    "usage": {
+      "new": "이전 기간에는 없던 사용이 새로 시작되었습니다."
+    },
     "cost": {
       "increase": "비용이 이전 기간보다 {delta}% 늘었습니다.",
       "decrease": "비용이 이전 기간보다 {delta}% 줄었습니다."

@@ -1,15 +1,20 @@
 import type { ReactNode } from "react";
 import { Clock3, Inbox, Lightbulb } from "lucide-react";
-import { getFormatter, getTranslations } from "next-intl/server";
+import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { InsightComparisonChart } from "@/components/charts/insight-comparison-chart";
 import { InsightComposition } from "@/components/dashboard/insight-composition";
 import { InsightFilters } from "@/components/dashboard/insight-filters";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
-import { buildInsightPeriodPair, getInsightPeriodAnchor, parseInsightPreset } from "@/lib/insight-period";
+import {
+  buildInsightPeriodPair,
+  formatInsightPeriodRange,
+  getInsightPeriodAnchor,
+  parseInsightPreset,
+} from "@/lib/insight-period";
 import { generateInsightCandidates, type InsightRuleKey } from "@/lib/insight-rules";
-import { getEnabledProviders } from "@/lib/providers";
+import { getEnabledProviders, resolveInsightProvider } from "@/lib/providers";
 import { getCachedUserInsights } from "@/lib/user-insights";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -42,7 +47,7 @@ export default async function InsightsPage({
 }: {
   searchParams: Promise<InsightSearchParams>;
 }) {
-  const [t, format] = await Promise.all([getTranslations("insights"), getFormatter()]);
+  const [t, format, locale] = await Promise.all([getTranslations("insights"), getFormatter(), getLocale()]);
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -61,14 +66,12 @@ export default async function InsightsPage({
   const sp = await searchParams;
   const preset = parseInsightPreset(sp.period);
   const timezone = await getViewerTimezone();
-  const providerKey = sp.provider && sp.provider !== "all" ? sp.provider : undefined;
   const metric = sp.metric === "tokens" ? "tokens" : "cost";
   const anchor = getInsightPeriodAnchor();
   const pair = buildInsightPeriodPair(preset, timezone, anchor);
-  const [comparison, providers] = await Promise.all([
-    getCachedUserInsights(userId, pair, providerKey),
-    getEnabledProviders(),
-  ]);
+  const providers = await getEnabledProviders();
+  const providerKey = resolveInsightProvider(sp.provider, providers);
+  const comparison = await getCachedUserInsights(userId, pair, providerKey);
   const candidates = generateInsightCandidates(comparison, metric);
   const hasCurrentUsage =
     comparison.current.sessions > 0 || comparison.current.costUsd > 0 || comparison.current.totalTokens > 0;
@@ -80,6 +83,8 @@ export default async function InsightsPage({
     const name = String(values.name ?? "");
     const dimension = values.dimension === "provider" ? t("composition.provider") : t("composition.model");
     switch (key) {
+      case "usage.new":
+        return t("rules.usage.new");
       case "cost.increase":
         return t("rules.cost.increase", { delta });
       case "cost.decrease":
@@ -128,16 +133,31 @@ export default async function InsightsPage({
             provider={providerKey ?? "all"}
             providers={providers}
           />
-          <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <Clock3 className="size-3.5" />
-            {t("cache.calculatedAt", {
-              time: format.dateTime(new Date(comparison.calculatedAt), {
-                dateStyle: "medium",
-                timeStyle: "short",
-                timeZone: timezone,
-              }),
-            })}
+          <div className="text-muted-foreground space-y-1 text-xs sm:text-right">
+            <div className="flex items-center gap-1.5 sm:justify-end">
+              <Clock3 className="size-3.5" />
+              {t("freshness.dataThrough", {
+                time: format.dateTime(pair.current.to, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                  timeZone: timezone,
+                }),
+              })}
+            </div>
+            <p>{t("freshness.delay")}</p>
           </div>
+        </div>
+        <div className="bg-muted/30 text-muted-foreground grid gap-1 rounded-lg px-3 py-2 text-xs sm:grid-cols-2 sm:gap-4">
+          <p>
+            {t("ranges.current", {
+              range: formatInsightPeriodRange(pair.current, locale, timezone),
+            })}
+          </p>
+          <p>
+            {t("ranges.previous", {
+              range: formatInsightPeriodRange(pair.previous, locale, timezone),
+            })}
+          </p>
         </div>
       </header>
 

@@ -14,8 +14,13 @@
     "cost": "Cost",
     "tokens": "Tokens"
   },
-  "cache": {
-    "calculatedAt": "Calculated as of {time}"
+  "freshness": {
+    "dataThrough": "Data through {time}",
+    "delay": "Data can be delayed by up to 10 minutes."
+  },
+  "ranges": {
+    "current": "Current period: {range}",
+    "previous": "Previous period: {range}"
   },
   "loginRequired": {
     "title": "Login required",
@@ -61,6 +66,9 @@
     "description": "No cost, session, or token usage was found for the selected period and provider."
   },
   "rules": {
+    "usage": {
+      "new": "Usage started after no sessions in the previous period."
+    },
     "cost": {
       "increase": "Cost increased by {delta}% from the previous period.",
       "decrease": "Cost decreased by {delta}% from the previous period."

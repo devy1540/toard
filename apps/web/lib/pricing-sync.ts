@@ -102,12 +102,14 @@ export async function runPricingSyncTransaction(
   fetchPricing: () => Promise<PricingMap>,
   day: string,
   effectiveAt: Date,
+  invalidateCache: () => void = invalidatePricingCache,
 ): Promise<number> {
   await client.query("BEGIN");
+  let upserted = 0;
   try {
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [PRICING_SYNC_LOCK_KEY]);
     const pricing = await fetchPricing();
-    const upserted = await syncPricingRevisions(client, pricing, effectiveAt);
+    upserted = await syncPricingRevisions(client, pricing, effectiveAt);
     await client.query(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
@@ -117,11 +119,12 @@ export async function runPricingSyncTransaction(
       ],
     );
     await client.query("COMMIT");
-    return upserted;
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
   }
+  invalidateCache();
+  return upserted;
 }
 
 /**
@@ -156,6 +159,5 @@ export async function runPricingSync(): Promise<PricingSyncResult> {
     client.release();
   }
 
-  if (upserted > 0) invalidatePricingCache(); // 새 revision 즉시 반영
   return { ok: true, upserted, day };
 }

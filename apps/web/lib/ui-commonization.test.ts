@@ -156,6 +156,22 @@ test("insight comparison chart renders current and previous without animation", 
   assert.match(chart, /dataKey="previous"[\s\S]*isAnimationActive=\{false\}/);
 });
 
+test("insight comparison chart fills only the current period with the approved gradient", () => {
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+
+  assert.match(chart, /ComposedChart/);
+  assert.match(chart, /<linearGradient id=\{gradientId\}[\s\S]*stopOpacity=\{0\.32\}[\s\S]*stopOpacity=\{0\.04\}/);
+  assert.match(
+    chart,
+    /<Area[^>]*dataKey="current"[^>]*stroke="var\(--color-chart-1\)"[^>]*fill=\{`url\(#\$\{gradientId\}\)`\}[^>]*isAnimationActive=\{false\}/s,
+  );
+  assert.doesNotMatch(chart, /<Area[^>]*dataKey="previous"/s);
+  assert.match(
+    chart,
+    /<Line[^>]*dataKey="previous"[^>]*stroke="var\(--color-muted-foreground\)"[^>]*strokeDasharray="4 4"[^>]*isAnimationActive=\{false\}/s,
+  );
+});
+
 test("insight comparison chart preserves sparse numeric positions", () => {
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /<XAxis[\s\S]*type="number"[\s\S]*domain=\{\["dataMin", "dataMax"\]\}/);
@@ -166,7 +182,7 @@ test("insight comparison chart exposes its translated name without a nested imag
   assert.doesNotMatch(chart, /role="img"/);
   assert.match(
     chart,
-    /<LineChart[\s\S]*aria-label=\{t\("chart\.accessibleLabel"\)\}[\s\S]*aria-describedby=\{descriptionId\}/,
+    /<ComposedChart[\s\S]*aria-label=\{t\("chart\.accessibleLabel"\)\}[\s\S]*aria-describedby=\{descriptionId\}/,
   );
   assert.match(chart, /id=\{descriptionId\}[\s\S]*t\("chart\.accessibleDescription"\)/);
 });

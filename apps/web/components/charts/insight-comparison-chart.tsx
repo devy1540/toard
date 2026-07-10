@@ -3,7 +3,16 @@
 import type { InsightTrendPoint } from "@toard/core";
 import { useFormatter, useTranslations } from "next-intl";
 import { useId } from "react";
-import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 const tooltipStyle = {
   background: "var(--color-popover)",
@@ -23,6 +32,7 @@ export function InsightComparisonChart({
   const t = useTranslations("insights");
   const format = useFormatter();
   const descriptionId = useId();
+  const gradientId = `${descriptionId.replace(/:/g, "")}-current-fill`;
   const isCost = metric === "cost";
   const chartData = data.map(({ position, current, previous }) => ({
     position: position + 1,
@@ -40,13 +50,19 @@ export function InsightComparisonChart({
         {t("chart.accessibleDescription")}
       </p>
       <ResponsiveContainer width="100%" height={280}>
-        <LineChart
+        <ComposedChart
           data={chartData}
           margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
           accessibilityLayer
           aria-label={t("chart.accessibleLabel")}
           aria-describedby={descriptionId}
         >
+          <defs>
+            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="5%" stopColor="var(--color-chart-1)" stopOpacity={0.32} />
+              <stop offset="95%" stopColor="var(--color-chart-1)" stopOpacity={0.04} />
+            </linearGradient>
+          </defs>
           <CartesianGrid vertical={false} stroke="var(--color-border)" />
           <XAxis
             dataKey="position"
@@ -76,11 +92,12 @@ export function InsightComparisonChart({
               name === "current" ? t("chart.current") : t("chart.previous"),
             ]}
           />
-          <Line
+          <Area
             type="monotone"
             dataKey="current"
             stroke="var(--color-chart-1)"
             strokeWidth={2}
+            fill={`url(#${gradientId})`}
             dot={false}
             isAnimationActive={false}
           />
@@ -92,7 +109,7 @@ export function InsightComparisonChart({
             dot={false}
             isAnimationActive={false}
           />
-        </LineChart>
+        </ComposedChart>
       </ResponsiveContainer>
     </div>
   );

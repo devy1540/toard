@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { addLocalCalendarDays, firstInstantOfLocalDate, localDateKey } from "@toard/core";
 import { DASHBOARD_MAX_RANGE_DAYS, parseDashboardPeriod, parseFilters } from "./period";
 
 test("parseFilters — 오늘은 요청한 하루 안 버킷을 사용한다", () => {
@@ -50,6 +51,45 @@ test("366일 초과 custom만 최근 366일로 제한한다", () => {
   assert.equal(over.to.getTime() - over.from.getTime(), DASHBOARD_MAX_RANGE_DAYS * 86_400_000);
   assert.equal(exact.limited, false);
   assert.equal(exact.to.getTime() - exact.from.getTime(), DASHBOARD_MAX_RANGE_DAYS * 86_400_000);
+});
+
+test("LA spring·fall을 지나는 custom clamp는 local day boundary와 366×24h 상한을 함께 지킨다", () => {
+  const timezone = "America/Los_Angeles";
+  const maximumMs = DASHBOARD_MAX_RANGE_DAYS * 86_400_000;
+  const spring = parseDashboardPeriod(
+    { period: "custom", from: "2024-01-01", to: "2026-03-08" },
+    timezone,
+  );
+  const fall = parseDashboardPeriod(
+    { period: "custom", from: "2024-01-01", to: "2026-11-01" },
+    timezone,
+  );
+
+  assert.equal(spring.from.toISOString(), "2025-03-08T08:00:00.000Z");
+  assert.equal(localDateKey(spring.from, timezone), "2025-03-08");
+  assert.equal(spring.from.getTime(), firstInstantOfLocalDate("2025-03-08", timezone).getTime());
+  assert.ok(spring.to.getTime() - spring.from.getTime() <= maximumMs);
+
+  assert.equal(fall.from.toISOString(), "2025-11-02T07:00:00.000Z");
+  assert.equal(localDateKey(fall.from, timezone), "2025-11-02");
+  assert.equal(fall.from.getTime(), firstInstantOfLocalDate("2025-11-02", timezone).getTime());
+  assert.ok(fall.to.getTime() - fall.from.getTime() <= maximumMs);
+});
+
+test("all clamp는 오늘의 현재 시각을 보존하면서 시작점만 viewer local day boundary로 맞춘다", () => {
+  const timezone = "America/Los_Angeles";
+  const before = Date.now();
+  const period = parseDashboardPeriod({ period: "all" }, timezone);
+  const after = Date.now();
+  const startDate = localDateKey(period.from, timezone);
+  const today = localDateKey(period.to, timezone);
+  const todayStart = firstInstantOfLocalDate(today, timezone);
+  const tomorrowStart = firstInstantOfLocalDate(addLocalCalendarDays(today, 1), timezone);
+
+  assert.ok(period.to.getTime() >= before && period.to.getTime() <= after);
+  assert.equal(period.from.getTime(), firstInstantOfLocalDate(startDate, timezone).getTime());
+  assert.ok(period.to.getTime() - period.from.getTime() <= DASHBOARD_MAX_RANGE_DAYS * 86_400_000);
+  assert.ok(period.to >= todayStart && period.to < tomorrowStart);
 });
 
 test("history용 parseFilters all은 epoch 시작을 그대로 보존한다", () => {

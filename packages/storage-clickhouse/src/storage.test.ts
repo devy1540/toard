@@ -186,7 +186,12 @@ function sourceRouterFixture({
         return { rows: [{ watermark }], rowCount: 1 };
       }
       if (sql.includes("FROM clickhouse_rollup_dirty_buckets")) {
-        return { rows: dirtyBucket ? [{ bucket: dirtyBucket }] : [], rowCount: dirtyBucket ? 1 : 0 };
+        const from = (params[1] as Date).getTime();
+        const to = (params[2] as Date).getTime();
+        const selected = dirtyBucket && dirtyBucket.getTime() >= from && dirtyBucket.getTime() < to
+          ? [{ bucket: dirtyBucket }]
+          : [];
+        return { rows: selected, rowCount: selected.length };
       }
       if (sql.includes("FROM clickhouse_timezone_rollup_jobs")) {
         const from = (params[2] as Date).getTime();
@@ -549,14 +554,88 @@ test("inactive Kathmandu는 exact 15분 v2 source를 요청 IANA 시간대로 �
   assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup|usage_hourly_rollup/);
 });
 
+test("active all 요청은 완성 과거 day cache와 오늘의 exact 15분·raw tail을 합친다", async () => {
+  const cached = localDayRange("America/Los_Angeles", "2025-07-10", 365);
+  const to = new Date(cached.to.getTime() + 12 * 60 * 60 * 1000 + 34 * 60 * 1000);
+  const watermark = new Date(to.getTime() - 4 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({ watermark, jobs: cached.jobs });
+
+  await storage.getDailyTimeseries({
+    from: cached.from,
+    to,
+    bucket: "day",
+    timezone: "America/Los_Angeles",
+  });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(query.query, /usage_15m_rollup_v2/);
+  assert.match(query.query, /UNION ALL/);
+  assert.equal(query.params.cache_from, cached.from.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.cache_to, cached.to.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.from, undefined);
+});
+
+test("unaligned 요청은 exact head·ready day cache·exact tail을 겹침 없이 같은 schema로 합친다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 4);
+  const from = new Date(range.from.getTime() + 12 * 60 * 60 * 1000);
+  const cacheFrom = range.jobs[1]!.bucket;
+  const cacheTo = range.jobs[3]!.bucket;
+  const to = new Date(cacheTo.getTime() + 12 * 60 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({ watermark: to, jobs: range.jobs });
+
+  await storage.getDailyTimeseries({ from, to, bucket: "day", timezone: "Asia/Seoul" });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_daily_timezone_rollup FINAL/);
+  assert.ok((query.query.match(/usage_15m_rollup_v2/g) ?? []).length >= 2);
+  assert.equal(query.params.head_from, from.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.head_to, cacheFrom.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.cache_from, query.params.head_to);
+  assert.equal(query.params.cache_to, cacheTo.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
+  assert.match(
+    query.query,
+    /SELECT ts, provider_key, user_id, team_id, session_id, model, host,[\s\S]*cost_usd[\s\S]*UNION ALL/,
+  );
+});
+
+test("현재 partial hour도 ready hour cache와 exact tail로 분할한다", async () => {
+  const day = localDayRange("America/Los_Angeles", "2026-03-08", 1);
+  const cacheTo = new Date(day.from.getTime() + 12 * 60 * 60 * 1000);
+  const to = new Date(cacheTo.getTime() + 34 * 60 * 1000);
+  const watermark = new Date(to.getTime() - 4 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({
+    watermark,
+    jobs: hourlyJobs(day.from, cacheTo),
+  });
+
+  await storage.getDailyTimeseries({
+    from: day.from,
+    to,
+    bucket: "hour",
+    timezone: "America/Los_Angeles",
+  });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_hourly_timezone_rollup FINAL/);
+  assert.match(query.query, /usage_15m_rollup_v2/);
+  assert.equal(query.params.cache_to, cacheTo.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
+});
+
 test("pending·inflight·누락·dirty·watermark 미완료 cache는 절대 선택하지 않는다", async () => {
   const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
   const incomplete = [
     { name: "pending", jobs: [{ ...range.jobs[0]!, status: "pending" as const }, range.jobs[1]!] },
-    { name: "inflight", jobs: [range.jobs[0]!, { ...range.jobs[1]!, status: "inflight" as const }] },
-    { name: "missing", jobs: [range.jobs[0]!] },
+    { name: "inflight", jobs: [{ ...range.jobs[0]!, status: "inflight" as const }, range.jobs[1]!] },
+    { name: "missing", jobs: [range.jobs[1]!] },
     { name: "dirty", jobs: range.jobs, dirtyBucket: new Date(range.from.getTime() + 15 * 60 * 1000) },
-    { name: "watermark", jobs: range.jobs, watermark: new Date(range.to.getTime() - 15 * 60 * 1000) },
+    { name: "watermark", jobs: range.jobs, watermark: new Date(range.jobs[1]!.bucket.getTime() - 15 * 60 * 1000) },
   ];
 
   for (const state of incomplete) {
@@ -586,6 +665,27 @@ test("pending·inflight·누락·dirty·watermark 미완료 cache는 절대 선�
       );
     }
   }
+});
+
+test("두 번째 cache bucket이 inflight면 첫 bucket만 cache하고 나머지는 exact tail로 읽는다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const jobs = [range.jobs[0]!, { ...range.jobs[1]!, status: "inflight" as const }];
+  const { storage, queries } = sourceRouterFixture({ watermark: range.to, jobs });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(query.query, /usage_15m_rollup_v2/);
+  assert.equal(query.params.cache_from, range.from.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.cache_to, range.jobs[1]!.bucket.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, range.to.toISOString().replace("T", " ").replace("Z", ""));
 });
 
 test("모든 dashboard 집계는 공통 router의 15분 v2 fallback을 사용한다", async () => {

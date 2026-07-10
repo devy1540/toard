@@ -790,6 +790,56 @@ async function main(): Promise<void> {
       assertEqual(hourSource.events, 4, `${timezone} hourly 15m bucket count`);
     }
 
+    const hybridRouterTimezone = "America/Los_Angeles";
+    const hybridCacheFrom = firstInstantOfLocalDate("2026-03-08", hybridRouterTimezone);
+    const hybridCacheTo = firstInstantOfLocalDate("2026-03-09", hybridRouterTimezone);
+    const hybridTo = new Date("2026-03-09T12:34:00.000Z");
+    const routeTx = await pg.connect();
+    try {
+      await routeTx.query("BEGIN");
+      await routeTx.query(
+        `INSERT INTO clickhouse_rollup_timezones (timezone)
+         VALUES ($1)
+         ON CONFLICT (timezone) DO UPDATE SET last_requested_at = now()`,
+        [hybridRouterTimezone],
+      );
+      await routeTx.query(
+        `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket, status)
+         VALUES ('day', $1, $2, 'done')
+         ON CONFLICT (resolution, timezone, bucket) DO UPDATE SET status = 'done', updated_at = now()`,
+        [hybridRouterTimezone, hybridCacheFrom],
+      );
+      const routedPg = {
+        query: (text: string, values?: unknown[]) => routeTx.query(text, values),
+      } as unknown as Pool;
+      const routed = new ClickHouseStorage(ch, routedPg, {
+        timezone: hybridRouterTimezone,
+        readRollup: true,
+        read15mV2Rollup: true,
+      });
+      const hybridPeriod = {
+        from: hybridCacheFrom,
+        to: hybridTo,
+        providerKey: timezoneProviderKey,
+        bucket: "day" as const,
+        timezone: hybridRouterTimezone,
+      };
+      assertEqual(
+        await routed.getDailyTimeseries(hybridPeriod),
+        await v2.getDailyTimeseries(hybridPeriod),
+        "timezone cache plus exact tail daily equivalence",
+      );
+      assertEqual(
+        await routed.getOverview(hybridPeriod),
+        await v2.getOverview(hybridPeriod),
+        "timezone cache plus exact tail overview equivalence",
+      );
+      assertEqual(hybridCacheTo.toISOString(), "2026-03-09T07:00:00.000Z", "hybrid DST cache boundary");
+    } finally {
+      await routeTx.query("ROLLBACK").catch(() => undefined);
+      routeTx.release();
+    }
+
     const santiagoBucket = firstInstantOfLocalDate("2025-09-07", "America/Santiago");
     assertEqual(santiagoBucket.toISOString(), "2025-09-07T04:00:00.000Z", "Santiago local-date first instant");
     await v2.compactTimezoneRollup("day", "America/Santiago", santiagoBucket);
@@ -890,6 +940,7 @@ async function main(): Promise<void> {
       runId,
       inserted: insertedDuplicates + saveRest.inserted + saveLate.inserted,
       verifiedTimezones,
+      hybridRouterTimezone,
       verifiedMidnightGapTimezone: "America/Santiago",
       timezoneRows: timezoneRows.length,
     }));

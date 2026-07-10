@@ -104,6 +104,8 @@ export type TimeseriesSource = {
   resolution: "raw" | "15m" | "timezone-hour" | "timezone-day";
 };
 type RollupSource = TimeseriesSource & { resolution: "15m"; from: Date; to: Date };
+type CacheBucket = { from: Date; to: Date };
+type CacheWindow = { from: Date; to: Date };
 type RollupSpec = {
   name: "usage_15m" | "usage_15m_v2";
   table: "usage_15m_rollup" | "usage_15m_rollup_v2";
@@ -508,62 +510,97 @@ export class ClickHouseStorage implements StorageBackend {
     };
   }
 
+  private async exactTimeseriesSource(q: ScopedQuery): Promise<TimeseriesSource> {
+    return await this.rollup15mV2Source(q) ?? this.rawSource(q);
+  }
+
+  private namespaceTimeseriesSource(source: TimeseriesSource, prefix: string): TimeseriesSource {
+    let query = source.source;
+    const params: Params = {};
+    for (const [key, value] of Object.entries(source.params)) {
+      const namespaced = `${prefix}_${key}`;
+      query = query.replaceAll(`{${key}:`, `{${namespaced}:`);
+      params[namespaced] = value;
+    }
+    return { ...source, source: query, params };
+  }
+
+  private combineTimeseriesSources(
+    parts: Array<{ name: string; source: TimeseriesSource }>,
+  ): TimeseriesSource {
+    if (parts.length === 1) return parts[0]!.source;
+    const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd`;
+    const namespaced = parts.map(({ name, source }) => ({
+      name,
+      source: this.namespaceTimeseriesSource(source, name),
+    }));
+    return {
+      source: `(${namespaced.map(({ source }) => `SELECT ${columns} FROM ${source.source}`).join("\nUNION ALL\n")})`,
+      params: Object.assign({}, ...namespaced.map(({ source }) => source.params)),
+      resolution: "15m",
+    };
+  }
+
   private timezoneCacheBuckets(
     resolution: "hour" | "day",
     timezone: string,
     q: ScopedQuery,
-  ): Date[] | null {
-    if (q.to <= q.from) return null;
-    const buckets: Date[] = [];
-    let cursor = q.from;
+  ): CacheBucket[] {
+    if (q.to <= q.from) return [];
+    const buckets: CacheBucket[] = [];
+    let cursor = firstInstantOfLocalDate(localDateKey(q.from, timezone), timezone);
+    if (resolution === "day") {
+      if (cursor < q.from) cursor = nextTimezoneDayStart(cursor, timezone);
+    } else {
+      while (cursor < q.from) cursor = new Date(cursor.getTime() + 60 * 60 * 1000);
+    }
     const maximum = resolution === "day" ? TIMEZONE_ROLLUP_MAX_DAYS : TIMEZONE_ROLLUP_MAX_HOURS;
 
-    while (cursor < q.to) {
-      if (buckets.length >= maximum) return null;
-      buckets.push(cursor);
+    while (cursor < q.to && buckets.length < maximum) {
       const next = resolution === "day"
         ? nextTimezoneDayStart(cursor, timezone)
         : new Date(cursor.getTime() + 60 * 60 * 1000);
-      if (next <= cursor) return null;
+      if (next <= cursor || next > q.to) break;
+      buckets.push({ from: cursor, to: next });
       cursor = next;
     }
-    return cursor.getTime() === q.to.getTime() ? buckets : null;
+    return buckets;
   }
 
   private async cacheReady(
     resolution: "hour" | "day",
     timezoneInput: string,
     q: ScopedQuery,
-  ): Promise<boolean> {
-    if (!this.readRollup) return false;
+  ): Promise<CacheWindow | null> {
+    if (!this.readRollup) return null;
     const timezone = canonicalTimezoneId(timezoneInput);
-    if (!timezone) return false;
+    if (!timezone) return null;
     try {
       const expected = this.timezoneCacheBuckets(resolution, timezone, q);
-      if (!expected || expected.length === 0) return false;
+      if (expected.length === 0) return null;
       const registry = await this.pg.query(
         "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
         [timezone],
       );
-      if (registry.rowCount !== 1) return false;
+      if (registry.rowCount !== 1) return null;
 
       const watermark = await this.pg.query<{ watermark: Date }>(
         "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
         [USAGE_15M_V2.name],
       );
       const coveredTo = watermark.rows[0]?.watermark;
-      if (!coveredTo || coveredTo < q.to) return false;
+      if (!coveredTo) return null;
 
       const dirty = await this.pg.query<{ bucket: Date }>(
-        `SELECT bucket
+        `SELECT min(bucket) AS bucket
          FROM clickhouse_rollup_dirty_buckets
          WHERE name = $1
            AND bucket >= $2
-           AND bucket < $3
-         LIMIT 1`,
-        [USAGE_15M_V2.name, q.from, q.to],
+           AND bucket < $3`,
+        [USAGE_15M_V2.name, expected[0]!.from, expected.at(-1)!.to],
       );
-      if (dirty.rowCount !== 0) return false;
+      const dirtyBucket = dirty.rows[0]?.bucket;
 
       const jobs = await this.pg.query<{ bucket: Date; status: "pending" | "inflight" | "done" }>(
         `SELECT bucket, status
@@ -573,15 +610,21 @@ export class ClickHouseStorage implements StorageBackend {
            AND bucket >= $3
            AND bucket < $4
          ORDER BY bucket`,
-        [resolution, timezone, q.from, q.to],
+        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
       );
-      if (jobs.rows.length !== expected.length) return false;
       const completed = new Map(
         jobs.rows.map((job) => [new Date(job.bucket).getTime(), job.status]),
       );
-      return expected.every((bucket) => completed.get(bucket.getTime()) === "done");
+      let cacheTo: Date | null = null;
+      for (const bucket of expected) {
+        if (bucket.to > coveredTo) break;
+        if (dirtyBucket && dirtyBucket < bucket.to) break;
+        if (completed.get(bucket.from.getTime()) !== "done") break;
+        cacheTo = bucket.to;
+      }
+      return cacheTo ? { from: expected[0]!.from, to: cacheTo } : null;
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -618,13 +661,32 @@ export class ClickHouseStorage implements StorageBackend {
     timezone: string,
   ): Promise<TimeseriesSource> {
     const canonical = canonicalTimezoneId(timezone);
-    if (bucket === "day" && canonical && await this.cacheReady("day", canonical, q)) {
-      return this.timezoneSource("day", canonical, q);
+    const resolution = bucket === "day" ? "day" : bucket === "hour" ? "hour" : null;
+    const cache = canonical && resolution
+      ? await this.cacheReady(resolution, canonical, q)
+      : null;
+    if (!cache || !canonical || !resolution) {
+      return this.exactTimeseriesSource(q);
     }
-    if (bucket === "hour" && canonical && await this.cacheReady("hour", canonical, q)) {
-      return this.timezoneSource("hour", canonical, q);
+
+    const parts: Array<{ name: "head" | "cache" | "tail"; source: TimeseriesSource }> = [];
+    if (q.from < cache.from) {
+      parts.push({
+        name: "head",
+        source: await this.exactTimeseriesSource({ ...q, from: q.from, to: cache.from }),
+      });
     }
-    return await this.rollup15mV2Source(q) ?? this.rawSource(q);
+    parts.push({
+      name: "cache",
+      source: this.timezoneSource(resolution, canonical, { ...q, from: cache.from, to: cache.to }),
+    });
+    if (cache.to < q.to) {
+      parts.push({
+        name: "tail",
+        source: await this.exactTimeseriesSource({ ...q, from: cache.to, to: q.to }),
+      });
+    }
+    return this.combineTimeseriesSources(parts);
   }
 
   private async rollupWindow(

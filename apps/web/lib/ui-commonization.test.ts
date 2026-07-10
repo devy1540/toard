@@ -39,6 +39,17 @@ test("dashboard provider filter stays compact for the all-tools value", () => {
   assert.doesNotMatch(filters, /min-w-\[8rem\]/);
 });
 
+test("dashboard filters delegate their visual shell to the shared toolbar", () => {
+  const toolbar = source("components/dashboard/dashboard-toolbar.tsx");
+  const filters = source("components/dashboard/dashboard-filters.tsx");
+
+  assert.match(toolbar, /function DashboardToolbar/);
+  assert.match(toolbar, /FeatureStatusBadge/);
+  assert.match(toolbar, /splitHeader[\s\S]*filters/);
+  assert.match(filters, /<DashboardToolbar[\s\S]*filters=\{filterControls\}/);
+  assert.match(filters, /showCustom[\s\S]*<Input/);
+});
+
 test("demo open mode can render settings with the dashboard viewer fallback", () => {
   const settings = source("app/(dashboard)/settings/page.tsx");
   assert.match(settings, /getDashboardViewer/);

@@ -1,6 +1,6 @@
-import { parseToolInventoryBody, ToolWireParseError } from "@toard/core";
+import { parseToolInventoryBody } from "@toard/core";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
-import { ingestToolInventory, readBoundedJson } from "@/lib/tool-ingest";
+import { ingestToolInventory, readBoundedJson, toolIngestClientError } from "@/lib/tool-ingest";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -14,8 +14,8 @@ export async function PUT(req: Request): Promise<Response> {
     if (unknown.length > 0) return new Response(`등록되지 않은 provider: ${unknown.join(", ")}`, { status: 400 });
     return Response.json(await ingestToolInventory(auth, snapshot));
   } catch (error) {
-    if (error instanceof RangeError) return new Response(error.message, { status: 413 });
-    const message = error instanceof ToolWireParseError ? error.message : "본문이 유효한 JSON 이 아닙니다";
-    return new Response(message, { status: 400 });
+    const response = toolIngestClientError(error);
+    if (response) return response;
+    throw error;
   }
 }

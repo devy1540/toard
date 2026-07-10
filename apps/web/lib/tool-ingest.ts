@@ -1,4 +1,4 @@
-import type { ToolActivityEvent, ToolInventorySnapshot } from "@toard/core";
+import { ToolWireParseError, type ToolActivityEvent, type ToolInventorySnapshot } from "@toard/core";
 import type { IngestAuthResult } from "./ingest-auth";
 import { sanitizeHost } from "./sanitize";
 import { insertToolActivity, replaceDeviceInventory } from "./tool-metadata";
@@ -57,4 +57,11 @@ export async function readBoundedJson(req: Request, maxBytes: number): Promise<u
   const text = await req.text();
   if (Buffer.byteLength(text, "utf8") > maxBytes) throw new RangeError(`payload too large (max ${maxBytes} bytes)`);
   return JSON.parse(text);
+}
+
+export function toolIngestClientError(error: unknown): Response | null {
+  if (error instanceof RangeError) return new Response(error.message, { status: 413 });
+  if (error instanceof ToolWireParseError) return new Response(error.message, { status: 400 });
+  if (error instanceof SyntaxError) return new Response("본문이 유효한 JSON 이 아닙니다", { status: 400 });
+  return null;
 }

@@ -46,23 +46,31 @@ impl LogAdapter for Claude {
     }
 }
 
-fn parse_mcp_name(name: &str) -> Option<(String, String)> {
+fn parse_mcp_name(name: &str) -> Option<String> {
     let rest = name.strip_prefix("mcp__")?;
     let (server, tool) = rest.split_once("__")?;
     if server.is_empty() || tool.is_empty() {
         return None;
     }
     let key = format!("{server}.{}", tool.replace("__", "."));
-    Some((key.clone(), key))
+    Some(key)
 }
 
-fn skill_name(input: &Value) -> Option<String> {
+fn skill_identity(input: &Value) -> Option<(String, Option<String>)> {
     let raw = input
         .get("skill")
         .or_else(|| input.get("name"))
         .and_then(Value::as_str)?;
     let name = raw.rsplit(':').next()?.trim();
-    (!name.is_empty()).then(|| name.to_string())
+    if name.is_empty() {
+        return None;
+    }
+    let plugin = raw
+        .split_once(':')
+        .map(|(prefix, _)| prefix.trim())
+        .filter(|prefix| !prefix.is_empty() && *prefix != name)
+        .map(str::to_string);
+    Some((name.to_string(), plugin))
 }
 
 fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
@@ -137,17 +145,17 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                         let Some(name) = block.get("name").and_then(Value::as_str) else {
                             continue;
                         };
-                        let activity =
-                            if let Some((item_key, display_name)) = parse_mcp_name(name) {
-                                Some((ToolActivityKind::Mcp, item_key, display_name, None))
-                            } else if name == "Skill" {
-                                block.get("input").and_then(skill_name).map(|skill| {
-                                    (ToolActivityKind::Skill, skill.clone(), skill, None)
-                                })
-                            } else {
-                                None
-                            };
-                        if let Some((kind, item_key, display_name, plugin_key)) = activity {
+                        let activity = if let Some(item_key) = parse_mcp_name(name) {
+                            Some((ToolActivityKind::Mcp, item_key, None))
+                        } else if name == "Skill" {
+                            block
+                                .get("input")
+                                .and_then(skill_identity)
+                                .map(|(skill, plugin)| (ToolActivityKind::Skill, skill, plugin))
+                        } else {
+                            None
+                        };
+                        if let Some((kind, item_key, plugin_key)) = activity {
                             let index = parsed.tools.len();
                             parsed.tools.push(RawToolActivity {
                                 ts_ms,
@@ -155,7 +163,6 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                                 call_id: call_id.to_string(),
                                 kind,
                                 item_key,
-                                display_name,
                                 plugin_key,
                                 outcome: ToolOutcome::Unknown,
                                 detection: ToolDetection::Explicit,
@@ -472,6 +479,7 @@ mod tests {
         assert_eq!(parsed.tools[0].item_key, "context7.resolve-library-id");
         assert_eq!(parsed.tools[0].outcome, ToolOutcome::Success);
         assert_eq!(parsed.tools[1].item_key, "brainstorming");
+        assert_eq!(parsed.tools[1].plugin_key.as_deref(), Some("superpowers"));
         assert_eq!(parsed.tools[1].detection, ToolDetection::Explicit);
         assert_eq!(parsed.tools[1].outcome, ToolOutcome::Failure);
     }

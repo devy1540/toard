@@ -69,7 +69,7 @@ pub fn to_tool_events_body(
             ts: iso::epoch_ms_to_iso(event.ts_ms),
             activity_kind: event.kind,
             item_key: &event.item_key,
-            display_name: &event.display_name,
+            display_name: &event.item_key,
             plugin_key: &event.plugin_key,
             outcome: event.outcome,
             detection: event.detection,

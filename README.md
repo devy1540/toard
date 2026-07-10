@@ -27,7 +27,8 @@
 ## ✨ 특징
 
 - **🔌 멀티 프로바이더** — Claude Code · Codex · Gemini · Qwen 등을 하나의 대시보드로 수렴
-- **🪶 경량 수집** — shim 이 로컬 세션 파일에서 사용량을 pull 수집(재시작·env 설정 불필요, 과거 백필·기기별 구분 자동) · 멱등 dedup 내장 · OTLP push 도 experimental 로 지원
+- **🪶 경량 수집** — shim 이 로컬 세션 파일에서 사용량과 AI 도구 활동을 pull 수집(재시작·env 설정 불필요, 기기별 구분 자동) · 멱등 dedup 내장 · OTLP push 도 experimental 로 지원
+- **🧰 AI 도구 가시성** — MCP·스킬 활동과 기기별 플러그인·스킬·MCP 설치 현황을 메타데이터만으로 확인
 - **💰 정확한 비용** — LiteLLM 가격 기반 비용 엔진: per-million + tiered(200k) + 캐시/fast 요금, 일 단위 자동 동기화
 - **👥 조직 뷰** — 조직/팀 집계 · 리더보드 · 개인 대시보드 · 관리자 패널 · 초대 기반 셀프 온보딩
 - **🗄️ 확장 가능한 저장소** — 기본은 Postgres 단일, 중규모 이상은 ClickHouse 옵트인 (`StorageBackend` 추상화)
@@ -37,7 +38,7 @@
 
 ## 🧭 동작 방식
 
-개발자 머신의 shim이 `claude`/`codex`를 투명하게 래핑하고, 로컬 세션 파일(`~/.claude`·`~/.codex`)에서 사용량을 pull 수집해 정규화 이벤트로 전송하면, toard가 비용 계산해 대시보드로 보여준다. (OTLP push 는 experimental)
+개발자 머신의 shim이 `claude`/`codex`를 투명하게 래핑하고, 로컬 세션 파일(`~/.claude`·`~/.codex`)에서 사용량과 AI 도구 활동 메타데이터를 pull 수집해 전송하면, toard가 비용·활동·설치 현황을 대시보드로 보여준다. (OTLP push 는 experimental)
 
 ```mermaid
 flowchart LR
@@ -147,7 +148,7 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 ## 🔗 shim 설치 (사용량 수집)
 
-개발자 머신에서 `claude`/`codex` 를 래핑해 사용량을 toard 로 전송(OS/arch 자동 감지). **프롬프트·코드 내용은 수집하지 않는다** — 토큰 수·모델·비용 등 사용량 메타데이터만 전송된다.
+개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
 
 **한 줄 설치(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 토큰을 발급하면 아래 명령이 내 토큰으로 채워진다. toard 가 서빙하는 `install.sh` 가 바이너리 설치(SHA 검증) + `~/.toard/credentials`(토큰·endpoint 자동 주입) + PATH 설정까지 처리한다. 사용량은 로컬 세션 파일 pull 로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필). 같은 탭의 **"연결 확인"** 으로 실제 수신 여부를 즉시 점검한다:
 

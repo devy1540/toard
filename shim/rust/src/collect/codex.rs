@@ -51,17 +51,31 @@ impl LogAdapter for Codex {
     }
 }
 
-fn parse_mcp_name(name: &str) -> Option<(String, String)> {
+fn parse_mcp_name(name: &str) -> Option<String> {
     let rest = name.strip_prefix("mcp__")?;
     let (server, tool) = rest.split_once("__")?;
     if server.is_empty() || tool.is_empty() {
         return None;
     }
-    let key = format!("{server}.{}", tool.replace("__", "."));
-    Some((key.clone(), key))
+    let mut key = String::with_capacity(server.len() + tool.len() + 1);
+    key.push_str(server);
+    key.push('.');
+    if tool.contains("__") {
+        let mut parts = tool.split("__");
+        if let Some(first) = parts.next() {
+            key.push_str(first);
+        }
+        for part in parts {
+            key.push('.');
+            key.push_str(part);
+        }
+    } else {
+        key.push_str(tool);
+    }
+    Some(key)
 }
 
-fn skill_names_from_input(input: &str) -> Vec<String> {
+fn skill_names_from_input(input: &str) -> Vec<(String, Option<String>)> {
     let mut names = Vec::new();
     for token in input.split_whitespace() {
         let path =
@@ -77,9 +91,17 @@ fn skill_names_from_input(input: &str) -> Vec<String> {
             continue;
         }
         if let Some(name) = path.trim_end_matches("/SKILL.md").rsplit('/').next() {
-            if !name.is_empty() && !names.iter().any(|existing| existing == name) {
-                names.push(name.to_string());
+            if name.is_empty() || names.iter().any(|(existing, _)| existing == name) {
+                continue;
             }
+            let segments: Vec<&str> = path.split('/').collect();
+            let plugin = segments
+                .iter()
+                .position(|segment| *segment == "cache")
+                .and_then(|index| segments.get(index + 2))
+                .filter(|plugin| !plugin.is_empty())
+                .map(|plugin| (*plugin).to_string());
+            names.push((name.to_string(), plugin));
         }
     }
     names
@@ -205,14 +227,13 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             Some("failed") => ToolOutcome::Failure,
             _ => ToolOutcome::Unknown,
         };
-        if let Some((item_key, display_name)) = parse_mcp_name(name) {
+        if let Some(item_key) = parse_mcp_name(name) {
             parsed.tools.push(RawToolActivity {
                 ts_ms,
                 session_id: session_id.clone(),
                 call_id: call_id.to_string(),
                 kind: ToolActivityKind::Mcp,
                 item_key,
-                display_name,
                 plugin_key: None,
                 outcome,
                 detection: ToolDetection::Explicit,
@@ -232,15 +253,14 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                         .unwrap_or_else(|| value.to_string())
                 })
                 .unwrap_or_default();
-            for skill in skill_names_from_input(&input) {
+            for (skill, plugin_key) in skill_names_from_input(&input) {
                 parsed.tools.push(RawToolActivity {
                     ts_ms,
                     session_id: session_id.clone(),
                     call_id: format!("{call_id}:{skill}"),
                     kind: ToolActivityKind::Skill,
-                    item_key: skill.clone(),
-                    display_name: skill,
-                    plugin_key: None,
+                    item_key: skill,
+                    plugin_key,
                     outcome,
                     detection: ToolDetection::DerivedLoad,
                 });
@@ -551,10 +571,79 @@ mod tests {
         assert_eq!(parsed.tools.len(), 2);
         assert_eq!(parsed.tools[0].item_key, "github.get_issue");
         assert_eq!(parsed.tools[1].item_key, "brainstorming");
+        assert_eq!(parsed.tools[1].plugin_key.as_deref(), Some("superpowers"));
         assert_eq!(parsed.tools[1].detection, ToolDetection::DerivedLoad);
         let body = crate::tool_event::to_tool_events_body("codex", Some("box"), &parsed.tools);
         assert!(!body.contains("sed -n"));
         assert!(!body.contains("/Users/test"));
         assert!(!body.contains("secret"));
+    }
+
+    #[test]
+    #[ignore = "release 성능 검증에서 명시적으로 실행"]
+    fn benchmark_collect_fixture_stays_within_ten_percent() {
+        use std::time::Instant;
+
+        let tmp = TempDir::new("codex-benchmark");
+        let mut lines =
+            vec![r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string()];
+        for index in 1..=2_000 {
+            lines.push(
+                serde_json::json!({
+                    "timestamp": "2026-07-10T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "last_token_usage": {
+                                "input_tokens": 100,
+                                "cached_input_tokens": 50,
+                                "output_tokens": 20
+                            },
+                            "total_token_usage": {
+                                "input_tokens": index * 100,
+                                "output_tokens": index * 20
+                            }
+                        }
+                    }
+                })
+                .to_string(),
+            );
+            lines.push(
+                serde_json::json!({
+                    "timestamp": "2026-07-10T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "mcp__github__get_issue",
+                        "call_id": format!("call-{index}"),
+                        "arguments": "{}"
+                    }
+                })
+                .to_string(),
+            );
+        }
+        let path = tmp.write("sessions/bench.jsonl", &lines.join("\n"));
+
+        let mut baseline = Vec::new();
+        let mut feature = Vec::new();
+        for _ in 0..15 {
+            let start = Instant::now();
+            assert_eq!(Codex.parse_file(&path).len(), 2_000);
+            baseline.push(start.elapsed().as_nanos());
+            let start = Instant::now();
+            let parsed = Codex.parse_changed(&path, false, true);
+            assert_eq!(parsed.tools.len(), 2_000);
+            feature.push(start.elapsed().as_nanos());
+        }
+        baseline.sort_unstable();
+        feature.sort_unstable();
+        let base = baseline[baseline.len() / 2];
+        let with_tools = feature[feature.len() / 2];
+        eprintln!("baseline_ns={base} feature_ns={with_tools}");
+        assert!(
+            with_tools <= base * 110 / 100,
+            "도구 파서 CPU 증가가 10%를 초과했습니다"
+        );
     }
 }

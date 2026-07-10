@@ -91,7 +91,6 @@ pub struct RawToolActivity {
     pub call_id: String,
     pub kind: ToolActivityKind,
     pub item_key: String,
-    pub display_name: String,
     pub plugin_key: Option<String>,
     pub outcome: ToolOutcome,
     pub detection: ToolDetection,

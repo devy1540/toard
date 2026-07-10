@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ToolActivityEvent, ToolInventorySnapshot } from "@toard/core";
-import { finalizeToolActivity, finalizeToolInventory } from "./tool-ingest";
+import { ToolWireParseError } from "@toard/core";
+import { finalizeToolActivity, finalizeToolInventory, toolIngestClientError } from "./tool-ingest";
 
 const event: ToolActivityEvent = {
   dedupKey: "a".repeat(64),
@@ -47,4 +48,11 @@ test("인벤토리 ingest는 인증 소유권을 강제하고 안전한 필드�
   assert.equal(result.host, "macbook.local");
   assert.equal("endpoint" in result.items[0]!, false);
   assert.equal("path" in result.items[0]!, false);
+});
+
+test("수집 API는 클라이언트 오류만 4xx로 변환한다", () => {
+  assert.equal(toolIngestClientError(new RangeError("too large"))?.status, 413);
+  assert.equal(toolIngestClientError(new SyntaxError("bad json"))?.status, 400);
+  assert.equal(toolIngestClientError(new ToolWireParseError("bad field"))?.status, 400);
+  assert.equal(toolIngestClientError(new Error("database unavailable")), null);
 });

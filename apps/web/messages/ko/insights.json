@@ -35,6 +35,7 @@
     "cost": "비용",
     "sessions": "세션",
     "tokens": "토큰",
+    "previousPeriod": "이전 기간 대비",
     "vsPrevious": "{delta} (이전 기간 대비)",
     "noPrevious": "비교할 이전 기간 데이터가 없습니다."
   },

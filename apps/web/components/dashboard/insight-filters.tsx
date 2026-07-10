@@ -1,8 +1,9 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useTranslations } from "next-intl";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/segmented-control";
+import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { InsightPreset } from "@/lib/insight-period";
 import type { ProviderOption } from "@/lib/providers";
@@ -13,6 +14,34 @@ type InsightFiltersProps = {
   provider: string;
   providers: ProviderOption[];
 };
+
+function FilterButtons<T extends string>({
+  value,
+  items,
+  label,
+  onChange,
+}: {
+  value: T;
+  items: readonly { value: T; label: ReactNode }[];
+  label: string;
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex flex-wrap gap-1" role="group" aria-label={label}>
+      {items.map((item) => (
+        <Button
+          key={item.value}
+          size="sm"
+          variant={value === item.value ? "default" : "outline"}
+          aria-pressed={value === item.value}
+          onClick={() => onChange(item.value)}
+        >
+          {item.label}
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 export function InsightFilters({ preset, metric, provider, providers }: InsightFiltersProps) {
   const t = useTranslations("insights");
@@ -26,23 +55,23 @@ export function InsightFilters({ preset, metric, provider, providers }: InsightF
     router.push(`${pathname}?${params.toString()}`);
   };
 
-  const presets: SegmentedControlItem<InsightPreset>[] = [
+  const presets: readonly { value: InsightPreset; label: ReactNode }[] = [
     { value: "7", label: t("presets.sevenDays") },
     { value: "week", label: t("presets.week") },
     { value: "month", label: t("presets.month") },
   ];
-  const metrics: SegmentedControlItem<"cost" | "tokens">[] = [
+  const metrics: readonly { value: "cost" | "tokens"; label: ReactNode }[] = [
     { value: "tokens", label: t("filters.tokens") },
     { value: "cost", label: t("filters.cost") },
   ];
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <SegmentedControl
+      <FilterButtons
         value={preset}
         items={presets}
-        onValueChange={(value) => update("period", value)}
-        aria-label={t("presets.label")}
+        label={t("presets.label")}
+        onChange={(value) => update("period", value)}
       />
 
       <Select value={provider} onValueChange={(value) => update("provider", value)}>
@@ -62,11 +91,11 @@ export function InsightFilters({ preset, metric, provider, providers }: InsightF
         </SelectContent>
       </Select>
 
-      <SegmentedControl
+      <FilterButtons
         value={metric}
         items={metrics}
-        onValueChange={(value) => update("metric", value)}
-        aria-label={t("filters.metricLabel")}
+        label={t("filters.metricLabel")}
+        onChange={(value) => update("metric", value)}
       />
     </div>
   );

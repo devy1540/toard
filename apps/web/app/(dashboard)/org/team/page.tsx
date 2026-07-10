@@ -360,7 +360,7 @@ export default async function TeamStatusPage({
         timezone={period.timezone}
         showBucketControl
         title={title}
-        statusBadge={{ status: "beta", label: navT("badge.beta") }}
+        statusBadge={{ status: "preview", label: navT("badge.preview") }}
         filterTrailing={
           isAdmin && selectedTeam ? <TeamFilter teams={teams} value={selectedTeam.id} label={t("teamSelector.label")} /> : undefined
         }

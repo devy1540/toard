@@ -17,8 +17,44 @@ type PricingRevisionRow = {
 
 type PricingRevisionQuery = (sql: string) => Promise<{ rows: PricingRevisionRow[] }>;
 
-let cache: { schedule: PricingSchedule; at: number } | undefined;
 const TTL_MS = 60 * 60 * 1000;
+
+export const PRICING_SYNC_STATUS_SETTING_KEY = "pricing_sync_status";
+
+export type PricingSyncStatus = {
+  day: string;
+  syncedAt: string;
+};
+
+type PricingScheduleCacheDeps = {
+  loadSchedule(): Promise<PricingSchedule>;
+  readVersion(): Promise<string | null>;
+  now?(): number;
+};
+
+export function createPricingScheduleCache({
+  loadSchedule,
+  readVersion,
+  now = Date.now,
+}: PricingScheduleCacheDeps) {
+  let entry: { schedule: PricingSchedule; at: number; version: string | null } | undefined;
+  return {
+    async get(): Promise<PricingSchedule> {
+      const version = await readVersion();
+      const currentTime = now();
+      if (entry && entry.version === version && currentTime - entry.at < TTL_MS) {
+        return entry.schedule;
+      }
+
+      const schedule = await loadSchedule();
+      entry = { schedule, at: currentTime, version };
+      return schedule;
+    },
+    invalidate(): void {
+      entry = undefined;
+    },
+  };
+}
 
 export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<PricingSchedule> {
   const res = await query(
@@ -58,14 +94,17 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
   return schedule;
 }
 
-/** 전체 불변 가격 revision을 시간순으로 로드해 1시간 캐시한다. */
-export async function getPricingSchedule(): Promise<PricingSchedule> {
-  const now = Date.now();
-  if (cache && now - cache.at < TTL_MS) return cache.schedule;
+const pricingScheduleCache = createPricingScheduleCache({
+  loadSchedule: () => loadPricingSchedule((sql) => getPool().query<PricingRevisionRow>(sql)),
+  readVersion: async () => {
+    const status = await getAppSetting<PricingSyncStatus>(PRICING_SYNC_STATUS_SETTING_KEY);
+    return status?.syncedAt ?? null;
+  },
+});
 
-  const schedule = await loadPricingSchedule((sql) => getPool().query<PricingRevisionRow>(sql));
-  cache = { schedule, at: now };
-  return schedule;
+/** 공유 sync version이 같을 때만 전체 가격 revision schedule을 최대 1시간 캐시한다. */
+export async function getPricingSchedule(): Promise<PricingSchedule> {
+  return pricingScheduleCache.get();
 }
 
 /** 기존 최신 가격 호출자 호환용 뷰. canonical 데이터는 pricing_revisions다. */
@@ -81,15 +120,8 @@ export async function getPricingMap(): Promise<PricingMap> {
 
 /** 가격 동기화 cron 후 캐시 무효화 — 다음 호출이 최신 스냅샷을 즉시 로드(1h TTL 대기 회피) */
 export function invalidatePricingCache(): void {
-  cache = undefined;
+  pricingScheduleCache.invalidate();
 }
-
-export const PRICING_SYNC_STATUS_SETTING_KEY = "pricing_sync_status";
-
-export type PricingSyncStatus = {
-  day: string;
-  syncedAt: string;
-};
 
 export type PricingStatus = { models: number; lastDay: string | null };
 

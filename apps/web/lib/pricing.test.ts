@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PricingMap } from "@toard/pricing";
+import type { PricingMap, PricingSchedule } from "@toard/pricing";
 import { pricingSyncDueToday } from "./pricing-auto-sync";
 import {
+  createPricingScheduleCache,
   loadPricingSchedule,
   loadPricingStatus,
   PRICING_SYNC_STATUS_SETTING_KEY,
@@ -164,6 +165,43 @@ test("schedule 로더는 과거 revision을 시간순으로 보존한다", async
       },
     },
   ]);
+});
+
+test("sync를 건너뛴 replica도 공유 generation이 바뀌면 TTL 전에 schedule을 다시 읽는다", async () => {
+  const oldSchedule: PricingSchedule = new Map([["model-a", [
+    { id: "old", modelId: "model-a", effectiveAt: new Date("2026-07-01T00:00:00Z"), pricing: { inputPerM: 1, outputPerM: 2 } },
+  ]] ]);
+  const newSchedule: PricingSchedule = new Map([["model-a", [
+    ...oldSchedule.get("model-a")!,
+    { id: "new", modelId: "model-a", effectiveAt: new Date("2026-07-10T12:00:00Z"), pricing: { inputPerM: 3, outputPerM: 4 } },
+  ]] ]);
+  let sharedSchedule = oldSchedule;
+  let sharedVersion = "2026-07-10T09:00:00.000Z";
+  const loads = { first: 0, second: 0 };
+  const replica = (name: keyof typeof loads) => createPricingScheduleCache({
+    loadSchedule: async () => {
+      loads[name] += 1;
+      return sharedSchedule;
+    },
+    readVersion: async () => sharedVersion,
+    now: () => 0,
+  });
+  const first = replica("first");
+  const second = replica("second");
+
+  await first.get();
+  await second.get();
+  await second.get();
+  assert.equal(loads.second, 1);
+
+  sharedSchedule = newSchedule;
+  sharedVersion = "2026-07-10T12:00:00.000Z";
+  first.invalidate();
+  assert.equal(pricingSyncDueToday("2026-07-10", "2026-07-10"), false);
+
+  const reloaded = await second.get();
+  assert.equal(reloaded.get("model-a")?.at(-1)?.id, "new");
+  assert.equal(loads.second, 2);
 });
 
 test("가격 sync는 최신 revision과 가격이 같으면 INSERT를 건너뛴다", async () => {

@@ -3,6 +3,9 @@ import { dateInTz, dayStartUtc, startOfToday } from "./org-time";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** 일반 대시보드가 한 요청에서 조회하는 최대 기간. history/export에는 적용하지 않는다. */
+export const DASHBOARD_MAX_RANGE_DAYS = 366;
+
 /** 기본 기간 프리셋 (URL 에 period 미지정 시). */
 export const DEFAULT_PERIOD = "today";
 
@@ -170,6 +173,23 @@ export function parseFilters(
   }
 
   return { ...range, providerKey, bucket, preset, timezone };
+}
+
+/**
+ * 일반 대시보드 전용 기간 parser.
+ * 전체 기간 또는 366일을 넘는 custom 범위만 종료 시각 기준 최근 366일로 제한한다.
+ */
+export function parseDashboardPeriod(
+  sp: DashboardSearchParams,
+  timezone: string,
+): DashboardPeriod & { limited: boolean } {
+  const period = parseFilters(sp, timezone);
+  const maximumMs = DASHBOARD_MAX_RANGE_DAYS * DAY_MS;
+  const span = period.to.getTime() - period.from.getTime();
+  const limited = period.preset === "all" || (period.preset === "custom" && span > maximumMs);
+  return limited
+    ? { ...period, from: new Date(period.to.getTime() - maximumMs), limited: true }
+    : { ...period, limited: false };
 }
 
 /** 직전 동일 길이 기간 — 스탯 카드의 "전일/직전 기간 대비" 델타 비교용. */

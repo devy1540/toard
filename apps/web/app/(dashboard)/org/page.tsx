@@ -22,7 +22,7 @@ import {
   totalUsageTokens,
   usagePerActiveUser,
 } from "@/lib/org-overview";
-import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
+import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -33,7 +33,7 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 export const dynamic = "force-dynamic";
 
 type OrgSearchParams = DashboardSearchParams & { tab?: string; scope?: string };
-type OrgPeriod = ReturnType<typeof parseFilters>;
+type OrgPeriod = ReturnType<typeof parseDashboardPeriod>;
 const tokenLabelKey = {
   today: "tokenLabel.today",
   week: "tokenLabel.week",
@@ -391,7 +391,7 @@ export default async function OrgPage({
   const t = await getTranslations("org");
   const navT = await getTranslations("nav");
   if (sp.tab === "ranking") redirect(legacyRankingHref(sp));
-  const period = parseFilters(sp, await getViewerTimezone());
+  const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
   const viewer = await getDashboardViewer();
   const canSeeTeamRanking = viewer?.role === "admin";
@@ -401,6 +401,7 @@ export default async function OrgPage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        limited={period.limited}
         showBucketControl
         title={t("title")}
         statusBadge={{ status: "preview", label: navT("badge.preview") }}

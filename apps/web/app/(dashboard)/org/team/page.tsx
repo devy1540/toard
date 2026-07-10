@@ -15,7 +15,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/
 import { getPool } from "@/lib/db";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { cacheSharePercent, findPeakTokenBucket, sharePercent, totalUsageTokens, usagePerActiveUser } from "@/lib/org-overview";
-import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
+import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -26,7 +26,7 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 export const dynamic = "force-dynamic";
 
 type TeamStatusSearchParams = DashboardSearchParams & { team?: string };
-type TeamPeriod = ReturnType<typeof parseFilters>;
+type TeamPeriod = ReturnType<typeof parseDashboardPeriod>;
 type TeamOption = { id: string; name: string };
 
 function overviewTokens(overview: OverviewStats): number {
@@ -340,7 +340,7 @@ export default async function TeamStatusPage({
 }) {
   const sp = await searchParams;
   const [t, navT] = await Promise.all([getTranslations("org"), getTranslations("nav")]);
-  const period = parseFilters(sp, await getViewerTimezone());
+  const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const [providers, viewer] = await Promise.all([getEnabledProviders(), getDashboardViewer()]);
   if (!viewer) redirect("/login");
 
@@ -358,6 +358,7 @@ export default async function TeamStatusPage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        limited={period.limited}
         showBucketControl
         title={title}
         statusBadge={{ status: "beta", label: navT("badge.beta") }}

@@ -107,6 +107,7 @@
       "15m": "15분"
     },
     "rangeAll": "전체 기간",
+    "rangeLimited": "최근 12개월까지만 표시합니다",
     "timezoneNote": "{tz} 기준"
   },
   "pricingNotice": {

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
-import type { FinalizedUsageEvent } from "@toard/core";
+import {
+  addLocalCalendarDays,
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+  type FinalizedUsageEvent,
+} from "@toard/core";
 import type { Pool, PoolClient } from "pg";
 import { ClickHouseStorage } from "./storage";
 
@@ -152,6 +157,81 @@ function v2CompactorFixture(): {
     },
   } as unknown as ClickHouseClient;
   return { storage: new ClickHouseStorage(ch, pg), aggregateQueries, inserts, pgQueries };
+}
+
+type RouterJobStatus = "pending" | "inflight" | "done";
+
+function sourceRouterFixture({
+  active = true,
+  dirtyBucket = null,
+  jobs = [],
+  watermark,
+  read15mV2Rollup = true,
+}: {
+  active?: boolean;
+  dirtyBucket?: Date | null;
+  jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
+  watermark: Date;
+  read15mV2Rollup?: boolean;
+}) {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const pg = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push({ sql, params });
+      if (sql.includes("FROM clickhouse_rollup_timezones")) {
+        return { rows: active ? [{ timezone: params[0] }] : [], rowCount: active ? 1 : 0 };
+      }
+      if (sql.includes("FROM clickhouse_rollup_watermarks")) {
+        return { rows: [{ watermark }], rowCount: 1 };
+      }
+      if (sql.includes("FROM clickhouse_rollup_dirty_buckets")) {
+        return { rows: dirtyBucket ? [{ bucket: dirtyBucket }] : [], rowCount: dirtyBucket ? 1 : 0 };
+      }
+      if (sql.includes("FROM clickhouse_timezone_rollup_jobs")) {
+        const from = (params[2] as Date).getTime();
+        const to = (params[3] as Date).getTime();
+        const selected = jobs.filter(({ bucket }) => bucket.getTime() >= from && bucket.getTime() < to);
+        return { rows: selected, rowCount: selected.length };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as Pool;
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  return {
+    storage: new ClickHouseStorage(ch, pg, {
+      readRollup: true,
+      read15mV2Rollup,
+    }),
+    queries,
+    pgQueries,
+  };
+}
+
+function localDayRange(timezone: string, date: string, days: number) {
+  const canonical = canonicalTimezoneId(timezone);
+  assert.ok(canonical);
+  const from = firstInstantOfLocalDate(date, canonical);
+  const jobs = Array.from({ length: days }, (_, index) => ({
+    bucket: firstInstantOfLocalDate(addLocalCalendarDays(date, index), canonical),
+    status: "done" as const,
+  }));
+  const to = firstInstantOfLocalDate(addLocalCalendarDays(date, days), canonical);
+  return { from, to, jobs };
+}
+
+function hourlyJobs(from: Date, to: Date) {
+  const jobs: Array<{ bucket: Date; status: "done" }> = [];
+  for (let at = from.getTime(); at < to.getTime(); at += 60 * 60 * 1000) {
+    jobs.push({ bucket: new Date(at), status: "done" });
+  }
+  return jobs;
 }
 
 async function schemaCommands(
@@ -379,6 +459,185 @@ test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async (
   assert.match(queries[0]!.query, /FROM usage_15m_rollup_v2/);
   assert.match(queries[0]!.query, /ts >= \{rollupTo:DateTime64\(3\)\}/);
   assert.equal(queries[0]!.params.rollupTo, "2026-04-15 10:15:00.000");
+});
+
+test("활성 Seoul 시간대의 12개월 일별 요청은 ready timezone-day source를 사용한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-02", 365);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  assert.equal(queries.length, 1);
+  assert.match(queries[0]!.query, /FROM usage_daily_timezone_rollup FINAL/);
+  assert.match(queries[0]!.query, /bucket_start >= \{from:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /bucket_start < \{to:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /formatDateTime\(bucket_start, '%Y-%m-%d', 'Asia\/Seoul'\)/);
+  assert.doesNotMatch(queries[0]!.query, /usage_15m_rollup_v2|usage_events|usage_hourly_rollup/);
+  assert.equal(queries[0]!.params.timezone, "Asia/Seoul");
+});
+
+test("다섯 IANA 시간대의 ready day cache는 canonical source와 DST local label을 보존한다", async () => {
+  const cases = [
+    ["UTC", "2026-07-01"],
+    ["Asia/Seoul", "2026-07-01"],
+    ["Asia/Kathmandu", "2026-07-01"],
+    ["America/Los_Angeles", "2026-03-08"],
+    ["America/Santiago", "2025-09-07"],
+  ] as const;
+
+  for (const [timezone, date] of cases) {
+    const range = localDayRange(timezone, date, 1);
+    const { storage, queries } = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+    await storage.getDailyTimeseries({ ...range, bucket: "day", timezone });
+
+    const canonical = canonicalTimezoneId(timezone);
+    assert.ok(canonical);
+    assert.match(queries[0]!.query, /FROM usage_daily_timezone_rollup FINAL/);
+    assert.match(queries[0]!.query, new RegExp(`formatDateTime\\(bucket_start, '%Y-%m-%d', '${canonical.replace("/", "\\/")}'\\)`));
+    assert.equal(queries[0]!.params.timezone, canonical);
+    assert.equal(queries[0]!.params.from, range.from.toISOString().replace("T", " ").replace("Z", ""));
+    assert.equal(queries[0]!.params.to, range.to.toISOString().replace("T", " ").replace("Z", ""));
+  }
+});
+
+test("DST 전환일의 ready hour cache는 bucket_start를 반열린 범위로 직접 조회한다", async () => {
+  const range = localDayRange("America/Los_Angeles", "2026-03-08", 1);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: hourlyJobs(range.from, range.to),
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "hour",
+    timezone: "America/Los_Angeles",
+  });
+
+  assert.match(queries[0]!.query, /FROM usage_hourly_timezone_rollup FINAL/);
+  assert.match(queries[0]!.query, /bucket_start >= \{from:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /bucket_start < \{to:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /formatDateTime\(bucket_start, '%Y-%m-%d %H:00', 'America\/Los_Angeles'\)/);
+  assert.doesNotMatch(queries[0]!.query, /toStartOfInterval\(bucket_start/);
+  assert.equal(hourlyJobs(range.from, range.to).length, 23);
+});
+
+test("inactive Kathmandu는 exact 15분 v2 source를 요청 IANA 시간대로 그룹화한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Kathmandu",
+  });
+
+  assert.match(queries[0]!.query, /FROM usage_15m_rollup_v2/);
+  assert.match(queries[0]!.query, /formatDateTime\(ts, '%Y-%m-%d', 'Asia\/Kathmandu'\)/);
+  assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup|usage_hourly_rollup/);
+});
+
+test("pending·inflight·누락·dirty·watermark 미완료 cache는 절대 선택하지 않는다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const incomplete = [
+    { name: "pending", jobs: [{ ...range.jobs[0]!, status: "pending" as const }, range.jobs[1]!] },
+    { name: "inflight", jobs: [range.jobs[0]!, { ...range.jobs[1]!, status: "inflight" as const }] },
+    { name: "missing", jobs: [range.jobs[0]!] },
+    { name: "dirty", jobs: range.jobs, dirtyBucket: new Date(range.from.getTime() + 15 * 60 * 1000) },
+    { name: "watermark", jobs: range.jobs, watermark: new Date(range.to.getTime() - 15 * 60 * 1000) },
+  ];
+
+  for (const state of incomplete) {
+    const { storage, queries, pgQueries } = sourceRouterFixture({
+      watermark: state.watermark ?? range.to,
+      dirtyBucket: state.dirtyBucket,
+      jobs: state.jobs,
+    });
+    await storage.getDailyTimeseries({
+      from: range.from,
+      to: range.to,
+      bucket: "day",
+      timezone: "Asia/Seoul",
+    });
+    assert.match(queries[0]!.query, /usage_15m_rollup_v2|usage_events/, state.name);
+    assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup/, state.name);
+    assert.equal(
+      pgQueries.some(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones")),
+      true,
+      `${state.name}: canonical registry 확인`,
+    );
+    if (state.name === "pending" || state.name === "inflight" || state.name === "missing") {
+      assert.equal(
+        pgQueries.some(({ sql }) => sql.includes("FROM clickhouse_timezone_rollup_jobs")),
+        true,
+        `${state.name}: 완료 job 범위 확인`,
+      );
+    }
+  }
+});
+
+test("모든 dashboard 집계는 공통 router의 15분 v2 fallback을 사용한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({ active: false, watermark: range.to });
+  const period = { from: range.from, to: range.to, bucket: "day" as const, timezone: "Asia/Kathmandu" };
+
+  await storage.getOverview(period);
+  await storage.getDailyTimeseries(period);
+  await storage.getUserModelTimeseries("user-1", period);
+  await storage.getTeamMemberTimeseries({ ...period, teamId: "team-1", userIds: ["user-1"] });
+  await storage.getUserUsage("user-1", period);
+  await storage.getLeaderboard({ ...period, scope: "user" });
+  await storage.getProviderBreakdown(period);
+
+  assert.equal(queries.length, 10);
+  for (const { query } of queries) {
+    assert.match(query, /FROM[\s\S]*usage_15m_rollup_v2/);
+    assert.doesNotMatch(query, /usage_hourly_rollup/);
+  }
+});
+
+test("인사이트의 current·previous 집계도 공통 router의 ready timezone-day source를 사용한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const { storage, queries } = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+
+  await storage.getUserInsightComparison("user-1", {
+    previous: { from: range.jobs[0]!.bucket, to: range.jobs[1]!.bucket },
+    current: { from: range.jobs[1]!.bucket, to: range.to },
+    timezone: "Asia/Seoul",
+  });
+
+  assert.equal(queries.length, 2);
+  for (const { query } of queries) {
+    assert.equal((query.match(/usage_daily_timezone_rollup FINAL/g) ?? []).length, 2);
+    assert.doesNotMatch(query, /usage_15m_rollup(?:_v2)?|usage_hourly_rollup/);
+  }
+});
+
+test("v2 read가 꺼진 dashboard router는 hourly가 아니라 raw source로 fallback한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+  });
+  const period = { ...range, bucket: "day" as const, timezone: "UTC" };
+
+  await storage.getOverview(period);
+
+  assert.match(queries[0]!.query, /FROM[\s\S]*usage_events/);
+  assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup|usage_15m_rollup_v2/);
 });
 
 test("v2 read와 compactor worker는 서로 독립된 opt-in flag와 실행 guard를 사용한다", () => {

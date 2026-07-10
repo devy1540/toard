@@ -10,7 +10,7 @@ import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
-import { parseFilters, type DashboardSearchParams } from "@/lib/period";
+import { parseDashboardPeriod, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
@@ -19,7 +19,7 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
 
-type TeamPeriod = ReturnType<typeof parseFilters>;
+type TeamPeriod = ReturnType<typeof parseDashboardPeriod>;
 
 function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
   const q = new URLSearchParams();
@@ -179,7 +179,7 @@ export default async function TeamUsagePage({
 }) {
   const sp = await searchParams;
   const t = await getTranslations("org");
-  const period = parseFilters(sp, await getViewerTimezone());
+  const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
   const viewer = await getDashboardViewer();
   if (!viewer) redirect("/login");
@@ -192,6 +192,7 @@ export default async function TeamUsagePage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        limited={period.limited}
         title={t("teamsTitle")}
         trailing={<AutoRefresh />}
       />

@@ -107,6 +107,7 @@
       "15m": "15m"
     },
     "rangeAll": "All time",
+    "rangeLimited": "Showing up to the last 12 months",
     "timezoneNote": "Times in {tz}"
   },
   "pricingNotice": {

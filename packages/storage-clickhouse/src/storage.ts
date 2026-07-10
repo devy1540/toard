@@ -93,6 +93,7 @@ type RollupSpec = {
   table: "usage_15m_rollup" | "usage_15m_rollup_v2";
   bucketColumn: "bucket_15m";
   intervalMs: number;
+  sourcePolicy: "dashboard" | "canonical_final";
 };
 
 export interface ClickHouseStorageOptions {
@@ -302,12 +303,14 @@ const USAGE_15M: RollupSpec = {
   table: "usage_15m_rollup",
   bucketColumn: "bucket_15m",
   intervalMs: FIFTEEN_MINUTES_MS,
+  sourcePolicy: "dashboard",
 };
 const USAGE_15M_V2: RollupSpec = {
   name: "usage_15m_v2",
   table: "usage_15m_rollup_v2",
   bucketColumn: "bucket_15m",
   intervalMs: FIFTEEN_MINUTES_MS,
+  sourcePolicy: "canonical_final",
 };
 const USAGE_ROLLUPS = [USAGE_15M, USAGE_15M_V2] as const;
 const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
@@ -877,10 +880,11 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async firstRollupBucket(spec: RollupSpec): Promise<Date | null> {
     const intervalMinutes = spec.intervalMs / 60_000;
+    const source = this.compactorSource(spec);
     const rows = await this.queryJson<{ events?: string; first_bucket?: string }>(
       `SELECT count() AS events,
               min(toStartOfInterval(ts, INTERVAL ${intervalMinutes} minute, 'UTC')) AS first_bucket
-       FROM ${this.usageEventsSource}`,
+       FROM ${source}`,
       {},
     );
     const row = rows[0];
@@ -910,6 +914,10 @@ export class ClickHouseStorage implements StorageBackend {
     return saved.rows[0]?.watermark ?? watermark;
   }
 
+  private compactorSource(spec: RollupSpec): string {
+    return spec.sourcePolicy === "canonical_final" ? "usage_events FINAL" : this.usageEventsSource;
+  }
+
   private async aggregateRollupBuckets(
     spec: RollupSpec,
     buckets: Date[],
@@ -926,6 +934,7 @@ export class ClickHouseStorage implements StorageBackend {
       ? "sumIf(cost_usd, cost_status != 'unpriced')"
       : "sum(cost_usd)";
     const pricingGroup = v2 ? ", pricing_revision_id, cost_status" : "";
+    const source = this.compactorSource(spec);
     const rows = await this.queryJson<Rollup15mAggRow>(
       `SELECT toStartOfInterval(ts, INTERVAL ${intervalMinutes} minute, 'UTC') AS ${spec.bucketColumn},
               provider_key,
@@ -940,7 +949,7 @@ export class ClickHouseStorage implements StorageBackend {
               sum(cache_read_tokens) AS cache_read_tokens,
               sum(cache_creation_tokens) AS cache_creation_tokens,
               ${costAggregate} AS cost_usd
-       FROM ${this.usageEventsSource}
+       FROM ${source}
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
          AND has(arrayMap(x -> toDateTime64(x, 3, 'UTC'), {buckets:Array(String)}), toStartOfInterval(ts, INTERVAL ${intervalMinutes} minute, 'UTC'))

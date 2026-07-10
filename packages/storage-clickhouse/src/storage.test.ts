@@ -311,6 +311,7 @@ test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한
 
   const aggregate = aggregateQueries.find((query) => query.includes("GROUP BY bucket_15m"));
   assert.ok(aggregate);
+  assert.match(aggregate, /FROM usage_events FINAL/);
   assert.match(aggregate, /pricing_revision_id/);
   assert.match(aggregate, /cost_status/);
   assert.match(aggregate, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost_usd/);
@@ -322,6 +323,17 @@ test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한
   assert.ok(inserted);
   assert.equal(inserted.values[0]?.pricing_revision_id, "rev-1");
   assert.equal(inserted.values[0]?.cost_status, "priced");
+});
+
+test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async () => {
+  const { storage, aggregateQueries } = v2CompactorFixture();
+
+  await storage.compactUsage15mRollup(1);
+
+  const aggregate = aggregateQueries.find((query) => query.includes("GROUP BY bucket_15m"));
+  assert.ok(aggregate);
+  assert.match(aggregate, /FROM usage_events\s+WHERE/);
+  assert.doesNotMatch(aggregate, /FROM usage_events FINAL/);
 });
 
 test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async () => {

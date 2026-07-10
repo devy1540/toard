@@ -302,8 +302,103 @@ async function main(): Promise<void> {
       "same-token retry rollup group totals",
     );
 
+    const canonicalDuplicate = pricedEvent({
+      dedupKey: `${runId}:canonical-duplicate`,
+      providerKey: `${runId}:canonical-provider`,
+      userId,
+      sessionId: `${runId}:canonical-session`,
+      model: "verify-model-canonical",
+      ts: new Date("2026-04-15T01:12:00.000Z"),
+      inputTokens: 31,
+      outputTokens: 37,
+      cacheReadTokens: 7,
+      cacheCreationTokens: 11,
+      costUsd: 0.6,
+      host: "verify-host-canonical",
+    });
+    const canonicalRawRow = {
+      dedup_key: canonicalDuplicate.dedupKey,
+      provider_key: canonicalDuplicate.providerKey,
+      user_id: canonicalDuplicate.userId ?? "",
+      team_id: teamId,
+      session_id: canonicalDuplicate.sessionId ?? "",
+      model: canonicalDuplicate.model ?? "",
+      ts: chTs(canonicalDuplicate.ts),
+      input_tokens: canonicalDuplicate.inputTokens,
+      output_tokens: canonicalDuplicate.outputTokens,
+      cache_read_tokens: canonicalDuplicate.cacheReadTokens,
+      cache_creation_tokens: canonicalDuplicate.cacheCreationTokens,
+      cost_usd: canonicalDuplicate.costUsd.toFixed(8),
+      pricing_revision_id: canonicalDuplicate.pricingRevisionId,
+      cost_status: canonicalDuplicate.costStatus,
+      log_adapter: "",
+      host: canonicalDuplicate.host ?? "",
+    };
+    await ch.command({ query: "SYSTEM STOP MERGES usage_events" });
+    try {
+      for (const tokenSuffix of ["a", "b"]) {
+        await ch.insert({
+          table: "usage_events",
+          values: [canonicalRawRow],
+          format: "JSONEachRow",
+          clickhouse_settings: {
+            insert_deduplication_token: `${runId}:canonical:${tokenSuffix}`,
+          },
+        });
+      }
+      const physicalDuplicates = await ch.query({
+        query: "SELECT count() AS rows FROM usage_events WHERE dedup_key = {key:String}",
+        query_params: { key: canonicalDuplicate.dedupKey },
+        format: "JSONEachRow",
+      });
+      const physicalDuplicateRows = (await physicalDuplicates.json<{ rows: string }>())[0]!;
+      assertEqual(Number(physicalDuplicateRows.rows), 2, "different-token physical raw duplicate rows");
+
+      await compactUntil((limit) => v2.compactUsage15mV2(limit), to, "15m v2 rollup");
+      const canonicalV2 = await ch.query({
+        query: `SELECT sum(event_count) AS events,
+                       sum(input_tokens) AS input,
+                       sum(output_tokens) AS output,
+                       sum(cache_read_tokens) AS cache_read,
+                       sum(cache_creation_tokens) AS cache_creation,
+                       sum(cost_usd) AS cost
+                FROM usage_15m_rollup_v2 FINAL
+                WHERE provider_key = {provider:String}`,
+        query_params: { provider: canonicalDuplicate.providerKey },
+        format: "JSONEachRow",
+      });
+      const canonicalV2Rows = (await canonicalV2.json<{
+        events: string;
+        input: string;
+        output: string;
+        cache_read: string;
+        cache_creation: string;
+        cost: string;
+      }>())[0]!;
+      assertEqual(
+        {
+          events: Number(canonicalV2Rows.events),
+          input: Number(canonicalV2Rows.input),
+          output: Number(canonicalV2Rows.output),
+          cacheRead: Number(canonicalV2Rows.cache_read),
+          cacheCreation: Number(canonicalV2Rows.cache_creation),
+          cost: Number(canonicalV2Rows.cost),
+        },
+        {
+          events: 1,
+          input: canonicalDuplicate.inputTokens,
+          output: canonicalDuplicate.outputTokens,
+          cacheRead: canonicalDuplicate.cacheReadTokens,
+          cacheCreation: canonicalDuplicate.cacheCreationTokens,
+          cost: canonicalDuplicate.costUsd,
+        },
+        "different-token duplicate canonical v2 totals",
+      );
+    } finally {
+      await ch.command({ query: "SYSTEM START MERGES usage_events" });
+    }
+
     await compactUntil((limit) => raw.compactUsage15mRollup(limit), to, "15m rollup");
-    await compactUntil((limit) => v2.compactUsage15mV2(limit), to, "15m v2 rollup");
     const rollup15mRows = await ch.query({
       query: "SELECT count() AS rows FROM usage_15m_rollup WHERE provider_key = {provider:String}",
       query_params: { provider: providerKey },

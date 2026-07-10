@@ -19,6 +19,7 @@ use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
 use crate::fsx;
 use crate::iso;
 use crate::usage_event::{to_events_body, UsageEvent};
+use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
 
 /// 내부 argv — wrap 실행에 편승하는 백그라운드 수집 (자동 업데이트와 동일 패턴)
 pub const SPAWN_ARG: &str = "___toard-spawn-collector";
@@ -82,6 +83,26 @@ pub struct RawContent {
     pub text: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawToolActivity {
+    pub ts_ms: i64,
+    pub session_id: Option<String>,
+    pub call_id: String,
+    pub kind: ToolActivityKind,
+    pub item_key: String,
+    pub display_name: String,
+    pub plugin_key: Option<String>,
+    pub outcome: ToolOutcome,
+    pub detection: ToolDetection,
+}
+
+#[derive(Debug, Default)]
+pub struct ParsedLog {
+    pub usage: Vec<RawUsage>,
+    pub content: Vec<RawContent>,
+    pub tools: Vec<RawToolActivity>,
+}
+
 pub trait LogAdapter {
     /// provider_key 이자 log_adapter 식별자
     fn key(&self) -> &'static str;
@@ -96,6 +117,13 @@ pub trait LogAdapter {
     /// 파일 하나 → 본문 레코드들. 기본은 없음(본문 미지원 어댑터). 손상 파일은 빈 벡터.
     fn parse_content(&self, _path: &Path) -> Vec<RawContent> {
         Vec::new()
+    }
+    fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
+        ParsedLog {
+            usage: self.parse_file(path),
+            content: if include_content { self.parse_content(path) } else { Vec::new() },
+            tools: Vec::new(),
+        }
     }
 }
 

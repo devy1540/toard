@@ -4,11 +4,13 @@
 //   - parse_content : user/assistant 본문 → RawContent (opt-in, /v1/prompts)
 // 사용량을 OTLP push 가 아니라 여기서 pull 하므로 재시작·env 주입이 불필요하고 host 가 자동으로 붙는다(§4.5).
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::{file_mtime_ms, walk_files, LogAdapter, RawContent, RawUsage};
+use super::{file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage};
+use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
 use crate::iso::iso_to_epoch_ms;
 
 pub struct Claude;
@@ -36,6 +38,147 @@ impl LogAdapter for Claude {
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
         parse_transcript(path)
     }
+
+    fn parse_changed(&self, path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
+        parse_transcript_all(path, include_content, include_tools)
+    }
+}
+
+fn parse_mcp_name(name: &str) -> Option<(String, String)> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+    let key = format!("{server}.{}", tool.replace("__", "."));
+    Some((key.clone(), key))
+}
+
+fn skill_name(input: &Value) -> Option<String> {
+    let raw = input
+        .get("skill")
+        .or_else(|| input.get("name"))
+        .and_then(Value::as_str)?;
+    let name = raw.rsplit(':').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
+    let fallback = file_mtime_ms(path);
+    let Ok(bytes) = std::fs::read(path) else {
+        return ParsedLog::default();
+    };
+    let mut parsed = ParsedLog::default();
+    let mut pending: HashMap<String, usize> = HashMap::new();
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let Some(obj) = value.as_object() else { continue };
+        let role = obj.get("type").and_then(Value::as_str);
+        let Some(message) = obj.get("message").and_then(Value::as_object) else { continue };
+        let ts_ms = obj
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(iso_to_epoch_ms)
+            .unwrap_or(fallback);
+        let session_id = obj.get("sessionId").and_then(Value::as_str).map(str::to_string);
+
+        if role == Some("assistant") {
+            if let Some(usage) = message.get("usage").and_then(Value::as_object) {
+                let tok = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+                let input_tokens = tok("input_tokens");
+                let output_tokens = tok("output_tokens");
+                let cache_read_tokens = tok("cache_read_input_tokens");
+                let cache_creation_tokens = tok("cache_creation_input_tokens");
+                if input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens > 0 {
+                    parsed.usage.push(RawUsage {
+                        ts_ms,
+                        session_id: session_id.clone(),
+                        model: message.get("model").and_then(Value::as_str).map(str::to_string),
+                        message_id: message.get("id").and_then(Value::as_str).map(str::to_string),
+                        input_tokens,
+                        output_tokens,
+                        cache_read_tokens,
+                        cache_creation_tokens,
+                        cache_creation_1h_tokens: usage
+                            .get("cache_creation")
+                            .and_then(Value::as_object)
+                            .and_then(|cache| cache.get("ephemeral_1h_input_tokens"))
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    });
+                }
+            }
+            if include_tools {
+                if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                    for block in blocks {
+                        if block.get("type").and_then(Value::as_str) != Some("tool_use") { continue; }
+                        let Some(call_id) = block.get("id").and_then(Value::as_str) else { continue };
+                        let Some(name) = block.get("name").and_then(Value::as_str) else { continue };
+                        let activity = if let Some((item_key, display_name)) = parse_mcp_name(name) {
+                            Some((ToolActivityKind::Mcp, item_key, display_name, None))
+                        } else if name == "Skill" {
+                            block.get("input").and_then(skill_name).map(|skill| {
+                                (ToolActivityKind::Skill, skill.clone(), skill, None)
+                            })
+                        } else {
+                            None
+                        };
+                        if let Some((kind, item_key, display_name, plugin_key)) = activity {
+                            let index = parsed.tools.len();
+                            parsed.tools.push(RawToolActivity {
+                                ts_ms,
+                                session_id: session_id.clone(),
+                                call_id: call_id.to_string(),
+                                kind,
+                                item_key,
+                                display_name,
+                                plugin_key,
+                                outcome: ToolOutcome::Unknown,
+                                detection: ToolDetection::Explicit,
+                            });
+                            pending.insert(call_id.to_string(), index);
+                        }
+                    }
+                }
+            }
+        }
+
+        if include_content && matches!(role, Some("user" | "assistant")) {
+            let text = extract_text(message.get("content"));
+            let text = text.trim();
+            if !text.is_empty() {
+                parsed.content.push(RawContent {
+                    ts_ms,
+                    session_id: session_id.clone(),
+                    message_id: message
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .or_else(|| obj.get("uuid").and_then(Value::as_str))
+                        .map(str::to_string),
+                    role: if role == Some("user") { "user" } else { "assistant" },
+                    text: text.to_string(),
+                });
+            }
+        }
+
+        if include_tools && role == Some("user") {
+            if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) != Some("tool_result") { continue; }
+                    let Some(call_id) = block.get("tool_use_id").and_then(Value::as_str) else { continue };
+                    let Some(index) = pending.remove(call_id) else { continue };
+                    parsed.tools[index].outcome = match block.get("is_error").and_then(Value::as_bool) {
+                        Some(true) => ToolOutcome::Failure,
+                        Some(false) => ToolOutcome::Success,
+                        None => ToolOutcome::Unknown,
+                    };
+                }
+            }
+        }
+    }
+    parsed
 }
 
 /// 트랜스크립트 jsonl → 사용량 레코드 (§4.2 필드 매핑).
@@ -277,5 +420,26 @@ mod tests {
         assert_eq!(sc.message_id.as_deref(), Some("m2"), "서브에이전트 턴 보존");
         assert_eq!(sc.input_tokens, 10);
         assert_eq!(sc.output_tokens, 20);
+    }
+
+    #[test]
+    fn parses_mcp_and_explicit_skill_activity() {
+        let tmp = TempDir::new("claude-tools");
+        let path = tmp.write(
+            "projects/p/tools.jsonl",
+            &[
+                r#"{"type":"assistant","sessionId":"s1","timestamp":"2026-07-10T00:00:00Z","message":{"content":[{"type":"tool_use","id":"tool-1","name":"mcp__context7__resolve-library-id","input":{"libraryName":"secret"}},{"type":"tool_use","id":"tool-2","name":"Skill","input":{"skill":"superpowers:brainstorming"}}]}}"#,
+                r#"{"type":"user","sessionId":"s1","timestamp":"2026-07-10T00:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","is_error":false},{"type":"tool_result","tool_use_id":"tool-2","is_error":true}]}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Claude.parse_changed(&path, false, true);
+        assert_eq!(parsed.tools.len(), 2);
+        assert_eq!(parsed.tools[0].item_key, "context7.resolve-library-id");
+        assert_eq!(parsed.tools[0].outcome, ToolOutcome::Success);
+        assert_eq!(parsed.tools[1].item_key, "brainstorming");
+        assert_eq!(parsed.tools[1].detection, ToolDetection::Explicit);
+        assert_eq!(parsed.tools[1].outcome, ToolOutcome::Failure);
     }
 }

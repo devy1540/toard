@@ -171,6 +171,31 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
 
+다중 해상도 rollup은 쓰기와 읽기를 독립 플래그로 단계 전환한다. 다섯 플래그는 기본값이 모두 off다.
+
+| 환경변수 | 역할 |
+|---|---|
+| `CLICKHOUSE_15M_V2_COMPACTOR` | 가격 revision/status를 보존한 15분 v2 shadow 생성 |
+| `CLICKHOUSE_READ_15M_V2_ROLLUP` | 검증 완료된 15분 v2와 raw tail 조회 |
+| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 활성 IANA 시간대별 hour/day cache 생성 |
+| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | ready인 시간대별 hour/day cache 조회, 미완료 구간은 15분 v2 fallback |
+| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 모든 shadow/read 검증 뒤 raw 원본 90일 TTL 적용 |
+
+전환 순서는 **schema 배포 → 15분 v2 shadow → 조직 기본·저장된 사용자 시간대 shadow → raw diff·benchmark → timezone day/hour read → 15분 v2 read → raw TTL**이다. 성능 gate는 로컬 Docker에서 400일·100만 이벤트 fixture를 검증한 뒤 다섯 시간대를 각 100회 측정한다.
+
+```bash
+pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts
+pnpm exec tsx scripts/benchmark-timezone-rollup.ts
+```
+
+read 전환 뒤 문제가 생기면 해당 `CLICKHOUSE_READ_*` 값만 비우고 앱만 재생성한다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다.
+
+```bash
+docker compose up -d --no-deps --force-recreate app
+```
+
+세부 검증 SQL, `/api/ready`의 `healthy`/`fallback`/`disabled` 해석, 단계별 rollback은 [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md)에 정리돼 있다.
+
 ## 🔐 로그인 (인증 모드)
 
 `AUTH_MODE` 로 조직 환경에 맞게 선택한다(ADR-007, JWT 세션). 로그인 페이지는 `/login`.

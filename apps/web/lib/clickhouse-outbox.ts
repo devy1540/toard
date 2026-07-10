@@ -1,7 +1,44 @@
 const STARTUP_DELAY_MS = 15_000;
 const TICK_MS = 30_000;
 const COMPACTOR_TICK_MS = 60_000;
+const RETENTION_TICK_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_LIMIT = 10;
+const DELIVERED_RETENTION_MS = 90 * 24 * 60 * 60 * 1_000;
+const COMPLETED_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+const TIMEZONE_ROLLUP_MAX_LAG_SECONDS = 30 * 60;
+const TIMEZONE_ROLLUP_MAX_PENDING_JOBS = 10_000;
+const ROLLUP_BUCKET_MS = 15 * 60 * 1_000;
+const DEFAULT_ROLLUP_FINALIZE_DELAY_MS = 30 * 60 * 1_000;
+
+export type ClickHouseUsageRetentionResult = {
+  deliveredOutboxRows: number;
+  deliveredBatches: number;
+  completedTimezoneJobs: number;
+};
+
+type RetentionClient = {
+  query(sql: string, params?: unknown[]): Promise<{ rowCount: number | null }>;
+  release(): void;
+};
+
+type RetentionPool = {
+  connect(): Promise<RetentionClient>;
+};
+
+type ReadyQueryable = {
+  query(sql: string, params?: unknown[]): Promise<{
+    rows: Array<Record<string, unknown>>;
+  }>;
+};
+
+type ReadyEnvironment = Record<string, string | undefined>;
+
+export type TimezoneRollupReadiness = {
+  status: "disabled" | "healthy" | "fallback";
+  watermark: string | null;
+  lagSeconds: number | null;
+  pendingJobs: number;
+};
 
 type FlushableStorage = {
   flushUsageOutbox(limit?: number): Promise<{ batches: number; rows: number }>;
@@ -28,8 +65,66 @@ function isV2Compactable(storage: unknown): storage is V2CompactableStorage {
 }
 
 function enabled(name: string): boolean {
-  const value = process.env[name];
+  return enabledIn(process.env, name);
+}
+
+function enabledIn(env: ReadyEnvironment, name: string): boolean {
+  const value = env[name];
   return value === "1" || value?.toLowerCase() === "true" || value?.toLowerCase() === "on";
+}
+
+function rollupFinalizeDelayMs(env: ReadyEnvironment): number {
+  const parsed = Number(env.CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : DEFAULT_ROLLUP_FINALIZE_DELAY_MS;
+}
+
+export async function getTimezoneRollupReadinessAt(
+  pool: ReadyQueryable,
+  env: ReadyEnvironment = process.env,
+  now = new Date(),
+): Promise<TimezoneRollupReadiness> {
+  if (!enabledIn(env, "CLICKHOUSE_READ_TIMEZONE_ROLLUP")) {
+    return { status: "disabled", watermark: null, lagSeconds: null, pendingJobs: 0 };
+  }
+  const [watermarkResult, pendingResult] = await Promise.all([
+    pool.query(
+      "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
+      ["usage_15m_v2"],
+    ),
+    pool.query(
+      `SELECT count(*)::int AS pending_jobs
+       FROM clickhouse_timezone_rollup_jobs
+       WHERE status = 'pending'`,
+    ),
+  ]);
+  const rawWatermark = watermarkResult.rows[0]?.watermark;
+  const parsedWatermark = rawWatermark instanceof Date
+    ? rawWatermark
+    : typeof rawWatermark === "string"
+      ? new Date(rawWatermark)
+      : null;
+  const watermark = parsedWatermark && Number.isFinite(parsedWatermark.getTime())
+    ? parsedWatermark
+    : null;
+  const rawPendingJobs = pendingResult.rows[0]?.pending_jobs;
+  const pendingJobs = Number.isFinite(Number(rawPendingJobs)) ? Number(rawPendingJobs) : 0;
+  const eligibleWatermarkMs = Math.floor(
+    (now.getTime() - rollupFinalizeDelayMs(env)) / ROLLUP_BUCKET_MS,
+  ) * ROLLUP_BUCKET_MS;
+  const lagSeconds = watermark
+    ? Math.max(0, Math.floor((eligibleWatermarkMs - watermark.getTime()) / 1_000))
+    : null;
+  const fallback = lagSeconds == null
+    || lagSeconds > TIMEZONE_ROLLUP_MAX_LAG_SECONDS
+    || pendingJobs > TIMEZONE_ROLLUP_MAX_PENDING_JOBS;
+  return {
+    status: fallback ? "fallback" : "healthy",
+    watermark: watermark?.toISOString() ?? null,
+    lagSeconds,
+    pendingJobs,
+  };
 }
 
 export async function flushClickHouseOutbox(limit = DEFAULT_LIMIT): Promise<{ batches: number; rows: number }> {
@@ -58,11 +153,73 @@ export async function compactClickHouse15mV2Rollup(limitBuckets?: number): Promi
   return storage.compactUsage15mV2(limitBuckets);
 }
 
-/** Task 7의 scheduler가 호출할 시간대 cache bounded tick. 시작 flag/timer는 그 task에서 연결한다. */
+/** 활성 시간대 queue에서 bounded batch를 처리한다. */
 export async function compactClickHouseTimezoneRollups(): Promise<{ jobs: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
+  if (!enabled("CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return { jobs: 0, rows: 0 };
   const { runTimezoneRollupWorker } = await import("./timezone-rollup");
   return runTimezoneRollupWorker();
+}
+
+export async function pruneClickHouseUsageRetentionAt(
+  pool: RetentionPool,
+  now = new Date(),
+): Promise<ClickHouseUsageRetentionResult> {
+  if (!Number.isFinite(now.getTime())) throw new Error("유효한 retention 기준 시각이 아님");
+  const deliveredCutoff = new Date(now.getTime() - DELIVERED_RETENTION_MS);
+  const completedJobCutoff = new Date(now.getTime() - COMPLETED_JOB_RETENTION_MS);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const outbox = await client.query(
+      `DELETE FROM clickhouse_usage_outbox AS outbox
+       USING clickhouse_usage_batches AS batch
+       WHERE outbox.batch_id = batch.id
+         AND outbox.delivered_at IS NOT NULL
+         AND outbox.delivered_at < $1
+         AND batch.status = 'delivered'
+         AND batch.delivered_at IS NOT NULL
+         AND batch.delivered_at < $1`,
+      [deliveredCutoff],
+    );
+    const batches = await client.query(
+      `DELETE FROM clickhouse_usage_batches AS batch
+       WHERE status = 'delivered'
+         AND delivered_at IS NOT NULL
+         AND delivered_at < $1
+         AND NOT EXISTS (
+           SELECT 1
+           FROM clickhouse_usage_outbox AS outbox
+           WHERE outbox.batch_id = batch.id
+         )`,
+      [deliveredCutoff],
+    );
+    const timezoneJobs = await client.query(
+      `DELETE FROM clickhouse_timezone_rollup_jobs
+       WHERE status = 'done'
+         AND updated_at < $1`,
+      [completedJobCutoff],
+    );
+    await client.query("COMMIT");
+    return {
+      deliveredOutboxRows: outbox.rowCount ?? 0,
+      deliveredBatches: batches.rowCount ?? 0,
+      completedTimezoneJobs: timezoneJobs.rowCount ?? 0,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function pruneClickHouseUsageRetention(now = new Date()): Promise<ClickHouseUsageRetentionResult> {
+  if (process.env.STORAGE_BACKEND !== "clickhouse") {
+    return { deliveredOutboxRows: 0, deliveredBatches: 0, completedTimezoneJobs: 0 };
+  }
+  const { getPool } = await import("./db");
+  return pruneClickHouseUsageRetentionAt(getPool(), now);
 }
 
 async function tick(): Promise<void> {
@@ -96,12 +253,38 @@ async function compactV2Tick(): Promise<void> {
   }
 }
 
+async function compactTimezoneTick(): Promise<void> {
+  try {
+    const r = await compactClickHouseTimezoneRollups();
+    if (r.jobs > 0) {
+      console.log(`[toard] ClickHouse timezone rollup compacted — ${r.jobs} jobs, ${r.rows} rows`);
+    }
+  } catch (e) {
+    console.warn(`[toard] ClickHouse timezone rollup compaction failed — ${String(e)} — retrying later`);
+  }
+}
+
+async function retentionTick(): Promise<void> {
+  try {
+    const r = await pruneClickHouseUsageRetention();
+    const deleted = r.deliveredOutboxRows + r.deliveredBatches + r.completedTimezoneJobs;
+    if (deleted > 0) {
+      console.log(
+        `[toard] ClickHouse retention cleanup — ${r.deliveredOutboxRows} outbox rows, ${r.deliveredBatches} batches, ${r.completedTimezoneJobs} timezone jobs`,
+      );
+    }
+  } catch (e) {
+    console.warn(`[toard] ClickHouse retention cleanup failed — ${String(e)} — retrying later`);
+  }
+}
+
 export function startClickHouseOutboxFlush(): void {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
   const g = globalThis as {
     __toardClickHouseOutboxFlush?: true;
     __toardClickHouseOutboxRunning?: true;
     __toardClickHouse15mRollupRunning?: true;
+    __toardClickHouseRetentionRunning?: true;
   };
   if (g.__toardClickHouseOutboxFlush) return;
   g.__toardClickHouseOutboxFlush = true;
@@ -124,6 +307,15 @@ export function startClickHouseOutboxFlush(): void {
   };
   setTimeout(guardedCompactTick, STARTUP_DELAY_MS + 5_000).unref();
   setInterval(guardedCompactTick, COMPACTOR_TICK_MS).unref();
+  const guardedRetentionTick = () => {
+    if (g.__toardClickHouseRetentionRunning) return;
+    g.__toardClickHouseRetentionRunning = true;
+    retentionTick().finally(() => {
+      g.__toardClickHouseRetentionRunning = undefined;
+    });
+  };
+  setTimeout(guardedRetentionTick, STARTUP_DELAY_MS + 30_000).unref();
+  setInterval(guardedRetentionTick, RETENTION_TICK_MS).unref();
 }
 
 export function startClickHouse15mV2Compaction(): void {
@@ -145,4 +337,25 @@ export function startClickHouse15mV2Compaction(): void {
   };
   setTimeout(guardedCompactV2Tick, STARTUP_DELAY_MS + 10_000).unref();
   setInterval(guardedCompactV2Tick, COMPACTOR_TICK_MS).unref();
+}
+
+export function startClickHouseTimezoneRollupCompaction(): void {
+  if (process.env.STORAGE_BACKEND !== "clickhouse") return;
+  if (!enabled("CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return;
+  const g = globalThis as {
+    __toardClickHouseTimezoneRollupFlush?: true;
+    __toardClickHouseTimezoneRollupRunning?: true;
+  };
+  if (g.__toardClickHouseTimezoneRollupFlush) return;
+  g.__toardClickHouseTimezoneRollupFlush = true;
+  const guardedCompactTimezoneTick = () => {
+    if (!enabled("CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return;
+    if (g.__toardClickHouseTimezoneRollupRunning) return;
+    g.__toardClickHouseTimezoneRollupRunning = true;
+    compactTimezoneTick().finally(() => {
+      g.__toardClickHouseTimezoneRollupRunning = undefined;
+    });
+  };
+  setTimeout(guardedCompactTimezoneTick, STARTUP_DELAY_MS + 20_000).unref();
+  setInterval(guardedCompactTimezoneTick, COMPACTOR_TICK_MS).unref();
 }

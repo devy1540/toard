@@ -612,14 +612,28 @@ export class ClickHouseStorage implements StorageBackend {
          ORDER BY bucket`,
         [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
       );
-      const completed = new Map(
+      const coverage = await this.pg.query<{ bucket: Date }>(
+        `SELECT bucket
+         FROM clickhouse_timezone_rollup_coverage
+         WHERE resolution = $1
+           AND timezone = $2
+           AND bucket >= $3
+           AND bucket < $4
+         ORDER BY bucket`,
+        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
+      );
+      const jobStatus = new Map(
         jobs.rows.map((job) => [new Date(job.bucket).getTime(), job.status]),
+      );
+      const covered = new Set(
+        coverage.rows.map(({ bucket }) => new Date(bucket).getTime()),
       );
       let cacheTo: Date | null = null;
       for (const bucket of expected) {
         if (bucket.to > coveredTo) break;
         if (dirtyBucket && dirtyBucket < bucket.to) break;
-        if (completed.get(bucket.from.getTime()) !== "done") break;
+        const status = jobStatus.get(bucket.from.getTime());
+        if (status ? status !== "done" : !covered.has(bucket.from.getTime())) break;
         cacheTo = bucket.to;
       }
       return cacheTo ? { from: expected[0]!.from, to: cacheTo } : null;
@@ -1236,12 +1250,21 @@ export class ClickHouseStorage implements StorageBackend {
     await client.query(
       `WITH affected(bucket) AS (
          SELECT unnest($1::timestamptz[])
+       ), requested(resolution, timezone, bucket) AS (
+         SELECT resolution, timezone, date_trunc(resolution, affected.bucket, timezone)
+         FROM affected
+         CROSS JOIN clickhouse_rollup_timezones
+         CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS resolutions(resolution)
+       ), invalidated AS (
+         DELETE FROM clickhouse_timezone_rollup_coverage AS coverage
+         USING requested
+         WHERE coverage.resolution = requested.resolution
+           AND coverage.timezone = requested.timezone
+           AND coverage.bucket = requested.bucket
        )
        INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
-       SELECT resolution, timezone, date_trunc(resolution, bucket, timezone)
-       FROM affected
-       CROSS JOIN clickhouse_rollup_timezones
-       CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS requested(resolution)
+       SELECT resolution, timezone, bucket
+       FROM requested
        ON CONFLICT (resolution, timezone, bucket) DO UPDATE
        SET status = 'pending', updated_at = now()`,
       [buckets],
@@ -1862,7 +1885,7 @@ function readEnvFlag(name: string, defaultValue = false): boolean {
 export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
   return new ClickHouseStorage(createClickHouseClient(), pg, {
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
-    readRollup: readEnvFlag("CLICKHOUSE_READ_ROLLUP", false),
+    readRollup: readEnvFlag("CLICKHOUSE_READ_TIMEZONE_ROLLUP", false),
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
     read15mV2Rollup: readEnvFlag("CLICKHOUSE_READ_15M_V2_ROLLUP", false),
     enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),

@@ -184,9 +184,18 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
   ): Promise<void> {
     if (buckets.length === 0) return;
     await this.pool.query(
-      `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
+      `WITH requested(bucket) AS (
+         SELECT unnest($3::timestamptz[])
+       ), invalidated AS (
+         DELETE FROM clickhouse_timezone_rollup_coverage AS coverage
+         USING requested
+         WHERE coverage.resolution = $1
+           AND coverage.timezone = $2
+           AND coverage.bucket = requested.bucket
+       )
+       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
        SELECT $1, $2, bucket
-       FROM unnest($3::timestamptz[]) AS bucket
+       FROM requested
        ON CONFLICT (resolution, timezone, bucket) DO UPDATE
        SET status = 'pending', updated_at = now()`,
       [resolution, timezone, buckets],
@@ -239,19 +248,35 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
 
   async markDone(id: string): Promise<void> {
     await this.pool.query(
-      `UPDATE clickhouse_timezone_rollup_jobs
-       SET status = 'done', updated_at = now()
-       WHERE id = $1
-         AND status = 'inflight'`,
+      `WITH completed AS (
+         UPDATE clickhouse_timezone_rollup_jobs
+         SET status = 'done', updated_at = now()
+         WHERE id = $1
+           AND status = 'inflight'
+         RETURNING resolution, timezone, bucket
+       )
+       INSERT INTO clickhouse_timezone_rollup_coverage (resolution, timezone, bucket)
+       SELECT resolution, timezone, bucket
+       FROM completed
+       ON CONFLICT (resolution, timezone, bucket) DO UPDATE
+       SET updated_at = now()`,
       [id],
     );
   }
 
   async markPending(id: string): Promise<void> {
     await this.pool.query(
-      `UPDATE clickhouse_timezone_rollup_jobs
-       SET status = 'pending', updated_at = now()
-       WHERE id = $1`,
+      `WITH pending AS (
+         UPDATE clickhouse_timezone_rollup_jobs
+         SET status = 'pending', updated_at = now()
+         WHERE id = $1
+         RETURNING resolution, timezone, bucket
+       )
+       DELETE FROM clickhouse_timezone_rollup_coverage AS coverage
+       USING pending
+       WHERE coverage.resolution = pending.resolution
+         AND coverage.timezone = pending.timezone
+         AND coverage.bucket = pending.bucket`,
       [id],
     );
   }

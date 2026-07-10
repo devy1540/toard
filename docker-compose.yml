@@ -77,6 +77,11 @@ services:
       CLICKHOUSE_READ_ROLLUP: ${CLICKHOUSE_READ_ROLLUP:-} # 1/true/on 이면 검증 완료된 CH hourly rollup 으로 대시보드 집계 조회
       CLICKHOUSE_15M_ROLLUP_COMPACTOR: ${CLICKHOUSE_15M_ROLLUP_COMPACTOR:-} # 1/true/on 이면 finalized 15분 rollup compactor 실행
       CLICKHOUSE_READ_15M_ROLLUP: ${CLICKHOUSE_READ_15M_ROLLUP:-} # 1/true/on 이면 검증 완료된 15분 rollup + raw tail 로 시계열 조회
+      CLICKHOUSE_15M_V2_COMPACTOR: ${CLICKHOUSE_15M_V2_COMPACTOR:-} # 가격 provenance를 보존한 15분 v2 shadow compactor
+      CLICKHOUSE_READ_15M_V2_ROLLUP: ${CLICKHOUSE_READ_15M_V2_ROLLUP:-} # 검증 완료된 15분 v2 + raw tail 읽기
+      CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR: ${CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR:-} # 활성 IANA 시간대 hour/day cache worker
+      CLICKHOUSE_READ_TIMEZONE_ROLLUP: ${CLICKHOUSE_READ_TIMEZONE_ROLLUP:-} # ready 상태인 시간대별 hour/day cache 읽기
+      CLICKHOUSE_ENFORCE_RETENTION_TTL: ${CLICKHOUSE_ENFORCE_RETENTION_TTL:-} # 최종 전환 뒤 raw usage_events 90일 TTL 적용
       CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS: ${CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS:-} # 15분 rollup 확정 지연(ms), 기본 30분
       CLICKHOUSE_ROLLUP_MAX_BUCKETS: ${CLICKHOUSE_ROLLUP_MAX_BUCKETS:-} # compactor tick 당 최대 bucket 수, 기본 16
       ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}

@@ -9,6 +9,10 @@ import {
   activateTimezoneRollupWith,
   type TimezoneRollupRepository,
 } from "../apps/web/lib/timezone-rollup";
+import {
+  getTimezoneRollupReadinessAt,
+  pruneClickHouseUsageRetentionAt,
+} from "../apps/web/lib/clickhouse-outbox";
 import { Pool, type PoolClient } from "pg";
 
 function assertLocalUrl(name: string, value: string | undefined): string {
@@ -23,6 +27,125 @@ function assertEqual(actual: unknown, expected: unknown, label: string): void {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a !== e) throw new Error(`${label} mismatch\nactual:   ${a}\nexpected: ${e}`);
+}
+
+async function verifyOperationalFixtures(): Promise<void> {
+  const now = new Date("2026-07-10T12:00:00.000Z");
+  const readinessQueries: string[] = [];
+  const healthy = await getTimezoneRollupReadinessAt(
+    {
+      async query(sql: string) {
+        readinessQueries.push(sql);
+        if (sql.includes("clickhouse_rollup_watermarks")) {
+          return { rows: [{ watermark: new Date("2026-07-10T11:45:00.000Z") }], rowCount: 1 };
+        }
+        return { rows: [{ pending_jobs: 10_000 }], rowCount: 1 };
+      },
+    },
+    {
+      CLICKHOUSE_READ_TIMEZONE_ROLLUP: "1",
+      CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS: "1800000",
+    },
+    now,
+  );
+  assertEqual(healthy, {
+    status: "healthy",
+    watermark: "2026-07-10T11:45:00.000Z",
+    lagSeconds: 0,
+    pendingJobs: 10_000,
+  }, "healthy timezone readiness fixture");
+  if (readinessQueries.length !== 2) throw new Error("timezone readiness must query watermark and pending jobs");
+
+  const fallback = await getTimezoneRollupReadinessAt(
+    {
+      async query(sql: string) {
+        if (sql.includes("clickhouse_rollup_watermarks")) {
+          return { rows: [{ watermark: new Date("2026-07-10T10:59:59.000Z") }], rowCount: 1 };
+        }
+        return { rows: [{ pending_jobs: 10_001 }], rowCount: 1 };
+      },
+    },
+    {
+      CLICKHOUSE_READ_TIMEZONE_ROLLUP: "1",
+      CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS: "1800000",
+    },
+    now,
+  );
+  assertEqual(fallback, {
+    status: "fallback",
+    watermark: "2026-07-10T10:59:59.000Z",
+    lagSeconds: 1_801,
+    pendingJobs: 10_001,
+  }, "fallback timezone readiness fixture");
+
+  const disabled = await getTimezoneRollupReadinessAt(
+    { async query() { throw new Error("disabled readiness must not query Postgres"); } },
+    { CLICKHOUSE_READ_TIMEZONE_ROLLUP: "" },
+    now,
+  );
+  assertEqual(disabled, {
+    status: "disabled",
+    watermark: null,
+    lagSeconds: null,
+    pendingJobs: 0,
+  }, "disabled timezone readiness fixture");
+
+  const cleanupQueries: Array<{ sql: string; params?: unknown[] }> = [];
+  const cleanup = await pruneClickHouseUsageRetentionAt(
+    {
+      async connect() {
+        return {
+          async query(sql: string, params?: unknown[]) {
+            cleanupQueries.push({ sql, params });
+            if (sql.includes("DELETE FROM clickhouse_usage_outbox")) return { rowCount: 12, rows: [] };
+            if (sql.includes("DELETE FROM clickhouse_usage_batches")) return { rowCount: 2, rows: [] };
+            if (sql.includes("DELETE FROM clickhouse_timezone_rollup_jobs")) return { rowCount: 8, rows: [] };
+            return { rowCount: null, rows: [] };
+          },
+          release() {},
+        };
+      },
+    },
+    now,
+  );
+  assertEqual(cleanup, {
+    deliveredOutboxRows: 12,
+    deliveredBatches: 2,
+    completedTimezoneJobs: 8,
+  }, "retention cleanup fixture");
+  const outboxIndex = cleanupQueries.findIndex(({ sql }) => sql.includes("DELETE FROM clickhouse_usage_outbox"));
+  const batchIndex = cleanupQueries.findIndex(({ sql }) => sql.includes("DELETE FROM clickhouse_usage_batches"));
+  const jobIndex = cleanupQueries.findIndex(({ sql }) => sql.includes("DELETE FROM clickhouse_timezone_rollup_jobs"));
+  if (outboxIndex < 0 || batchIndex <= outboxIndex || jobIndex <= batchIndex) {
+    throw new Error("retention cleanup must delete delivered outbox rows before batches, then completed timezone jobs");
+  }
+  const outboxSql = cleanupQueries[outboxIndex]!.sql;
+  const batchSql = cleanupQueries[batchIndex]!.sql;
+  const jobSql = cleanupQueries[jobIndex]!.sql;
+  if (!/outbox\.delivered_at IS NOT NULL[\s\S]*outbox\.delivered_at < \$1[\s\S]*batch\.status = 'delivered'/.test(outboxSql)) {
+    throw new Error("retention cleanup must only delete old delivered outbox rows");
+  }
+  if (!/status = 'delivered'[\s\S]*delivered_at < \$1[\s\S]*NOT EXISTS/.test(batchSql)) {
+    throw new Error("retention cleanup must only delete old empty delivered batches");
+  }
+  if (!/status = 'done'[\s\S]*updated_at < \$1/.test(jobSql)) {
+    throw new Error("retention cleanup must only delete old completed timezone jobs");
+  }
+  assertEqual(
+    cleanupQueries[outboxIndex]!.params?.[0],
+    new Date("2026-04-11T12:00:00.000Z"),
+    "delivered outbox 90-day cutoff",
+  );
+  assertEqual(
+    cleanupQueries[batchIndex]!.params?.[0],
+    new Date("2026-04-11T12:00:00.000Z"),
+    "delivered batch 90-day cutoff",
+  );
+  assertEqual(
+    cleanupQueries[jobIndex]!.params?.[0],
+    new Date("2026-07-03T12:00:00.000Z"),
+    "completed timezone job 7-day cutoff",
+  );
 }
 
 async function compactUntil(
@@ -223,6 +346,7 @@ function pricedEvent(base: {
 }
 
 async function main(): Promise<void> {
+  await verifyOperationalFixtures();
   const databaseUrl = assertLocalUrl("DATABASE_URL", process.env.DATABASE_URL);
   const clickhouseUrl = assertLocalUrl("CLICKHOUSE_URL", process.env.CLICKHOUSE_URL ?? "http://localhost:8123");
   const pg = new Pool({ connectionString: databaseUrl });

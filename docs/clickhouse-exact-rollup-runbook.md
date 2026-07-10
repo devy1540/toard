@@ -322,3 +322,65 @@ docker compose up -d --no-deps --force-recreate app
 ```
 
 rollback 때 `usage_15m_rollup` 테이블은 drop하지 않는다.
+
+## 9. 다중 해상도 v2·시간대 cache 전환
+
+아래 다섯 환경변수는 모두 기본 off다. shadow writer와 read router를 독립적으로 전환한다.
+
+| 환경변수 | 켜는 시점 | 효과 |
+|---|---|---|
+| `CLICKHOUSE_15M_V2_COMPACTOR` | 15분 v2 shadow | 가격 revision/status를 보존한 `usage_15m_rollup_v2` 생성 |
+| `CLICKHOUSE_READ_15M_V2_ROLLUP` | 시간대 cache read 검증 뒤 | 15분 v2 + 미확정 raw tail 조회 |
+| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 활성 시간대 shadow | 조직 기본·저장 사용자 IANA 시간대의 hour/day cache 작업 처리 |
+| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | raw diff·benchmark 통과 뒤 | 완료된 시간대별 day/hour cache 조회, 나머지는 15분 v2 fallback |
+| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 모든 read 전환·관찰 뒤 마지막 | raw `usage_events`에 90일 TTL 적용 |
+
+### 9.1 고정 rollout 순서
+
+1. **schema 배포** — 다섯 플래그를 빈 값으로 둔 채 앱을 배포한다.
+2. **15분 v2 shadow** — `CLICKHOUSE_15M_V2_COMPACTOR=1`만 켜고 watermark·dirty bucket을 관찰한다.
+3. **활성 시간대 shadow** — `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR=1`을 켠다. 조직 기본 시간대와 저장된 사용자 시간대가 `clickhouse_rollup_timezones`에 있고, 해당 작업이 `done`으로 수렴하는지 확인한다.
+4. **raw diff·benchmark** — 지원하는 다섯 시간대의 exactness와 400일·100만 이벤트 성능 gate를 통과한다.
+5. **timezone day/hour read** — `CLICKHOUSE_READ_TIMEZONE_ROLLUP=1`을 켠다.
+6. **15분 v2 read** — `CLICKHOUSE_READ_15M_V2_ROLLUP=1`을 켠다.
+7. **raw TTL** — 최소 한 관찰 기간 동안 오류·diff·성능 회귀가 없을 때만 `CLICKHOUSE_ENFORCE_RETENTION_TTL=1`을 켠다.
+
+각 플래그 변경은 앱 컨테이너에만 적용한다.
+
+```bash
+docker compose up -d --no-deps --force-recreate app
+curl -fsS http://127.0.0.1:${PORT:-3000}/api/ready
+```
+
+`/api/ready`의 `rollups.timezone`은 read flag가 꺼졌으면 `disabled`, finalize 지연을 뺀 최신 15분 기준점 대비 watermark backlog가 30분 이내이고 pending 작업이 10,000개 이하면 `healthy`, watermark가 없거나 backlog가 30분을 넘거나 pending 작업이 10,000개를 넘으면 `fallback`이다. `fallback`이어도 Postgres와 ClickHouse 연결이 정상이면 HTTP 200을 유지하고 더 세밀한 소스로 읽는다. 함께 반환되는 `timezoneWatermark`, `timezoneLagSeconds`, `timezonePendingJobs`로 원인을 확인한다.
+
+### 9.2 shadow와 성능 gate
+
+```bash
+DATABASE_URL=postgres://toard:toard@localhost:5432/toard \
+CLICKHOUSE_URL=http://localhost:8123 \
+pnpm exec tsx scripts/verify-clickhouse-exact-rollup.ts
+
+CLICKHOUSE_URL=http://localhost:8123 \
+pnpm exec tsx scripts/benchmark-timezone-rollup.ts
+```
+
+benchmark는 localhost Docker와 비-production 환경만 허용한다. `timezone-rollup-v1` fixture가 400일·이벤트 1,000,000건·사용자 100명·provider 5개·model 10개인지 먼저 검증하고, `Asia/Seoul`, `America/Los_Angeles`, `Asia/Kolkata`, `Asia/Kathmandu`, `Europe/London`의 최근 12개월 일별 cache를 각각 100회 cache-miss로 측정한다. 정렬된 duration의 `p50=sorted[49]`, `p95=sorted[94]`를 사용하며 어느 시간대든 P50 1,000ms 또는 P95 2,000ms를 넘으면 실패다. 로컬 fixture를 재사용만 하고 seed를 금지하려면 `--seed=never`를 붙인다.
+
+### 9.3 read rollback
+
+불일치, watermark 정지, 성능 기준 초과가 발생하면 문제가 생긴 read flag만 비우고 앱 컨테이너만 재생성한다. writer, Postgres, ClickHouse, cache table은 유지해 원인 분석과 재검증에 사용한다.
+
+```bash
+# 시간대별 day/hour read 문제
+sed -i.bak 's/^CLICKHOUSE_READ_TIMEZONE_ROLLUP=.*/CLICKHOUSE_READ_TIMEZONE_ROLLUP=/' .env
+docker compose up -d --no-deps --force-recreate app
+
+# 15분 v2 read 문제
+sed -i.bak 's/^CLICKHOUSE_READ_15M_V2_ROLLUP=.*/CLICKHOUSE_READ_15M_V2_ROLLUP=/' .env
+docker compose up -d --no-deps --force-recreate app
+```
+
+`CLICKHOUSE_ENFORCE_RETENTION_TTL`은 원본 삭제가 시작되기 전 마지막 단계에서만 켠다. 이미 TTL로 삭제된 원본은 read flag rollback으로 복구되지 않으므로 shadow·read gate를 건너뛰지 않는다.
+
+background retention cleanup은 delivered outbox/batch를 90일 뒤 FK 순서대로, `done` timezone job을 7일 뒤 삭제한다. `pending`·`inflight`는 삭제하지 않는다. 완료 job을 정리해도 12개월 cache 판정이 사라지지 않도록 migration `1700000023`이 durable `clickhouse_timezone_rollup_coverage`를 backfill하고, worker 성공 시 coverage를 기록한다. 같은 bucket이 다시 dirty/pending이 되면 coverage를 먼저 무효화하므로 오래된 cache를 완료로 오인하지 않는다.

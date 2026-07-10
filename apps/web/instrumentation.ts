@@ -5,8 +5,13 @@ export async function register(): Promise<void> {
   const { schedulerEligible, startPricingAutoSync } = await import("./lib/pricing-auto-sync");
   if (schedulerEligible(process.env)) startPricingAutoSync();
   if (process.env.STORAGE_BACKEND === "clickhouse") {
-    const { startClickHouse15mV2Compaction, startClickHouseOutboxFlush } = await import("./lib/clickhouse-outbox");
+    const {
+      startClickHouse15mV2Compaction,
+      startClickHouseOutboxFlush,
+      startClickHouseTimezoneRollupCompaction,
+    } = await import("./lib/clickhouse-outbox");
     startClickHouseOutboxFlush();
     startClickHouse15mV2Compaction();
+    startClickHouseTimezoneRollupCompaction();
   }
 }

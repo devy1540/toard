@@ -292,4 +292,9 @@ test("설정 저장과 cookie fallback은 DB 성공 뒤 non-blocking activation�
     /ON CONFLICT \(resolution, timezone, bucket\) DO UPDATE[\s\S]*status = 'pending'/,
   );
   assert.match(rollup, /WHERE id = \$1[\s\S]*AND status = 'inflight'/);
+  assert.match(rollup, /DELETE FROM clickhouse_timezone_rollup_coverage/);
+  assert.match(
+    rollup,
+    /INSERT INTO clickhouse_timezone_rollup_coverage[\s\S]*FROM completed/,
+  );
 });

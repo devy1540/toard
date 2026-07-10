@@ -28,7 +28,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
   const workspaceItems: NavItem[] = [
     { href: "/org", key: "org", icon: ChartBar, badge: "preview" },
     ...(isAdmin ? ([{ href: "/org/teams", key: "orgTeams", icon: Building2, badge: "preview" }] satisfies NavItem[]) : []),
-    { href: "/org/team", key: "myTeam", icon: Building2, badge: "beta" },
+    { href: "/org/team", key: "myTeam", icon: Building2, badge: "preview" },
   ];
 
   // 그룹 축: 개인(내 데이터) / 워크스페이스(이 인스턴스 전체·팀별 집계) / 시스템

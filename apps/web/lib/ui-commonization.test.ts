@@ -182,6 +182,14 @@ test("insights expose beta status in navigation and the shared toolbar", () => {
   );
 });
 
+test("team status exposes preview status in navigation and the page toolbar", () => {
+  const nav = source("components/dashboard/sidebar-nav.tsx");
+  const page = source("app/(dashboard)/org/team/page.tsx");
+
+  assert.match(nav, /href: "\/org\/team", key: "myTeam", icon: Building2, badge: "preview"/);
+  assert.match(page, /statusBadge=\{\{ status: "preview", label: navT\("badge\.preview"\) \}\}/);
+});
+
 test("insight comparison chart renders current and previous without animation", () => {
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);

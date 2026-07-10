@@ -38,3 +38,33 @@ test("demo open mode can render settings with the dashboard viewer fallback", ()
     /const session = await auth\(\);\s*const userId = session\?\.user\?\.id;\s*if \(!userId\) redirect\("\/login"\);/s,
   );
 });
+
+test("personal navigation includes insights between usage and history", () => {
+  const nav = source("components/dashboard/sidebar-nav.tsx");
+  assert.match(nav, /key: "myUsage"[\s\S]*key: "insights"[\s\S]*key: "history"/);
+});
+
+test("insights page uses the cached comparison and shared cards", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  assert.match(page, /getCachedUserInsights/);
+  assert.match(page, /@\/components\/ui\/card/);
+});
+
+test("insight filters reuse shared controls and update URL parameters", () => {
+  const filters = source("components/dashboard/insight-filters.tsx");
+  assert.match(filters, /@\/components\/ui\/segmented-control/);
+  assert.match(filters, /@\/components\/ui\/select/);
+  assert.match(filters, /new URLSearchParams\(searchParams\.toString\(\)\)/);
+});
+
+test("insight comparison chart renders current and previous without animation", () => {
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+  assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);
+  assert.match(chart, /dataKey="previous"[\s\S]*isAnimationActive=\{false\}/);
+});
+
+test("insight composition uses shared tabs and limits rows", () => {
+  const composition = source("components/dashboard/insight-composition.tsx");
+  assert.match(composition, /@\/components\/ui\/segmented-control/);
+  assert.match(composition, /\.slice\(0, 5\)/);
+});

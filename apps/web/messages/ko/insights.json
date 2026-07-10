@@ -1,0 +1,80 @@
+{
+  "title": "인사이트",
+  "description": "현재 기간과 직전의 같은 길이 기간을 비교합니다.",
+  "presets": {
+    "label": "비교 기간",
+    "sevenDays": "최근 7일",
+    "week": "이번 주",
+    "month": "이번 달"
+  },
+  "filters": {
+    "providerLabel": "프로바이더",
+    "allProviders": "모든 프로바이더",
+    "metricLabel": "지표",
+    "cost": "비용",
+    "tokens": "토큰"
+  },
+  "cache": {
+    "calculatedAt": "{time} 기준 계산"
+  },
+  "summary": {
+    "title": "주요 변화",
+    "description": "이전 기간과 비교해 두드러진 변화입니다.",
+    "empty": "기준을 넘는 두드러진 변화가 없습니다."
+  },
+  "kpi": {
+    "cost": "비용",
+    "sessions": "세션",
+    "tokens": "토큰",
+    "vsPrevious": "{delta} (이전 기간 대비)",
+    "noPrevious": "비교할 이전 기간 데이터가 없습니다."
+  },
+  "chart": {
+    "title": "현재·이전 기간 추이",
+    "description": "두 기간의 같은 경과 지점을 나란히 비교합니다.",
+    "current": "현재 기간",
+    "previous": "이전 기간",
+    "position": "경과 {position}"
+  },
+  "comparison": {
+    "current": "현재",
+    "previous": "이전"
+  },
+  "composition": {
+    "title": "구성 변화",
+    "description": "구성 비중 변화가 큰 항목부터 표시합니다.",
+    "label": "구성 기준",
+    "model": "모델",
+    "provider": "프로바이더",
+    "currentShare": "현재 {share}%",
+    "previousShare": "이전 {share}%",
+    "empty": "표시할 구성 데이터가 없습니다."
+  },
+  "empty": {
+    "title": "사용 데이터가 없습니다",
+    "description": "선택한 기간과 프로바이더에서 비용, 세션, 토큰 사용이 확인되지 않습니다."
+  },
+  "rules": {
+    "cost": {
+      "increase": "비용이 이전 기간보다 {delta}% 늘었습니다.",
+      "decrease": "비용이 이전 기간보다 {delta}% 줄었습니다."
+    },
+    "sessions": {
+      "increase": "세션이 이전 기간보다 {delta}% 늘었습니다.",
+      "decrease": "세션이 이전 기간보다 {delta}% 줄었습니다."
+    },
+    "tokens": {
+      "increase": "토큰 사용이 이전 기간보다 {delta}% 늘었습니다.",
+      "decrease": "토큰 사용이 이전 기간보다 {delta}% 줄었습니다."
+    },
+    "efficiency": {
+      "increase": "세션당 비용이 이전 기간보다 {delta}% 늘었습니다.",
+      "decrease": "세션당 비용이 이전 기간보다 {delta}% 줄었습니다."
+    },
+    "composition": {
+      "increase": "{dimension}의 {name} 비중이 {delta}%p 늘었습니다.",
+      "decrease": "{dimension}의 {name} 비중이 {delta}%p 줄었습니다.",
+      "new": "{dimension} 구성에 {name} 항목이 새로 나타났습니다."
+    }
+  }
+}

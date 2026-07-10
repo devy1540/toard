@@ -6,6 +6,7 @@ import type nav from "../messages/en/nav.json";
 import type auth from "../messages/en/auth.json";
 import type invite from "../messages/en/invite.json";
 import type dashboard from "../messages/en/dashboard.json";
+import type insights from "../messages/en/insights.json";
 import type org from "../messages/en/org.json";
 import type settings from "../messages/en/settings.json";
 import type admin from "../messages/en/admin.json";
@@ -19,6 +20,7 @@ declare module "next-intl" {
       auth: typeof auth;
       invite: typeof invite;
       dashboard: typeof dashboard;
+      insights: typeof insights;
       org: typeof org;
       settings: typeof settings;
       admin: typeof admin;

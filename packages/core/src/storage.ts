@@ -237,7 +237,7 @@ export interface StorageBackend {
   /** OTLP 원형을 무손실 보존하고 raw id 반환 */
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
-  saveUsageEvents(events: UsageEvent[]): Promise<SaveResult>;
+  saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
 

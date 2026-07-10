@@ -38,3 +38,17 @@ test("demo open mode can render settings with the dashboard viewer fallback", ()
     /const session = await auth\(\);\s*const userId = session\?\.user\?\.id;\s*if \(!userId\) redirect\("\/login"\);/s,
   );
 });
+
+test("tool activity copy distinguishes explicit calls from loads", () => {
+  const ko = JSON.parse(source("messages/ko/dashboard.json"));
+  assert.equal(ko.toolActivity.skillLabel, "스킬 활동");
+  assert.equal(ko.toolActivity.explicitBadge, "명시 호출");
+  assert.equal(ko.toolActivity.loadedBadge, "로드");
+  assert.doesNotMatch(JSON.stringify(ko.toolActivity), /사용한 스킬/);
+});
+
+test("overview adds tool activity as a secondary card", () => {
+  const overview = source("components/dashboard/overview-view.tsx");
+  assert.match(overview, /ToolActivityCard/);
+  assert.match(overview, /<ToolActivityCard[^>]*\/>/s);
+});

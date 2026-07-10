@@ -6,6 +6,7 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { CompositionToggle, type CompositionDimension } from "@/components/dashboard/composition-toggle";
 import type { ChartMetric } from "@/components/dashboard/metric-toggle";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
+import { ToolActivityCard } from "@/components/dashboard/tool-activity-card";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { orderByTokens, tokenShare } from "@/lib/composition";
@@ -337,6 +338,8 @@ export async function OverviewView({
           </div>
         </aside>
       </div>
+
+      <ToolActivityCard userId={userId} period={period} />
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
         <section className="min-w-0 rounded-lg border p-4">

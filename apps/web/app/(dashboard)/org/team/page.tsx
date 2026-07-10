@@ -1,24 +1,26 @@
 import { getTranslations } from "next-intl/server";
-import Link from "next/link";
 import { redirect } from "next/navigation";
-import type { LeaderRow, OverviewStats } from "@toard/core";
-import { Activity, ArrowUpDown, DollarSign, Inbox, Users } from "lucide-react";
-import { UsageAreaChart } from "@/components/charts/usage-area-chart";
+import type { ReactNode } from "react";
+import type { LeaderRow, OverviewStats, ProviderBreakdown } from "@toard/core";
+import { DollarSign, Inbox, Layers3, Trophy, Users } from "lucide-react";
+import { TeamUsageChart } from "@/components/charts/team-usage-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
-import { StatCard } from "@/components/dashboard/stat-card";
-import { Button } from "@/components/ui/button";
+import { DeltaBadge } from "@/components/dashboard/stat-card";
+import { TeamFilter } from "@/components/dashboard/team-filter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getPool } from "@/lib/db";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
+import { cacheSharePercent, findPeakTokenBucket, sharePercent, totalUsageTokens, usagePerActiveUser } from "@/lib/org-overview";
 import { fillSeriesGaps, parseFilters, previousPeriod, type DashboardSearchParams } from "@/lib/period";
-import { getEnabledProviders } from "@/lib/providers";
+import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
+import { buildTeamMemberSeries, TEAM_MEMBER_COLORS } from "@/lib/team-overview";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
@@ -27,8 +29,13 @@ type TeamStatusSearchParams = DashboardSearchParams & { team?: string };
 type TeamPeriod = ReturnType<typeof parseFilters>;
 type TeamOption = { id: string; name: string };
 
-function totalTokens(s: OverviewStats): number {
-  return s.totalInputTokens + s.totalOutputTokens + s.totalCacheReadTokens + s.totalCacheCreationTokens;
+function overviewTokens(overview: OverviewStats): number {
+  return totalUsageTokens({
+    input: overview.totalInputTokens,
+    output: overview.totalOutputTokens,
+    cacheRead: overview.totalCacheReadTokens,
+    cacheCreation: overview.totalCacheCreationTokens,
+  });
 }
 
 function teamUsageTitleKey(
@@ -40,107 +47,289 @@ function teamUsageTitleKey(
   return "teamUsage15m";
 }
 
-function shareText(value: number, total: number): string {
-  if (total <= 0) return "—";
-  return `${Math.round((value / total) * 100)}%`;
-}
-
-function hrefWithTeam(sp: TeamStatusSearchParams, teamId: string): string {
-  const q = new URLSearchParams();
-  if (sp.period) q.set("period", sp.period);
-  if (sp.provider) q.set("provider", sp.provider);
-  if (sp.from) q.set("from", sp.from);
-  if (sp.to) q.set("to", sp.to);
-  if (sp.bucket) q.set("bucket", sp.bucket);
-  if (sp.metric) q.set("metric", sp.metric);
-  q.set("team", teamId);
-  return `/org/team?${q.toString()}`;
-}
-
 async function listTeams(): Promise<TeamOption[]> {
   const r = await getPool().query<TeamOption>("SELECT id::text AS id, name FROM teams ORDER BY name");
   return r.rows;
 }
 
-function RankingListRow({
+function SummaryTile({ label, value, sub, icon }: { label: string; value: string; sub?: string; icon?: ReactNode }) {
+  return (
+    <div className="border-border/70 min-w-0 border-l pl-3">
+      <div className="text-muted-foreground flex items-center gap-1.5 text-xs tracking-wide uppercase">
+        {icon}
+        {label}
+      </div>
+      <div className="mt-1 truncate text-xl font-medium tabular-nums">{value}</div>
+      {sub ? <div className="text-muted-foreground mt-0.5 truncate text-xs">{sub}</div> : null}
+    </div>
+  );
+}
+
+function TeamHero({
+  overview,
+  previousTokens,
+  tokenLabel,
+  costLabel,
+  activeUsersLabel,
+  sessionsLabel,
+  activeUsersSub,
+}: {
+  overview: OverviewStats;
+  previousTokens: number;
+  tokenLabel: string;
+  costLabel: string;
+  activeUsersLabel: string;
+  sessionsLabel: string;
+  activeUsersSub: string;
+}) {
+  const tokens = overviewTokens(overview);
+  const delta = pctDelta(tokens, previousTokens);
+
+  return (
+    <section className="border-border/80 bg-card rounded-xl border px-5 py-5">
+      <div className="flex flex-wrap items-end justify-between gap-6">
+        <div className="min-w-0">
+          <div className="text-muted-foreground text-xs tracking-wide uppercase">{tokenLabel}</div>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <span className="text-4xl font-semibold tracking-tight tabular-nums">{fmtCompact(tokens)}</span>
+            {delta ? (
+              <span className="text-xs">
+                <DeltaBadge delta={delta} />
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
+          <SummaryTile label={costLabel} value={fmtUsd(overview.totalCostUsd)} />
+          <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
+          <SummaryTile label={sessionsLabel} value={fmtNum(overview.totalSessions)} />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SupportingMetric({ label, value, sub, icon }: { label: string; value: string; sub: string; icon: ReactNode }) {
+  return (
+    <div className="border-border/80 bg-card min-w-0 rounded-xl border px-4 py-4 shadow-sm">
+      <div className="text-muted-foreground flex items-center gap-2 text-sm">
+        {icon}
+        <span className="truncate">{label}</span>
+      </div>
+      <div className="mt-2 truncate text-2xl font-bold tracking-tight tabular-nums">{value}</div>
+      <div className="text-muted-foreground mt-1 truncate text-xs">{sub}</div>
+    </div>
+  );
+}
+
+function TeamRankRow({
   row,
   rank,
-  totalCost,
-  maxCost,
+  metric,
+  total,
+  max,
+  color,
   sessionsLabel,
-  tokensLabel,
-  costShareLabel,
+  secondaryLabel,
 }: {
   row: LeaderRow;
   rank: number;
-  totalCost: number;
-  maxCost: number;
+  metric: ChartMetric;
+  total: number;
+  max: number;
+  color: string;
   sessionsLabel: string;
-  tokensLabel: string;
-  costShareLabel: string;
+  secondaryLabel: string;
 }) {
-  const width = maxCost > 0 ? Math.max(3, Math.round((row.costUsd / maxCost) * 100)) : 0;
+  const value = metric === "tokens" ? row.totalTokens : row.costUsd;
+  const secondary = metric === "tokens" ? fmtUsd(row.costUsd) : fmtCompact(row.totalTokens);
+  const share = sharePercent(value, total);
+  const width = max > 0 ? Math.max(3, Math.round((value / max) * 100)) : 0;
 
   return (
-    <div className="border-border/80 bg-background rounded-lg border p-3">
-      <div className="grid min-w-0 gap-3 sm:grid-cols-[2rem_minmax(0,1fr)_auto] sm:items-center">
-        <div className="text-muted-foreground text-sm tabular-nums">#{rank}</div>
-        <div className="min-w-0">
-          <div className="truncate font-medium" title={row.label}>
-            {row.label}
-          </div>
-          <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-            <span>
-              {sessionsLabel}: {fmtNum(row.sessions)}
-            </span>
-            <span>
-              {tokensLabel}: {fmtCompact(row.totalTokens)}
-            </span>
-          </div>
-        </div>
-        <div className="sm:text-right">
-          <div className="font-semibold tabular-nums">{fmtUsd(row.costUsd)}</div>
-          <div className="text-muted-foreground text-xs tabular-nums">
-            {costShareLabel}: {shareText(row.costUsd, totalCost)}
-          </div>
-        </div>
+    <div className="space-y-1.5">
+      <div className="flex min-w-0 items-center gap-2 text-sm">
+        <span className="text-muted-foreground w-5 shrink-0 text-right tabular-nums">{rank}</span>
+        <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: color }} aria-hidden />
+        <span className="truncate font-medium" title={row.label}>
+          {row.label}
+        </span>
+        <span className="ml-auto shrink-0 font-medium tabular-nums">
+          {metric === "tokens" ? fmtCompact(row.totalTokens) : fmtUsd(row.costUsd)}
+        </span>
       </div>
-      <div className="mt-3 flex items-center gap-2">
-        <div className="bg-muted h-1.5 min-w-0 flex-1 overflow-hidden rounded-full">
-          <div className="bg-chart-1 h-full rounded-full" style={{ width: `${width}%` }} />
+      <div className="ml-7 space-y-1.5">
+        <div className="text-muted-foreground flex flex-wrap gap-x-2 text-[11px]">
+          <span>{sessionsLabel} {fmtNum(row.sessions)}</span>
+          <span>{secondaryLabel} {secondary}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="bg-muted h-1.5 min-w-0 flex-1 overflow-hidden rounded-full">
+            <div className="h-full rounded-full" style={{ width: `${width}%`, backgroundColor: color }} />
+          </div>
+          <span className="text-muted-foreground w-10 text-right text-[11px] tabular-nums">
+            {share == null ? "—" : `${share}%`}
+          </span>
         </div>
       </div>
     </div>
   );
 }
 
-function TeamSelector({
-  sp,
-  teams,
-  selectedTeamId,
+function TeamMembersCard({
+  rows,
+  metric,
+  total,
   title,
   description,
+  emptyTitle,
+  emptyDescription,
+  sessionsLabel,
+  secondaryLabel,
 }: {
-  sp: TeamStatusSearchParams;
-  teams: TeamOption[];
-  selectedTeamId: string | null;
+  rows: LeaderRow[];
+  metric: ChartMetric;
+  total: number;
   title: string;
   description: string;
+  emptyTitle: string;
+  emptyDescription: string;
+  sessionsLabel: string;
+  secondaryLabel: string;
+}) {
+  const shown = rows.slice(0, 5);
+  const max = shown.length > 0 ? (metric === "tokens" ? shown[0]!.totalTokens : shown[0]!.costUsd) : 0;
+
+  return (
+    <Card className="min-w-0 gap-4 xl:h-full">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Users className="text-muted-foreground size-4" />
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {shown.length > 0 ? (
+          <div className="space-y-4">
+            {shown.map((row, index) => (
+              <TeamRankRow
+                key={row.key}
+                row={row}
+                rank={index + 1}
+                metric={metric}
+                total={total}
+                max={max}
+                color={TEAM_MEMBER_COLORS[index % TEAM_MEMBER_COLORS.length] ?? TEAM_MEMBER_COLORS[0]}
+                sessionsLabel={sessionsLabel}
+                secondaryLabel={secondaryLabel}
+              />
+            ))}
+          </div>
+        ) : (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Inbox />
+              </EmptyMedia>
+              <EmptyTitle>{emptyTitle}</EmptyTitle>
+              <EmptyDescription>{emptyDescription}</EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function TeamSignalsCard({
+  title,
+  description,
+  signals,
+}: {
+  title: string;
+  description: string;
+  signals: Array<{ label: string; value: string; sub: string }>;
 }) {
   return (
-    <div className="space-y-2">
-      <div>
-        <h2 className="text-sm font-medium">{title}</h2>
-        <p className="text-muted-foreground text-sm">{description}</p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {teams.map((team) => (
-          <Button key={team.id} asChild size="sm" variant={team.id === selectedTeamId ? "default" : "outline"}>
-            <Link href={hrefWithTeam(sp, team.id)}>{team.name}</Link>
-          </Button>
-        ))}
-      </div>
-    </div>
+    <Card className="min-w-0 gap-4">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Trophy className="text-muted-foreground size-4" />
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="grid min-w-0 gap-3 sm:grid-cols-3">
+          {signals.map((signal) => (
+            <SummaryTile key={signal.label} {...signal} />
+          ))}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const providerBarClasses = ["bg-chart-1", "bg-chart-2", "bg-chart-3", "bg-chart-4", "bg-chart-5"] as const;
+
+function TeamProviderCompositionCard({
+  title,
+  description,
+  emptyTitle,
+  rows,
+  totalTokens,
+  providers,
+}: {
+  title: string;
+  description: string;
+  emptyTitle: string;
+  rows: ProviderBreakdown[];
+  totalTokens: number;
+  providers: ProviderOption[];
+}) {
+  const labels = new Map(providers.map((provider) => [provider.key, provider.label]));
+
+  return (
+    <Card className="min-w-0 gap-4">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Layers3 className="text-muted-foreground size-4" />
+          {title}
+        </CardTitle>
+        <CardDescription>{description}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        {rows.length > 0 ? (
+          <div className="space-y-3">
+            {rows.slice(0, 5).map((row, index) => {
+              const share = sharePercent(row.totalTokens, totalTokens);
+              return (
+                <div key={row.providerKey} className="grid min-w-0 grid-cols-[minmax(6rem,0.8fr)_minmax(0,1.6fr)_auto] items-center gap-3">
+                  <span className="truncate text-sm font-medium" title={labels.get(row.providerKey) ?? row.providerKey}>
+                    {labels.get(row.providerKey) ?? row.providerKey}
+                  </span>
+                  <div className="bg-muted h-1.5 min-w-0 overflow-hidden rounded-full">
+                    <div className={`${providerBarClasses[index] ?? "bg-chart-5"} h-full rounded-full`} style={{ width: `${share ?? 0}%` }} />
+                  </div>
+                  <span className="text-muted-foreground text-right text-xs tabular-nums">{share == null ? "—" : `${share}%`}</span>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Inbox />
+              </EmptyMedia>
+              <EmptyTitle>{emptyTitle}</EmptyTitle>
+            </EmptyHeader>
+          </Empty>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -152,17 +341,13 @@ export default async function TeamStatusPage({
   const sp = await searchParams;
   const [t, navT] = await Promise.all([getTranslations("org"), getTranslations("nav")]);
   const period = parseFilters(sp, await getViewerTimezone());
-  const providers = await getEnabledProviders();
-  const viewer = await getDashboardViewer();
+  const [providers, viewer] = await Promise.all([getEnabledProviders(), getDashboardViewer()]);
   if (!viewer) redirect("/login");
 
   const isAdmin = viewer.role === "admin";
   const teams = isAdmin ? await listTeams() : [];
   const selectedTeam = isAdmin
-    ? (teams.find((team) => team.id === sp.team) ??
-      teams.find((team) => team.id === viewer.teamId) ??
-      teams[0] ??
-      null)
+    ? (teams.find((team) => team.id === sp.team) ?? teams.find((team) => team.id === viewer.teamId) ?? teams[0] ?? null)
     : viewer.teamId
       ? { id: viewer.teamId, name: viewer.teamName ?? t("myTeamFallbackTitle") }
       : null;
@@ -176,22 +361,15 @@ export default async function TeamStatusPage({
         showBucketControl
         title={title}
         statusBadge={{ status: "beta", label: navT("badge.beta") }}
+        filterTrailing={
+          isAdmin && selectedTeam ? <TeamFilter teams={teams} value={selectedTeam.id} label={t("teamSelector.label")} /> : undefined
+        }
         trailing={<AutoRefresh />}
       />
 
       <PricingNotice />
 
-      {isAdmin && teams.length > 0 ? (
-        <TeamSelector
-          sp={sp}
-          teams={teams}
-          selectedTeamId={selectedTeam?.id ?? null}
-          title={t("teamSelector.title")}
-          description={t("teamSelector.description")}
-        />
-      ) : null}
-
-      <TeamDetailOverview period={period} sp={sp} teamId={selectedTeam?.id ?? null} isAdmin={isAdmin} />
+      <TeamDetailOverview period={period} sp={sp} teamId={selectedTeam?.id ?? null} isAdmin={isAdmin} providers={providers} />
     </div>
   );
 }
@@ -201,11 +379,13 @@ async function TeamDetailOverview({
   period,
   teamId,
   isAdmin,
+  providers,
 }: {
   sp: TeamStatusSearchParams;
   period: TeamPeriod;
   teamId: string | null;
   isAdmin: boolean;
+  providers: ProviderOption[];
 }) {
   const t = await getTranslations("org");
   if (!teamId) {
@@ -228,76 +408,111 @@ async function TeamDetailOverview({
     );
   }
 
-  const metric: ChartMetric = sp.metric === "tokens" ? "tokens" : "cost";
+  const metric: ChartMetric = sp.metric === "cost" ? "cost" : "tokens";
   const storage = getStorage();
   const scoped = { ...period, teamId };
-  const overview = await storage.getOverview(scoped);
-  const prevOverview = await storage.getOverview({ ...previousPeriod(period), teamId });
-  const daily = await storage.getDailyTimeseries({ ...period, scope: "team", teamId });
-  const members = await storage.getLeaderboard({ ...period, scope: "user", teamId });
+  const [overview, prevOverview, daily, members, tokenMembers, providerBreakdown] = await Promise.all([
+    storage.getOverview(scoped),
+    storage.getOverview({ ...previousPeriod(period), teamId }),
+    storage.getDailyTimeseries({ ...period, scope: "team", teamId }),
+    storage.getLeaderboard({ ...period, scope: "user", teamId, orderBy: metric }),
+    metric === "tokens"
+      ? Promise.resolve(null)
+      : storage.getLeaderboard({ ...period, scope: "user", teamId, orderBy: "tokens" }),
+    storage.getProviderBreakdown(scoped),
+  ]);
   const series = fillSeriesGaps(daily, period);
-  const tokens = totalTokens(overview);
-  const spark = {
-    cost: series.map((d) => d.costUsd),
-    sessions: series.map((d) => d.sessions),
-    users: series.map((d) => d.activeUsers),
-    tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
-  };
-  const maxCost = members[0]?.costUsd ?? 0;
-  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
-  const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
-  const usersDelta = pctDelta(overview.activeUsers, prevOverview.activeUsers);
-  const tokensDelta = pctDelta(tokens, totalTokens(prevOverview));
+  const shownMembers = members.slice(0, 5);
+  const memberPoints = await storage.getTeamMemberTimeseries({
+    ...period,
+    teamId,
+    userIds: shownMembers.map((member) => member.key),
+  });
+  const tokens = overviewTokens(overview);
+  const previousTokens = overviewTokens(prevOverview);
+  const cacheTokens = overview.totalCacheReadTokens + overview.totalCacheCreationTokens;
+  const tokensPerUser = usagePerActiveUser(tokens, overview.activeUsers);
+  const cacheShare = cacheSharePercent(cacheTokens, tokens);
+  const membersByTokens = tokenMembers ?? members;
+  const topThreeTokenShare = sharePercent(
+    membersByTokens.slice(0, 3).reduce((sum, member) => sum + member.totalTokens, 0),
+    tokens,
+  );
+  const peakUsage = findPeakTokenBucket(
+    series.map((point) => ({
+      day: point.day,
+      input: point.inputTokens,
+      output: point.outputTokens,
+      cacheRead: point.cacheReadTokens,
+      cacheCreation: point.cacheCreationTokens,
+    })),
+  );
+  const memberSeries = buildTeamMemberSeries(series, memberPoints, shownMembers, overview.activeUsers, t("teamChartOthers"));
+  const signals = [
+    {
+      label: t("signal.topThreeTokenShare"),
+      value: topThreeTokenShare == null ? "—" : `${topThreeTokenShare}%`,
+      sub: t("signal.topThreeTokenShareSub"),
+    },
+    {
+      label: t("signal.peakTokenBucket"),
+      value: peakUsage ? peakUsage.day.slice(5) : "—",
+      sub: t("signal.peakTokenBucketSub"),
+    },
+    {
+      label: t("signal.costChange"),
+      value: pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)?.pct ?? "—",
+      sub: t("signal.costChangeSub"),
+    },
+  ];
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label={t("totalCost")}
-          value={fmtUsd(overview.totalCostUsd)}
-          delta={costDelta}
-          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
-          spark={spark.cost}
-          icon={<DollarSign className="size-4" />}
-        />
-        <StatCard
-          label={t("sessions")}
-          value={fmtNum(overview.totalSessions)}
-          delta={sessionsDelta}
-          spark={spark.sessions}
-          icon={<Activity className="size-4" />}
-        />
-        <StatCard
-          label={t("activeUsers")}
-          value={fmtNum(overview.activeUsers)}
-          delta={usersDelta}
-          spark={spark.users}
+      <TeamHero
+        overview={overview}
+        previousTokens={previousTokens}
+        tokenLabel={t("totalTokens")}
+        costLabel={t("totalCost")}
+        activeUsersLabel={t("activeUsers")}
+        sessionsLabel={t("sessions")}
+        activeUsersSub={t("hero.activeUsersSub")}
+      />
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <SupportingMetric
+          label={t("tokensPerUser")}
+          value={tokensPerUser == null ? "—" : fmtCompact(tokensPerUser)}
+          sub={t("hero.activeUsersSub")}
           icon={<Users className="size-4" />}
         />
-        <StatCard
-          label={t("totalTokens")}
-          value={fmtCompact(tokens)}
-          delta={tokensDelta}
-          hint={t("tokenHint", {
-            in: fmtCompact(overview.totalInputTokens),
-            out: fmtCompact(overview.totalOutputTokens),
-            cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
-          })}
-          spark={spark.tokens}
-          icon={<ArrowUpDown className="size-4" />}
+        <SupportingMetric
+          label={t("costPerUser")}
+          value={overview.activeUsers > 0 ? fmtUsd(overview.totalCostUsd / overview.activeUsers) : "—"}
+          sub={t("hero.activeUsersSub")}
+          icon={<DollarSign className="size-4" />}
+        />
+        <SupportingMetric
+          label={t("signal.cacheShare")}
+          value={cacheShare == null ? "—" : `${cacheShare}%`}
+          sub={t("signal.cacheShareSub", { cache: fmtCompact(cacheTokens) })}
+          icon={<Layers3 className="size-4" />}
         />
       </div>
 
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(0,0.8fr)]">
-        <Card className="min-w-0">
-          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle>{t(teamUsageTitleKey(period.bucket))}</CardTitle>
+      <div className="grid min-w-0 items-stretch gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
+        <Card className="min-w-0 xl:h-full">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <CardTitle>{t(teamUsageTitleKey(period.bucket))}</CardTitle>
+              <CardDescription>{t("teamChartMembersDescription")}</CardDescription>
+            </div>
             <MetricToggle value={metric} />
           </CardHeader>
           <CardContent className="min-w-0">
             {daily.length > 0 ? (
-              <UsageAreaChart
-                data={series}
+              <TeamUsageChart
+                aggregate={series}
+                members={memberSeries}
                 metric={metric}
                 bucket={period.bucket}
                 markNow={period.preset === "today"}
@@ -316,40 +531,29 @@ async function TeamDetailOverview({
           </CardContent>
         </Card>
 
-        <Card className="min-w-0 gap-4">
-          <CardHeader>
-            <CardTitle>{t("teamMembers")}</CardTitle>
-            <CardDescription>{t("teamMembersDescription")}</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {members.length > 0 ? (
-              <div className="space-y-3">
-                {members.slice(0, 8).map((row, i) => (
-                  <RankingListRow
-                    key={row.key}
-                    row={row}
-                    rank={i + 1}
-                    totalCost={overview.totalCostUsd}
-                    maxCost={maxCost}
-                    sessionsLabel={t("sessionsCol")}
-                    tokensLabel={t("tokensCol")}
-                    costShareLabel={t("ranking.costShare")}
-                  />
-                ))}
-              </div>
-            ) : (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("teamNoMembersTitle")}</EmptyTitle>
-                  <EmptyDescription>{t("teamNoUsageDescription")}</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </CardContent>
-        </Card>
+        <TeamMembersCard
+          rows={members}
+          metric={metric}
+          total={metric === "tokens" ? tokens : overview.totalCostUsd}
+          title={t("teamMembers")}
+          description={t(metric === "tokens" ? "teamMembersTokensDescription" : "teamMembersCostDescription")}
+          emptyTitle={t("teamNoMembersTitle")}
+          emptyDescription={t("teamNoUsageDescription")}
+          sessionsLabel={t("sessionsCol")}
+          secondaryLabel={metric === "tokens" ? t("cost") : t("tokensCol")}
+        />
+      </div>
+
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+        <TeamSignalsCard title={t("teamSignals")} description={t("teamSignalsDescription")} signals={signals} />
+        <TeamProviderCompositionCard
+          title={t("teamProviderComposition")}
+          description={t("teamProviderCompositionDescription")}
+          emptyTitle={t("noProviderTitle")}
+          rows={providerBreakdown}
+          totalTokens={tokens}
+          providers={providers}
+        />
       </div>
     </div>
   );

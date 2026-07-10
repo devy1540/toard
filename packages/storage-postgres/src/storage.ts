@@ -14,6 +14,7 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TeamMemberTimeseriesPoint,
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
@@ -24,7 +25,7 @@ import { Pool, type PoolClient } from "pg";
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
-type ScopedQuery = PeriodQuery & { userId?: string; teamId?: string };
+type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
 
 export interface PostgresStorageOptions {
   /** 조직 타임존 (IANA, ADR-008) — Mart 물질화 경계이자, 쿼리에 timezone 미지정 시 버킷 폴백. 기본 UTC. */
@@ -56,6 +57,10 @@ export class PostgresStorage implements StorageBackend {
     if (q.teamId) {
       params.push(q.teamId);
       conds.push(`team_id = $${params.length}`);
+    }
+    if (q.userIds?.length) {
+      params.push(q.userIds);
+      conds.push(`user_id = ANY($${params.length})`);
     }
     return { where: `WHERE ${conds.join(" AND ")}`, params };
   }
@@ -306,6 +311,35 @@ export class PostgresStorage implements StorageBackend {
     return this.dailyQuery(q);
   }
 
+  async getTeamMemberTimeseries(
+    q: PeriodQuery & BucketOptions & { teamId: string; userIds: string[] },
+  ): Promise<TeamMemberTimeseriesPoint[]> {
+    if (q.userIds.length === 0) return [];
+    const { where, params } = this.periodWhere(q);
+    params.push(q.timezone ?? this.tz);
+    const bucketExpr = this.bucketExpr(q.bucket, `$${params.length}`);
+    const res = await this.pool.query(
+      `SELECT ${bucketExpr} AS day,
+              user_id,
+              COUNT(DISTINCT session_id) AS sessions,
+              COUNT(DISTINCT user_id)    AS active_users,
+              COALESCE(SUM(cost_usd),0)  AS cost,
+              COALESCE(SUM(input_tokens),0)  AS input,
+              COALESCE(SUM(output_tokens),0) AS output,
+              COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
+              COALESCE(SUM(cache_creation_tokens),0) AS cache_creation
+       FROM usage_events ${where}
+       GROUP BY 1, 2 ORDER BY 1, 2`,
+      params,
+    );
+    return res.rows.map((r) => ({
+      userId: String(r.user_id),
+      day: r.day, sessions: n(r.sessions), activeUsers: n(r.active_users), costUsd: n(r.cost),
+      inputTokens: n(r.input), outputTokens: n(r.output),
+      cacheReadTokens: n(r.cache_read), cacheCreationTokens: n(r.cache_creation),
+    }));
+  }
+
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
     const scoped = { ...q, userId }; // bucket/timezone 은 dailyQuery 만 소비, 나머지 쿼리는 무시
     const [overview, daily, byModel, byHost] = await Promise.all([
@@ -408,13 +442,14 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
-  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string }): Promise<LeaderRow[]> {
+  async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string; orderBy?: "cost" | "tokens" }): Promise<LeaderRow[]> {
     const { where, params } = this.periodWhere(q);
     const ePrefixed = where
       .replace(/ts /g, "e.ts ")
       .replace(/provider_key /g, "e.provider_key ")
       .replace(/user_id /g, "e.user_id ")
       .replace(/team_id /g, "e.team_id ");
+    const orderColumn = q.orderBy === "tokens" ? "tokens" : "cost";
     const sql =
       q.scope === "user"
         ? `SELECT u.id AS key, COALESCE(u.name, u.email) AS label,
@@ -423,14 +458,14 @@ export class PostgresStorage implements StorageBackend {
                   COUNT(DISTINCT e.session_id) AS sessions
            FROM usage_events e JOIN users u ON u.id = e.user_id
            ${ePrefixed}
-           GROUP BY u.id, label ORDER BY cost DESC LIMIT 100`
+           GROUP BY u.id, label ORDER BY ${orderColumn} DESC LIMIT 100`
         : `SELECT d.id AS key, d.name AS label,
                   COALESCE(SUM(e.cost_usd),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions
            FROM usage_events e JOIN teams d ON d.id = e.team_id
            ${ePrefixed} AND e.team_id IS NOT NULL
-           GROUP BY d.id, d.name ORDER BY cost DESC LIMIT 100`;
+           GROUP BY d.id, d.name ORDER BY ${orderColumn} DESC LIMIT 100`;
     const res = await this.pool.query(sql, params);
     return res.rows.map((r) => ({
       key: String(r.key), label: r.label, costUsd: n(r.cost),
@@ -438,7 +473,7 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
-  async getProviderBreakdown(q: PeriodQuery): Promise<ProviderBreakdown[]> {
+  async getProviderBreakdown(q: PeriodQuery & { teamId?: string }): Promise<ProviderBreakdown[]> {
     const { where, params } = this.periodWhere(q);
     const res = await this.pool.query(
       `SELECT provider_key,

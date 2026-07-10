@@ -5,7 +5,7 @@ import { getTranslations } from "next-intl/server";
 import { auth } from "@/auth";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword, verifyPassword } from "@/lib/password";
-import { activateTimezoneRollup, isValidRollupTimezone } from "@/lib/timezone-rollup";
+import { activateTimezoneRollup, resolveSupportedRollupTimezone } from "@/lib/timezone-rollup";
 
 export type PasswordState = { error?: string; ok?: boolean };
 
@@ -64,8 +64,9 @@ export async function saveTimezoneAction(
   if (!userId) return { error: t("errors.loginRequired") };
 
   const raw = String(formData.get("timezone") ?? "").trim();
-  const tz = raw === "" || raw === "auto" ? null : raw;
-  if (tz && !isValidRollupTimezone(tz)) return { error: t("errors.invalidTimezone") };
+  const automatic = raw === "" || raw === "auto";
+  const tz = automatic ? null : await resolveSupportedRollupTimezone(raw);
+  if (!automatic && !tz) return { error: t("errors.invalidTimezone") };
 
   await getPool().query("UPDATE users SET timezone = $1 WHERE id = $2", [tz, userId]);
   if (tz) void activateTimezoneRollup(tz).catch(() => undefined);

@@ -520,9 +520,73 @@ test("비정수 offset 시간대의 시간 cache도 timezone 식으로 v2를 집
   assert.ok(aggregate);
   assert.match(
     aggregate,
-    /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Kathmandu'\)/,
+    /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Katmandu'\)/,
   );
   assert.match(aggregate, /FROM usage_15m_rollup_v2 FINAL/);
+});
+
+test("timezone capability는 canonical ID로 system.time_zones를 조회한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => [{ supported: "1" }] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  assert.equal(await storage.supportsTimezone("US/Pacific"), true);
+  assert.match(queries.at(-1)!.query, /FROM system\.time_zones/);
+  assert.equal(queries.at(-1)!.params.timezone, "America/Los_Angeles");
+  assert.equal(await storage.supportsTimezone("PST"), false);
+});
+
+test("timezone cache row에는 alias가 아닌 canonical timezone ID를 저장한다", async () => {
+  const inserts: InsertedRows[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async () => ({
+      json: async () => [{
+        provider_key: "anthropic", user_id: "user-1", team_id: "team-1",
+        session_id: "session-1", model: "model", host: "host",
+        pricing_revision_id: "revision-1", cost_status: "priced",
+        event_count: "1", input_tokens: "1", output_tokens: "1",
+        cache_read_tokens: "0", cache_creation_tokens: "0", cost_usd: "0.01000000",
+      }],
+    }),
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      inserts.push({ table, values });
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  await storage.compactTimezoneRollup("day", "US/Pacific", new Date("2026-03-08T08:00:00.000Z"));
+
+  assert.equal(inserts.at(-1)?.values[0]?.timezone, "America/Los_Angeles");
+});
+
+test("Santiago 자정 gap daily cache는 다음 local date 첫 instant까지 조회한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  await storage.compactTimezoneRollup(
+    "day",
+    "America/Santiago",
+    new Date("2025-09-07T04:00:00.000Z"),
+  );
+
+  const aggregate = queries.find(({ query }) => query.includes("toStartOfDay"));
+  assert.ok(aggregate);
+  assert.equal(aggregate.params.bucket, "2025-09-07 04:00:00.000");
+  assert.equal(aggregate.params.to, "2025-09-08 03:00:00.000");
 });
 
 test("ClickHouse runtime/init schema는 timezone cache 2종에 400일 TTL과 exact key를 둔다", async () => {

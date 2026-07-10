@@ -1,6 +1,11 @@
+import {
+  addLocalCalendarDays,
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+  localDateKey,
+} from "@toard/core";
 import type { Pool } from "pg";
 import { getPool } from "./db";
-import { dayStartUtc, isValidTimezone } from "./org-time";
 
 export const MAX_ACTIVE_ROLLUP_TIMEZONES = 64;
 export const TIMEZONE_ROLLUP_JOBS_PER_TICK = 8;
@@ -20,11 +25,16 @@ export type TimezoneRollupJob = {
 };
 
 export type TimezoneRollupCompactor = {
+  supportsTimezone(timezone: string): Promise<boolean>;
   compactTimezoneRollup(
     resolution: TimezoneRollupResolution,
     timezone: string,
     bucket: Date,
   ): Promise<number>;
+};
+
+type TimezoneCapability = {
+  supportsTimezone(timezone: string): Promise<boolean>;
 };
 
 export type TimezoneRollupRepository = {
@@ -41,39 +51,25 @@ export type TimezoneRollupRepository = {
   ): Promise<{ acquired: false } | { acquired: true; value: T }>;
   markDone(id: string): Promise<void>;
   markPending(id: string): Promise<void>;
+  disableTimezone(timezone: string): Promise<void>;
 };
 
-export function isValidRollupTimezone(timezone: string): boolean {
-  const hasIanaNameShape = timezone === "UTC"
-    || /^[A-Za-z0-9_+-]+(?:\/[A-Za-z0-9_+-]+)+$/.test(timezone);
-  return hasIanaNameShape && isValidTimezone(timezone);
-}
-
-function assertIanaTimezone(timezone: string): void {
-  if (!isValidRollupTimezone(timezone)) {
+function requireCanonicalTimezone(timezone: string): string {
+  const canonical = canonicalTimezoneId(timezone);
+  if (!canonical) {
     throw new Error(`유효한 IANA 시간대가 아님: ${timezone}`);
   }
-}
-
-function localDateKey(at: Date, timezone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(at);
-}
-
-function addCalendarDays(date: string, days: number): string {
-  const [year, month, day] = date.split("-").map(Number);
-  return new Date(Date.UTC(year!, month! - 1, day! + days)).toISOString().slice(0, 10);
+  return canonical;
 }
 
 function dailyPrewarmBuckets(timezone: string, now: Date): Date[] {
   const today = localDateKey(now, timezone);
   return Array.from(
     { length: TIMEZONE_ROLLUP_PREWARM_DAYS },
-    (_, index) => dayStartUtc(addCalendarDays(today, index - TIMEZONE_ROLLUP_PREWARM_DAYS + 1), timezone),
+    (_, index) => firstInstantOfLocalDate(
+      addLocalCalendarDays(today, index - TIMEZONE_ROLLUP_PREWARM_DAYS + 1),
+      timezone,
+    ),
   );
 }
 
@@ -83,27 +79,31 @@ export async function enqueueTimezoneRollupWith(
   timezone: string,
   bucket: Date,
 ): Promise<void> {
-  assertIanaTimezone(timezone);
+  const canonical = requireCanonicalTimezone(timezone);
   if (!Number.isFinite(bucket.getTime())) throw new Error("유효한 시간대 rollup bucket이 아님");
-  await repository.enqueueJobs(resolution, timezone, [bucket]);
+  await repository.enqueueJobs(resolution, canonical, [bucket]);
 }
 
 export async function activateTimezoneRollupWith(
   repository: TimezoneRollupRepository,
   timezone: string,
   now = new Date(),
+  supportsTimezone: (timezone: string) => Promise<boolean> = async () => true,
 ): Promise<void> {
-  assertIanaTimezone(timezone);
-  const active = await repository.activateTimezone(timezone, MAX_ACTIVE_ROLLUP_TIMEZONES);
+  const canonical = requireCanonicalTimezone(timezone);
+  if (!(await supportsTimezone(canonical))) {
+    throw new Error(`ClickHouse가 지원하지 않는 IANA 시간대: ${canonical}`);
+  }
+  const active = await repository.activateTimezone(canonical, MAX_ACTIVE_ROLLUP_TIMEZONES);
   if (!active) {
     throw new Error(`활성 시간대는 최대 ${MAX_ACTIVE_ROLLUP_TIMEZONES}개까지 등록할 수 있음`);
   }
 
-  const buckets = dailyPrewarmBuckets(timezone, now);
+  const buckets = dailyPrewarmBuckets(canonical, now);
   for (let offset = 0; offset < buckets.length; offset += TIMEZONE_ROLLUP_PREWARM_CHUNK_DAYS) {
     await repository.enqueueJobs(
       "day",
-      timezone,
+      canonical,
       buckets.slice(offset, offset + TIMEZONE_ROLLUP_PREWARM_CHUNK_DAYS),
     );
   }
@@ -119,6 +119,10 @@ export async function runTimezoneRollupWorkerWith(
 
   for (const job of claimed) {
     try {
+      if (!(await compactor.supportsTimezone(job.timezone))) {
+        await repository.disableTimezone(job.timezone);
+        continue;
+      }
       const result = await repository.withAdvisoryLock(
         `timezone-rollup:${job.resolution}:${job.timezone}`,
         () => compactor.compactTimezoneRollup(job.resolution, job.timezone, job.bucket),
@@ -251,16 +255,75 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
       [id],
     );
   }
+
+  async disableTimezone(timezone: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE clickhouse_timezone_rollup_jobs
+         SET status = 'done', updated_at = now()
+         WHERE timezone = $1 AND status != 'done'`,
+        [timezone],
+      );
+      await client.query("DELETE FROM clickhouse_rollup_timezones WHERE timezone = $1", [timezone]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 function isTimezoneRollupCompactor(storage: unknown): storage is TimezoneRollupCompactor {
   return typeof (storage as { compactTimezoneRollup?: unknown }).compactTimezoneRollup === "function";
 }
 
+function isTimezoneCapability(storage: unknown): storage is TimezoneCapability {
+  return typeof (storage as { supportsTimezone?: unknown }).supportsTimezone === "function";
+}
+
+const timezoneCapabilityCache = new Map<string, Promise<boolean>>();
+
+async function productionSupportsTimezone(timezone: string): Promise<boolean> {
+  if (process.env.STORAGE_BACKEND !== "clickhouse") return true;
+  let check = timezoneCapabilityCache.get(timezone);
+  if (!check) {
+    check = import("./storage")
+      .then(({ getStorage }) => {
+        const storage = getStorage();
+        return isTimezoneCapability(storage) ? storage.supportsTimezone(timezone) : false;
+      })
+      .catch((error) => {
+        timezoneCapabilityCache.delete(timezone);
+        throw error;
+      });
+    timezoneCapabilityCache.set(timezone, check);
+  }
+  return check;
+}
+
+export async function resolveSupportedRollupTimezone(
+  timezone: string,
+  supportsTimezone: (timezone: string) => Promise<boolean> = productionSupportsTimezone,
+): Promise<string | null> {
+  const canonical = canonicalTimezoneId(timezone);
+  if (!canonical) return null;
+  return (await supportsTimezone(canonical)) ? canonical : null;
+}
+
 export async function activateTimezoneRollup(timezone: string): Promise<void> {
-  assertIanaTimezone(timezone);
+  const canonical = await resolveSupportedRollupTimezone(timezone);
+  if (!canonical) throw new Error(`지원하지 않는 IANA 시간대: ${timezone}`);
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
-  await activateTimezoneRollupWith(new PgTimezoneRollupRepository(getPool()), timezone);
+  await activateTimezoneRollupWith(
+    new PgTimezoneRollupRepository(getPool()),
+    canonical,
+    new Date(),
+    async () => true,
+  );
 }
 
 export async function enqueueTimezoneRollup(
@@ -268,17 +331,18 @@ export async function enqueueTimezoneRollup(
   timezone: string,
   bucket: Date,
 ): Promise<void> {
-  assertIanaTimezone(timezone);
+  const canonical = await resolveSupportedRollupTimezone(timezone);
+  if (!canonical) throw new Error(`지원하지 않는 IANA 시간대: ${timezone}`);
   if (!Number.isFinite(bucket.getTime())) throw new Error("유효한 시간대 rollup bucket이 아님");
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
-  await enqueueTimezoneRollupWith(new PgTimezoneRollupRepository(getPool()), resolution, timezone, bucket);
+  await enqueueTimezoneRollupWith(new PgTimezoneRollupRepository(getPool()), resolution, canonical, bucket);
 }
 
 export async function runTimezoneRollupWorker(): Promise<{ jobs: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
   const { getStorage } = await import("./storage");
   const storage = getStorage();
-  if (!isTimezoneRollupCompactor(storage)) return { jobs: 0, rows: 0 };
+  if (!isTimezoneRollupCompactor(storage) || !isTimezoneCapability(storage)) return { jobs: 0, rows: 0 };
   return runTimezoneRollupWorkerWith(new PgTimezoneRollupRepository(getPool()), storage);
 }
 
@@ -287,10 +351,11 @@ export function createTimezoneRollupActivationGate(
 ): (timezone: string) => void {
   const activated = new Set<string>();
   return (timezone) => {
-    if (activated.has(timezone)) return;
-    activated.add(timezone);
-    void activate(timezone).catch(() => {
-      activated.delete(timezone);
+    const canonical = canonicalTimezoneId(timezone);
+    if (!canonical || activated.has(canonical)) return;
+    activated.add(canonical);
+    void activate(canonical).catch(() => {
+      activated.delete(canonical);
     });
   };
 }

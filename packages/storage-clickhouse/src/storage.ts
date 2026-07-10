@@ -26,7 +26,13 @@ import type {
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
-import { buildUserInsightComparison } from "@toard/core";
+import {
+  addLocalCalendarDays,
+  buildUserInsightComparison,
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+  localDateKey,
+} from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
 /** CH/PG 는 큰 수·Decimal 을 string 으로 반환 → number 변환 */
@@ -81,47 +87,9 @@ function chDate(s: string): Date {
   return new Date(`${s.replace(" ", "T")}Z`);
 }
 
-function timezoneOffsetMs(at: Date, timezone: string): number {
-  const parts = Object.fromEntries(
-    new Intl.DateTimeFormat("en-US", {
-      timeZone: timezone,
-      hourCycle: "h23",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).formatToParts(at).map((part) => [part.type, part.value]),
-  );
-  const asUtc = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour),
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  return Math.round((asUtc - at.getTime()) / 60_000) * 60_000;
-}
-
-function timezoneDateKey(at: Date, timezone: string): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).format(at);
-}
-
 function nextTimezoneDayStart(bucket: Date, timezone: string): Date {
-  const [year, month, day] = timezoneDateKey(bucket, timezone).split("-").map(Number);
-  const nextDate = new Date(Date.UTC(year!, month! - 1, day! + 1));
-  const midnightAsUtc = nextDate.getTime();
-  let result = new Date(midnightAsUtc - timezoneOffsetMs(nextDate, timezone));
-  const refined = new Date(midnightAsUtc - timezoneOffsetMs(result, timezone));
-  if (refined.getTime() !== result.getTime()) result = refined;
-  return result;
+  const date = localDateKey(bucket, timezone);
+  return firstInstantOfLocalDate(addLocalCalendarDays(date, 1), timezone);
 }
 
 type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
@@ -1194,12 +1162,25 @@ export class ClickHouseStorage implements StorageBackend {
     return this.compactUsageRollup(USAGE_15M_V2, limitBuckets);
   }
 
+  async supportsTimezone(timezoneInput: string): Promise<boolean> {
+    const timezone = canonicalTimezoneId(timezoneInput);
+    if (!timezone) return false;
+    const rows = await this.queryJson<{ supported?: string }>(
+      `SELECT count() AS supported
+       FROM system.time_zones
+       WHERE time_zone = {timezone:String}`,
+      { timezone },
+    );
+    return n(rows[0]?.supported) > 0;
+  }
+
   async compactTimezoneRollup(
     resolution: "hour" | "day",
     timezone: string,
     bucket: Date,
   ): Promise<number> {
-    const tz = safeTimezone(timezone);
+    const tz = canonicalTimezoneId(timezone);
+    if (!tz) throw new Error(`invalid IANA timezone: ${timezone}`);
     const bucketExpression = resolution === "hour"
       ? `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${tz}')`
       : `toStartOfDay(bucket_15m, '${tz}')`;

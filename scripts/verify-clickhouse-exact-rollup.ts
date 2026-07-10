@@ -1,8 +1,15 @@
 import { createClient } from "../packages/storage-clickhouse/node_modules/@clickhouse/client/dist/index.js";
 import type { FinalizedUsageEvent } from "../packages/core/src/storage";
+import {
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+} from "../packages/core/src/timezone";
 import { ClickHouseStorage } from "../packages/storage-clickhouse/src/storage";
-import { dayStartUtc } from "../apps/web/lib/org-time";
-import { Pool } from "pg";
+import {
+  activateTimezoneRollupWith,
+  type TimezoneRollupRepository,
+} from "../apps/web/lib/timezone-rollup";
+import { Pool, type PoolClient } from "pg";
 
 function assertLocalUrl(name: string, value: string | undefined): string {
   const v = value ?? "";
@@ -68,9 +75,11 @@ async function readTimezoneSourceTotals(
   bucket: Date,
   providerKey: string,
 ): Promise<TimezoneTotals> {
+  const canonical = canonicalTimezoneId(timezone);
+  if (!canonical) throw new Error(`invalid timezone: ${timezone}`);
   const expression = resolution === "hour"
-    ? `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${timezone}')`
-    : `toStartOfDay(bucket_15m, '${timezone}')`;
+    ? `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${canonical}')`
+    : `toStartOfDay(bucket_15m, '${canonical}')`;
   const result = await ch.query({
     query: `SELECT sum(event_count) AS events,
                    sum(input_tokens) AS input,
@@ -101,6 +110,8 @@ async function readTimezoneCacheTotals(
   bucket: Date,
   providerKey: string,
 ): Promise<TimezoneTotals> {
+  const canonical = canonicalTimezoneId(timezone);
+  if (!canonical) throw new Error(`invalid timezone: ${timezone}`);
   const table = resolution === "hour" ? "usage_hourly_timezone_rollup" : "usage_daily_timezone_rollup";
   const result = await ch.query({
     query: `SELECT sum(event_count) AS events,
@@ -113,7 +124,7 @@ async function readTimezoneCacheTotals(
             WHERE timezone = {timezone:String}
               AND bucket_start = {bucket:DateTime64(3)}
               AND provider_key = {provider:String}`,
-    query_params: { timezone, bucket: chTs(bucket), provider: providerKey },
+    query_params: { timezone: canonical, bucket: chTs(bucket), provider: providerKey },
     format: "JSONEachRow",
   });
   return timezoneTotals((await result.json<{
@@ -131,9 +142,11 @@ async function timezoneHourStart(
   timezone: string,
   at: Date,
 ): Promise<Date> {
+  const canonical = canonicalTimezoneId(timezone);
+  if (!canonical) throw new Error(`invalid timezone: ${timezone}`);
   const result = await ch.query({
     query: `SELECT toUnixTimestamp(
-                     toStartOfInterval(toDateTime64({at:String}, 3, 'UTC'), INTERVAL 1 HOUR, '${timezone}')
+                     toStartOfInterval(toDateTime64({at:String}, 3, 'UTC'), INTERVAL 1 HOUR, '${canonical}')
                    ) AS epoch_seconds`,
     query_params: { at: chTs(at) },
     format: "JSONEachRow",
@@ -141,6 +154,34 @@ async function timezoneHourStart(
   const row = (await result.json<{ epoch_seconds: string }>())[0];
   if (!row) throw new Error(`failed to resolve hourly bucket for ${timezone}`);
   return new Date(Number(row.epoch_seconds) * 1000);
+}
+
+function transactionalTimezoneRepository(
+  client: PoolClient,
+  enqueuedBuckets: Date[],
+): TimezoneRollupRepository {
+  return {
+    async activateTimezone(timezone) {
+      await client.query(
+        `INSERT INTO clickhouse_rollup_timezones (timezone)
+         VALUES ($1)
+         ON CONFLICT (timezone) DO UPDATE SET last_requested_at = now()`,
+        [timezone],
+      );
+      return true;
+    },
+    async enqueueJobs(resolution, timezone, buckets) {
+      enqueuedBuckets.push(...buckets);
+      await client.query(
+        `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
+         SELECT $1, $2, bucket
+         FROM unnest($3::timestamptz[]) AS bucket
+         ON CONFLICT (resolution, timezone, bucket) DO UPDATE
+         SET status = 'pending', updated_at = now()`,
+        [resolution, timezone, buckets],
+      );
+    },
+  } as unknown as TimezoneRollupRepository;
 }
 
 function hourBucket(d: Date): string {
@@ -675,7 +716,7 @@ async function main(): Promise<void> {
     );
 
     const timezoneProviderKey = `${runId}:timezone-provider`;
-    const timezoneRows = Array.from(
+    const marchTimezoneRows = Array.from(
       { length: (4 * 24 * 60) / 15 },
       (_, index) => ({
         bucket_15m: chTs(new Date(Date.UTC(2026, 2, 7) + index * 15 * 60 * 1000)),
@@ -696,6 +737,28 @@ async function main(): Promise<void> {
         version: Date.now(),
       }),
     );
+    const santiagoTimezoneRows = Array.from(
+      { length: 23 * 4 },
+      (_, index) => ({
+        bucket_15m: chTs(new Date(Date.UTC(2025, 8, 7, 4) + index * 15 * 60 * 1000)),
+        provider_key: timezoneProviderKey,
+        user_id: userId,
+        team_id: teamId,
+        session_id: `${runId}:santiago-session`,
+        model: "verify-timezone-model",
+        host: "verify-timezone-host",
+        pricing_revision_id: "00000000-0000-0000-0000-000000000001",
+        cost_status: "priced",
+        event_count: 1,
+        input_tokens: 2,
+        output_tokens: 3,
+        cache_read_tokens: 5,
+        cache_creation_tokens: 7,
+        cost_usd: "0.01000000",
+        version: Date.now(),
+      }),
+    );
+    const timezoneRows = [...marchTimezoneRows, ...santiagoTimezoneRows];
     await ch.insert({
       table: "usage_15m_rollup_v2",
       values: timezoneRows,
@@ -710,7 +773,7 @@ async function main(): Promise<void> {
       "Europe/London",
     ] as const;
     for (const timezone of verifiedTimezones) {
-      const dayBucket = dayStartUtc("2026-03-08", timezone);
+      const dayBucket = firstInstantOfLocalDate("2026-03-08", timezone);
       await v2.compactTimezoneRollup("day", timezone, dayBucket);
       const daySource = await readTimezoneSourceTotals(ch, "day", timezone, dayBucket, timezoneProviderKey);
       const dayCache = await readTimezoneCacheTotals(ch, "day", timezone, dayBucket, timezoneProviderKey);
@@ -725,6 +788,74 @@ async function main(): Promise<void> {
       const hourCache = await readTimezoneCacheTotals(ch, "hour", timezone, hourBucket, timezoneProviderKey);
       assertEqual(hourCache, hourSource, `${timezone} hourly timezone cache vs 15m v2`);
       assertEqual(hourSource.events, 4, `${timezone} hourly 15m bucket count`);
+    }
+
+    const santiagoBucket = firstInstantOfLocalDate("2025-09-07", "America/Santiago");
+    assertEqual(santiagoBucket.toISOString(), "2025-09-07T04:00:00.000Z", "Santiago local-date first instant");
+    await v2.compactTimezoneRollup("day", "America/Santiago", santiagoBucket);
+    const santiagoSource = await readTimezoneSourceTotals(
+      ch,
+      "day",
+      "America/Santiago",
+      santiagoBucket,
+      timezoneProviderKey,
+    );
+    const santiagoCache = await readTimezoneCacheTotals(
+      ch,
+      "day",
+      "America/Santiago",
+      santiagoBucket,
+      timezoneProviderKey,
+    );
+    assertEqual(santiagoSource.events, 23 * 4, "Santiago midnight-gap non-empty source count");
+    assertEqual(santiagoCache, santiagoSource, "Santiago daily timezone cache vs 15m v2");
+
+    assertEqual(await v2.supportsTimezone("US/Pacific"), true, "ClickHouse canonical alias capability");
+    assertEqual(await v2.supportsTimezone("America/Coyhaique"), false, "ClickHouse Node-only timezone capability");
+
+    const tx = await pg.connect();
+    const aliasBuckets: Date[] = [];
+    try {
+      await tx.query("BEGIN");
+      const repository = transactionalTimezoneRepository(tx, aliasBuckets);
+      const supportsTimezone = (timezone: string) => v2.supportsTimezone(timezone);
+      let unsupportedRejected = false;
+      try {
+        await activateTimezoneRollupWith(
+          repository,
+          "America/Coyhaique",
+          new Date("2026-07-10T12:00:00.000Z"),
+          supportsTimezone,
+        );
+      } catch {
+        unsupportedRejected = true;
+      }
+      assertEqual(unsupportedRejected, true, "unsupported timezone rejected before registry write");
+
+      const activationNow = new Date("2026-07-10T12:00:00.000Z");
+      await activateTimezoneRollupWith(repository, "US/Pacific", activationNow, supportsTimezone);
+      await activateTimezoneRollupWith(repository, "America/Los_Angeles", activationNow, supportsTimezone);
+      const uniqueAliasBuckets = [...new Map(aliasBuckets.map((bucket) => [bucket.toISOString(), bucket])).values()];
+      const registry = await tx.query<{ timezone: string }>(
+        `SELECT timezone FROM clickhouse_rollup_timezones
+         WHERE timezone IN ('US/Pacific', 'America/Los_Angeles')
+         ORDER BY timezone`,
+      );
+      const jobs = await tx.query<{ timezone: string; count: string }>(
+        `SELECT timezone, count(*)::text AS count
+         FROM clickhouse_timezone_rollup_jobs
+         WHERE resolution = 'day'
+           AND timezone IN ('US/Pacific', 'America/Los_Angeles')
+           AND bucket = ANY($1::timestamptz[])
+         GROUP BY timezone
+         ORDER BY timezone`,
+        [uniqueAliasBuckets],
+      );
+      assertEqual(registry.rows, [{ timezone: "America/Los_Angeles" }], "canonical timezone registry key");
+      assertEqual(jobs.rows, [{ timezone: "America/Los_Angeles", count: "400" }], "canonical timezone job keys");
+    } finally {
+      await tx.query("ROLLBACK").catch(() => undefined);
+      tx.release();
     }
 
     const duplicateJobBucket = new Date();
@@ -759,6 +890,7 @@ async function main(): Promise<void> {
       runId,
       inserted: insertedDuplicates + saveRest.inserted + saveLate.inserted,
       verifiedTimezones,
+      verifiedMidnightGapTimezone: "America/Santiago",
       timezoneRows: timezoneRows.length,
     }));
   } finally {

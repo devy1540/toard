@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { canonicalTimezoneId } from "@toard/core";
 import {
   MAX_ACTIVE_ROLLUP_TIMEZONES,
   TIMEZONE_ROLLUP_JOBS_PER_TICK,
   activateTimezoneRollupWith,
   createTimezoneRollupActivationGate,
   enqueueTimezoneRollupWith,
-  isValidRollupTimezone,
+  resolveSupportedRollupTimezone,
   runTimezoneRollupWorkerWith,
   type TimezoneRollupJob,
   type TimezoneRollupRepository,
@@ -17,14 +18,16 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
   const jobs = new Map<string, TimezoneRollupJob>();
   const chunks: Date[][] = [];
   const lockKeys: string[] = [];
+  const activeTimezones = new Set<string>();
   let sequence = 0;
   let lockHeld = false;
   const key = (resolution: string, timezone: string, bucket: Date) =>
     `${resolution}:${timezone}:${bucket.toISOString()}`;
 
   const repo: TimezoneRollupRepository = {
-    async activateTimezone(_timezone, maximum) {
+    async activateTimezone(timezone, maximum) {
       assert.equal(maximum, MAX_ACTIVE_ROLLUP_TIMEZONES);
+      activeTimezones.add(timezone);
       return options.capacity ?? true;
     },
     async enqueueJobs(resolution, timezone, buckets) {
@@ -69,9 +72,15 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
       if (job) job.status = "pending";
     },
+    async disableTimezone(timezone) {
+      activeTimezones.delete(timezone);
+      for (const job of jobs.values()) {
+        if (job.timezone === timezone) job.status = "done";
+      }
+    },
   };
 
-  return { repo, jobs, chunks, lockKeys };
+  return { repo, jobs, chunks, lockKeys, activeTimezones };
 }
 
 test("같은 시간대·해상도·버킷 작업은 한 번만 enqueue한다", async () => {
@@ -126,18 +135,61 @@ test("활성화는 IANA 시간대만 허용하고 registry 64개 상한을 강�
   assert.equal(full.chunks.length, 0);
 });
 
-test("rollup 시간대 검증은 필수 IANA 이름을 보존하고 ClickHouse 비호환 약어를 거부한다", () => {
-  for (const timezone of [
-    "UTC",
-    "Asia/Seoul",
+test("alias activation은 canonical registry와 job key 하나로 합쳐진다", async () => {
+  const fixture = fakeTimezoneRollupRepository();
+  const now = new Date("2026-03-10T12:00:00.000Z");
+
+  await activateTimezoneRollupWith(fixture.repo, "US/Pacific", now);
+  await activateTimezoneRollupWith(fixture.repo, "America/Los_Angeles", now);
+
+  assert.deepEqual([...fixture.activeTimezones], ["America/Los_Angeles"]);
+  assert.equal(fixture.jobs.size, 400);
+  assert.equal(canonicalTimezoneId("US/Pacific"), "America/Los_Angeles");
+});
+
+test("ClickHouse 미지원 timezone은 registry와 prewarm 전에 거부한다", async () => {
+  const fixture = fakeTimezoneRollupRepository();
+
+  await assert.rejects(
+    activateTimezoneRollupWith(
+      fixture.repo,
+      "America/Coyhaique",
+      new Date("2026-03-10T12:00:00.000Z"),
+      async () => false,
+    ),
+    /ClickHouse가 지원하지 않는/,
+  );
+  assert.equal(fixture.activeTimezones.size, 0);
+  assert.equal(fixture.jobs.size, 0);
+});
+
+test("지원 여부 resolver는 canonical ID로 capability를 확인한다", async () => {
+  const checked: string[] = [];
+  const supported = async (timezone: string) => {
+    checked.push(timezone);
+    return timezone !== "America/Coyhaique";
+  };
+
+  assert.equal(
+    await resolveSupportedRollupTimezone("US/Pacific", supported),
     "America/Los_Angeles",
-    "Asia/Kolkata",
-    "Asia/Kathmandu",
-    "Europe/London",
-  ]) {
-    assert.equal(isValidRollupTimezone(timezone), true, timezone);
-  }
-  assert.equal(isValidRollupTimezone("PST"), false);
+  );
+  assert.equal(await resolveSupportedRollupTimezone("America/Coyhaique", supported), null);
+  assert.deepEqual(checked, ["America/Los_Angeles", "America/Coyhaique"]);
+});
+
+test("Santiago 자정 gap 날짜 prewarm은 실제 local date 첫 instant를 사용한다", async () => {
+  const fixture = fakeTimezoneRollupRepository();
+
+  await activateTimezoneRollupWith(
+    fixture.repo,
+    "America/Santiago",
+    new Date("2026-07-10T12:00:00.000Z"),
+  );
+
+  const starts = new Set(fixture.chunks.flat().map((bucket) => bucket.toISOString()));
+  assert.equal(starts.has("2025-09-07T04:00:00.000Z"), true);
+  assert.equal(starts.has("2025-09-07T03:00:00.000Z"), false);
 });
 
 test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은 pending으로 복귀한다", async () => {
@@ -152,6 +204,9 @@ test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은
   }
 
   const result = await runTimezoneRollupWorkerWith(fixture.repo, {
+    async supportsTimezone() {
+      return true;
+    },
     async compactTimezoneRollup(_resolution, _timezone, bucket) {
       if (bucket.toISOString() === "2026-07-02T00:00:00.000Z") throw new Error("ClickHouse unavailable");
       return 3;
@@ -164,6 +219,39 @@ test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은
   assert.equal(fixture.lockKeys[1], "timezone-rollup:hour:Asia/Seoul");
   assert.equal([...fixture.jobs.values()].filter((job) => job.status === "done").length, 7);
   assert.equal([...fixture.jobs.values()].filter((job) => job.status === "pending").length, 2);
+});
+
+test("ClickHouse capability가 사라진 timezone job은 한 tick에 drain되어 정상 queue를 굶기지 않는다", async () => {
+  const fixture = fakeTimezoneRollupRepository();
+  for (let index = 0; index < 8; index++) {
+    await enqueueTimezoneRollupWith(
+      fixture.repo,
+      "day",
+      "America/Coyhaique",
+      new Date(Date.UTC(2026, 0, index + 1)),
+    );
+  }
+  await enqueueTimezoneRollupWith(
+    fixture.repo,
+    "day",
+    "Asia/Seoul",
+    new Date("2026-01-09T00:00:00.000Z"),
+  );
+  const compactor = {
+    async supportsTimezone(timezone: string) {
+      return timezone !== "America/Coyhaique";
+    },
+    async compactTimezoneRollup() {
+      return 3;
+    },
+  };
+
+  assert.deepEqual(await runTimezoneRollupWorkerWith(fixture.repo, compactor), { jobs: 0, rows: 0 });
+  assert.equal(
+    [...fixture.jobs.values()].filter((job) => job.timezone === "America/Coyhaique" && job.status !== "done").length,
+    0,
+  );
+  assert.deepEqual(await runTimezoneRollupWorkerWith(fixture.repo, compactor), { jobs: 1, rows: 3 });
 });
 
 test("cookie activation gate는 같은 process의 동일 시간대 요청을 한 번만 실행한다", async () => {
@@ -195,9 +283,9 @@ test("설정 저장과 cookie fallback은 DB 성공 뒤 non-blocking activation�
     actions,
     /await getPool\(\)\.query\("UPDATE users SET timezone[\s\S]*void activateTimezoneRollup\(tz\)/,
   );
-  assert.match(viewer, /activateTimezoneRollupNonBlocking\(cookieTz\)/);
-  assert.match(actions, /isValidRollupTimezone\(tz\)/);
-  assert.match(viewer, /isValidRollupTimezone\(cookieTz\)/);
+  assert.match(viewer, /activateTimezoneRollupNonBlocking\(resolvedCookie\)/);
+  assert.match(actions, /resolveSupportedRollupTimezone\(raw\)/);
+  assert.match(viewer, /resolveSupportedRollupTimezone\(cookieTz\)/);
   assert.match(outbox, /compactClickHouseTimezoneRollups/);
   assert.match(
     rollup,

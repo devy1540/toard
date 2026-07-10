@@ -633,7 +633,7 @@ export class ClickHouseStorage implements StorageBackend {
         if (bucket.to > coveredTo) break;
         if (dirtyBucket && dirtyBucket < bucket.to) break;
         const status = jobStatus.get(bucket.from.getTime());
-        if (status ? status !== "done" : !covered.has(bucket.from.getTime())) break;
+        if (!covered.has(bucket.from.getTime()) || (status != null && status !== "done")) break;
         cacheTo = bucket.to;
       }
       return cacheTo ? { from: expected[0]!.from, to: cacheTo } : null;

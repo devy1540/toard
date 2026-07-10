@@ -34,6 +34,13 @@
     "shimUnreported": "Not reported (old shim)",
     "shimOutdated": "Update needed",
     "deviceCommandCopied": "Copied the command.",
+    "inventory": {
+      "missing": "AI tool inventory not received",
+      "fresh": "Current",
+      "stale": "Delayed",
+      "summary": "{mcp} MCP · {skills} skills · {plugins} plugins",
+      "kind": { "mcp": "MCP", "skill": "Skills", "plugin": "Plugins" }
+    },
     "deviceAction": {
       "collect": "Check",
       "doctor": "Diagnose",

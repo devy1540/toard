@@ -1,0 +1,34 @@
+{
+  "host": "macbook.local",
+  "fingerprint": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "observedAt": "2026-07-10T00:00:00.000Z",
+  "items": [
+    {
+      "kind": "mcp",
+      "itemKey": "context7",
+      "displayName": "context7",
+      "sourceProvider": "claude_code",
+      "pluginKey": "context7",
+      "version": null,
+      "enabled": true
+    },
+    {
+      "kind": "skill",
+      "itemKey": "brainstorming",
+      "displayName": "brainstorming",
+      "sourceProvider": "codex",
+      "pluginKey": "superpowers",
+      "version": "6.1.1",
+      "enabled": true
+    },
+    {
+      "kind": "plugin",
+      "itemKey": "superpowers",
+      "displayName": "superpowers",
+      "sourceProvider": "codex",
+      "pluginKey": "superpowers",
+      "version": "6.1.1",
+      "enabled": true
+    }
+  ]
+}

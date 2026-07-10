@@ -14,12 +14,14 @@ import { getHostShims } from "@/lib/host-shims";
 import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
+import { getMyDeviceInventories } from "@/lib/tool-metadata";
 import { getActiveTokenMeta, listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { AppearanceForm } from "./appearance-form";
 import { DeviceActions } from "./device-actions";
+import { DeviceInventory } from "./device-inventory";
 import { OnboardingPanel } from "./onboarding-panel";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
@@ -154,13 +156,14 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [meta, tokens, endpoint, baseUrl, devices, shims] = await Promise.all([
+  const [meta, tokens, endpoint, baseUrl, devices, shims, inventories] = await Promise.all([
     getActiveTokenMeta(userId),
     listActiveTokens(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
     getStorage().getUserHosts(userId),
     getHostShims(userId),
+    getMyDeviceInventories(userId),
   ]);
   const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
@@ -205,7 +208,7 @@ async function InstallTab({ userId }: { userId: string }) {
       </Card>
 
       <TokenManagementPanel tokens={tokenRows} />
-      <DeviceList devices={devices} shims={shims} serverVersion={serverVersion} />
+      <DeviceList devices={devices} shims={shims} inventories={inventories} serverVersion={serverVersion} />
     </div>
   );
 }
@@ -213,10 +216,12 @@ async function InstallTab({ userId }: { userId: string }) {
 async function DeviceList({
   devices,
   shims,
+  inventories,
   serverVersion,
 }: {
   devices: DeviceInfo[];
   shims: Map<string, { version: string; lastSeenAt: Date }>;
+  inventories: import("@toard/core").DeviceToolInventory[];
   serverVersion: string;
 }) {
   const t = await getTranslations("settings");
@@ -252,6 +257,7 @@ async function DeviceList({
             <TableBody>
               {devices.map((d) => {
                 const shim = d.host ? shims.get(d.host) : undefined;
+                const inventory = inventories.find((item) => item.host === d.host);
                 const outdated = shim ? isShimOutdated(shim.version, serverVersion) : false;
                 const primaryAction = !shim ? "doctor" : outdated ? "update" : "collect";
                 return (
@@ -269,6 +275,7 @@ async function DeviceList({
                           {d.host ?? t("install.unknownHost")}
                         </span>
                       </span>
+                      <DeviceInventory inventory={inventory} />
                     </TableCell>
                     <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
                     <TableCell>

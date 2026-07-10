@@ -79,6 +79,15 @@
   "providerComposition": "도구 구성",
   "providerCompositionDescription": "프로바이더별 토큰 비중입니다.",
   "noProviderTitle": "프로바이더 사용량 없음",
+  "toolActivity": {
+    "title": "AI 도구 활동",
+    "description": "개인 이름과 기기를 노출하지 않는 워크스페이스 집계입니다.",
+    "mcp": "MCP 호출",
+    "skills": "스킬 활동",
+    "plugins": "플러그인 활동",
+    "users": "활성 사용자",
+    "devices": "활성 기기"
+  },
   "teamDailyUsage": "팀 일별 사용량",
   "teamHourlyUsage": "팀 시간별 사용량",
   "teamUsage30m": "팀 30분별 사용량",

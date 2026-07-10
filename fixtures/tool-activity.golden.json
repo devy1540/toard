@@ -1,0 +1,41 @@
+[
+  {
+    "dedupKey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "providerKey": "claude_code",
+    "sessionId": "claude-session",
+    "host": "macbook.local",
+    "ts": "2026-07-10T00:00:00.000Z",
+    "activityKind": "mcp",
+    "itemKey": "context7.resolve-library-id",
+    "displayName": "context7.resolve-library-id",
+    "pluginKey": "context7",
+    "outcome": "success",
+    "detection": "explicit"
+  },
+  {
+    "dedupKey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "providerKey": "claude_code",
+    "sessionId": "claude-session",
+    "host": "macbook.local",
+    "ts": "2026-07-10T00:01:00.000Z",
+    "activityKind": "skill",
+    "itemKey": "brainstorming",
+    "displayName": "brainstorming",
+    "pluginKey": "superpowers",
+    "outcome": "unknown",
+    "detection": "explicit"
+  },
+  {
+    "dedupKey": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "providerKey": "codex",
+    "sessionId": "codex-session",
+    "host": "macmini.local",
+    "ts": "2026-07-10T00:02:00.000Z",
+    "activityKind": "skill",
+    "itemKey": "writing-plans",
+    "displayName": "writing-plans",
+    "pluginKey": "superpowers",
+    "outcome": "unknown",
+    "detection": "derived_load"
+  }
+]

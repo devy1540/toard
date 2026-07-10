@@ -11,11 +11,15 @@
 // 최상위 crate::codex(=OTEL config.toml 주입기)와는 다른 모듈(collect::codex).
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::{file_mtime_ms, walk_files, LogAdapter, RawContent, RawUsage};
+use super::{
+    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage,
+};
 use crate::iso::iso_to_epoch_ms;
+use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
 
 pub struct Codex;
 
@@ -42,6 +46,229 @@ impl LogAdapter for Codex {
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
         parse_rollout(path)
     }
+
+    fn parse_changed(&self, path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
+        parse_rollout_all(path, include_content, include_tools)
+    }
+}
+
+fn parse_mcp_name(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.split_once("__")?;
+    if server.is_empty() || tool.is_empty() {
+        return None;
+    }
+    let mut key = String::with_capacity(server.len() + tool.len() + 1);
+    key.push_str(server);
+    key.push('.');
+    if tool.contains("__") {
+        let mut parts = tool.split("__");
+        if let Some(first) = parts.next() {
+            key.push_str(first);
+        }
+        for part in parts {
+            key.push('.');
+            key.push_str(part);
+        }
+    } else {
+        key.push_str(tool);
+    }
+    Some(key)
+}
+
+fn skill_names_from_input(input: &str) -> Vec<(String, Option<String>)> {
+    let mut names = Vec::new();
+    for token in input.split_whitespace() {
+        let path =
+            token.trim_matches(|ch: char| matches!(ch, '"' | '\'' | '}' | ']' | ')' | ',' | ';'));
+        if !path.ends_with("/SKILL.md") {
+            continue;
+        }
+        if !(path.contains("/.codex/skills/")
+            || path.contains("/.agents/skills/")
+            || path.contains("/.claude/skills/")
+            || path.contains("/.codex/plugins/cache/"))
+        {
+            continue;
+        }
+        if let Some(name) = path.trim_end_matches("/SKILL.md").rsplit('/').next() {
+            if name.is_empty() || names.iter().any(|(existing, _)| existing == name) {
+                continue;
+            }
+            let segments: Vec<&str> = path.split('/').collect();
+            let plugin = segments
+                .iter()
+                .position(|segment| *segment == "cache")
+                .and_then(|index| segments.get(index + 2))
+                .filter(|plugin| !plugin.is_empty())
+                .map(|plugin| (*plugin).to_string());
+            names.push((name.to_string(), plugin));
+        }
+    }
+    names
+}
+
+fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
+    let fallback = file_mtime_ms(path);
+    let Ok(bytes) = std::fs::read(path) else {
+        return ParsedLog::default();
+    };
+    let mut parsed = ParsedLog::default();
+    let mut session_id: Option<Arc<str>> = None;
+    let mut model: Option<String> = None;
+    let mut last_seen_total: Option<(u64, u64)> = None;
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            continue;
+        };
+        let Some(obj) = value.as_object() else {
+            continue;
+        };
+        let ty = obj.get("type").and_then(Value::as_str);
+        let payload = obj.get("payload").and_then(Value::as_object);
+        let ts_ms = obj
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .and_then(iso_to_epoch_ms)
+            .unwrap_or(fallback);
+        if ty == Some("session_meta") {
+            session_id = payload
+                .and_then(|item| item.get("session_id"))
+                .and_then(Value::as_str)
+                .map(Arc::from);
+            continue;
+        }
+        if ty == Some("turn_context") {
+            if let Some(value) = payload
+                .and_then(|item| item.get("model"))
+                .and_then(Value::as_str)
+            {
+                model = Some(value.to_string());
+            }
+            continue;
+        }
+        if ty == Some("event_msg") {
+            let Some(item) = payload else { continue };
+            match item.get("type").and_then(Value::as_str) {
+                Some("token_count") => {
+                    let Some(info) = item.get("info").and_then(Value::as_object) else {
+                        continue;
+                    };
+                    if let Some(total) = info.get("total_token_usage").and_then(Value::as_object) {
+                        let count = |key: &str| total.get(key).and_then(Value::as_u64).unwrap_or(0);
+                        let current = (count("input_tokens"), count("output_tokens"));
+                        if last_seen_total == Some(current) {
+                            continue;
+                        }
+                        last_seen_total = Some(current);
+                    }
+                    let Some(last) = info.get("last_token_usage").and_then(Value::as_object) else {
+                        continue;
+                    };
+                    let count = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
+                    let cached = count("cached_input_tokens");
+                    let usage = RawUsage {
+                        ts_ms,
+                        session_id: session_id.as_deref().map(str::to_string),
+                        model: model.clone(),
+                        message_id: None,
+                        input_tokens: count("input_tokens").saturating_sub(cached),
+                        output_tokens: count("output_tokens"),
+                        cache_read_tokens: cached,
+                        cache_creation_tokens: 0,
+                        cache_creation_1h_tokens: 0,
+                    };
+                    if usage.input_tokens + usage.output_tokens + usage.cache_read_tokens > 0 {
+                        parsed.usage.push(usage);
+                    }
+                }
+                Some("user_message" | "agent_message") if include_content => {
+                    let Some(text) = item.get("message").and_then(Value::as_str).map(str::trim)
+                    else {
+                        continue;
+                    };
+                    if !text.is_empty() {
+                        parsed.content.push(RawContent {
+                            ts_ms,
+                            session_id: session_id.as_deref().map(str::to_string),
+                            message_id: None,
+                            role: if item.get("type").and_then(Value::as_str)
+                                == Some("user_message")
+                            {
+                                "user"
+                            } else {
+                                "assistant"
+                            },
+                            text: text.to_string(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if !include_tools || ty != Some("response_item") {
+            continue;
+        }
+        let Some(item) = payload else { continue };
+        let item_type = item.get("type").and_then(Value::as_str);
+        if !matches!(item_type, Some("function_call" | "custom_tool_call")) {
+            continue;
+        }
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let call_id = item
+            .get("call_id")
+            .or_else(|| item.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let outcome = match item.get("status").and_then(Value::as_str) {
+            Some("completed") => ToolOutcome::Success,
+            Some("failed") => ToolOutcome::Failure,
+            _ => ToolOutcome::Unknown,
+        };
+        if let Some(item_key) = parse_mcp_name(name) {
+            parsed.tools.push(RawToolActivity {
+                ts_ms,
+                session_id: session_id.clone(),
+                call_id: call_id.to_string(),
+                kind: ToolActivityKind::Mcp,
+                item_key,
+                plugin_key: None,
+                outcome,
+                detection: ToolDetection::Explicit,
+            });
+        }
+        if matches!(
+            name,
+            "exec_command" | "shell_command" | "exec" | "read_file"
+        ) {
+            let input = item
+                .get("arguments")
+                .or_else(|| item.get("input"))
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .unwrap_or_default();
+            for (skill, plugin_key) in skill_names_from_input(&input) {
+                parsed.tools.push(RawToolActivity {
+                    ts_ms,
+                    session_id: session_id.clone(),
+                    call_id: format!("{call_id}:{skill}"),
+                    kind: ToolActivityKind::Skill,
+                    item_key: skill,
+                    plugin_key,
+                    outcome,
+                    detection: ToolDetection::DerivedLoad,
+                });
+            }
+        }
+    }
+    parsed
 }
 
 /// 롤아웃 jsonl → 사용량 레코드 (§4.2·§4.3 — 실측 검증).
@@ -326,5 +553,121 @@ mod tests {
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].input_tokens, 0, "언더플로 없이 0");
         assert_eq!(recs[0].cache_read_tokens, 150);
+    }
+
+    #[test]
+    fn parses_mcp_and_skill_load_without_serializing_command() {
+        let tmp = TempDir::new("codex-tools");
+        let path = tmp.write(
+            "sessions/tools.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"session_id":"s1"}}"#,
+                r#"{"timestamp":"2026-07-10T00:00:00Z","type":"response_item","payload":{"type":"function_call","name":"mcp__github__get_issue","call_id":"call-1","arguments":"{\"owner\":\"secret\"}"}}"#,
+                r#"{"timestamp":"2026-07-10T00:00:01Z","type":"response_item","payload":{"type":"function_call","name":"exec_command","call_id":"call-2","arguments":"{\"cmd\":\"sed -n 1,200p /Users/test/.codex/plugins/cache/openai-curated-remote/superpowers/6.1.1/skills/brainstorming/SKILL.md\"}"}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Codex.parse_changed(&path, false, true);
+        assert_eq!(parsed.tools.len(), 2);
+        assert_eq!(parsed.tools[0].item_key, "github.get_issue");
+        assert_eq!(parsed.tools[1].item_key, "brainstorming");
+        assert_eq!(parsed.tools[1].plugin_key.as_deref(), Some("superpowers"));
+        assert_eq!(parsed.tools[1].detection, ToolDetection::DerivedLoad);
+        let body = crate::tool_event::to_tool_events_body("codex", Some("box"), &parsed.tools);
+        assert!(!body.contains("sed -n"));
+        assert!(!body.contains("/Users/test"));
+        assert!(!body.contains("secret"));
+    }
+
+    #[test]
+    #[ignore = "release 성능 검증에서 명시적으로 실행"]
+    fn benchmark_collect_fixture_stays_within_ten_percent() {
+        use std::time::Instant;
+
+        let tmp = TempDir::new("codex-benchmark");
+        let mut lines =
+            vec![r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string()];
+        const RECORDS: usize = 5_000;
+        for index in 1..=RECORDS {
+            lines.push(
+                serde_json::json!({
+                    "timestamp": "2026-07-10T00:00:00Z",
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "token_count",
+                        "info": {
+                            "last_token_usage": {
+                                "input_tokens": 100,
+                                "cached_input_tokens": 50,
+                                "output_tokens": 20
+                            },
+                            "total_token_usage": {
+                                "input_tokens": index * 100,
+                                "output_tokens": index * 20
+                            }
+                        }
+                    }
+                })
+                .to_string(),
+            );
+            lines.push(
+                serde_json::json!({
+                    "timestamp": "2026-07-10T00:00:01Z",
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": "mcp__github__get_issue",
+                        "call_id": format!("call-{index}"),
+                        "arguments": "{}"
+                    }
+                })
+                .to_string(),
+            );
+        }
+        let path = tmp.write("sessions/bench.jsonl", &lines.join("\n"));
+
+        let baseline = || {
+            let start = Instant::now();
+            assert_eq!(Codex.parse_file(&path).len(), RECORDS);
+            start.elapsed().as_nanos()
+        };
+        let feature = || {
+            let start = Instant::now();
+            let parsed = Codex.parse_changed(&path, false, true);
+            assert_eq!(parsed.tools.len(), RECORDS);
+            start.elapsed().as_nanos()
+        };
+
+        for _ in 0..3 {
+            let _ = baseline();
+            let _ = feature();
+        }
+
+        let mut baseline_times = Vec::new();
+        let mut feature_times = Vec::new();
+        for index in 0..31 {
+            let (base, with_tools) = if index % 2 == 0 {
+                (baseline(), feature())
+            } else {
+                let with_tools = feature();
+                (baseline(), with_tools)
+            };
+            baseline_times.push(base);
+            feature_times.push(with_tools);
+        }
+        baseline_times.sort_unstable();
+        feature_times.sort_unstable();
+        let baseline_total: u128 = baseline_times[5..26].iter().sum();
+        let feature_total: u128 = feature_times[5..26].iter().sum();
+        let trimmed_ratio = feature_total as f64 / baseline_total as f64;
+        eprintln!(
+            "trimmed_mean_overhead={:.2}%",
+            (trimmed_ratio - 1.0) * 100.0
+        );
+        assert!(
+            trimmed_ratio <= 1.10,
+            "도구 파서 CPU 증가가 10%를 초과했습니다"
+        );
     }
 }

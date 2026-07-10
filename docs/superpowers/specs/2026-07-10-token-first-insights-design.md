@@ -108,7 +108,7 @@
   - 토큰/비용 선택 순서.
   - 한 줄 툴바용 압축 표현.
   - 기존 URL 파라미터 갱신과 접근 가능한 이름 유지.
-- `apps/web/messages/ko.json`, `apps/web/messages/en.json`
+- `apps/web/messages/ko/insights.json`, `apps/web/messages/en/insights.json`
   - 제거되는 설명 또는 시각 라벨 정리와 필요한 토큰 중심 문구 확인.
 - 기존 인사이트 페이지 및 규칙 테스트
   - 기본값, 명시적 비용 선택, KPI 순서와 레이아웃 계약 보강.

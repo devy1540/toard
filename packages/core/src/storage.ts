@@ -79,6 +79,14 @@ export interface UsageEvent {
   host?: string | null;
 }
 
+export type UsageCostStatus = "priced" | "unpriced" | "legacy";
+
+/** 서버가 이벤트 시각 기준 가격 revision으로 비용을 확정한 저장 계약. */
+export interface FinalizedUsageEvent extends UsageEvent {
+  pricingRevisionId: string | null;
+  costStatus: UsageCostStatus;
+}
+
 export interface OverviewStats {
   totalSessions: number;
   /** 기간 내 DISTINCT user */

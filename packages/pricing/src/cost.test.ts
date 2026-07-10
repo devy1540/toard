@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveCost } from "./cost";
-import type { PricingMap } from "./types";
+import { resolveCost, resolveCostAt } from "./cost";
+import type { PricingMap, PricingSchedule } from "./types";
 
 const pricing: PricingMap = new Map([
   ["claude-sonnet-4-6", { inputPerM: 3, outputPerM: 15, cacheReadPerM: 0.3, cacheCreatePerM: 3.75 }],
@@ -65,4 +65,52 @@ test("fast 배수 적용", () => {
   const m: PricingMap = new Map([["m", { inputPerM: 10, outputPerM: 20, fastMultiplier: 2 }]]);
   const c = resolveCost({ model: "m", inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, isFast: true, pricing: m });
   assert.equal(c, 20); // (1M×10/1e6=10) × 2
+});
+
+test("resolveCostAt은 사용 시각 이하의 마지막 revision을 선택한다", () => {
+  const schedule: PricingSchedule = new Map([["model-a", [
+    { id: "old", modelId: "model-a", effectiveAt: new Date("2026-07-01T00:00:00Z"), pricing: { inputPerM: 1, outputPerM: 1 } },
+    { id: "new", modelId: "model-a", effectiveAt: new Date("2026-07-11T00:00:00Z"), pricing: { inputPerM: 2, outputPerM: 2 } },
+  ]] ]);
+
+  assert.deepEqual(resolveCostAt({
+    model: "model-a",
+    occurredAt: new Date("2026-07-10T23:59:59Z"),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule,
+    mode: "calculate",
+  }), { costUsd: 1, pricingRevisionId: "old", status: "priced" });
+});
+
+test("resolveCostAt은 일치 가격이 없으면 unpriced를 돌려준다", () => {
+  assert.deepEqual(resolveCostAt({
+    model: "missing",
+    occurredAt: new Date("2026-07-10T00:00:00Z"),
+    inputTokens: 1,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule: new Map(),
+    mode: "calculate",
+  }), { costUsd: 0, pricingRevisionId: null, status: "unpriced" });
+});
+
+test("resolveCostAt은 기존 모델 alias 정규화를 사용한다", () => {
+  const schedule: PricingSchedule = new Map([["model-a", [
+    { id: "aliased", modelId: "model-a", effectiveAt: new Date("2026-07-01T00:00:00Z"), pricing: { inputPerM: 3, outputPerM: 1 } },
+  ]] ]);
+
+  assert.deepEqual(resolveCostAt({
+    model: "anthropic.model-a-20260710",
+    occurredAt: new Date("2026-07-10T00:00:00Z"),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule,
+    mode: "calculate",
+  }), { costUsd: 3, pricingRevisionId: "aliased", status: "priced" });
 });

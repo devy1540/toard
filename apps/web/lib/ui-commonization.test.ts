@@ -50,6 +50,12 @@ test("insights page uses the cached comparison and shared cards", () => {
   assert.match(page, /@\/components\/ui\/card/);
 });
 
+test("insights page builds cache arguments from a stable period anchor", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  assert.match(page, /const anchor = getInsightPeriodAnchor\(\)/);
+  assert.match(page, /buildInsightPeriodPair\(preset, timezone, anchor\)/);
+});
+
 test("insight filters reuse shared controls and update URL parameters", () => {
   const filters = source("components/dashboard/insight-filters.tsx");
   assert.match(filters, /@\/components\/ui\/segmented-control/);
@@ -61,6 +67,24 @@ test("insight comparison chart renders current and previous without animation", 
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);
   assert.match(chart, /dataKey="previous"[\s\S]*isAnimationActive=\{false\}/);
+});
+
+test("insight comparison chart preserves sparse numeric positions", () => {
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+  assert.match(chart, /<XAxis[\s\S]*type="number"[\s\S]*domain=\{\["dataMin", "dataMax"\]\}/);
+});
+
+test("insight comparison chart has a translated accessible name and description", () => {
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+  assert.match(chart, /role="img"/);
+  assert.match(chart, /aria-label=\{t\("chart\.accessibleLabel"\)\}/);
+  assert.match(chart, /aria-describedby=\{descriptionId\}/);
+  assert.match(chart, /id=\{descriptionId\}[\s\S]*t\("chart\.accessibleDescription"\)/);
+});
+
+test("insights page separates login-required and usage-empty states", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  assert.match(page, /if \(!userId\)[\s\S]*loginRequired\.title[\s\S]*loginRequired\.description/);
 });
 
 test("insight composition uses shared tabs and limits rows", () => {

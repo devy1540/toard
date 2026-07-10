@@ -17,6 +17,10 @@
   "cache": {
     "calculatedAt": "Calculated as of {time}"
   },
+  "loginRequired": {
+    "title": "Login required",
+    "description": "Sign in to view your personal insights."
+  },
   "summary": {
     "title": "Key changes",
     "description": "Notable changes compared with the previous period.",
@@ -32,6 +36,8 @@
   "chart": {
     "title": "Current and previous trends",
     "description": "Compare matching elapsed positions across both periods.",
+    "accessibleLabel": "Current and previous period usage comparison chart",
+    "accessibleDescription": "Two lines compare current and previous period usage at each elapsed position.",
     "current": "Current period",
     "previous": "Previous period",
     "position": "Position {position}"

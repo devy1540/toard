@@ -7,7 +7,7 @@ import { InsightFilters } from "@/components/dashboard/insight-filters";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
-import { buildInsightPeriodPair, parseInsightPreset } from "@/lib/insight-period";
+import { buildInsightPeriodPair, getInsightPeriodAnchor, parseInsightPreset } from "@/lib/insight-period";
 import { generateInsightCandidates, type InsightRuleKey } from "@/lib/insight-rules";
 import { getEnabledProviders } from "@/lib/providers";
 import { getCachedUserInsights } from "@/lib/user-insights";
@@ -51,8 +51,8 @@ export default async function InsightsPage({
           <EmptyMedia variant="icon">
             <Inbox />
           </EmptyMedia>
-          <EmptyTitle>{t("empty.title")}</EmptyTitle>
-          <EmptyDescription>{t("empty.description")}</EmptyDescription>
+          <EmptyTitle>{t("loginRequired.title")}</EmptyTitle>
+          <EmptyDescription>{t("loginRequired.description")}</EmptyDescription>
         </EmptyHeader>
       </Empty>
     );
@@ -63,7 +63,8 @@ export default async function InsightsPage({
   const timezone = await getViewerTimezone();
   const providerKey = sp.provider && sp.provider !== "all" ? sp.provider : undefined;
   const metric = sp.metric === "tokens" ? "tokens" : "cost";
-  const pair = buildInsightPeriodPair(preset, timezone);
+  const anchor = getInsightPeriodAnchor();
+  const pair = buildInsightPeriodPair(preset, timezone, anchor);
   const [comparison, providers] = await Promise.all([
     getCachedUserInsights(userId, pair, providerKey),
     getEnabledProviders(),

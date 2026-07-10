@@ -2,6 +2,7 @@ import type { PeriodQuery } from "@toard/core";
 import { dayStartUtc } from "./org-time";
 
 const DAY_MS = 86_400_000;
+const INSIGHT_ANCHOR_MS = 10 * 60_000;
 export const INSIGHT_PRESETS = ["7", "week", "month"] as const;
 export type InsightPreset = (typeof INSIGHT_PRESETS)[number];
 
@@ -14,6 +15,10 @@ export interface InsightPeriodPair {
 
 export function parseInsightPreset(value: string | undefined): InsightPreset {
   return INSIGHT_PRESETS.includes(value as InsightPreset) ? (value as InsightPreset) : "7";
+}
+
+export function getInsightPeriodAnchor(now = new Date()): Date {
+  return new Date(Math.floor(now.getTime() / INSIGHT_ANCHOR_MS) * INSIGHT_ANCHOR_MS);
 }
 
 function dateKey(at: Date, timezone: string): string {

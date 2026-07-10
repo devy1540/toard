@@ -17,6 +17,10 @@
   "cache": {
     "calculatedAt": "{time} 기준 계산"
   },
+  "loginRequired": {
+    "title": "로그인이 필요합니다",
+    "description": "개인 인사이트를 보려면 로그인하세요."
+  },
   "summary": {
     "title": "주요 변화",
     "description": "이전 기간과 비교해 두드러진 변화입니다.",
@@ -32,6 +36,8 @@
   "chart": {
     "title": "현재·이전 기간 추이",
     "description": "두 기간의 같은 경과 지점을 나란히 비교합니다.",
+    "accessibleLabel": "현재 기간과 이전 기간 사용량 비교 차트",
+    "accessibleDescription": "경과 위치별 현재 기간과 이전 기간의 사용량을 두 선으로 비교합니다.",
     "current": "현재 기간",
     "previous": "이전 기간",
     "position": "경과 {position}"

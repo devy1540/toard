@@ -143,15 +143,24 @@ export function deriveRollupProgress(input: DeriveRollupProgressInput): RollupPr
     Math.floor((targetToMs - contiguousFromMs) / bucketMs),
   );
   const completedUnits = Math.max(0, totalUnits - contiguousRemaining);
-  const dirtyBeforeWatermark = new Set(
-    input.dirtyBuckets
-      .map((bucket) => bucket.getTime())
-      .filter((dirtyBucketMs) => Number.isFinite(dirtyBucketMs)
-        && dirtyBucketMs >= targetFromMs
-        && dirtyBucketMs < targetToMs
-        && dirtyBucketMs < contiguousFromMs),
-  ).size;
-  const remainingUnits = contiguousRemaining + dirtyBeforeWatermark;
+  const uniqueDirtyBuckets = new Set<number>();
+  for (const bucket of input.dirtyBuckets) {
+    const dirtyBucketMs = bucket.getTime();
+    if (Number.isFinite(dirtyBucketMs)
+      && dirtyBucketMs >= targetFromMs
+      && dirtyBucketMs < targetToMs) {
+      uniqueDirtyBuckets.add(dirtyBucketMs);
+    }
+  }
+  let dirtyOnlyRemaining = 0;
+  for (const dirtyBucketMs of uniqueDirtyBuckets) {
+    const contiguousIndex = (dirtyBucketMs - contiguousFromMs) / bucketMs;
+    const duplicatesContiguous = Number.isInteger(contiguousIndex)
+      && contiguousIndex >= 0
+      && contiguousIndex < contiguousRemaining;
+    if (!duplicatesContiguous) dirtyOnlyRemaining++;
+  }
+  const remainingUnits = contiguousRemaining + dirtyOnlyRemaining;
   const throughput = finiteNonNegative(input.throughputPerMinute ?? 0);
   return {
     progressPercent: percent(completedUnits, totalUnits),

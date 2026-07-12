@@ -28,7 +28,8 @@ SELECT
   cache_read_price_per_mtok, cache_creation_price_per_mtok,
   input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
   fast_multiplier, source
-FROM pricing_models;
+FROM pricing_models
+ON CONFLICT (model_id, effective_at, source) DO NOTHING;
 
 ALTER TABLE usage_events ADD COLUMN pricing_revision_id UUID REFERENCES pricing_revisions(id);
 ALTER TABLE usage_events ADD COLUMN cost_status TEXT NOT NULL DEFAULT 'legacy'

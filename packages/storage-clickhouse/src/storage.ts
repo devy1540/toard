@@ -68,6 +68,7 @@ function hourBucket(ts: Date | string): string {
 }
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+const V2_ROLLUP_RETENTION_MS = 400 * 24 * 60 * 60 * 1_000;
 
 function fifteenMinuteBucket(ts: Date | string): string {
   const d = new Date(ts);
@@ -78,6 +79,11 @@ function fifteenMinuteBucket(ts: Date | string): string {
 
 function floorRollupDate(ts: Date, intervalMs: number): Date {
   return new Date(Math.floor(ts.getTime() / intervalMs) * intervalMs);
+}
+
+export function clampV2RollupStart(firstBucket: Date, eligibleTo: Date): Date {
+  const minimum = new Date(eligibleTo.getTime() - V2_ROLLUP_RETENTION_MS);
+  return firstBucket > minimum ? firstBucket : minimum;
 }
 
 function ceilRollupDate(ts: Date, intervalMs: number): Date {
@@ -1229,7 +1235,11 @@ export class ClickHouseStorage implements StorageBackend {
     if (current.rows[0]) return current.rows[0].watermark;
 
     const firstBucket = await this.firstRollupBucket(spec);
-    const watermark = firstBucket ?? eligibleTo;
+    const watermark = firstBucket
+      ? spec.name === USAGE_15M_V2.name
+        ? clampV2RollupStart(firstBucket, eligibleTo)
+        : firstBucket
+      : eligibleTo;
     await client.query(
       `INSERT INTO clickhouse_rollup_watermarks (name, watermark)
        VALUES ($1, $2)
@@ -1352,14 +1362,28 @@ export class ClickHouseStorage implements StorageBackend {
       await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`rollup:${spec.name}`]);
       const watermark = await this.readOrInitWatermark(client, spec, eligibleTo);
       const dirtyLimit = Math.max(1, Math.ceil(maxBuckets / 2));
-      const dirty = await client.query<{ bucket: Date }>(
-        `SELECT bucket
-         FROM clickhouse_rollup_dirty_buckets
-         WHERE name = $1 AND bucket < $2
-         ORDER BY bucket
-         LIMIT $3`,
-        [spec.name, eligibleTo, dirtyLimit],
-      );
+      const dirty = spec.name === USAGE_15M_V2.name
+        ? await client.query<{ bucket: Date }>(
+            `SELECT bucket
+             FROM clickhouse_rollup_dirty_buckets
+             WHERE name = $1 AND bucket >= $2 AND bucket < $3
+             ORDER BY bucket
+             LIMIT $4`,
+            [
+              spec.name,
+              clampV2RollupStart(new Date(0), eligibleTo),
+              eligibleTo,
+              dirtyLimit,
+            ],
+          )
+        : await client.query<{ bucket: Date }>(
+            `SELECT bucket
+             FROM clickhouse_rollup_dirty_buckets
+             WHERE name = $1 AND bucket < $2
+             ORDER BY bucket
+             LIMIT $3`,
+            [spec.name, eligibleTo, dirtyLimit],
+          );
       const remaining = maxBuckets - dirty.rows.length;
       const contiguousCount = Math.min(
         remaining,

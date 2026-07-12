@@ -1,5 +1,12 @@
 import { CLICKHOUSE_RAW_RETENTION_DAYS } from "@toard/core";
 import { resolveClickHouseRollupReadFlag } from "@toard/storage-clickhouse";
+import {
+  PgRollupWorkerRepository,
+  sanitizeRollupError,
+  shadowWorkerEnabled,
+  type RollupWorkerName,
+  type RollupWorkerRepository,
+} from "./rollup-worker-state";
 
 const STARTUP_DELAY_MS = 15_000;
 const TICK_MS = 30_000;
@@ -51,6 +58,43 @@ export type TimezoneRollupReadyPayload = {
   timezonePendingJobs: number;
   legacyFlagMigration: "deprecated_alias" | null;
 };
+
+export async function runObservedWorkerTick(options: {
+  worker: RollupWorkerName;
+  hardEnabled: boolean;
+  repository: RollupWorkerRepository;
+  run(): Promise<{ units: number; rows: number }>;
+  now(): Date;
+}): Promise<"disabled" | "paused" | "completed" | "failed"> {
+  if (!options.hardEnabled) return "disabled";
+  const record = await options.repository.get(options.worker);
+  if (record.paused) return "paused";
+
+  const warnObservationFailure = (error: unknown) => {
+    console.warn(
+      `[toard] ${options.worker} worker observation write failed — ${sanitizeRollupError(error)}`,
+    );
+  };
+  const startedAt = options.now();
+  await options.repository.markStarted(options.worker, startedAt).catch(warnObservationFailure);
+  try {
+    const result = await options.run();
+    await options.repository
+      .markSucceeded(options.worker, startedAt, options.now(), result)
+      .catch(warnObservationFailure);
+    return "completed";
+  } catch (error) {
+    await options.repository
+      .markFailed(
+        options.worker,
+        startedAt,
+        options.now(),
+        sanitizeRollupError(error),
+      )
+      .catch(warnObservationFailure);
+    return "failed";
+  }
+}
 
 export function toTimezoneRollupReadyPayload(
   readiness: TimezoneRollupReadiness,
@@ -179,7 +223,7 @@ export async function compactClickHouse15mRollup(limitBuckets?: number): Promise
 
 export async function compactClickHouse15mV2Rollup(limitBuckets?: number): Promise<{ buckets: number; rows: number; watermark: string }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { buckets: 0, rows: 0, watermark: "" };
-  if (!enabled("CLICKHOUSE_15M_V2_COMPACTOR")) return { buckets: 0, rows: 0, watermark: "" };
+  if (!shadowWorkerEnabled(process.env, "CLICKHOUSE_15M_V2_COMPACTOR")) return { buckets: 0, rows: 0, watermark: "" };
   const { getStorage } = await import("./storage");
   const storage = getStorage();
   if (!isV2Compactable(storage)) return { buckets: 0, rows: 0, watermark: "" };
@@ -189,7 +233,7 @@ export async function compactClickHouse15mV2Rollup(limitBuckets?: number): Promi
 /** 활성 시간대 queue에서 bounded batch를 처리한다. */
 export async function compactClickHouseTimezoneRollups(): Promise<{ jobs: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
-  if (!enabled("CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return { jobs: 0, rows: 0 };
+  if (!shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return { jobs: 0, rows: 0 };
   const { runTimezoneRollupWorker } = await import("./timezone-rollup");
   return runTimezoneRollupWorker();
 }
@@ -277,8 +321,20 @@ async function compactTick(): Promise<void> {
 
 async function compactV2Tick(): Promise<void> {
   try {
-    const r = await compactClickHouse15mV2Rollup();
-    if (r.buckets > 0) {
+    const { getPool } = await import("./db");
+    const repository = new PgRollupWorkerRepository(getPool());
+    let r = { buckets: 0, rows: 0, watermark: "" };
+    const outcome = await runObservedWorkerTick({
+      worker: "usage_15m_v2",
+      hardEnabled: shadowWorkerEnabled(process.env, "CLICKHOUSE_15M_V2_COMPACTOR"),
+      repository,
+      run: async () => {
+        r = await compactClickHouse15mV2Rollup();
+        return { units: r.buckets, rows: r.rows };
+      },
+      now: () => new Date(),
+    });
+    if (outcome === "completed" && r.buckets > 0) {
       console.log(`[toard] ClickHouse 15m v2 rollup compacted — ${r.buckets} buckets, ${r.rows} rows, watermark ${r.watermark}`);
     }
   } catch (e) {
@@ -288,8 +344,20 @@ async function compactV2Tick(): Promise<void> {
 
 async function compactTimezoneTick(): Promise<void> {
   try {
-    const r = await compactClickHouseTimezoneRollups();
-    if (r.jobs > 0) {
+    const { getPool } = await import("./db");
+    const repository = new PgRollupWorkerRepository(getPool());
+    let r = { jobs: 0, rows: 0 };
+    const outcome = await runObservedWorkerTick({
+      worker: "timezone",
+      hardEnabled: shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"),
+      repository,
+      run: async () => {
+        r = await compactClickHouseTimezoneRollups();
+        return { units: r.jobs, rows: r.rows };
+      },
+      now: () => new Date(),
+    });
+    if (outcome === "completed" && r.jobs > 0) {
       console.log(`[toard] ClickHouse timezone rollup compacted — ${r.jobs} jobs, ${r.rows} rows`);
     }
   } catch (e) {
@@ -353,7 +421,7 @@ export function startClickHouseOutboxFlush(): void {
 
 export function startClickHouse15mV2Compaction(): void {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
-  if (!enabled("CLICKHOUSE_15M_V2_COMPACTOR")) return;
+  if (!shadowWorkerEnabled(process.env, "CLICKHOUSE_15M_V2_COMPACTOR")) return;
   const g = globalThis as {
     __toardClickHouse15mV2RollupFlush?: true;
     __toardClickHouse15mV2RollupRunning?: true;
@@ -361,7 +429,6 @@ export function startClickHouse15mV2Compaction(): void {
   if (g.__toardClickHouse15mV2RollupFlush) return;
   g.__toardClickHouse15mV2RollupFlush = true;
   const guardedCompactV2Tick = () => {
-    if (!enabled("CLICKHOUSE_15M_V2_COMPACTOR")) return;
     if (g.__toardClickHouse15mV2RollupRunning) return;
     g.__toardClickHouse15mV2RollupRunning = true;
     compactV2Tick().finally(() => {
@@ -374,7 +441,7 @@ export function startClickHouse15mV2Compaction(): void {
 
 export function startClickHouseTimezoneRollupCompaction(): void {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
-  if (!enabled("CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return;
+  if (!shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return;
   const g = globalThis as {
     __toardClickHouseTimezoneRollupFlush?: true;
     __toardClickHouseTimezoneRollupRunning?: true;
@@ -382,7 +449,6 @@ export function startClickHouseTimezoneRollupCompaction(): void {
   if (g.__toardClickHouseTimezoneRollupFlush) return;
   g.__toardClickHouseTimezoneRollupFlush = true;
   const guardedCompactTimezoneTick = () => {
-    if (!enabled("CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return;
     if (g.__toardClickHouseTimezoneRollupRunning) return;
     g.__toardClickHouseTimezoneRollupRunning = true;
     compactTimezoneTick().finally(() => {

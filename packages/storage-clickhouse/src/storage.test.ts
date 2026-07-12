@@ -11,6 +11,7 @@ import {
 import type { Pool, PoolClient } from "pg";
 import {
   ClickHouseStorage,
+  clampV2RollupStart,
   resolveClickHouseRollupReadFlag,
 } from "./storage";
 
@@ -450,6 +451,18 @@ test("finalizer가 90일 초과 이벤트를 제외해 빈 배열을 넘기면 v
   );
 });
 
+test("v2 최초 watermark는 최근 400일보다 오래 시작하지 않는다", () => {
+  const eligible = new Date("2026-07-12T12:00:00.000Z");
+  assert.equal(
+    clampV2RollupStart(new Date("2024-01-01T00:00:00.000Z"), eligible).toISOString(),
+    "2025-06-07T12:00:00.000Z",
+  );
+  assert.equal(
+    clampV2RollupStart(new Date("2026-07-01T00:00:00.000Z"), eligible).toISOString(),
+    "2026-07-01T00:00:00.000Z",
+  );
+});
+
 test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한다", async () => {
   const { storage, aggregateQueries, inserts, pgQueries } = v2CompactorFixture();
   const compact = (storage as unknown as {
@@ -481,6 +494,10 @@ test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한
   assert.match(timezoneJobs, /DELETE FROM clickhouse_timezone_rollup_coverage/);
   assert.match(timezoneJobs, /ON CONFLICT \(resolution, timezone, bucket\) DO UPDATE/);
   assert.match(timezoneJobs, /status = 'pending'/);
+
+  const dirtyQuery = pgQueries.find((query) => query.includes("FROM clickhouse_rollup_dirty_buckets"));
+  assert.ok(dirtyQuery);
+  assert.match(dirtyQuery, /bucket >= \$2 AND bucket < \$3/);
 });
 
 test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async () => {
@@ -493,6 +510,9 @@ test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async
   assert.match(aggregate, /FROM usage_events\s+WHERE/);
   assert.doesNotMatch(aggregate, /FROM usage_events FINAL/);
   assert.equal(pgQueries.some((query) => query.includes("INSERT INTO clickhouse_timezone_rollup_jobs")), false);
+  const dirtyQuery = pgQueries.find((query) => query.includes("FROM clickhouse_rollup_dirty_buckets"));
+  assert.ok(dirtyQuery);
+  assert.doesNotMatch(dirtyQuery, /bucket >=/);
 });
 
 test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async () => {
@@ -1182,7 +1202,7 @@ test("v2 read가 꺼진 dashboard router는 hourly가 아니라 raw source로 fa
   assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup|usage_15m_rollup_v2/);
 });
 
-test("v2 read와 compactor worker는 서로 독립된 opt-in flag와 실행 guard를 사용한다", () => {
+test("v2 read는 opt-in을 유지하고 compactor worker는 default-on pause gate를 사용한다", () => {
   const storageSource = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
   const workerSource = readFileSync(new URL("../../../apps/web/lib/clickhouse-outbox.ts", import.meta.url), "utf8");
   const instrumentationSource = readFileSync(new URL("../../../apps/web/instrumentation.ts", import.meta.url), "utf8");
@@ -1191,6 +1211,11 @@ test("v2 read와 compactor worker는 서로 독립된 opt-in flag와 실행 guar
   assert.match(storageSource, /CLICKHOUSE_READ_TIMEZONE_ROLLUP/);
   assert.match(workerSource, /CLICKHOUSE_15M_V2_COMPACTOR/);
   assert.match(workerSource, /CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR/);
+  assert.match(workerSource, /shadowWorkerEnabled\(process\.env, "CLICKHOUSE_15M_V2_COMPACTOR"\)/);
+  assert.match(workerSource, /shadowWorkerEnabled\(process\.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"\)/);
+  assert.match(workerSource, /runObservedWorkerTick\(\{/);
+  assert.match(workerSource, /worker: "usage_15m_v2"/);
+  assert.match(workerSource, /worker: "timezone"/);
   assert.match(workerSource, /__toardClickHouseTimezoneRollupRunning/);
   assert.match(workerSource, /__toardClickHouse15mV2RollupRunning/);
   assert.match(workerSource, /__toardClickHouseOutboxRunning/);

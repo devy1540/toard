@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,10 @@ import type {
   RollupWorkerStatusView,
 } from "@/lib/rollup-status";
 import type { RollupWorkerName } from "@/lib/rollup-worker-state";
+import {
+  createRollupStatusRequestGate,
+  type RollupStatusRequestGate,
+} from "./rollup-status-request-gate";
 
 const POLL_MS = 10_000;
 
@@ -49,39 +53,68 @@ export function RollupStatusPanel({
   const [status, setStatus] = useState(initialStatus);
   const [requestFailed, setRequestFailed] = useState(false);
   const [pendingWorker, setPendingWorker] = useState<RollupWorkerName | null>(null);
+  const requestGateRef = useRef<RollupStatusRequestGate | null>(null);
+  const controlAbortRef = useRef<AbortController | null>(null);
+  requestGateRef.current ??= createRollupStatusRequestGate();
 
   const refresh = useCallback(async () => {
+    const requestGate = requestGateRef.current;
+    if (!requestGate) return;
+    const ticket = requestGate.begin();
     try {
-      const response = await fetch("/api/admin/rollups/status", { cache: "no-store" });
+      const response = await fetch("/api/admin/rollups/status", {
+        cache: "no-store",
+        signal: ticket.signal,
+      });
       if (!response.ok) throw new Error("rollup status request failed");
-      setStatus((await response.json()) as RollupAdminStatus);
+      const nextStatus = (await response.json()) as RollupAdminStatus;
+      if (!requestGate.canCommit(ticket)) return;
+      setStatus(nextStatus);
       setRequestFailed(false);
     } catch {
-      setRequestFailed(true);
+      if (requestGate.canCommit(ticket)) setRequestFailed(true);
     }
   }, []);
 
   useEffect(() => {
+    const requestGate = requestGateRef.current ?? createRollupStatusRequestGate();
+    requestGateRef.current = requestGate;
     const id = window.setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, POLL_MS);
-    return () => window.clearInterval(id);
+    return () => {
+      window.clearInterval(id);
+      requestGate.dispose();
+      if (requestGateRef.current === requestGate) requestGateRef.current = null;
+      controlAbortRef.current?.abort();
+      controlAbortRef.current = null;
+    };
   }, [refresh]);
 
   const control = async (worker: RollupWorkerName, action: "pause" | "resume") => {
+    requestGateRef.current?.invalidate();
+    controlAbortRef.current?.abort();
+    const controller = new AbortController();
+    controlAbortRef.current = controller;
     setPendingWorker(worker);
     try {
       const response = await fetch("/api/admin/rollups/control", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ worker, action }),
+        signal: controller.signal,
       });
       if (!response.ok) throw new Error("rollup control request failed");
+      if (controller.signal.aborted) return;
+      requestGateRef.current?.invalidate();
       await refresh();
     } catch {
-      setRequestFailed(true);
+      if (!controller.signal.aborted) setRequestFailed(true);
     } finally {
-      setPendingWorker(null);
+      if (controlAbortRef.current === controller) {
+        controlAbortRef.current = null;
+        if (!controller.signal.aborted) setPendingWorker(null);
+      }
     }
   };
 

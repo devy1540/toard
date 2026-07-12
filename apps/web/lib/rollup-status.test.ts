@@ -149,6 +149,63 @@ test("target 범위 밖 최신·과거 dirty와 중복 dirty는 제외한다", (
   assert.equal(view.remainingUnits, 1);
 });
 
+test("비정렬 watermark의 contiguous remaining은 compactor와 같은 floor 산식을 쓴다", () => {
+  const targetFrom = new Date("2026-07-01T10:00:00.000Z");
+  const targetTo = new Date("2026-07-01T11:00:00.000Z");
+  const cases = [
+    {
+      name: "target 내부",
+      watermark: new Date("2026-07-01T10:31:00.000Z"),
+      completedUnits: 3,
+      remainingUnits: 1,
+      progressPercent: 75,
+      etaMinutes: 1,
+    },
+    {
+      name: "targetTo 직전",
+      watermark: new Date("2026-07-01T10:59:00.000Z"),
+      completedUnits: 4,
+      remainingUnits: 0,
+      progressPercent: 100,
+      etaMinutes: 0,
+    },
+    {
+      name: "target 범위 이전",
+      watermark: new Date("2026-07-01T09:59:00.000Z"),
+      completedUnits: 0,
+      remainingUnits: 4,
+      progressPercent: 0,
+      etaMinutes: 4,
+    },
+    {
+      name: "target 범위 이후",
+      watermark: new Date("2026-07-01T11:01:00.000Z"),
+      completedUnits: 4,
+      remainingUnits: 0,
+      progressPercent: 100,
+      etaMinutes: 0,
+    },
+  ];
+
+  for (const expected of cases) {
+    const view = deriveRollupProgress({
+      targetFrom,
+      targetTo,
+      watermark: expected.watermark,
+      dirtyBuckets: [],
+      throughputPerMinute: 1,
+      bucketMs: 15 * 60 * 1000,
+    });
+
+    assert.equal(view.totalUnits, 4, expected.name);
+    assert.equal(view.completedUnits, expected.completedUnits, expected.name);
+    assert.equal(view.remainingUnits, expected.remainingUnits, expected.name);
+    assert.equal(view.completedUnits + view.remainingUnits, view.totalUnits, expected.name);
+    assert.equal(view.progressPercent, expected.progressPercent, expected.name);
+    assert.equal(view.etaMinutes, expected.etaMinutes, expected.name);
+  }
+});
+
 test("ETA 표본이 없으면 worker별 configured 처리량을 사용한다", async () => {
   const status = await getRollupAdminStatusWith(dependencies({
     loadPostgresProgress: async () => ({
@@ -248,6 +305,53 @@ test("worker ready·catching_up 상태는 dirty 합집합 remaining으로 파생
   }));
   assert.equal(catchingUp.workers.usage15mV2.remainingUnits, 1);
   assert.equal(catchingUp.workers.usage15mV2.state, "catching_up");
+});
+
+test("비정렬 watermark의 remaining은 ETA와 ready·catching_up·stalled 상태에 전달된다", async () => {
+  const targetTo = new Date("2026-07-12T11:30:00.000Z");
+  const statusFor = (watermark: Date, lastProgressAt: Date) =>
+    getRollupAdminStatusWith(dependencies({
+      loadWorkerRecords: async () => [
+        workerRecord("usage_15m_v2", {
+          lastSuccessAt: lastProgressAt,
+          lastProgressAt,
+        }),
+        workerRecord("timezone"),
+      ],
+      loadPostgresProgress: async () => ({
+        watermark,
+        dirtyBuckets: [],
+        pending: 0,
+        inflight: 0,
+        activeTimezones: [],
+        coverage: { hour: 0, day: 0 },
+        postgresRawEvents: 0,
+      }),
+    }));
+
+  const ready = await statusFor(
+    new Date(targetTo.getTime() - 60 * 1000),
+    NOW,
+  );
+  assert.equal(ready.workers.usage15mV2.remainingUnits, 0);
+  assert.equal(ready.workers.usage15mV2.etaMinutes, 0);
+  assert.equal(ready.workers.usage15mV2.state, "ready");
+
+  const catchingUp = await statusFor(
+    new Date(targetTo.getTime() - 16 * 60 * 1000),
+    NOW,
+  );
+  assert.equal(catchingUp.workers.usage15mV2.remainingUnits, 1);
+  assert.equal(catchingUp.workers.usage15mV2.etaMinutes, 1);
+  assert.equal(catchingUp.workers.usage15mV2.state, "catching_up");
+
+  const stalled = await statusFor(
+    new Date(targetTo.getTime() - 16 * 60 * 1000),
+    new Date(NOW.getTime() - 4 * 60 * 1000),
+  );
+  assert.equal(stalled.workers.usage15mV2.remainingUnits, 1);
+  assert.equal(stalled.workers.usage15mV2.etaMinutes, 1);
+  assert.equal(stalled.workers.usage15mV2.state, "stalled");
 });
 
 test("ClickHouse 규모 조회 실패는 worker 제어 상태를 유지한 degraded 응답이 된다", async () => {

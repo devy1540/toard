@@ -130,30 +130,28 @@ export function deriveRollupProgress(input: DeriveRollupProgressInput): RollupPr
   const bucketMs = Number.isFinite(input.bucketMs) && input.bucketMs > 0
     ? input.bucketMs
     : 1;
-  const targetSpan = Math.max(0, input.targetTo.getTime() - input.targetFrom.getTime());
+  const targetFromMs = input.targetFrom.getTime();
+  const targetToMs = input.targetTo.getTime();
+  const targetSpan = Math.max(0, targetToMs - targetFromMs);
   const totalUnits = Math.ceil(targetSpan / bucketMs);
   const watermarkMs = input.watermark?.getTime();
-  const completedUnits = watermarkMs == null || !Number.isFinite(watermarkMs)
-    ? 0
-    : Math.min(
-      totalUnits,
-      Math.max(0, Math.floor((watermarkMs - input.targetFrom.getTime()) / bucketMs)),
-    );
   const contiguousFromMs = watermarkMs == null || !Number.isFinite(watermarkMs)
-    ? input.targetFrom.getTime()
-    : Math.min(
-      input.targetTo.getTime(),
-      Math.max(input.targetFrom.getTime(), watermarkMs),
-    );
+    ? targetFromMs
+    : Math.min(targetToMs, Math.max(targetFromMs, watermarkMs));
+  const contiguousRemaining = Math.max(
+    0,
+    Math.floor((targetToMs - contiguousFromMs) / bucketMs),
+  );
+  const completedUnits = Math.max(0, totalUnits - contiguousRemaining);
   const dirtyBeforeWatermark = new Set(
     input.dirtyBuckets
       .map((bucket) => bucket.getTime())
-      .filter((bucketMs) => Number.isFinite(bucketMs)
-        && bucketMs >= input.targetFrom.getTime()
-        && bucketMs < input.targetTo.getTime()
-        && bucketMs < contiguousFromMs),
+      .filter((dirtyBucketMs) => Number.isFinite(dirtyBucketMs)
+        && dirtyBucketMs >= targetFromMs
+        && dirtyBucketMs < targetToMs
+        && dirtyBucketMs < contiguousFromMs),
   ).size;
-  const remainingUnits = Math.max(0, totalUnits - completedUnits) + dirtyBeforeWatermark;
+  const remainingUnits = contiguousRemaining + dirtyBeforeWatermark;
   const throughput = finiteNonNegative(input.throughputPerMinute ?? 0);
   return {
     progressPercent: percent(completedUnits, totalUnits),

@@ -2,7 +2,7 @@
 // npx @toard/shim — 현재 OS/arch 를 감지해 GitHub Release 바이너리를
 // ~/.toard/bin/{claude,codex} 로 설치한다 (install.sh 의 npx 등가물).
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -23,6 +23,7 @@ const TARGETS = {
   "darwin-x64": "x86_64-apple-darwin",
   "linux-arm64": "aarch64-unknown-linux-gnu",
   "linux-x64": "x86_64-unknown-linux-gnu",
+  "win32-x64": "x86_64-pc-windows-msvc",
 };
 
 const key = `${process.platform}-${process.arch}`;
@@ -33,8 +34,10 @@ if (!target) {
   process.exit(1);
 }
 
+const isWin = process.platform === "win32";
+const ext = isWin ? ".exe" : ""; // Windows 릴리스 자산·설치 파일명은 .exe (shim update.rs 와 계약)
 const binDir = process.env.TOARD_BIN_DIR ?? join(homedir(), ".toard", "bin");
-const url = `${releaseBase}/toard-shim-${target}`;
+const url = `${releaseBase}/toard-shim-${target}${ext}`;
 
 console.log(`toard: ${target} 바이너리 다운로드 중… (${version})`);
 const res = await fetch(url, { redirect: "follow" });
@@ -53,7 +56,7 @@ if (!sumsRes.ok) {
   process.exit(1);
 }
 const sums = await sumsRes.text();
-const asset = `toard-shim-${target}`;
+const asset = `toard-shim-${target}${ext}`;
 const line = sums.split("\n").find((l) => l.trimEnd().endsWith(asset));
 const expected = line?.trim().split(/\s+/)[0];
 const actual = createHash("sha256").update(buf).digest("hex");
@@ -63,22 +66,31 @@ if (!expected || expected !== actual) {
 }
 
 mkdirSync(binDir, { recursive: true });
-const claude = join(binDir, "claude");
+const claude = join(binDir, `claude${ext}`);
 writeFileSync(claude, buf, { mode: 0o755 });
 chmodSync(claude, 0o755);
 
-const codex = join(binDir, "codex");
-rmSync(codex, { force: true });
-symlinkSync(claude, codex);
-
-const shimCli = join(binDir, "toard-shim");
-rmSync(shimCli, { force: true });
-symlinkSync(claude, shimCli);
+// Windows 는 symlink 생성에 관리자 권한/개발자 모드가 필요해 복사로 대체한다
+// (자동 업데이트가 사본들을 함께 갱신 — shim update.rs sync_sibling_copies 와 계약).
+const alias = (name) => {
+  const p = join(binDir, `${name}${ext}`);
+  rmSync(p, { force: true });
+  if (isWin) copyFileSync(claude, p);
+  else symlinkSync(claude, p);
+  return p;
+};
+const codex = alias("codex");
+const shimCli = alias("toard-shim");
 
 console.log(`toard: 설치 완료 → ${claude}, ${codex}, ${shimCli}`);
 console.log("");
 console.log("PATH 에 추가하세요 (진짜 claude 보다 앞서야 함):");
-console.log(`  export PATH="${binDir}:$PATH"`);
+if (isWin) {
+  console.log(`  PowerShell: [Environment]::SetEnvironmentVariable("Path", "${binDir};" + [Environment]::GetEnvironmentVariable("Path", "User"), "User")`);
+  console.log("  적용은 새 터미널부터입니다.");
+} else {
+  console.log(`  export PATH="${binDir}:$PATH"`);
+}
 console.log("");
 console.log("자격 증명 → ~/.toard/credentials:");
 console.log("  agent_key=<ingest_token>");

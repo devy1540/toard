@@ -15,7 +15,7 @@ arch=$(uname -m)
 case "$os" in
   Darwin) os_t="apple-darwin" ;;
   Linux)  os_t="unknown-linux-gnu" ;;
-  *) echo "지원하지 않는 OS: $os (darwin/linux 만 지원)" >&2; exit 1 ;;
+  *) echo "지원하지 않는 OS: $os (darwin/linux 만 지원 — Windows 는 'npx @toard/shim' 사용)" >&2; exit 1 ;;
 esac
 case "$arch" in
   x86_64|amd64)  arch_t="x86_64" ;;

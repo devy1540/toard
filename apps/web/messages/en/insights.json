@@ -35,6 +35,7 @@
     "cost": "Cost",
     "sessions": "Sessions",
     "tokens": "Tokens",
+    "previousPeriod": "vs previous period",
     "vsPrevious": "{delta} vs previous period",
     "noPrevious": "No previous-period data is available for comparison."
   },

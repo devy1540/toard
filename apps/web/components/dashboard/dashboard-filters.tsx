@@ -14,7 +14,8 @@ import {
   parseFilters,
 } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
-import { FeatureStatusBadge, type FeatureStatus } from "./feature-status-badge";
+import { DashboardToolbar } from "./dashboard-toolbar";
+import type { FeatureStatus } from "./feature-status-badge";
 
 const PERIODS = [
   { v: "today", key: "filters.periodToday" },
@@ -161,13 +162,6 @@ export function DashboardFilters({
     push({ period: "custom", from, to, bucket: from === to && isIntradayBucket(bucketParam) ? bucketParam : null });
   };
 
-  const titleNode = title ? (
-    <div className="mr-2 flex shrink-0 items-center gap-2">
-      <h1 className="text-sm font-medium">{title}</h1>
-      {statusBadge ? <FeatureStatusBadge status={statusBadge.status}>{statusBadge.label}</FeatureStatusBadge> : null}
-    </div>
-  ) : null;
-
   const filterControls = (
     <>
       <div className="flex flex-wrap gap-1">
@@ -236,23 +230,14 @@ export function DashboardFilters({
 
   return (
     <div className="flex flex-col gap-2">
-      {splitHeader ? (
-        <>
-          <div className="flex flex-wrap items-center gap-2">
-            {titleNode}
-            {leading}
-            {trailing ? <div className="ml-auto flex flex-wrap items-center gap-2">{trailing}</div> : null}
-          </div>
-          <div className="flex flex-wrap items-center gap-2">{filterControls}</div>
-        </>
-      ) : (
-        <div className="flex flex-wrap items-center gap-2">
-          {titleNode}
-          {leading}
-          {filterControls}
-          {trailing ? <div className="ml-auto flex flex-wrap items-center gap-2">{trailing}</div> : null}
-        </div>
-      )}
+      <DashboardToolbar
+        title={title}
+        statusBadge={statusBadge}
+        leading={leading}
+        filters={filterControls}
+        trailing={trailing}
+        splitHeader={splitHeader}
+      />
 
       {showCustom && (
         <div className="flex flex-wrap items-center gap-1">

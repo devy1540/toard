@@ -1,10 +1,11 @@
-import type { ReactNode } from "react";
 import { Clock3, Inbox, Lightbulb } from "lucide-react";
 import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { InsightComparisonChart } from "@/components/charts/insight-comparison-chart";
+import { DashboardToolbar } from "@/components/dashboard/dashboard-toolbar";
 import { InsightComposition } from "@/components/dashboard/insight-composition";
 import { InsightFilters } from "@/components/dashboard/insight-filters";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
+import { DeltaBadge, type StatDelta } from "@/components/dashboard/stat-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
@@ -17,6 +18,7 @@ import {
 import { generateInsightCandidates, type InsightRuleKey } from "@/lib/insight-rules";
 import { getEnabledProviders, resolveInsightProvider } from "@/lib/providers";
 import { formatCostForCoverage } from "@/lib/pricing";
+import { pctDelta } from "@/lib/stat-delta";
 import { getCachedUserInsights } from "@/lib/user-insights";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -28,14 +30,29 @@ type InsightSearchParams = {
   metric?: string;
 };
 
-function KpiCard({ label, value, comparison }: { label: string; value: string; comparison: ReactNode }) {
+function KpiCard({
+  label,
+  value,
+  delta,
+  comparison,
+}: {
+  label: string;
+  value: string;
+  delta: StatDelta | null;
+  comparison: string;
+}) {
   return (
     <Card className="gap-3 py-5">
       <CardHeader className="px-5">
         <CardDescription>{label}</CardDescription>
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
       </CardHeader>
-      <CardContent className="text-muted-foreground px-5 text-xs">{comparison}</CardContent>
+      <CardContent className="px-5">
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs">
+          {delta ? <DeltaBadge delta={delta} /> : null}
+          <span className="text-muted-foreground">{comparison}</span>
+        </div>
+      </CardContent>
     </Card>
   );
 }
@@ -49,8 +66,9 @@ export default async function InsightsPage({
 }: {
   searchParams: Promise<InsightSearchParams>;
 }) {
-  const [t, dashboardT, format, locale] = await Promise.all([
+  const [t, navT, dashboardT, format, locale] = await Promise.all([
     getTranslations("insights"),
+    getTranslations("nav"),
     getTranslations("dashboard"),
     getFormatter(),
     getLocale(),
@@ -79,18 +97,21 @@ export default async function InsightsPage({
   const providers = await getEnabledProviders();
   const providerKey = resolveInsightProvider(sp.provider, providers);
   const comparison = await getCachedUserInsights(userId, pair, providerKey);
-  const candidates = generateInsightCandidates(comparison, metric);
   const comparisonCoverage = {
     pricedEvents: comparison.current.costCoverage.pricedEvents + comparison.previous.costCoverage.pricedEvents,
     unpricedEvents: comparison.current.costCoverage.unpricedEvents + comparison.previous.costCoverage.unpricedEvents,
     legacyEvents: comparison.current.costCoverage.legacyEvents + comparison.previous.costCoverage.legacyEvents,
   };
+  const costComplete = comparisonCoverage.unpricedEvents === 0;
+  const tokenDelta = pctDelta(comparison.current.totalTokens, comparison.previous.totalTokens);
+  const sessionsDelta = pctDelta(comparison.current.sessions, comparison.previous.sessions);
+  const costDelta = costComplete ? pctDelta(comparison.current.costUsd, comparison.previous.costUsd) : null;
+  const candidates = generateInsightCandidates(comparison, metric);
   const costLabels = {
     partial: dashboardT("costCoverage.partial"),
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
   };
-  const costComplete = comparisonCoverage.unpricedEvents === 0;
   const hasCurrentUsage =
     comparison.current.sessions > 0 || comparison.current.costUsd > 0 || comparison.current.totalTokens > 0;
 
@@ -129,39 +150,37 @@ export default async function InsightsPage({
         return assertNever(key);
     }
   };
-  const formatComparison = (current: number, previous: number) => {
-    if (previous === 0) return t("kpi.noPrevious");
-    const delta = (current - previous) / previous;
-    return t("kpi.vsPrevious", {
-      delta: format.number(delta, { style: "percent", signDisplay: "always", maximumFractionDigits: 1 }),
-    });
-  };
-
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="mr-2 text-sm font-medium">{t("title")}</h1>
-          <InsightFilters
-            preset={preset}
-            metric={metric}
-            provider={providerKey ?? "all"}
-            providers={providers}
-          />
-          <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs sm:ml-auto sm:justify-end">
-            <span className="flex items-center gap-1.5">
-              <Clock3 className="size-3.5" />
-              {t("freshness.dataThrough", {
-                time: format.dateTime(pair.current.to, {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                  timeZone: timezone,
-                }),
-              })}
-            </span>
-            <span>{t("freshness.delay")}</span>
-          </div>
-        </div>
+        <DashboardToolbar
+          title={t("title")}
+          statusBadge={{ status: "beta", label: navT("badge.beta") }}
+          filters={
+            <InsightFilters
+              preset={preset}
+              metric={metric}
+              provider={providerKey ?? "all"}
+              providers={providers}
+            />
+          }
+          trailing={
+            <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+              <span className="flex items-center gap-1.5">
+                <Clock3 className="size-3.5" />
+                {t("freshness.dataThrough", {
+                  time: format.dateTime(pair.current.to, {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                    timeZone: timezone,
+                  }),
+                })}
+              </span>
+              <span>{t("freshness.delay")}</span>
+            </div>
+          }
+          splitHeader
+        />
         <div className="bg-muted/30 text-muted-foreground grid gap-1 rounded-lg px-3 py-2 text-xs sm:grid-cols-2 sm:gap-4">
           <p>
             {t("ranges.current", {
@@ -222,12 +241,14 @@ export default async function InsightsPage({
             <KpiCard
               label={t("kpi.tokens")}
               value={format.number(comparison.current.totalTokens)}
-              comparison={formatComparison(comparison.current.totalTokens, comparison.previous.totalTokens)}
+              delta={tokenDelta}
+              comparison={comparison.previous.totalTokens === 0 ? t("kpi.noPrevious") : t("kpi.previousPeriod")}
             />
             <KpiCard
               label={t("kpi.sessions")}
               value={format.number(comparison.current.sessions)}
-              comparison={formatComparison(comparison.current.sessions, comparison.previous.sessions)}
+              delta={sessionsDelta}
+              comparison={comparison.previous.sessions === 0 ? t("kpi.noPrevious") : t("kpi.previousPeriod")}
             />
             <KpiCard
               label={t("kpi.cost")}
@@ -241,9 +262,12 @@ export default async function InsightsPage({
                 comparison.current.costCoverage,
                 costLabels,
               )}
+              delta={costDelta}
               comparison={
                 costComplete
-                  ? formatComparison(comparison.current.costUsd, comparison.previous.costUsd)
+                  ? comparison.previous.costUsd === 0
+                    ? t("kpi.noPrevious")
+                    : t("kpi.previousPeriod")
                   : comparisonCoverage.pricedEvents + comparisonCoverage.legacyEvents > 0
                     ? costLabels.partial
                     : costLabels.unpriced

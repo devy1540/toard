@@ -2,9 +2,7 @@
 // 계획(plan)은 순수 함수로 분리해 테스트하고, 쓰기는 temp+rename 으로 원자적으로 수행한다
 // (codex 동시 실행 시 read-modify-write 겹침으로 config 가 깨지는 것을 방지).
 
-use std::env;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::fsx;
 use crate::otel::notice;
@@ -72,18 +70,18 @@ pub fn plan(existing: &str, endpoint: &str, token: &str) -> Plan {
     }
 }
 
-/// 토큰이 평문으로 들어가므로 파일 0600, 디렉토리 0700.
+/// 토큰이 평문으로 들어가므로 파일 0600, 디렉토리 0700 (Unix — Windows 는 mode 무시).
 fn write_config(dir: &Path, path: &Path, content: &str) {
     let _ = std::fs::create_dir_all(dir);
-    let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    let _ = fsx::set_mode(dir, 0o700);
     let _ = fsx::write_atomic(path, content, 0o600);
 }
 
 pub fn inject_config(endpoint: &str, token: &str) {
-    let Some(home) = env::var_os("HOME") else {
+    let Some(home) = fsx::home_dir() else {
         return;
     };
-    let dir = PathBuf::from(home).join(".codex");
+    let dir = home.join(".codex");
     let path = dir.join("config.toml");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     match plan(&existing, endpoint, token) {

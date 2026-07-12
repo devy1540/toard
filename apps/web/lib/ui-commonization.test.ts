@@ -39,6 +39,17 @@ test("dashboard provider filter stays compact for the all-tools value", () => {
   assert.doesNotMatch(filters, /min-w-\[8rem\]/);
 });
 
+test("dashboard filters delegate their visual shell to the shared toolbar", () => {
+  const toolbar = source("components/dashboard/dashboard-toolbar.tsx");
+  const filters = source("components/dashboard/dashboard-filters.tsx");
+
+  assert.match(toolbar, /function DashboardToolbar/);
+  assert.match(toolbar, /FeatureStatusBadge/);
+  assert.match(toolbar, /splitHeader[\s\S]*filters/);
+  assert.match(filters, /<DashboardToolbar[\s\S]*filters=\{filterControls\}/);
+  assert.match(filters, /showCustom[\s\S]*<Input/);
+});
+
 test("demo open mode can render settings with the dashboard viewer fallback", () => {
   const settings = source("app/(dashboard)/settings/page.tsx");
   assert.match(settings, /getDashboardViewer/);
@@ -59,6 +70,24 @@ test("insights page uses the cached comparison and shared cards", () => {
   assert.match(page, /@\/components\/ui\/card/);
 });
 
+test("insight KPI deltas use the shared dashboard badge and calculation", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const ko = JSON.parse(source("messages/ko/insights.json"));
+  const en = JSON.parse(source("messages/en/insights.json"));
+
+  assert.match(page, /DashboardToolbar/);
+  assert.match(page, /@\/components\/dashboard\/stat-card/);
+  assert.match(page, /@\/lib\/stat-delta/);
+  assert.match(page, /<DeltaBadge delta=\{delta\}/);
+  assert.match(page, /const tokenDelta = pctDelta\(/);
+  assert.match(page, /const sessionsDelta = pctDelta\(/);
+  assert.match(page, /const costDelta = costComplete[\s\S]*pctDelta\(/);
+  assert.doesNotMatch(page, /const formatComparison/);
+  assert.doesNotMatch(page, /signDisplay: "always"/);
+  assert.equal(ko.kpi.previousPeriod, "이전 기간 대비");
+  assert.equal(en.kpi.previousPeriod, "vs previous period");
+});
+
 test("insights와 history 비용 UI는 같은 query coverage formatter를 재사용한다", () => {
   const insights = source("app/(dashboard)/insights/page.tsx");
   const overview = source("components/dashboard/overview-view.tsx");
@@ -67,6 +96,7 @@ test("insights와 history 비용 UI는 같은 query coverage formatter를 재사
 
   assert.match(insights, /<PricingNotice coverage=\{comparisonCoverage\}/);
   assert.match(insights, /formatCostForCoverage/);
+  assert.match(insights, /costComplete[\s\S]*costDelta/);
   assert.match(overview, /formatCostForCoverage\(fmtUsd\(u\.costUsd\), u\.costCoverage/);
   assert.match(history, /formatCostForCoverage\(fmtUsd\(usage\.costUsd\), usage\.costCoverage/);
   assert.match(detail, /formatCostForCoverage\(fmtUsd\(summary\.costUsd\), summary\.costCoverage/);
@@ -146,28 +176,51 @@ test("Korean and English insight catalogs have the same shape and 10-minute dela
   assert.equal(en.chart?.comparisonUnavailable, "Comparison data unavailable");
 });
 
-test("insight filters reuse shared controls and update URL parameters", () => {
+test("insight filters use dashboard button variants and keep URL updates", () => {
   const filters = source("components/dashboard/insight-filters.tsx");
-  assert.match(filters, /@\/components\/ui\/segmented-control/);
+  assert.match(filters, /@\/components\/ui\/button/);
+  assert.doesNotMatch(filters, /@\/components\/ui\/segmented-control/);
   assert.match(filters, /@\/components\/ui\/select/);
+  assert.match(filters, /size="sm"/);
+  assert.match(filters, /variant=\{value === item\.value \? "default" : "outline"\}/);
   assert.match(filters, /new URLSearchParams\(searchParams\.toString\(\)\)/);
 });
 
-test("insights use the compact dashboard toolbar while preserving accessible labels", () => {
+test("insights use the shared split toolbar while preserving accessible labels", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   const filters = source("components/dashboard/insight-filters.tsx");
 
-  assert.match(page, /<h1 className="[^\"]*text-sm font-medium[^\"]*">\{t\("title"\)\}<\/h1>/);
-  assert.doesNotMatch(page, /<h1 className="text-2xl/);
-  assert.match(page, /flex flex-wrap items-center gap-2[\s\S]*<InsightFilters/);
-  assert.match(page, /sm:ml-auto[\s\S]*t\("freshness\.dataThrough"/);
+  assert.match(page, /@\/components\/dashboard\/dashboard-toolbar/);
+  assert.match(page, /<DashboardToolbar[\s\S]*filters=\{\s*<InsightFilters/);
+  assert.match(page, /trailing=\{/);
+  assert.match(page, /splitHeader/);
   assert.match(filters, /<div className="flex flex-wrap items-center gap-2">/);
   assert.doesNotMatch(filters, /className="text-muted-foreground text-xs">\{t\("presets\.label"\)\}/);
   assert.doesNotMatch(filters, /className="text-muted-foreground text-xs">\{t\("filters\.providerLabel"\)\}/);
   assert.doesNotMatch(filters, /className="text-muted-foreground text-xs">\{t\("filters\.metricLabel"\)\}/);
-  assert.match(filters, /aria-label=\{t\("presets\.label"\)\}/);
+  assert.match(filters, /label=\{t\("presets\.label"\)\}/);
   assert.match(filters, /aria-label=\{t\("filters\.providerLabel"\)\}/);
-  assert.match(filters, /aria-label=\{t\("filters\.metricLabel"\)\}/);
+  assert.match(filters, /label=\{t\("filters\.metricLabel"\)\}/);
+});
+
+test("insights expose beta status in navigation and the shared toolbar", () => {
+  const nav = source("components/dashboard/sidebar-nav.tsx");
+  const page = source("app/(dashboard)/insights/page.tsx");
+
+  assert.match(nav, /href: "\/insights", key: "insights", icon: Lightbulb, badge: "beta"/);
+  assert.match(page, /getTranslations\("nav"\)/);
+  assert.match(
+    page,
+    /<DashboardToolbar[\s\S]*statusBadge=\{\{ status: "beta", label: navT\("badge\.beta"\) \}\}/,
+  );
+});
+
+test("team status exposes preview status in navigation and the page toolbar", () => {
+  const nav = source("components/dashboard/sidebar-nav.tsx");
+  const page = source("app/(dashboard)/org/team/page.tsx");
+
+  assert.match(nav, /href: "\/org\/team", key: "myTeam", icon: Building2, badge: "preview"/);
+  assert.match(page, /statusBadge=\{\{ status: "preview", label: navT\("badge\.preview"\) \}\}/);
 });
 
 test("insight comparison chart renders current and previous without animation", () => {

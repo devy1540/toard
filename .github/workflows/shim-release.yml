@@ -1,6 +1,6 @@
 name: shim-release
 
-# v* 태그 push 시 4-플랫폼을 각 OS 네이티브 러너에서 빌드해 GitHub Release 에 업로드.
+# v* 태그 push 시 5-플랫폼을 각 OS 네이티브 러너에서 빌드해 GitHub Release 에 업로드.
 on:
   push:
     tags:
@@ -21,12 +21,16 @@ jobs:
             targets: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             targets: aarch64-unknown-linux-gnu
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - name: build
         working-directory: shim/rust
+        # Windows 러너 기본 셸(pwsh)을 피해 전 OS 동일 스크립트 — Git Bash 사용
+        shell: bash
         run: |
           set -eux
           mkdir -p ../../dist
@@ -35,7 +39,12 @@ jobs:
           for t in ${{ matrix.targets }}; do
             rustup target add "$t"
             cargo build --release --target "$t"
-            cp "target/$t/release/shim" "../../dist/toard-shim-$t"
+            # Windows 바이너리는 .exe — 자산명 접미까지 유지 (update.rs asset_name 계약)
+            if [ -f "target/$t/release/shim.exe" ]; then
+              cp "target/$t/release/shim.exe" "../../dist/toard-shim-$t.exe"
+            else
+              cp "target/$t/release/shim" "../../dist/toard-shim-$t"
+            fi
           done
       - uses: actions/upload-artifact@v4
         with:

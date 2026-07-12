@@ -1,7 +1,8 @@
 name: shim-ci
 
-# shim 변경 PR/push 검증 — 릴리스 빌드(4-플랫폼)는 shim-release.yml 이 v* 태그에서 수행.
+# shim 변경 PR/push 검증 — 릴리스 빌드(5-플랫폼)는 shim-release.yml 이 v* 태그에서 수행.
 # fmt·clippy(-D warnings)·test·release build 와 설치 스크립트 문법 검사를 미리 잡는다.
+# Windows 는 별도 잡 — cfg(windows) 경로의 컴파일·테스트 회귀를 PR 단계에서 잡는다.
 on:
   pull_request:
     paths:
@@ -36,6 +37,26 @@ jobs:
           workspaces: shim/rust
       - name: fmt
         run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        run: cargo test
+      - name: build (release)
+        run: cargo build --release
+
+  check-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: shim/rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shim/rust
       - name: clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: test

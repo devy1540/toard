@@ -68,16 +68,28 @@ pub fn kick(intermediate_arg: &str) {
 }
 
 /// 중간 프로세스에서 호출 — 작업 프로세스를 분리하고 즉시 종료 (double-spawn 2단계).
+/// Unix 는 새 프로세스 그룹, Windows 는 DETACHED_PROCESS(콘솔 없음) +
+/// CREATE_NEW_PROCESS_GROUP 으로 부모 콘솔·Ctrl+C 에서 분리한다.
 pub fn detach(run_arg: &str) -> ! {
-    use std::os::unix::process::CommandExt;
     if let Ok(exe) = env::current_exe() {
-        let _ = Command::new(exe)
-            .arg(run_arg)
+        let mut cmd = Command::new(exe);
+        cmd.arg(run_arg)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
+            .stderr(Stdio::null());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+            cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
+        }
+        let _ = cmd.spawn();
     }
     std::process::exit(0);
 }

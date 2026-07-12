@@ -4,6 +4,7 @@ import type { RollupWorkerName, RollupWorkerRecord } from "./rollup-worker-state
 import {
   deriveRollupProgress,
   getRollupAdminStatusWith,
+  loadPostgresProgressWith,
   type RollupStatusDependencies,
   type RollupStorageStats,
 } from "./rollup-status";
@@ -61,7 +62,7 @@ function dependencies(
     ],
     loadPostgresProgress: async () => ({
       watermark: new Date("2026-07-12T11:30:00.000Z"),
-      dirty: 0,
+      dirtyBuckets: [],
       pending: 0,
       inflight: 0,
       activeTimezones: [],
@@ -78,7 +79,12 @@ test("15분 진행률과 ETA는 watermark·dirty·최근 속도로 계산한다"
     targetFrom: new Date("2026-07-01T00:00:00.000Z"),
     targetTo: new Date("2026-07-02T00:00:00.000Z"),
     watermark: new Date("2026-07-01T12:00:00.000Z"),
-    dirty: 4,
+    dirtyBuckets: [
+      new Date("2026-07-01T00:00:00.000Z"),
+      new Date("2026-07-01T00:15:00.000Z"),
+      new Date("2026-07-01T00:30:00.000Z"),
+      new Date("2026-07-01T00:45:00.000Z"),
+    ],
     throughputPerMinute: 16,
     bucketMs: 15 * 60 * 1000,
   });
@@ -89,11 +95,65 @@ test("15분 진행률과 ETA는 watermark·dirty·최근 속도로 계산한다"
   assert.equal(view.etaBasis, "recent");
 });
 
+test("4개 contiguous target 안의 dirty는 remaining에 중복 가산하지 않는다", () => {
+  const view = deriveRollupProgress({
+    targetFrom: new Date("2026-07-01T10:00:00.000Z"),
+    targetTo: new Date("2026-07-01T11:00:00.000Z"),
+    watermark: new Date("2026-07-01T10:00:00.000Z"),
+    dirtyBuckets: [new Date("2026-07-01T10:15:00.000Z")],
+    throughputPerMinute: 1,
+    bucketMs: 15 * 60 * 1000,
+  });
+
+  assert.equal(view.totalUnits, 4);
+  assert.equal(view.remainingUnits, 4);
+  assert.equal(view.etaMinutes, 4);
+});
+
+test("watermark 이전 dirty는 고유 bucket만 remaining에 더한다", () => {
+  const dirty = new Date("2026-07-01T10:00:00.000Z");
+  const view = deriveRollupProgress({
+    targetFrom: new Date("2026-07-01T10:00:00.000Z"),
+    targetTo: new Date("2026-07-01T11:00:00.000Z"),
+    watermark: new Date("2026-07-01T10:30:00.000Z"),
+    dirtyBuckets: [
+      dirty,
+      new Date(dirty),
+      new Date("2026-07-01T10:15:00.000Z"),
+      new Date("2026-07-01T10:45:00.000Z"),
+    ],
+    throughputPerMinute: 1,
+    bucketMs: 15 * 60 * 1000,
+  });
+
+  assert.equal(view.remainingUnits, 4);
+});
+
+test("target 범위 밖 최신·과거 dirty와 중복 dirty는 제외한다", () => {
+  const inRange = new Date("2026-07-01T10:00:00.000Z");
+  const view = deriveRollupProgress({
+    targetFrom: new Date("2026-07-01T10:00:00.000Z"),
+    targetTo: new Date("2026-07-01T11:00:00.000Z"),
+    watermark: new Date("2026-07-01T11:00:00.000Z"),
+    dirtyBuckets: [
+      new Date("2026-07-01T09:45:00.000Z"),
+      inRange,
+      new Date(inRange),
+      new Date("2026-07-01T11:00:00.000Z"),
+      new Date("2026-07-01T11:15:00.000Z"),
+    ],
+    throughputPerMinute: 1,
+    bucketMs: 15 * 60 * 1000,
+  });
+
+  assert.equal(view.remainingUnits, 1);
+});
+
 test("ETA 표본이 없으면 worker별 configured 처리량을 사용한다", async () => {
   const status = await getRollupAdminStatusWith(dependencies({
     loadPostgresProgress: async () => ({
       watermark: new Date("2026-07-12T11:30:00.000Z"),
-      dirty: 0,
+      dirtyBuckets: [],
       pending: 7,
       inflight: 1,
       activeTimezones: ["Asia/Seoul"],
@@ -108,6 +168,86 @@ test("ETA 표본이 없으면 worker별 configured 처리량을 사용한다", a
   assert.equal(status.workers.timezone.throughputUnitsPerMinute, 8);
   assert.equal(status.workers.timezone.remainingUnits, 8);
   assert.equal(status.workers.timezone.etaMinutes, 1);
+});
+
+test("status dirty 조회는 compactor와 같은 target 범위를 사용한다", async () => {
+  const queries: Array<{ sql: string; params: unknown[] }> = [];
+  const targetFrom = new Date("2025-06-07T11:30:00.000Z");
+  const targetTo = new Date("2026-07-12T11:30:00.000Z");
+  const dirtyBucket = new Date("2026-07-12T11:15:00.000Z");
+  const pool = {
+    async query(sql: string, params: unknown[] = []) {
+      queries.push({ sql, params });
+      if (sql.includes("clickhouse_rollup_watermarks")) {
+        return { rows: [{ watermark: targetTo }] };
+      }
+      if (sql.includes("clickhouse_rollup_dirty_buckets")) {
+        return { rows: [{ bucket: dirtyBucket }] };
+      }
+      if (sql.includes("FROM raw_events")) {
+        return { rows: [{ count: 0 }] };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const progress = await loadPostgresProgressWith(pool, targetFrom, targetTo);
+  const dirtyQuery = queries.find(({ sql }) => sql.includes("clickhouse_rollup_dirty_buckets"));
+
+  assert.ok(dirtyQuery);
+  assert.match(dirtyQuery.sql, /bucket >= \$2/);
+  assert.match(dirtyQuery.sql, /bucket < \$3/);
+  assert.deepEqual(dirtyQuery.params, ["usage_15m_v2", targetFrom, targetTo]);
+  assert.deepEqual(progress.dirtyBuckets, [dirtyBucket]);
+});
+
+test("worker ready·catching_up 상태는 dirty 합집합 remaining으로 파생한다", async () => {
+  const targetTo = new Date("2026-07-12T11:30:00.000Z");
+  const targetFrom = new Date(targetTo.getTime() - 400 * 24 * 60 * 60 * 1000);
+  const ready = await getRollupAdminStatusWith(dependencies({
+    loadWorkerRecords: async () => [
+      workerRecord("usage_15m_v2", {
+        lastSuccessAt: NOW,
+        lastProgressAt: NOW,
+      }),
+      workerRecord("timezone"),
+    ],
+    loadPostgresProgress: async (from, to) => {
+      assert.deepEqual([from, to], [targetFrom, targetTo]);
+      return {
+        watermark: targetTo,
+        dirtyBuckets: [targetTo, new Date("2025-06-07T11:15:00.000Z")],
+        pending: 0,
+        inflight: 0,
+        activeTimezones: [],
+        coverage: { hour: 0, day: 0 },
+        postgresRawEvents: 0,
+      };
+    },
+  }));
+  assert.equal(ready.workers.usage15mV2.remainingUnits, 0);
+  assert.equal(ready.workers.usage15mV2.state, "ready");
+
+  const catchingUp = await getRollupAdminStatusWith(dependencies({
+    loadWorkerRecords: async () => [
+      workerRecord("usage_15m_v2", {
+        lastSuccessAt: NOW,
+        lastProgressAt: NOW,
+      }),
+      workerRecord("timezone"),
+    ],
+    loadPostgresProgress: async () => ({
+      watermark: targetTo,
+      dirtyBuckets: [targetFrom],
+      pending: 0,
+      inflight: 0,
+      activeTimezones: [],
+      coverage: { hour: 0, day: 0 },
+      postgresRawEvents: 0,
+    }),
+  }));
+  assert.equal(catchingUp.workers.usage15mV2.remainingUnits, 1);
+  assert.equal(catchingUp.workers.usage15mV2.state, "catching_up");
 });
 
 test("ClickHouse 규모 조회 실패는 worker 제어 상태를 유지한 degraded 응답이 된다", async () => {

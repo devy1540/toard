@@ -35,7 +35,7 @@ export type DeriveRollupProgressInput = {
   targetFrom: Date;
   targetTo: Date;
   watermark: Date | null;
-  dirty: number;
+  dirtyBuckets: Date[];
   throughputPerMinute: number | null;
   bucketMs: number;
   etaBasis?: "recent" | "configured";
@@ -89,7 +89,7 @@ export type RollupAdminStatus = {
 
 export type RollupPostgresProgress = {
   watermark: Date | null;
-  dirty: number;
+  dirtyBuckets: Date[];
   pending: number;
   inflight: number;
   activeTimezones: string[];
@@ -101,8 +101,15 @@ export type RollupStatusDependencies = {
   env: Record<string, string | undefined>;
   now(): Date;
   loadWorkerRecords(): Promise<RollupWorkerRecord[]>;
-  loadPostgresProgress(): Promise<RollupPostgresProgress>;
+  loadPostgresProgress(targetFrom: Date, targetTo: Date): Promise<RollupPostgresProgress>;
   loadStorageStats(): Promise<RollupStorageStats>;
+};
+
+export type RollupStatusPool = {
+  query(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: Array<Record<string, unknown>> }>;
 };
 
 type StorageCacheEntry =
@@ -132,7 +139,21 @@ export function deriveRollupProgress(input: DeriveRollupProgressInput): RollupPr
       totalUnits,
       Math.max(0, Math.floor((watermarkMs - input.targetFrom.getTime()) / bucketMs)),
     );
-  const remainingUnits = Math.max(0, totalUnits - completedUnits) + Math.floor(finiteNonNegative(input.dirty));
+  const contiguousFromMs = watermarkMs == null || !Number.isFinite(watermarkMs)
+    ? input.targetFrom.getTime()
+    : Math.min(
+      input.targetTo.getTime(),
+      Math.max(input.targetFrom.getTime(), watermarkMs),
+    );
+  const dirtyBeforeWatermark = new Set(
+    input.dirtyBuckets
+      .map((bucket) => bucket.getTime())
+      .filter((bucketMs) => Number.isFinite(bucketMs)
+        && bucketMs >= input.targetFrom.getTime()
+        && bucketMs < input.targetTo.getTime()
+        && bucketMs < contiguousFromMs),
+  ).size;
+  const remainingUnits = Math.max(0, totalUnits - completedUnits) + dirtyBeforeWatermark;
   const throughput = finiteNonNegative(input.throughputPerMinute ?? 0);
   return {
     progressPercent: percent(completedUnits, totalUnits),
@@ -285,7 +306,7 @@ async function cachedStorageStats(
 
 const EMPTY_PROGRESS: RollupPostgresProgress = {
   watermark: null,
-  dirty: 0,
+  dirtyBuckets: [],
   pending: 0,
   inflight: 0,
   activeTimezones: [],
@@ -299,9 +320,17 @@ export async function getRollupAdminStatusWith(
   const now = dependencies.now();
   const backend = dependencies.env.STORAGE_BACKEND === "clickhouse" ? "clickhouse" : "postgres";
   const applicable = backend === "clickhouse";
+  const finalizeDelay = Number(dependencies.env.CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS);
+  const finalizeDelayMs = Number.isFinite(finalizeDelay) && finalizeDelay > 0
+    ? Math.floor(finalizeDelay)
+    : DEFAULT_FINALIZE_DELAY_MS;
+  const targetTo = new Date(
+    Math.floor((now.getTime() - finalizeDelayMs) / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS,
+  );
+  const targetFrom = new Date(targetTo.getTime() - V2_RETENTION_MS);
   const [workersResult, progressResult, storageResult] = await Promise.allSettled([
     dependencies.loadWorkerRecords(),
-    dependencies.loadPostgresProgress(),
+    dependencies.loadPostgresProgress(targetFrom, targetTo),
     applicable ? cachedStorageStats(dependencies.loadStorageStats, now) : Promise.resolve(null),
   ]);
   const degraded = workersResult.status === "rejected"
@@ -315,22 +344,15 @@ export async function getRollupAdminStatusWith(
     usage_15m_v2: shadowWorkerEnabled(dependencies.env, "CLICKHOUSE_15M_V2_COMPACTOR"),
     timezone: shadowWorkerEnabled(dependencies.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"),
   };
-  const finalizeDelay = Number(dependencies.env.CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS);
-  const finalizeDelayMs = Number.isFinite(finalizeDelay) && finalizeDelay > 0
-    ? Math.floor(finalizeDelay)
-    : DEFAULT_FINALIZE_DELAY_MS;
-  const targetTo = new Date(
-    Math.floor((now.getTime() - finalizeDelayMs) / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS,
-  );
   const v2Record = records.get("usage_15m_v2");
   const v2Throughput = v2Record?.throughputUnitsPerMinute && v2Record.throughputUnitsPerMinute > 0
     ? v2Record.throughputUnitsPerMinute
     : CONFIGURED_THROUGHPUT.usage_15m_v2;
   const v2Progress = deriveRollupProgress({
-    targetFrom: new Date(targetTo.getTime() - V2_RETENTION_MS),
+    targetFrom,
     targetTo,
     watermark: progress.watermark,
-    dirty: progress.dirty,
+    dirtyBuckets: progress.dirtyBuckets,
     throughputPerMinute: v2Throughput,
     bucketMs: FIFTEEN_MINUTES_MS,
     etaBasis: v2Record?.throughputUnitsPerMinute && v2Record.throughputUnitsPerMinute > 0
@@ -406,47 +428,64 @@ async function loadDefaultWorkerRecords(): Promise<RollupWorkerRecord[]> {
   ]);
 }
 
-async function loadDefaultPostgresProgress(): Promise<RollupPostgresProgress> {
-  const pool = getPool();
+export async function loadPostgresProgressWith(
+  pool: RollupStatusPool,
+  targetFrom: Date,
+  targetTo: Date,
+): Promise<RollupPostgresProgress> {
   const [watermark, dirty, jobs, timezones, coverage, rawEvents] = await Promise.all([
-    pool.query<{ watermark: Date | null }>(
+    pool.query(
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
       ["usage_15m_v2"],
     ),
-    pool.query<{ count: string | number }>(
-      "SELECT count(*) AS count FROM clickhouse_rollup_dirty_buckets WHERE name = $1",
-      ["usage_15m_v2"],
+    pool.query(
+      `SELECT bucket
+       FROM clickhouse_rollup_dirty_buckets
+       WHERE name = $1 AND bucket >= $2 AND bucket < $3
+       ORDER BY bucket`,
+      ["usage_15m_v2", targetFrom, targetTo],
     ),
-    pool.query<{ status: "pending" | "inflight"; count: string | number }>(
+    pool.query(
       `SELECT status, count(*) AS count
        FROM clickhouse_timezone_rollup_jobs
        WHERE status IN ('pending', 'inflight')
        GROUP BY status`,
     ),
-    pool.query<{ timezone: string }>(
+    pool.query(
       "SELECT timezone FROM clickhouse_rollup_timezones ORDER BY activated_at, timezone",
     ),
-    pool.query<{ resolution: "hour" | "day"; count: string | number }>(
+    pool.query(
       `SELECT resolution, count(*) AS count
        FROM clickhouse_timezone_rollup_coverage
        GROUP BY resolution`,
     ),
-    pool.query<{ count: string | number }>("SELECT count(*) AS count FROM raw_events"),
+    pool.query("SELECT count(*) AS count FROM raw_events"),
   ]);
-  const jobCounts = new Map(jobs.rows.map((row) => [row.status, Number(row.count)]));
-  const coverageCounts = new Map(coverage.rows.map((row) => [row.resolution, Number(row.count)]));
+  const jobCounts = new Map(jobs.rows.map((row) => [String(row.status), Number(row.count)]));
+  const coverageCounts = new Map(coverage.rows.map((row) => [String(row.resolution), Number(row.count)]));
   return {
-    watermark: watermark.rows[0]?.watermark ?? null,
-    dirty: Number(dirty.rows[0]?.count ?? 0),
+    watermark: watermark.rows[0]?.watermark instanceof Date ? watermark.rows[0].watermark : null,
+    dirtyBuckets: dirty.rows
+      .map(({ bucket }) => bucket)
+      .filter((bucket): bucket is Date => bucket instanceof Date && Number.isFinite(bucket.getTime())),
     pending: jobCounts.get("pending") ?? 0,
     inflight: jobCounts.get("inflight") ?? 0,
-    activeTimezones: timezones.rows.map(({ timezone }) => timezone),
+    activeTimezones: timezones.rows
+      .map(({ timezone }) => timezone)
+      .filter((timezone): timezone is string => typeof timezone === "string"),
     coverage: {
       hour: coverageCounts.get("hour") ?? 0,
       day: coverageCounts.get("day") ?? 0,
     },
     postgresRawEvents: Number(rawEvents.rows[0]?.count ?? 0),
   };
+}
+
+async function loadDefaultPostgresProgress(
+  targetFrom: Date,
+  targetTo: Date,
+): Promise<RollupPostgresProgress> {
+  return loadPostgresProgressWith(getPool(), targetFrom, targetTo);
 }
 
 async function loadDefaultStorageStats(): Promise<RollupStorageStats> {

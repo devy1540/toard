@@ -58,10 +58,16 @@ export function InsightComparisonChart({
     );
     if (currentDate === null) return [];
     const previousDate = getInsightPositionDate(previousStart, position, timezone, previousEnd);
+    const currentValue = isCost && current.costCoverage.unpricedEvents > 0
+      ? undefined
+      : isCost ? current.costUsd : current.totalTokens;
+    const previousValue = isCost && previous.costCoverage.unpricedEvents > 0
+      ? undefined
+      : isCost ? previous.costUsd : previous.totalTokens;
     return {
       position: position + 1,
-      current: isCost ? current.costUsd : current.totalTokens,
-      previous: previousDate === null ? undefined : isCost ? previous.costUsd : previous.totalTokens,
+      current: currentValue,
+      previous: previousDate === null ? undefined : previousValue,
     };
   });
   const formatValue = (value: number) =>

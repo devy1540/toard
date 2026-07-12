@@ -15,6 +15,7 @@ export interface TurnUsage {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
+  costStatus: SessionUsageEventRow["costStatus"];
 }
 
 /** pull 수집은 같은 로그 라인에서 본문·usage 가 나와 ts 가 일치하고,
@@ -57,6 +58,7 @@ export function matchTurnUsage(
         cacheReadTokens: e.cacheReadTokens,
         cacheCreationTokens: e.cacheCreationTokens,
         costUsd: e.costUsd,
+        costStatus: e.costStatus,
       });
     }
   }

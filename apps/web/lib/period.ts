@@ -1,7 +1,18 @@
-import { fillTimeBucketGaps, type DailyPoint, type PeriodQuery, type TimeBucket } from "@toard/core";
+import {
+  addLocalCalendarDays,
+  fillTimeBucketGaps,
+  firstInstantOfLocalDate,
+  localDateKey,
+  type DailyPoint,
+  type PeriodQuery,
+  type TimeBucket,
+} from "@toard/core";
 import { dateInTz, dayStartUtc, startOfToday } from "./org-time";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** 일반 대시보드가 한 요청에서 조회하는 최대 기간. history/export에는 적용하지 않는다. */
+export const DASHBOARD_MAX_RANGE_DAYS = 366;
 
 /** 기본 기간 프리셋 (URL 에 period 미지정 시). */
 export const DEFAULT_PERIOD = "today";
@@ -170,6 +181,31 @@ export function parseFilters(
   }
 
   return { ...range, providerKey, bucket, preset, timezone };
+}
+
+/**
+ * 일반 대시보드 전용 기간 parser.
+ * 전체 기간 또는 366일을 넘는 custom 범위만 viewer local date 경계의 최근 366일로 제한한다.
+ * DST fall 때문에 절대 길이가 366×24h를 넘으면 다음 local date 경계로 한 번 더 전진한다.
+ */
+export function parseDashboardPeriod(
+  sp: DashboardSearchParams,
+  timezone: string,
+): DashboardPeriod & { limited: boolean } {
+  const period = parseFilters(sp, timezone);
+  const maximumMs = DASHBOARD_MAX_RANGE_DAYS * DAY_MS;
+  const span = period.to.getTime() - period.from.getTime();
+  const limited = period.preset === "all" || (period.preset === "custom" && span > maximumMs);
+  if (!limited) return { ...period, limited: false };
+
+  const lastIncludedDate = localDateKey(new Date(period.to.getTime() - 1), timezone);
+  let firstIncludedDate = addLocalCalendarDays(lastIncludedDate, -(DASHBOARD_MAX_RANGE_DAYS - 1));
+  let from = firstInstantOfLocalDate(firstIncludedDate, timezone);
+  while (period.to.getTime() - from.getTime() > maximumMs) {
+    firstIncludedDate = addLocalCalendarDays(firstIncludedDate, 1);
+    from = firstInstantOfLocalDate(firstIncludedDate, timezone);
+  }
+  return { ...period, from, limited: true };
 }
 
 /** 직전 동일 길이 기간 — 스탯 카드의 "전일/직전 기간 대비" 델타 비교용. */

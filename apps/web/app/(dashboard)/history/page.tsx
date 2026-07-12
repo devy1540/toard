@@ -18,6 +18,7 @@ import {
 import { getCurrentUserId } from "@/lib/current-user";
 import { fmtCompact, fmtUsd } from "@/lib/format";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
+import { formatCostForCoverage } from "@/lib/pricing";
 import { getMyHistorySessions } from "@/lib/prompt-history";
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
@@ -86,6 +87,11 @@ export default async function HistoryPage({
 }) {
   const t = await getTranslations("dashboard");
   const navT = await getTranslations("nav");
+  const costLabels = {
+    partial: t("costCoverage.partial"),
+    unpriced: t("costCoverage.unpriced"),
+    legacy: t("costCoverage.legacy"),
+  };
   const userId = await getCurrentUserId();
   if (!userId) {
     return (
@@ -272,7 +278,9 @@ export default async function HistoryPage({
                         </div>
                         <div className="flex items-center justify-between gap-4 pl-11 sm:min-w-36 sm:flex-col sm:items-end sm:justify-center sm:gap-1 sm:pl-0">
                           {usage ? (
-                            <span className="text-sm font-semibold tabular-nums">{fmtUsd(usage.costUsd)}</span>
+                            <span className="text-sm font-semibold tabular-nums">
+                              {formatCostForCoverage(fmtUsd(usage.costUsd), usage.costCoverage, costLabels)}
+                            </span>
                           ) : (
                             <span className="text-muted-foreground text-xs">{t("history.noUsage")}</span>
                           )}

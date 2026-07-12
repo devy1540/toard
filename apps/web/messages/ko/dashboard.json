@@ -107,12 +107,20 @@
       "15m": "15분"
     },
     "rangeAll": "전체 기간",
+    "rangeLimited": "최근 12개월까지만 표시합니다",
     "timezoneNote": "{tz} 기준"
   },
   "pricingNotice": {
-    "title": "모델 가격이 동기화되지 않아 비용이 $0 으로 표시됩니다.",
-    "adminAction": "<link>관리 → 시스템</link>에서 가격 동기화를 실행하세요. 일 단위 자동 갱신은 sync-pricing cron 등록이 필요합니다(README 스케줄러 절).",
-    "memberAction": "관리자에게 가격 동기화(sync-pricing) 실행을 요청하세요."
+    "unpricedTitle": "가격 미확정 사용량 {count}건이 있어 비용 합계가 불완전합니다.",
+    "unpricedAdminAction": "<link>관리 → 시스템</link>에서 가격 동기화를 실행하세요. 일 단위 자동 갱신은 sync-pricing cron 등록이 필요합니다(README 스케줄러 절).",
+    "unpricedMemberAction": "관리자에게 가격 동기화(sync-pricing) 실행을 요청하세요.",
+    "legacyTitle": "기존 저장 비용을 사용하는 사용량이 {count}건 있습니다.",
+    "legacyDescription": "이 비용은 합계에 포함되지만 가격 revision 근거가 없는 legacy 데이터입니다."
+  },
+  "costCoverage": {
+    "partial": "부분 합계",
+    "unpriced": "가격 미확정",
+    "legacy": "기존 저장 비용"
   },
   "chart": {
     "cost": "비용",

@@ -17,7 +17,14 @@ function daily(day: string, tokens: number): DailyPoint {
 }
 
 function leader(key: string, label: string, tokens: number): LeaderRow {
-  return { key, label, totalTokens: tokens, costUsd: tokens / 100, sessions: 1 };
+  return {
+    key,
+    label,
+    totalTokens: tokens,
+    costUsd: tokens / 100,
+    sessions: 1,
+    costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 },
+  };
 }
 
 function memberPoint(userId: string, day: string, tokens: number): TeamMemberTimeseriesPoint {

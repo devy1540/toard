@@ -13,3 +13,18 @@ export interface ModelPricing {
 }
 
 export type PricingMap = Map<string, ModelPricing>;
+
+export interface PricingRevision {
+  id: string;
+  modelId: string;
+  effectiveAt: Date;
+  pricing: ModelPricing;
+}
+
+export type PricingSchedule = Map<string, readonly PricingRevision[]>;
+
+export type CostResolution = {
+  costUsd: number;
+  pricingRevisionId: string | null;
+  status: "priced" | "unpriced";
+};

@@ -1,79 +1,164 @@
-import { fetchLiteLLMPricing } from "@toard/pricing";
+import { fetchLiteLLMPricing, type ModelPricing, type PricingMap } from "@toard/pricing";
 import { getPool } from "./db";
 import { orgDate } from "./org-time";
-import { invalidatePricingCache } from "./pricing";
+import { invalidatePricingCache, PRICING_SYNC_STATUS_SETTING_KEY } from "./pricing";
 
 const DEFAULT_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const PRICING_SYNC_LOCK_KEY = "pricing-sync";
 
 export type PricingSyncResult =
   | { ok: true; upserted: number; day: string }
   | { ok: false; error: string; kept: boolean };
 
+type LatestPricingRow = {
+  model_id: string;
+  input_price_per_mtok: string | number;
+  output_price_per_mtok: string | number;
+  cache_read_price_per_mtok: string | number | null;
+  cache_creation_price_per_mtok: string | number | null;
+  input_price_above_200k_per_mtok: string | number | null;
+  output_price_above_200k_per_mtok: string | number | null;
+  fast_multiplier: string | number;
+};
+
+export type PricingSyncQueryClient = {
+  query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
+};
+
+function optionalNumber(value: string | number | null): number | undefined {
+  return value == null ? undefined : Number(value);
+}
+
+function samePricing(row: LatestPricingRow, pricing: ModelPricing): boolean {
+  return Number(row.input_price_per_mtok) === pricing.inputPerM &&
+    Number(row.output_price_per_mtok) === pricing.outputPerM &&
+    optionalNumber(row.cache_read_price_per_mtok) === pricing.cacheReadPerM &&
+    optionalNumber(row.cache_creation_price_per_mtok) === pricing.cacheCreatePerM &&
+    optionalNumber(row.input_price_above_200k_per_mtok) === pricing.inputAbove200kPerM &&
+    optionalNumber(row.output_price_above_200k_per_mtok) === pricing.outputAbove200kPerM &&
+    Number(row.fast_multiplier) === (pricing.fastMultiplier ?? 1);
+}
+
+/** 최신 revision과 다른 모델만 새 revision으로 추가한다. 기존 행은 절대 수정하지 않는다. */
+export async function syncPricingRevisions(
+  client: PricingSyncQueryClient,
+  pricing: PricingMap,
+  effectiveAt: Date,
+): Promise<number> {
+  const latestResult = await client.query(
+    `SELECT DISTINCT ON (model_id)
+       model_id, input_price_per_mtok, output_price_per_mtok,
+       cache_read_price_per_mtok, cache_creation_price_per_mtok,
+       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier
+     FROM pricing_revisions
+     ORDER BY model_id, effective_at DESC, observed_at DESC, id DESC`,
+  );
+  const latest = new Map(
+    (latestResult.rows as LatestPricingRow[]).map((row) => [row.model_id, row]),
+  );
+  const changed = [...pricing.entries()].filter(([modelId, value]) => {
+    const previous = latest.get(modelId);
+    return !previous || !samePricing(previous, value);
+  });
+
+  const CHUNK = 500;
+  for (let i = 0; i < changed.length; i += CHUNK) {
+    const chunk = changed.slice(i, i + CHUNK);
+    const params: unknown[] = [effectiveAt];
+    const rows: string[] = [];
+    for (const [modelId, value] of chunk) {
+      const b = params.length + 1;
+      rows.push(
+        `($${b},$1,$${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},'litellm')`,
+      );
+      params.push(
+        modelId,
+        value.inputPerM,
+        value.outputPerM,
+        value.cacheReadPerM ?? null,
+        value.cacheCreatePerM ?? null,
+        value.inputAbove200kPerM ?? null,
+        value.outputAbove200kPerM ?? null,
+        value.fastMultiplier ?? 1,
+      );
+    }
+    await client.query(
+      `INSERT INTO pricing_revisions
+         (model_id, effective_at, input_price_per_mtok, output_price_per_mtok,
+          cache_read_price_per_mtok, cache_creation_price_per_mtok,
+          input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
+          fast_multiplier, source)
+       VALUES ${rows.join(",")}`,
+      params,
+    );
+  }
+  return changed.length;
+}
+
+/** 가격 fetch부터 성공 상태 기록까지 하나의 DB transaction으로 확정한다. */
+export async function runPricingSyncTransaction(
+  client: PricingSyncQueryClient,
+  fetchPricing: () => Promise<PricingMap>,
+  day: string,
+  /** @deprecated 호출 호환용. revision 시각은 lock 획득·fetch 성공 뒤 생성한다. */
+  _requestedAt?: Date,
+  invalidateCache: () => void = invalidatePricingCache,
+  now: () => Date = () => new Date(),
+): Promise<number> {
+  await client.query("BEGIN");
+  let upserted = 0;
+  try {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [PRICING_SYNC_LOCK_KEY]);
+    const pricing = await fetchPricing();
+    const effectiveAt = now();
+    upserted = await syncPricingRevisions(client, pricing, effectiveAt);
+    await client.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [
+        PRICING_SYNC_STATUS_SETTING_KEY,
+        JSON.stringify({ day, syncedAt: effectiveAt.toISOString() }),
+      ],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  }
+  invalidateCache();
+  return upserted;
+}
+
 /**
  * LiteLLM 가격 동기화 코어 (설계 §6.2) — cron 라우트와 admin 수동 동기화가 공유.
- * fetch → per-million 변환 → pricing_models 에 당일(effective_date) UPSERT.
+ * fetch → per-million 변환 → 가격이 달라진 모델만 현재 시각 revision으로 INSERT.
  * fetch 실패/0건이면 마지막 스냅샷 유지(검토 A-9) — kept: true 로 구분.
  */
 export async function runPricingSync(): Promise<PricingSyncResult> {
   const url = process.env.LITELLM_PRICING_URL ?? DEFAULT_URL;
-  let pricing;
-  try {
-    pricing = await fetchLiteLLMPricing(url);
-  } catch (e) {
-    return { ok: false, error: String(e), kept: true };
-  }
-
   const day = orgDate(0);
   const client = await getPool().connect();
   let upserted = 0;
+  let fetchFailed = false;
   try {
-    await client.query("BEGIN");
-    // 건당 UPSERT 대신 청크 배치(다중 VALUES)로 라운드트립·클라이언트 점유시간 단축
-    const entries = [...pricing.entries()];
-    const CHUNK = 500;
-    for (let i = 0; i < entries.length; i += CHUNK) {
-      const chunk = entries.slice(i, i + CHUNK);
-      const params: unknown[] = [day]; // $1 = effective_date (전 row 공통)
-      const rows: string[] = [];
-      for (const [modelId, p] of chunk) {
-        const b = params.length + 1;
-        rows.push(
-          `($${b},$${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$1::date,'litellm')`,
-        );
-        params.push(
-          modelId, p.inputPerM, p.outputPerM, p.cacheReadPerM ?? null,
-          p.cacheCreatePerM ?? null, p.inputAbove200kPerM ?? null,
-          p.outputAbove200kPerM ?? null, p.fastMultiplier ?? 1,
-        );
-      }
-      await client.query(
-        `INSERT INTO pricing_models
-           (model_id, input_price_per_mtok, output_price_per_mtok, cache_read_price_per_mtok,
-            cache_creation_price_per_mtok, input_price_above_200k_per_mtok,
-            output_price_above_200k_per_mtok, fast_multiplier, effective_date, source)
-         VALUES ${rows.join(",")}
-         ON CONFLICT (model_id, effective_date) DO UPDATE SET
-           input_price_per_mtok            = EXCLUDED.input_price_per_mtok,
-           output_price_per_mtok           = EXCLUDED.output_price_per_mtok,
-           cache_read_price_per_mtok       = EXCLUDED.cache_read_price_per_mtok,
-           cache_creation_price_per_mtok   = EXCLUDED.cache_creation_price_per_mtok,
-           input_price_above_200k_per_mtok = EXCLUDED.input_price_above_200k_per_mtok,
-           output_price_above_200k_per_mtok = EXCLUDED.output_price_above_200k_per_mtok,
-           fast_multiplier                 = EXCLUDED.fast_multiplier,
-           source                          = 'litellm'`,
-        params,
-      );
-      upserted += chunk.length;
-    }
-    await client.query("COMMIT");
+    upserted = await runPricingSyncTransaction(
+      client,
+      async () => {
+        try {
+          return await fetchLiteLLMPricing(url);
+        } catch (error) {
+          fetchFailed = true;
+          throw error;
+        }
+      },
+      day,
+    );
   } catch (e) {
-    await client.query("ROLLBACK");
-    return { ok: false, error: String(e), kept: false };
+    return { ok: false, error: String(e), kept: fetchFailed };
   } finally {
     client.release();
   }
 
-  invalidatePricingCache(); // 새 스냅샷 즉시 반영
   return { ok: true, upserted, day };
 }

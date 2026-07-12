@@ -17,3 +17,10 @@ export function getStorage(): StorageBackend {
   }
   return storage;
 }
+
+/** 일회성 CLI가 만든 ClickHouse client/timer를 명시적으로 정리한다. */
+export async function closeStorage(): Promise<void> {
+  const current = storage as (StorageBackend & { close?: () => Promise<void> }) | undefined;
+  storage = undefined;
+  if (current?.close) await current.close();
+}

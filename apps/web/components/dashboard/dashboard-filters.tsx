@@ -6,7 +6,13 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { DEFAULT_PERIOD, INTRADAY_BUCKETS, isIntradayBucket, parseFilters } from "@/lib/period";
+import {
+  DEFAULT_PERIOD,
+  INTRADAY_BUCKETS,
+  isIntradayBucket,
+  parseDashboardPeriod,
+  parseFilters,
+} from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
 import { DashboardToolbar } from "./dashboard-toolbar";
 import type { FeatureStatus } from "./feature-status-badge";
@@ -63,6 +69,7 @@ export function DashboardFilters({
   filterTrailing,
   trailing,
   splitHeader = false,
+  limited = false,
 }: {
   providers: ProviderOption[];
   defaultPeriod?: string;
@@ -83,6 +90,8 @@ export function DashboardFilters({
   trailing?: React.ReactNode;
   /** 제목/상태와 필터 컨트롤을 두 줄로 분리한다. 내 사용량처럼 조작면이 많은 화면용. */
   splitHeader?: boolean;
+  /** 일반 대시보드 조회 범위가 최근 12개월로 제한됐는지 여부. */
+  limited?: boolean;
 }) {
   const t = useTranslations("dashboard");
   const locale = useLocale();
@@ -109,18 +118,17 @@ export function DashboardFilters({
   const tzDiffers = timezone != null && deviceTz != null && timezone !== deviceTz;
   const parsedPeriod = useMemo(() => {
     if (!timezone) return null;
-    return parseFilters(
-      {
-        period,
-        provider,
-        from: fromParam,
-        to: toParam,
-        bucket: bucketParam,
-      },
-      timezone,
-      defaultPeriod,
-    );
-  }, [bucketParam, defaultPeriod, fromParam, period, provider, timezone, toParam]);
+    const params = {
+      period,
+      provider,
+      from: fromParam,
+      to: toParam,
+      bucket: bucketParam,
+    };
+    return limited
+      ? parseDashboardPeriod(params, timezone)
+      : parseFilters(params, timezone, defaultPeriod);
+  }, [bucketParam, defaultPeriod, fromParam, limited, period, provider, timezone, toParam]);
   const rangeLabel = useMemo(() => {
     if (!timezone || !parsedPeriod) return null;
     const label = formatRange(parsedPeriod.from, parsedPeriod.to, locale, timezone);
@@ -207,6 +215,11 @@ export function DashboardFilters({
 
       {filterTrailing}
       {rangeLabel ? <span className="text-muted-foreground text-xs tabular-nums">{rangeLabel}</span> : null}
+      {limited ? (
+        <span className="text-muted-foreground text-xs" role="status">
+          {t("filters.rangeLimited")}
+        </span>
+      ) : null}
       {tzDiffers && (
         <span className="text-muted-foreground text-xs" title={timezone}>
           {t("filters.timezoneNote", { tz: timezone })}

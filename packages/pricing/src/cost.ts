@@ -1,5 +1,5 @@
-import { resolvePricing } from "./aliases";
-import type { CostMode, PricingMap } from "./types";
+import { resolvePricing, resolvePricingRevisions } from "./aliases";
+import type { CostMode, CostResolution, PricingMap, PricingRevision, PricingSchedule } from "./types";
 
 const TIER_THRESHOLD = 200_000;
 
@@ -64,4 +64,37 @@ export function resolveCost(a: ResolveCostArgs): number {
     (cc1h * cacheCreate1hBase) / 1e6;
 
   return a.isFast ? cost * (p.fastMultiplier ?? 1) : cost;
+}
+
+export function resolveCostAt(
+  args: Omit<ResolveCostArgs, "pricing"> & {
+    occurredAt: Date;
+    schedule: PricingSchedule;
+  },
+): CostResolution {
+  const revisions = resolvePricingRevisions(args.model, args.schedule);
+  let selected: PricingRevision | undefined;
+  for (const revision of revisions ?? []) {
+    if (
+      revision.effectiveAt <= args.occurredAt &&
+      (!selected || revision.effectiveAt >= selected.effectiveAt)
+    ) {
+      selected = revision;
+    }
+  }
+  if (!selected) {
+    return { costUsd: 0, pricingRevisionId: null, status: "unpriced" };
+  }
+
+  const { occurredAt: _occurredAt, schedule: _schedule, ...costArgs } = args;
+  return {
+    costUsd: resolveCost({
+      ...costArgs,
+      pricing: new Map([[selected.modelId, selected.pricing]]),
+      // FinalizedUsageEvent의 provenance는 선택한 revision이므로 제공 비용으로 덮지 않는다.
+      mode: "calculate",
+    }),
+    pricingRevisionId: selected.id,
+    status: "priced",
+  };
 }

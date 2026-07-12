@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/empty";
 import { fmtCompact, fmtUsd } from "@/lib/format";
 import { matchTurnUsage } from "@/lib/history-grouping";
+import { costCoverageForStatus, formatCostForCoverage } from "@/lib/pricing";
 import { DETAIL_TURN_LIMIT, getMyHistorySession } from "@/lib/prompt-history";
 import { getStorage } from "@/lib/storage";
 import { detectMetaTurn } from "@/lib/turn-meta";
@@ -36,6 +37,11 @@ export async function SessionDetail({
   providerLabel: (key: string) => string;
 }) {
   const t = await getTranslations("dashboard");
+  const costLabels = {
+    partial: t("costCoverage.partial"),
+    unpriced: t("costCoverage.unpriced"),
+    legacy: t("costCoverage.legacy"),
+  };
   const locale = await getLocale();
   const tz = await getViewerTimezone();
   const fmtTs = (ts: Date): string =>
@@ -86,7 +92,10 @@ export async function SessionDetail({
         label: t("tokens"),
         value: `${t("history.inputShort")} ${fmtCompact(summary.inputTokens)} · ${t("history.outputShort")} ${fmtCompact(summary.outputTokens)} · ${t("history.cacheShort")} ${fmtCompact(summary.cacheReadTokens + summary.cacheCreationTokens)}`,
       },
-      { label: t("cost"), value: fmtUsd(summary.costUsd) },
+      {
+        label: t("cost"),
+        value: formatCostForCoverage(fmtUsd(summary.costUsd), summary.costCoverage, costLabels),
+      },
     );
     if (summary.hosts.length > 0) {
       stats.push({ label: t("computer"), value: summary.hosts.join(", ") });
@@ -215,7 +224,12 @@ export async function SessionDetail({
                             {usage ? (
                               <span className="font-mono">
                                 {usage.model ? `${usage.model} · ` : ""}↑{fmtCompact(usage.inputTokens)}{" "}
-                                ↓{fmtCompact(usage.outputTokens)} · {fmtUsd(usage.costUsd)}
+                                ↓{fmtCompact(usage.outputTokens)} ·{" "}
+                                {formatCostForCoverage(
+                                  fmtUsd(usage.costUsd),
+                                  costCoverageForStatus(usage.costStatus),
+                                  costLabels,
+                                )}
                               </span>
                             ) : null}
                             <span className="tabular-nums">{fmtTime(turn.ts)}</span>

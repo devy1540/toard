@@ -27,6 +27,59 @@ test("visible boolean settings use the shared switch control", () => {
   assert.match(source("app/(dashboard)/settings/onboarding-panel.tsx"), /@\/components\/ui\/switch/);
 });
 
+test("관리자 시스템 탭은 rollup 상태를 표시하되 read와 TTL을 제어하지 않는다", () => {
+  const page = source("app/(dashboard)/admin/page.tsx");
+  const panel = source("app/(dashboard)/admin/rollup-status-panel.tsx");
+
+  assert.match(page, /getRollupAdminStatus\(\)\.catch\(\(\) => null\)/);
+  assert.match(page, /<RollupStatusPanel initialStatus=\{rollupStatus\}/);
+  assert.match(panel, /const POLL_MS = 10_000/);
+  assert.match(panel, /document\.visibilityState === "visible"/);
+  assert.match(panel, /signal: ticket\.signal/);
+  assert.match(panel, /requestGate\.canCommit\(ticket\)/);
+  assert.match(panel, /requestGateRef\.current\?\.invalidate\(\)[\s\S]*setPendingWorker/);
+  assert.match(panel, /requestGateRef\.current\?\.invalidate\(\);\s*await refresh\(\)/);
+  assert.match(panel, /requestGate\.dispose\(\)/);
+  assert.match(panel, /requestGateRef\.current === requestGate[\s\S]*requestGateRef\.current = null/);
+  assert.match(panel, /controlAbortRef\.current\?\.abort\(\)/);
+  assert.match(panel, /\/api\/admin\/rollups\/status/);
+  assert.match(panel, /\/api\/admin\/rollups\/control/);
+  assert.match(panel, /await refresh\(\)/);
+  assert.match(panel, /role="progressbar"/);
+  assert.match(panel, /aria-valuenow=\{/);
+  assert.match(panel, /!worker\.hardEnabled/);
+  assert.match(panel, /status\.backend === "postgres"/);
+  assert.match(panel, /const summaryLabel = status\.degraded[\s\S]*status\.backend === "postgres"/);
+  assert.match(panel, /formatDateTime\(worker\.lastErrorAt, locale\)/);
+  assert.doesNotMatch(panel, /CLICKHOUSE_READ_|CLICKHOUSE_ENFORCE_RETENTION_TTL/);
+  assert.doesNotMatch(panel, />\{worker\.lastError\}</);
+});
+
+test("rollup 관리자 메시지는 한영 shape와 상태·storage 계약을 같이 유지한다", () => {
+  const ko = JSON.parse(source("messages/ko/admin.json")) as Record<string, unknown>;
+  const en = JSON.parse(source("messages/en/admin.json")) as Record<string, unknown>;
+  const koRollup = ko.rollup as Record<string, unknown> | undefined;
+  const enRollup = en.rollup as Record<string, unknown> | undefined;
+
+  assert.deepEqual(messageShape(ko), messageShape(en));
+  assert.equal(typeof (ko.system as Record<string, unknown>)?.rollupTitle, "string");
+  assert.equal(typeof (en.system as Record<string, unknown>)?.rollupDescription, "string");
+  for (const catalog of [koRollup, enRollup]) {
+    assert.equal(typeof catalog?.progress, "string");
+    assert.equal(typeof catalog?.eta, "string");
+    assert.equal(typeof catalog?.etaConfigured, "string");
+    assert.equal(typeof catalog?.lastError, "string");
+    assert.equal(typeof catalog?.pause, "string");
+    assert.equal(typeof catalog?.resume, "string");
+    assert.equal(typeof catalog?.disabledByServer, "string");
+    assert.equal(typeof catalog?.readSource, "object");
+    assert.equal(typeof catalog?.rawTtl, "object");
+    assert.equal(typeof catalog?.states, "object");
+    assert.equal(typeof catalog?.worker, "object");
+    assert.equal(typeof catalog?.storage, "object");
+  }
+});
+
 test("dashboard disclosures use the shared disclosure wrapper", () => {
   assert.match(source("components/ui/disclosure.tsx"), /function Disclosure/);
   assert.match(source("app/(dashboard)/history/session-detail.tsx"), /@\/components\/ui\/disclosure/);
@@ -75,16 +128,32 @@ test("insight KPI deltas use the shared dashboard badge and calculation", () => 
   const ko = JSON.parse(source("messages/ko/insights.json"));
   const en = JSON.parse(source("messages/en/insights.json"));
 
+  assert.match(page, /DashboardToolbar/);
   assert.match(page, /@\/components\/dashboard\/stat-card/);
   assert.match(page, /@\/lib\/stat-delta/);
   assert.match(page, /<DeltaBadge delta=\{delta\}/);
   assert.match(page, /const tokenDelta = pctDelta\(/);
   assert.match(page, /const sessionsDelta = pctDelta\(/);
-  assert.match(page, /const costDelta = pctDelta\(/);
+  assert.match(page, /const costDelta = costComplete[\s\S]*pctDelta\(/);
   assert.doesNotMatch(page, /const formatComparison/);
   assert.doesNotMatch(page, /signDisplay: "always"/);
   assert.equal(ko.kpi.previousPeriod, "이전 기간 대비");
   assert.equal(en.kpi.previousPeriod, "vs previous period");
+});
+
+test("insights와 history 비용 UI는 같은 query coverage formatter를 재사용한다", () => {
+  const insights = source("app/(dashboard)/insights/page.tsx");
+  const overview = source("components/dashboard/overview-view.tsx");
+  const history = source("app/(dashboard)/history/page.tsx");
+  const detail = source("app/(dashboard)/history/session-detail.tsx");
+
+  assert.match(insights, /<PricingNotice coverage=\{comparisonCoverage\}/);
+  assert.match(insights, /formatCostForCoverage/);
+  assert.match(insights, /costComplete[\s\S]*costDelta/);
+  assert.match(overview, /formatCostForCoverage\(fmtUsd\(u\.costUsd\), u\.costCoverage/);
+  assert.match(history, /formatCostForCoverage\(fmtUsd\(usage\.costUsd\), usage\.costCoverage/);
+  assert.match(detail, /formatCostForCoverage\(fmtUsd\(summary\.costUsd\), summary\.costCoverage/);
+  assert.match(detail, /costCoverageForStatus\(usage\.costStatus\)/);
 });
 
 test("insights default to tokens while preserving explicit cost selection", () => {
@@ -211,6 +280,8 @@ test("insight comparison chart renders current and previous without animation", 
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);
   assert.match(chart, /dataKey="previous"[\s\S]*isAnimationActive=\{false\}/);
+  assert.match(chart, /current\.costCoverage\.unpricedEvents/);
+  assert.match(chart, /previous\.costCoverage\.unpricedEvents/);
 });
 
 test("insight comparison chart fills only the current period with the approved gradient", () => {
@@ -293,6 +364,7 @@ test("insight composition uses shared tabs and limits rows", () => {
   const composition = source("components/dashboard/insight-composition.tsx");
   assert.match(composition, /@\/components\/ui\/segmented-control/);
   assert.match(composition, /\.slice\(0, 5\)/);
+  assert.match(composition, /costCoverage\.unpricedEvents/);
 });
 
 test("tool activity copy distinguishes explicit calls from loads", () => {

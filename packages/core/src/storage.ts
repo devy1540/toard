@@ -21,6 +21,7 @@ export interface InsightMetricSummary {
   costUsd: number;
   sessions: number;
   totalTokens: number;
+  costCoverage: UsageCostCoverage;
 }
 
 export interface InsightTrendPoint {
@@ -31,8 +32,8 @@ export interface InsightTrendPoint {
 
 export interface InsightCompositionChange {
   key: string;
-  current: { costUsd: number; totalTokens: number };
-  previous: { costUsd: number; totalTokens: number };
+  current: { costUsd: number; totalTokens: number; costCoverage: UsageCostCoverage };
+  previous: { costUsd: number; totalTokens: number; costCoverage: UsageCostCoverage };
 }
 
 export interface UserInsightComparison {
@@ -79,6 +80,21 @@ export interface UsageEvent {
   host?: string | null;
 }
 
+export type UsageCostStatus = "priced" | "unpriced" | "legacy";
+
+/** 비용 합계가 어떤 가격 확정 상태의 이벤트로 구성됐는지 설명한다. */
+export interface UsageCostCoverage {
+  pricedEvents: number;
+  unpricedEvents: number;
+  legacyEvents: number;
+}
+
+/** 서버가 이벤트 시각 기준 가격 revision으로 비용을 확정한 저장 계약. */
+export interface FinalizedUsageEvent extends UsageEvent {
+  pricingRevisionId: string | null;
+  costStatus: UsageCostStatus;
+}
+
 export interface OverviewStats {
   totalSessions: number;
   /** 기간 내 DISTINCT user */
@@ -89,6 +105,7 @@ export interface OverviewStats {
   /** 캐시 토큰 — input/output 과 별개 합계. 토큰 카드의 "토큰 대비 비용" 힌트용. */
   totalCacheReadTokens: number;
   totalCacheCreationTokens: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 시계열 버킷 단위 — 하루짜리 기간은 분/시간 단위로 내려 점 하나 대신 곡선을 그린다. */
@@ -139,6 +156,7 @@ export interface ModelBreakdown {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 프로바이더별 사용량 분해 — 워크스페이스 전체 기간 범위. */
@@ -148,6 +166,7 @@ export interface ProviderBreakdown {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 컴퓨터(호스트)별 사용량 분해 — 기간-스코프. host=null 은 "(알 수 없음)"(라벨링은 UI). */
@@ -157,6 +176,7 @@ export interface HostBreakdown {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 내 기기 목록 1행 — 기간 무관(유휴 기기도 노출). host=null 은 "(알 수 없음)". */
@@ -183,6 +203,7 @@ export interface SessionUsageSummary {
   cacheCreationTokens: number;
   costUsd: number;
   eventCount: number;
+  costCoverage: UsageCostCoverage;
 }
 
 /** 세션 내 개별 사용 이벤트 — 히스토리 상세의 턴별(ts 근접) 매칭용 최소 필드. */
@@ -194,6 +215,7 @@ export interface SessionUsageEventRow {
   cacheReadTokens: number;
   cacheCreationTokens: number;
   costUsd: number;
+  costStatus: UsageCostStatus;
 }
 
 export interface LeaderRow {
@@ -205,6 +227,7 @@ export interface LeaderRow {
   /** 총 소모 토큰 = input+output+cache_read+cache_creation (과금 대상 전체) */
   totalTokens: number;
   sessions: number;
+  costCoverage: UsageCostCoverage;
 }
 
 export type LeaderScope = "user" | "team";
@@ -229,7 +252,7 @@ export interface StorageBackend {
   /** OTLP 원형을 무손실 보존하고 raw id 반환 */
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
-  saveUsageEvents(events: UsageEvent[]): Promise<SaveResult>;
+  saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
 

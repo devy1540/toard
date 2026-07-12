@@ -9,7 +9,7 @@ export default function DashboardError({ reset }: { error: Error & { digest?: st
   const t = useTranslations("dashboard");
 
   return (
-    <div className="py-10">
+    <div data-dashboard-error className="py-10">
       <Empty>
         <EmptyHeader>
           <EmptyMedia variant="icon">

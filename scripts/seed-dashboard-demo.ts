@@ -281,16 +281,11 @@ async function upsertProviders(pool: Pool): Promise<void> {
 async function upsertPricing(pool: Pool): Promise<void> {
   for (const m of MODELS) {
     await pool.query(
-      `INSERT INTO pricing_models
+      `INSERT INTO pricing_revisions
          (model_id, input_price_per_mtok, output_price_per_mtok, cache_read_price_per_mtok,
-          cache_creation_price_per_mtok, effective_date, source)
-       VALUES ($1, $2, $3, $4, $5, '2026-01-01', 'dashboard-demo')
-       ON CONFLICT (model_id, effective_date) DO UPDATE SET
-         input_price_per_mtok = EXCLUDED.input_price_per_mtok,
-         output_price_per_mtok = EXCLUDED.output_price_per_mtok,
-         cache_read_price_per_mtok = EXCLUDED.cache_read_price_per_mtok,
-         cache_creation_price_per_mtok = EXCLUDED.cache_creation_price_per_mtok,
-         source = EXCLUDED.source`,
+          cache_creation_price_per_mtok, effective_at, source)
+       VALUES ($1, $2, $3, $4, $5, TIMESTAMPTZ '2026-01-01T00:00:00Z', 'dashboard-demo')
+       ON CONFLICT (model_id, effective_at, source) DO NOTHING`,
       [m.model, m.input, m.output, m.cacheRead, m.cacheCreate],
     );
   }

@@ -171,6 +171,45 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
 
+다중 해상도 rollup은 shadow worker와 읽기를 독립적으로 운영한다. ClickHouse backend에서는 15분 v2와 시간대 shadow worker가 **기본 ON**이며, 각 compactor 값을 `0`·`false`·`off`로 명시할 때만 hard disable된다. 반면 두 read flag와 정규화 `usage_events`의 97일 TTL은 **기본 OFF**다.
+
+| 환경변수 | 역할 |
+|---|---|
+| `CLICKHOUSE_15M_V2_COMPACTOR` | 기본 ON. 가격 revision/status를 보존한 15분 v2 shadow 생성; `0`·`false`·`off`는 hard disable |
+| `CLICKHOUSE_READ_15M_V2_ROLLUP` | 기본 OFF. 검증 완료된 15분 v2와 raw tail 조회 |
+| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 기본 ON. 활성 IANA 시간대별 hour/day cache 생성; `0`·`false`·`off`는 hard disable |
+| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | 기본 OFF. ready인 시간대별 hour/day cache 조회, 미완료 구간은 15분 v2 fallback |
+| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 기본 OFF. 모든 shadow/read 검증 뒤 정규화 `usage_events`에 90일 논리 보정 기간 + 7일 safety grace(물리 97일) TTL 적용 |
+| `CLICKHOUSE_READ_ROLLUP` | **deprecated alias**. 구 `usage_hourly_rollup`을 읽지 않으며 새 flag가 없을 때만 guarded timezone cache read를 요청하고, 미완료 구간은 exact fallback |
+
+전환 순서는 **schema 배포 → 기본 ON shadow backfill 관찰 → raw diff·격리 verifier·HTTP benchmark → timezone day/hour read → 15분 v2 read → 정규화 raw TTL**이다. 앱은 기동 시 `ORG_TIMEZONE`과 `users.timezone`의 고유 값을 canonicalize·ClickHouse capability-check해 비동기로 등록하며, rollout에서 즉시 seed하려면 ClickHouse 환경변수와 함께 `pnpm rollup:activate-timezones`를 실행한다. 신규·coverage-missing bucket만 day 최근 400 local days와 hour 최근 32 local days를 16-bucket chunk로 prewarm하므로 재시작·replica activation이 완료 coverage를 무효화하지 않는다.
+
+관리자는 **관리자 → 시스템 → Rollup 상태**(`/admin?tab=system`)에서 두 worker의 상태·진행률·ETA·최근 오류·table 규모를 확인한다. 화면은 보이는 동안 `GET /api/admin/rollups/status`를 10초마다 호출하고, pause/resume은 관리자 전용 `POST /api/admin/rollups/control`을 사용한다. pause 값은 Postgres에 저장되어 앱 재시작 뒤에도 유지된다. pause는 실행 중인 batch를 강제 중단하지 않고 다음 60초 worker tick부터 건너뛰며, resume도 다음 tick부터 반영된다. hard-disabled worker는 화면에서 resume할 수 없고 서버 환경변수를 고친 뒤 앱을 재생성해야 한다. 이 화면은 read flag와 TTL 상태를 표시만 하며 변경하지 않는다.
+
+기존 `CLICKHOUSE_READ_ROLLUP=1` 설치의 업그레이드 계약은 **schema → `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0` 명시 override → activation CLI (`pnpm rollup:activate-timezones`) → worker/coverage 확인 → verifier·benchmark → new read flags (`CLICKHOUSE_READ_TIMEZONE_ROLLUP=1`, `CLICKHOUSE_READ_15M_V2_ROLLUP=1`) → legacy unset** 순서다. 검증 기간에는 명시적 `0`이 legacy alias보다 우선해 timezone read를 OFF로 유지한다. legacy 값이 남아 있으면 process당 한 번 deprecation 경고를 남기고 `/api/ready`의 `rollups.legacyFlagMigration`이 `deprecated_alias`가 된다. Postgres·ClickHouse 연결이 정상이면 이 migration 경고 때문에 HTTP 200을 503으로 바꾸지는 않는다.
+
+수집 API의 late-event cutoff와 대시보드 쿼리는 계속 90일을 논리 경계로 사용한다. 물리 raw TTL과 delivered outbox/batch만 97일 보존해 정확히 90일 경계에서 수락된 이벤트가 outbox flush와 v2 compactor를 거칠 7일의 안전 여유를 둔다. 정규화 `usage_events` TTL은 위 opt-in 플래그를 켜기 전에는 init/runtime 어디에서도 적용하지 않는다. 이와 별개로 보조 ClickHouse `raw_events` 7일, legacy hourly·15분 v2·시간대 cache 400일 TTL은 schema에서 자동 적용되고, production non-Vercel 앱은 Postgres `raw_events` 7일·완료 timezone job 7일·outbox/batch 97일·시간대 coverage hour 32 local days/day 400 local days 정리를 매일 실행한다. Postgres raw 정리는 transaction당 최대 1,000행의 참조 분리+삭제 원자성을 유지하면서 batch가 가득 차면 1초 뒤 raw-only batch를 이어가고, 짧은 batch에서 멈춘다. 오류는 60초 backoff 후 재시도하며 같은 process의 drain은 겹치지 않는다.
+
+exact verifier는 TTL을 바꾸고 fixture를 삽입하므로 기존 localhost 서비스에 직접 실행하지 않는다. 전용 tmpfs Postgres·ClickHouse 생성/정리 명령은 [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md#92-shadow와-성능-gate)을 따른다. HTTP release gate는 자체 전용 Compose project를 만들고 정리한다.
+
+```bash
+pnpm benchmark:dashboard-http
+```
+
+릴리스 성능 gate는 전용 Compose profile로 app·Postgres·ClickHouse를 실제 기동하고 Docker inspect로 합계 4 vCPU/8 GiB 제한을 확인한 뒤, app 컨테이너 안에서 credentials 로그인 production Next HTTP 응답을 측정한다. 400일·100만 event 고정 fixture는 tmpfs 기반 격리 stack에서 raw → 15분 v2 compactor → 시간대 activation/worker → durable coverage 경로를 통과한다. 다섯 시간대 조직·provider·team·개인의 8개 scenario를 각각 100회 측정하며, 모두 P50 1초 이하·P95 2초 이하일 때만 마지막에 `RELEASE_PASS`를 출력한다. 각 요청은 ClickHouse query/uncompressed/mark cache를 비우고 고유 URL로 앱 응답 cache를 우회한다. `AUTH_MODE=open`은 사용하지 않는다.
+
+`pnpm benchmark:dashboard-http:diagnostic`은 host localhost 측정이라 release PASS 근거가 아니며, `pnpm benchmark:rollup:micro`도 ClickHouse 단일 SQL 진단용이다. 실제 release 명령은 `pnpm benchmark:dashboard-http` 하나이며 app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB가 아니면 fixture 생성 전에 실패한다.
+
+release wrapper는 정상·실패·중단 경로에서 전용 Compose project를 한 번만 정리한다. cleanup 자체가 실패하면 release 성공으로 종료하지 않으며, benchmark와 cleanup이 모두 실패하면 두 오류를 함께 출력한다. `SIGINT`/`SIGTERM`은 실행 중인 child에 전달하고 cleanup 완료를 기다린 뒤 각각 130/143으로 종료한다. 실제 signal 정리 회귀는 `pnpm test:benchmark-dashboard-signal`로 확인한다.
+
+read 전환 뒤 문제가 생기면 해당 `CLICKHOUSE_READ_*`를 끄고 앱만 재생성한다. 단, `CLICKHOUSE_READ_ROLLUP=1` legacy alias가 아직 남아 있으면 timezone read rollback은 빈 값이 아니라 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0`이어야 한다. legacy unset을 확인한 뒤에만 새 flag를 빈 값으로 되돌릴 수 있다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다.
+
+```bash
+docker compose up -d --no-deps --force-recreate app
+```
+
+세부 검증 SQL, `/api/ready`의 `healthy`/`fallback`/`disabled` 해석, 단계별 rollback은 [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md)에 정리돼 있다.
+
 ## 🔐 로그인 (인증 모드)
 
 `AUTH_MODE` 로 조직 환경에 맞게 선택한다(ADR-007, JWT 세션). 로그인 페이지는 `/login`.

@@ -7,12 +7,11 @@ import type { CompositionDimension } from "@/components/dashboard/composition-to
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { OverviewView } from "@/components/dashboard/overview-view";
-import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { ViewToggle } from "@/components/dashboard/view-toggle";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
 import { DEFAULT_VIEW, VIEW_COOKIE, isDashboardView, type DashboardView } from "@/lib/dashboard-view";
-import { parseFilters, type DashboardSearchParams } from "@/lib/period";
+import { parseDashboardPeriod, type DashboardSearchParams } from "@/lib/period";
 import { getEnabledProviders } from "@/lib/providers";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -44,7 +43,7 @@ export default async function MyUsagePage({
   }
 
   const sp = await searchParams;
-  const period = parseFilters(sp, await getViewerTimezone());
+  const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const metric: ChartMetric = sp.metric === "cost" ? "cost" : "tokens";
   const composition: CompositionDimension = sp.composition === "device" ? "device" : "model";
   const providers = await getEnabledProviders();
@@ -56,6 +55,7 @@ export default async function MyUsagePage({
       <DashboardFilters
         providers={providers}
         timezone={period.timezone}
+        limited={period.limited}
         showBucketControl
         splitHeader
         title={t("myUsageTitle")}
@@ -67,8 +67,6 @@ export default async function MyUsagePage({
           </>
         }
       />
-
-      <PricingNotice />
 
       {view === "classic" ? (
         <ClassicView userId={userId} period={period} metric={metric} />

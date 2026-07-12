@@ -1,8 +1,348 @@
 import assert from "node:assert/strict";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 import type { ClickHouseClient } from "@clickhouse/client";
-import type { Pool } from "pg";
-import { ClickHouseStorage } from "./storage";
+import {
+  addLocalCalendarDays,
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+  type FinalizedUsageEvent,
+} from "@toard/core";
+import type { Pool, PoolClient } from "pg";
+import {
+  ClickHouseStorage,
+  clampV2RollupStart,
+  resolveClickHouseRollupReadFlag,
+} from "./storage";
+
+type InsertedRows = { table: string; values: Array<Record<string, unknown>> };
+
+function finalizedEvent(
+  overrides: Partial<FinalizedUsageEvent> = {},
+): FinalizedUsageEvent {
+  return {
+    dedupKey: "event-1",
+    providerKey: "anthropic",
+    userId: null,
+    sessionId: "session-1",
+    model: "claude-sonnet-4",
+    ts: new Date("2026-07-10T10:05:00.000Z"),
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 5,
+    cacheCreationTokens: 3,
+    costUsd: 0.0123,
+    pricingRevisionId: "rev-1",
+    costStatus: "priced",
+    logAdapter: "claude",
+    host: "macbook",
+    ...overrides,
+  };
+}
+
+function storageWithInsertedRows(
+  inserts: InsertedRows[],
+  pgQueries: Array<{ sql: string; params: unknown[] }> = [],
+): ClickHouseStorage {
+  const outboxRows: Array<Record<string, unknown>> = [];
+  let pendingBatch = true;
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push({ sql, params });
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("INSERT INTO clickhouse_usage_batches")) {
+        return { rows: [{ id: "batch-1" }], rowCount: 1 };
+      }
+      if (normalized.startsWith("INSERT INTO clickhouse_usage_outbox")) {
+        outboxRows.push({
+          dedup_key: params[0],
+          provider_key: params[2],
+          user_id: params[3],
+          team_id: params[4],
+          session_id: params[5],
+          model: params[6],
+          ts: params[7],
+          input_tokens: String(params[8]),
+          output_tokens: String(params[9]),
+          cache_read_tokens: String(params[10]),
+          cache_creation_tokens: String(params[11]),
+          cost_usd: String(params[12]),
+          log_adapter: params[13],
+          host: params[14],
+          pricing_revision_id: params[15],
+          cost_status: params[16],
+        });
+        return { rows: [], rowCount: 1 };
+      }
+      if (normalized.includes("UPDATE clickhouse_usage_batches b")) {
+        if (!pendingBatch) return { rows: [], rowCount: 0 };
+        pendingBatch = false;
+        return {
+          rows: [{ id: "batch-1", insertToken: "insert-token-1" }],
+          rowCount: 1,
+        };
+      }
+      if (normalized.startsWith("SELECT dedup_key")) {
+        return { rows: outboxRows, rowCount: outboxRows.length };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const pg = {
+    connect: async () => client,
+  } as unknown as Pool;
+  const ch = {
+    command: async () => undefined,
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      inserts.push({ table, values });
+    },
+  } as unknown as ClickHouseClient;
+  return new ClickHouseStorage(ch, pg);
+}
+
+function v2CompactorFixture(options: {
+  watermark?: Date;
+  failAggregate?: boolean;
+} = {}): {
+  storage: ClickHouseStorage;
+  aggregateQueries: string[];
+  aggregateParams: Array<Record<string, unknown>>;
+  inserts: InsertedRows[];
+  pgQueries: string[];
+  pgCalls: Array<{ sql: string; params: unknown[] }>;
+} {
+  const aggregateQueries: string[] = [];
+  const aggregateParams: Array<Record<string, unknown>> = [];
+  const inserts: InsertedRows[] = [];
+  const pgQueries: string[] = [];
+  const pgCalls: Array<{ sql: string; params: unknown[] }> = [];
+  const bucket = new Date(Math.floor((Date.now() - 2 * 60 * 60 * 1000) / (15 * 60 * 1000)) * (15 * 60 * 1000));
+  let watermark = options.watermark ?? bucket;
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push(sql);
+      pgCalls.push({ sql, params });
+      const normalized = sql.replace(/\s+/g, " ").trim();
+      if (normalized.startsWith("SELECT watermark")) {
+        return { rows: [{ watermark }], rowCount: 1 };
+      }
+      if (normalized.startsWith("SELECT bucket")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (normalized.startsWith("UPDATE clickhouse_rollup_watermarks")) {
+        watermark = params[1] as Date;
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const pg = {
+    connect: async () => client,
+  } as unknown as Pool;
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query, query_params }: { query: string; query_params: Record<string, unknown> }) => {
+      aggregateQueries.push(query);
+      aggregateParams.push(query_params);
+      if (options.failAggregate) throw new Error("aggregate failed");
+      const firstBucket = (query_params.buckets as string[] | undefined)?.[0]
+        ?? bucket.toISOString().replace("T", " ").replace("Z", "");
+      return {
+        json: async () => [{
+          bucket_15m: firstBucket,
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "team-1",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          host: "macbook",
+          pricing_revision_id: "rev-1",
+          cost_status: "priced",
+          event_count: "1",
+          input_tokens: "100",
+          output_tokens: "20",
+          cache_read_tokens: "5",
+          cache_creation_tokens: "3",
+          cost_usd: "0.01230000",
+        }],
+      };
+    },
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      inserts.push({ table, values });
+    },
+  } as unknown as ClickHouseClient;
+  return {
+    storage: new ClickHouseStorage(ch, pg),
+    aggregateQueries,
+    aggregateParams,
+    inserts,
+    pgQueries,
+    pgCalls,
+  };
+}
+
+type RouterJobStatus = "pending" | "inflight" | "done";
+
+function sourceRouterFixture({
+  active = true,
+  coverageBuckets,
+  dirtyBucket = null,
+  failRegistryOnce = false,
+  jsonRows = [],
+  jobs = [],
+  watermark,
+  readRollup = true,
+  read15mV2Rollup = true,
+}: {
+  active?: boolean;
+  coverageBuckets?: Date[];
+  dirtyBucket?: Date | null;
+  failRegistryOnce?: boolean;
+  jsonRows?: Array<Record<string, unknown>>;
+  jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
+  watermark: Date;
+  readRollup?: boolean;
+  read15mV2Rollup?: boolean;
+}) {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  let registryFailures = failRegistryOnce ? 1 : 0;
+  const pg = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push({ sql, params });
+      if (sql.includes("FROM clickhouse_rollup_timezones")) {
+        if (registryFailures > 0) {
+          registryFailures--;
+          throw new Error("transient registry failure");
+        }
+        return { rows: active ? [{ timezone: params[0] }] : [], rowCount: active ? 1 : 0 };
+      }
+      if (sql.includes("FROM clickhouse_rollup_watermarks")) {
+        return { rows: [{ watermark }], rowCount: 1 };
+      }
+      if (sql.includes("FROM clickhouse_rollup_dirty_buckets")) {
+        const from = (params[1] as Date).getTime();
+        const to = (params[2] as Date).getTime();
+        const selected = dirtyBucket && dirtyBucket.getTime() >= from && dirtyBucket.getTime() < to
+          ? [{ bucket: dirtyBucket }]
+          : [];
+        return { rows: selected, rowCount: selected.length };
+      }
+      if (sql.includes("FROM clickhouse_timezone_rollup_jobs")) {
+        const from = (params[2] as Date).getTime();
+        const to = (params[3] as Date).getTime();
+        const selected = jobs.filter(({ bucket }) => bucket.getTime() >= from && bucket.getTime() < to);
+        return { rows: selected, rowCount: selected.length };
+      }
+      if (sql.includes("FROM clickhouse_timezone_rollup_coverage")) {
+        const from = (params[2] as Date).getTime();
+        const to = (params[3] as Date).getTime();
+        const available = coverageBuckets ?? jobs
+          .filter(({ status }) => status === "done")
+          .map(({ bucket }) => bucket);
+        const selected = available
+          .filter((bucket) => bucket.getTime() >= from && bucket.getTime() < to)
+          .map((bucket) => ({ bucket }));
+        return { rows: selected, rowCount: selected.length };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as Pool;
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => jsonRows };
+    },
+  } as unknown as ClickHouseClient;
+  return {
+    storage: new ClickHouseStorage(ch, pg, {
+      readRollup,
+      read15mV2Rollup,
+    }),
+    queries,
+    pgQueries,
+  };
+}
+
+test("legacy rollup flag는 deprecated alias이며 새 flag의 명시값이 우선하고 경고는 process당 한 번이다", () => {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (message?: unknown) => warnings.push(String(message));
+  try {
+    const legacy = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+    const repeated = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+    const explicitNewOff = resolveClickHouseRollupReadFlag({
+      CLICKHOUSE_READ_ROLLUP: "1",
+      CLICKHOUSE_READ_TIMEZONE_ROLLUP: "0",
+    });
+
+    assert.deepEqual(legacy, {
+      enabled: true,
+      legacyFlagMigration: "deprecated_alias",
+    });
+    assert.deepEqual(repeated, legacy);
+    assert.deepEqual(explicitNewOff, {
+      enabled: false,
+      legacyFlagMigration: "deprecated_alias",
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(warnings.length, 1);
+  const warning = JSON.parse(warnings[0]!) as Record<string, unknown>;
+  assert.equal(warning.event, "clickhouse_read_rollup_deprecated");
+  assert.equal(warning.legacyFlag, "CLICKHOUSE_READ_ROLLUP");
+  assert.equal(warning.replacementFlag, "CLICKHOUSE_READ_TIMEZONE_ROLLUP");
+  assert.match(String(warning.action), /rollup:activate-timezones/);
+  assert.match(String(warning.action), /shadow/);
+  assert.match(String(warning.action), /unset/);
+  assert.doesNotMatch(warnings[0]!, /CLICKHOUSE_PASSWORD|DATABASE_URL|AUTH_SECRET/);
+});
+
+function localDayRange(timezone: string, date: string, days: number) {
+  const canonical = canonicalTimezoneId(timezone);
+  assert.ok(canonical);
+  const from = firstInstantOfLocalDate(date, canonical);
+  const jobs = Array.from({ length: days }, (_, index) => ({
+    bucket: firstInstantOfLocalDate(addLocalCalendarDays(date, index), canonical),
+    status: "done" as const,
+  }));
+  const to = firstInstantOfLocalDate(addLocalCalendarDays(date, days), canonical);
+  return { from, to, jobs };
+}
+
+function hourlyJobs(from: Date, to: Date) {
+  const jobs: Array<{ bucket: Date; status: "done" }> = [];
+  for (let at = from.getTime(); at < to.getTime(); at += 60 * 60 * 1000) {
+    jobs.push({ bucket: new Date(at), status: "done" });
+  }
+  return jobs;
+}
+
+async function schemaCommands(
+  opts: ConstructorParameters<typeof ClickHouseStorage>[2] = {},
+): Promise<string[]> {
+  const commands: string[] = [];
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      commands.push(query);
+    },
+    query: async () => ({ json: async () => [] }),
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool, opts);
+  await storage.getTeamMemberTimeseries({
+    from: new Date("2026-07-10T00:00:00.000Z"),
+    to: new Date("2026-07-11T00:00:00.000Z"),
+    bucket: "15m",
+    timezone: "UTC",
+    teamId: "team-1",
+    userIds: ["user-1"],
+  });
+  return commands;
+}
 
 test("인사이트 query log 표식은 SQL 주석 제거 후에도 남는 문자열 리터럴이다", async () => {
   const queries: string[] = [];
@@ -79,4 +419,1207 @@ test("ClickHouseStorage groups team member usage by bucket and user", async () =
       cacheCreationTokens: 0,
     },
   ]);
+});
+
+test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다", async () => {
+  const inserts: InsertedRows[] = [];
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows(inserts, pgQueries);
+
+  await storage.saveUsageEvents([
+    finalizedEvent(),
+    finalizedEvent({
+      dedupKey: "event-2",
+      pricingRevisionId: null,
+      costStatus: "unpriced",
+      costUsd: 0,
+    }),
+    finalizedEvent({
+      dedupKey: "event-3",
+      pricingRevisionId: null,
+      costStatus: "legacy",
+    }),
+  ]);
+  await storage.flushUsageOutbox();
+
+  const rawRows = inserts.find((x) => x.table === "usage_events")?.values;
+  assert.deepEqual(
+    rawRows?.map((row) => [row.pricing_revision_id, row.cost_status]),
+    [
+      ["rev-1", "priced"],
+      ["", "unpriced"],
+      ["", "legacy"],
+    ],
+  );
+  assert.deepEqual(
+    pgQueries
+      .filter(({ sql }) => sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets"))
+      .map(({ params }) => params[0]),
+    ["usage_15m", "usage_15m_v2"],
+  );
+});
+
+test("finalizer가 90일 초과 이벤트를 제외해 빈 배열을 넘기면 v2 dirty와 watermark를 건드리지 않는다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries);
+
+  assert.deepEqual(await storage.saveUsageEvents([]), { inserted: 0, deduped: 0 });
+  assert.equal(
+    pgQueries.some(({ sql }) => /clickhouse_rollup_(dirty_buckets|watermarks)/.test(sql)),
+    false,
+  );
+});
+
+test("v2 최초 watermark는 최근 400일보다 오래 시작하지 않는다", () => {
+  const eligible = new Date("2026-07-12T12:00:00.000Z");
+  assert.equal(
+    clampV2RollupStart(new Date("2024-01-01T00:00:00.000Z"), eligible).toISOString(),
+    "2025-06-07T12:00:00.000Z",
+  );
+  assert.equal(
+    clampV2RollupStart(new Date("2026-07-01T00:00:00.000Z"), eligible).toISOString(),
+    "2026-07-01T00:00:00.000Z",
+  );
+});
+
+test("v2 compactor는 기존 watermark도 최근 400일 시작점으로 clamp한다", async () => {
+  const { storage, aggregateParams, pgCalls } = v2CompactorFixture({
+    watermark: new Date("2024-01-01T00:00:00.000Z"),
+  });
+
+  const result = await storage.compactUsage15mV2(1);
+  const dirtyQuery = pgCalls.find(({ sql }) => sql.includes("FROM clickhouse_rollup_dirty_buckets"));
+  assert.ok(dirtyQuery);
+  const targetFrom = dirtyQuery.params[1] as Date;
+  const processedBuckets = aggregateParams[0]?.buckets as string[] | undefined;
+  assert.deepEqual(processedBuckets, [targetFrom.toISOString().replace("T", " ").replace("Z", "")]);
+
+  const watermarkUpdate = pgCalls.find(({ sql }) => sql.includes("UPDATE clickhouse_rollup_watermarks"));
+  assert.ok(watermarkUpdate);
+  assert.equal(
+    (watermarkUpdate.params[1] as Date).toISOString(),
+    new Date(targetFrom.getTime() + 15 * 60 * 1000).toISOString(),
+  );
+  assert.equal(result.watermark, (watermarkUpdate.params[1] as Date).toISOString());
+});
+
+test("v2 compactor 실패 전에는 clamp 진척을 watermark에 저장하지 않는다", async () => {
+  const { storage, pgCalls } = v2CompactorFixture({
+    watermark: new Date("2024-01-01T00:00:00.000Z"),
+    failAggregate: true,
+  });
+
+  await assert.rejects(storage.compactUsage15mV2(1), /aggregate failed/);
+  assert.equal(
+    pgCalls.some(({ sql }) => sql.includes("UPDATE clickhouse_rollup_watermarks")),
+    false,
+  );
+  assert.equal(pgCalls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("v1 compactor의 기존 watermark는 retention 시작점으로 clamp하지 않는다", async () => {
+  const persistedWatermark = new Date("2024-01-01T00:00:00.000Z");
+  const { storage, aggregateParams, pgCalls } = v2CompactorFixture({ watermark: persistedWatermark });
+
+  const result = await storage.compactUsage15mRollup(1);
+  const processedBuckets = aggregateParams[0]?.buckets as string[] | undefined;
+  assert.deepEqual(
+    processedBuckets,
+    [persistedWatermark.toISOString().replace("T", " ").replace("Z", "")],
+  );
+
+  const watermarkUpdate = pgCalls.find(({ sql }) => sql.includes("UPDATE clickhouse_rollup_watermarks"));
+  assert.ok(watermarkUpdate);
+  assert.equal(
+    (watermarkUpdate.params[1] as Date).toISOString(),
+    new Date(persistedWatermark.getTime() + 15 * 60 * 1000).toISOString(),
+  );
+  assert.equal(result.watermark, (watermarkUpdate.params[1] as Date).toISOString());
+});
+
+test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한다", async () => {
+  const { storage, aggregateQueries, inserts, pgQueries } = v2CompactorFixture();
+  const compact = (storage as unknown as {
+    compactUsage15mV2?: (limitBuckets?: number) => Promise<{ buckets: number; rows: number; watermark: string }>;
+  }).compactUsage15mV2;
+
+  assert.equal(typeof compact, "function");
+  if (!compact) return;
+  await compact.call(storage, 1);
+
+  const aggregate = aggregateQueries.find((query) => query.includes("GROUP BY bucket_15m"));
+  assert.ok(aggregate);
+  assert.match(aggregate, /FROM usage_events FINAL/);
+  assert.match(aggregate, /pricing_revision_id/);
+  assert.match(aggregate, /cost_status/);
+  assert.match(aggregate, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost_usd/);
+  assert.match(
+    aggregate,
+    /GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status/,
+  );
+  const inserted = inserts.find(({ table }) => table === "usage_15m_rollup_v2");
+  assert.ok(inserted);
+  assert.equal(inserted.values[0]?.pricing_revision_id, "rev-1");
+  assert.equal(inserted.values[0]?.cost_status, "priced");
+
+  const timezoneJobs = pgQueries.find((query) => query.includes("INSERT INTO clickhouse_timezone_rollup_jobs"));
+  assert.ok(timezoneJobs);
+  assert.match(timezoneJobs, /SELECT DISTINCT resolution, timezone, date_trunc\(resolution, affected\.bucket, timezone\)/);
+  assert.match(timezoneJobs, /DELETE FROM clickhouse_timezone_rollup_coverage/);
+  assert.match(timezoneJobs, /ON CONFLICT \(resolution, timezone, bucket\) DO UPDATE/);
+  assert.match(timezoneJobs, /status = 'pending'/);
+
+  const dirtyQuery = pgQueries.find((query) => query.includes("FROM clickhouse_rollup_dirty_buckets"));
+  assert.ok(dirtyQuery);
+  assert.match(dirtyQuery, /bucket >= \$2 AND bucket < \$3/);
+});
+
+test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async () => {
+  const { storage, aggregateQueries, pgQueries } = v2CompactorFixture();
+
+  await storage.compactUsage15mRollup(1);
+
+  const aggregate = aggregateQueries.find((query) => query.includes("GROUP BY bucket_15m"));
+  assert.ok(aggregate);
+  assert.match(aggregate, /FROM usage_events\s+WHERE/);
+  assert.doesNotMatch(aggregate, /FROM usage_events FINAL/);
+  assert.equal(pgQueries.some((query) => query.includes("INSERT INTO clickhouse_timezone_rollup_jobs")), false);
+  const dirtyQuery = pgQueries.find((query) => query.includes("FROM clickhouse_rollup_dirty_buckets"));
+  assert.ok(dirtyQuery);
+  assert.doesNotMatch(dirtyQuery, /bucket >=/);
+});
+
+test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const pg = {
+    query: async (sql: string) => {
+      if (sql.includes("SELECT watermark")) {
+        return { rows: [{ watermark: new Date("2026-04-15T11:00:00.000Z") }] };
+      }
+      if (sql.includes("SELECT min(bucket)")) {
+        return { rows: [{ bucket: new Date("2026-04-15T10:15:00.000Z") }] };
+      }
+      return { rows: [] };
+    },
+  } as unknown as Pool;
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, pg, { read15mV2Rollup: true } as never);
+
+  await storage.getDailyTimeseries({
+    from: new Date("2026-04-15T09:00:00.000Z"),
+    to: new Date("2026-04-15T11:00:00.000Z"),
+    bucket: "15m",
+    timezone: "UTC",
+  });
+
+  assert.equal(queries.length, 1);
+  assert.match(queries[0]!.query, /FROM usage_15m_rollup_v2/);
+  assert.match(queries[0]!.query, /ts >= \{rollupTo:DateTime64\(3\)\}/);
+  assert.equal(queries[0]!.params.rollupTo, "2026-04-15 10:15:00.000");
+});
+
+test("활성 Seoul 시간대의 12개월 일별 요청은 ready timezone-day source를 사용한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-02", 365);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  assert.equal(queries.length, 1);
+  assert.match(queries[0]!.query, /FROM usage_daily_timezone_rollup FINAL/);
+  assert.match(queries[0]!.query, /bucket_start >= \{from:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /bucket_start < \{to:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /formatDateTime\(bucket_start, '%Y-%m-%d', 'Asia\/Seoul'\)/);
+  assert.doesNotMatch(queries[0]!.query, /usage_15m_rollup_v2|usage_events|usage_hourly_rollup/);
+  assert.equal(queries[0]!.params.timezone, "Asia/Seoul");
+});
+
+test("다섯 IANA 시간대의 ready day cache는 canonical source와 DST local label을 보존한다", async () => {
+  const cases = [
+    ["UTC", "2026-07-01"],
+    ["Asia/Seoul", "2026-07-01"],
+    ["Asia/Kathmandu", "2026-07-01"],
+    ["America/Los_Angeles", "2026-03-08"],
+    ["America/Santiago", "2025-09-07"],
+  ] as const;
+
+  for (const [timezone, date] of cases) {
+    const range = localDayRange(timezone, date, 1);
+    const { storage, queries } = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+    await storage.getDailyTimeseries({ ...range, bucket: "day", timezone });
+
+    const canonical = canonicalTimezoneId(timezone);
+    assert.ok(canonical);
+    assert.match(queries[0]!.query, /FROM usage_daily_timezone_rollup FINAL/);
+    assert.match(queries[0]!.query, new RegExp(`formatDateTime\\(bucket_start, '%Y-%m-%d', '${canonical.replace("/", "\\/")}'\\)`));
+    assert.equal(queries[0]!.params.timezone, canonical);
+    assert.equal(queries[0]!.params.from, range.from.toISOString().replace("T", " ").replace("Z", ""));
+    assert.equal(queries[0]!.params.to, range.to.toISOString().replace("T", " ").replace("Z", ""));
+  }
+});
+
+test("DST 전환일의 ready hour cache는 bucket_start를 반열린 범위로 직접 조회한다", async () => {
+  const range = localDayRange("America/Los_Angeles", "2026-03-08", 1);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: hourlyJobs(range.from, range.to),
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "hour",
+    timezone: "America/Los_Angeles",
+  });
+
+  assert.match(queries[0]!.query, /FROM usage_hourly_timezone_rollup FINAL/);
+  assert.match(queries[0]!.query, /bucket_start >= \{from:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /bucket_start < \{to:DateTime64\(3\)\}/);
+  assert.match(queries[0]!.query, /formatDateTime\(bucket_start, '%Y-%m-%d %H:00', 'America\/Los_Angeles'\)/);
+  assert.doesNotMatch(queries[0]!.query, /toStartOfInterval\(bucket_start/);
+  assert.equal(hourlyJobs(range.from, range.to).length, 23);
+});
+
+test("inactive Kathmandu는 exact 15분 v2 source를 요청 IANA 시간대로 그룹화한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Kathmandu",
+  });
+
+  assert.match(queries[0]!.query, /FROM usage_15m_rollup_v2/);
+  assert.match(queries[0]!.query, /formatDateTime\(ts, '%Y-%m-%d', 'Asia\/Kathmandu'\)/);
+  assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup|usage_hourly_rollup/);
+});
+
+test("active all 요청은 완성 과거 day cache와 오늘의 exact 15분·raw tail을 합친다", async () => {
+  const cached = localDayRange("America/Los_Angeles", "2025-07-10", 365);
+  const to = new Date(cached.to.getTime() + 12 * 60 * 60 * 1000 + 34 * 60 * 1000);
+  const watermark = new Date(to.getTime() - 4 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({ watermark, jobs: cached.jobs });
+
+  await storage.getDailyTimeseries({
+    from: cached.from,
+    to,
+    bucket: "day",
+    timezone: "America/Los_Angeles",
+  });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(query.query, /usage_15m_rollup_v2/);
+  assert.match(query.query, /UNION ALL/);
+  assert.equal(query.params.cache_from, cached.from.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.cache_to, cached.to.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.from, undefined);
+});
+
+test("hybrid cache와 exact tail은 가격 상태 event count를 같은 schema로 보존한다", async () => {
+  const cached = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const to = new Date(cached.to.getTime() + 45 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: to,
+    jobs: cached.jobs,
+    jsonRows: [{
+      sessions: "2",
+      active_users: "1",
+      cost: "1.25000000",
+      input: "10",
+      output: "5",
+      cache_read: "0",
+      cache_creation: "0",
+      priced_events: "2",
+      unpriced_events: "3",
+      legacy_events: "4",
+    }],
+  });
+
+  const overview = await storage.getOverview({
+    from: cached.from,
+    to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  } as never);
+
+  const query = queries[0]!.query;
+  assert.match(query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(query, /usage_15m_rollup_v2/);
+  assert.ok((query.match(/cost_status/g) ?? []).length >= 3);
+  assert.ok((query.match(/event_count/g) ?? []).length >= 3);
+  assert.match(query, /sumIf\(event_count, cost_status = 'priced'\) AS priced_events/);
+  assert.match(query, /sumIf\(event_count, cost_status = 'unpriced'\) AS unpriced_events/);
+  assert.match(query, /sumIf\(event_count, cost_status = 'legacy'\) AS legacy_events/);
+  assert.deepEqual(overview.costCoverage, {
+    pricedEvents: 2,
+    unpricedEvents: 3,
+    legacyEvents: 4,
+  });
+});
+
+test("raw fallback도 event_count=1과 cost_status를 보존하고 unpriced 비용을 제외한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+    jsonRows: [{
+      sessions: "1",
+      active_users: "1",
+      cost: "0",
+      input: "10",
+      output: "0",
+      cache_read: "0",
+      cache_creation: "0",
+      priced_events: "0",
+      unpriced_events: "1",
+      legacy_events: "0",
+    }],
+  });
+
+  const overview = await storage.getOverview({ ...range, bucket: "day" } as never);
+
+  assert.match(queries[0]!.query, /1 AS event_count/);
+  assert.match(queries[0]!.query, /cost_status/);
+  assert.match(queries[0]!.query, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost/);
+  assert.equal(overview.totalCostUsd, 0);
+  assert.equal(overview.costCoverage.unpricedEvents, 1);
+});
+
+test("모델별 비용은 all-unpriced와 legacy-only provenance를 반환한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const { storage } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+    jsonRows: [
+      {
+        model: "unpriced-model",
+        cost: "0",
+        tokens: "10",
+        sessions: "1",
+        priced_events: "0",
+        unpriced_events: "2",
+        legacy_events: "0",
+      },
+      {
+        model: "legacy-model",
+        cost: "4.5",
+        tokens: "20",
+        sessions: "1",
+        priced_events: "0",
+        unpriced_events: "0",
+        legacy_events: "3",
+      },
+    ],
+  });
+
+  const usage = await storage.getUserUsage("user-1", { ...range, bucket: "day" });
+
+  assert.deepEqual(usage.byModel.map(({ model, costUsd, costCoverage }) => ({ model, costUsd, costCoverage })), [
+    {
+      model: "unpriced-model",
+      costUsd: 0,
+      costCoverage: { pricedEvents: 0, unpricedEvents: 2, legacyEvents: 0 },
+    },
+    {
+      model: "legacy-model",
+      costUsd: 4.5,
+      costCoverage: { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 3 },
+    },
+  ]);
+});
+
+test("ClickHouse 인사이트와 session 경로도 가격 coverage를 같은 query에서 보존한다", async () => {
+  const queries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      if (query.includes("SELECT 'summary' AS kind")) {
+        return {
+          json: async () => [{
+            kind: "summary", period: "current", position: null,
+            cost: "1.25", sessions: "2", tokens: "15",
+            priced_events: "2", unpriced_events: "1", legacy_events: "0",
+          }],
+        };
+      }
+      if (query.includes("SELECT 'model' AS dimension")) {
+        return {
+          json: async () => [{
+            dimension: "model", key: "model-a", period: "current",
+            cost: "1.25", tokens: "15",
+            priced_events: "2", unpriced_events: "1", legacy_events: "0",
+          }],
+        };
+      }
+      if (query.includes("GROUP BY session_id")) {
+        return {
+          json: async () => [{
+            session_id: "session-1", models: ["model-a"], hosts: ["host-a"],
+            input: "10", output: "5", cache_read: "0", cache_creation: "0",
+            cost: "2.5", events: "4",
+            priced_events: "2", unpriced_events: "1", legacy_events: "1",
+          }],
+        };
+      }
+      return {
+        json: async () => [{
+          ts: "2026-07-01 00:00:00.000", model: "model-a",
+          input: "10", output: "5", cache_read: "0", cache_creation: "0",
+          cost: "0", cost_status: "unpriced",
+        }],
+      };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const comparison = await storage.getUserInsightComparison("user-1", {
+    previous: { from: new Date("2026-06-01T00:00:00Z"), to: new Date("2026-06-08T00:00:00Z") },
+    current: { from: new Date("2026-06-08T00:00:00Z"), to: new Date("2026-06-15T00:00:00Z") },
+    timezone: "UTC",
+  });
+  const summaries = await storage.getSessionUsageSummaries("user-1", ["session-1"]);
+  const events = await storage.getSessionUsageEvents("user-1", "session-1");
+
+  const insightQueries = queries.filter((query) => query.includes("/* user-insights */"));
+  assert.equal(insightQueries.length, 2);
+  for (const query of insightQueries) {
+    assert.match(query, /sumIf\(cost_usd, cost_status != 'unpriced'\)/);
+    assert.match(query, /sumIf\(event_count, cost_status = 'unpriced'\)/);
+  }
+  const summaryQuery = queries.find((query) => query.includes("GROUP BY session_id"));
+  assert.ok(summaryQuery);
+  assert.match(summaryQuery, /sumIf\(cost_usd, cost_status != 'unpriced'\)/);
+  assert.match(summaryQuery, /countIf\(cost_status = 'legacy'\)/);
+  const eventQuery = queries.find((query) => /ORDER BY ts ASC/.test(query));
+  assert.ok(eventQuery);
+  assert.match(eventQuery, /cost_status/);
+  assert.equal(comparison.current.costCoverage.unpricedEvents, 1);
+  assert.equal(comparison.byModel[0]?.current.costCoverage.unpricedEvents, 1);
+  assert.equal(summaries[0]?.costCoverage.unpricedEvents, 1);
+  assert.equal(events[0]?.costStatus, "unpriced");
+});
+
+test("unaligned 요청은 exact head·ready day cache·exact tail을 겹침 없이 같은 schema로 합친다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 4);
+  const from = new Date(range.from.getTime() + 12 * 60 * 60 * 1000);
+  const cacheFrom = range.jobs[1]!.bucket;
+  const cacheTo = range.jobs[3]!.bucket;
+  const to = new Date(cacheTo.getTime() + 12 * 60 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({ watermark: to, jobs: range.jobs });
+
+  await storage.getDailyTimeseries({ from, to, bucket: "day", timezone: "Asia/Seoul" });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_daily_timezone_rollup FINAL/);
+  assert.ok((query.query.match(/usage_15m_rollup_v2/g) ?? []).length >= 2);
+  assert.equal(query.params.head_from, from.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.head_to, cacheFrom.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.cache_from, query.params.head_to);
+  assert.equal(query.params.cache_to, cacheTo.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
+  assert.match(
+    query.query,
+    /SELECT ts, provider_key, user_id, team_id, session_id, model, host,[\s\S]*cost_usd[\s\S]*UNION ALL/,
+  );
+});
+
+test("현재 partial hour도 ready hour cache와 exact tail로 분할한다", async () => {
+  const day = localDayRange("America/Los_Angeles", "2026-03-08", 1);
+  const cacheTo = new Date(day.from.getTime() + 12 * 60 * 60 * 1000);
+  const to = new Date(cacheTo.getTime() + 34 * 60 * 1000);
+  const watermark = new Date(to.getTime() - 4 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({
+    watermark,
+    jobs: hourlyJobs(day.from, cacheTo),
+  });
+
+  await storage.getDailyTimeseries({
+    from: day.from,
+    to,
+    bucket: "hour",
+    timezone: "America/Los_Angeles",
+  });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_hourly_timezone_rollup FINAL/);
+  assert.match(query.query, /usage_15m_rollup_v2/);
+  assert.equal(query.params.cache_to, cacheTo.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, to.toISOString().replace("T", " ").replace("Z", ""));
+});
+
+test("pending·inflight·누락·dirty·watermark 미완료 cache는 절대 선택하지 않는다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const incomplete = [
+    { name: "pending", jobs: [{ ...range.jobs[0]!, status: "pending" as const }, range.jobs[1]!] },
+    { name: "inflight", jobs: [{ ...range.jobs[0]!, status: "inflight" as const }, range.jobs[1]!] },
+    { name: "missing", jobs: [range.jobs[1]!] },
+    { name: "dirty", jobs: range.jobs, dirtyBucket: new Date(range.from.getTime() + 15 * 60 * 1000) },
+    { name: "watermark", jobs: range.jobs, watermark: new Date(range.jobs[1]!.bucket.getTime() - 15 * 60 * 1000) },
+  ];
+
+  for (const state of incomplete) {
+    const { storage, queries, pgQueries } = sourceRouterFixture({
+      watermark: state.watermark ?? range.to,
+      dirtyBucket: state.dirtyBucket,
+      jobs: state.jobs,
+    });
+    await storage.getDailyTimeseries({
+      from: range.from,
+      to: range.to,
+      bucket: "day",
+      timezone: "Asia/Seoul",
+    });
+    assert.match(queries[0]!.query, /usage_15m_rollup_v2|usage_events/, state.name);
+    assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup/, state.name);
+    assert.equal(
+      pgQueries.some(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones")),
+      true,
+      `${state.name}: canonical registry 확인`,
+    );
+    if (state.name === "pending" || state.name === "inflight" || state.name === "missing") {
+      assert.equal(
+        pgQueries.some(({ sql }) => sql.includes("FROM clickhouse_timezone_rollup_jobs")),
+        true,
+        `${state.name}: 완료 job 범위 확인`,
+      );
+    }
+  }
+});
+
+test("7일 cleanup으로 done job이 사라져도 실제 cache bucket coverage가 있으면 timezone source를 사용한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: [],
+    coverageBuckets: range.jobs.map(({ bucket }) => bucket),
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  assert.equal(
+    pgQueries.some(({ sql }) => sql.includes("FROM clickhouse_timezone_rollup_coverage")),
+    true,
+  );
+  assert.match(queries.at(-1)!.query, /usage_daily_timezone_rollup FINAL/);
+  assert.doesNotMatch(queries.at(-1)!.query, /usage_15m_rollup_v2|usage_events/);
+});
+
+test("동시 dashboard 집계는 readiness snapshot 한 세트만 공유하고 settle 뒤 새 상태를 조회한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
+  const fixture = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+  const period = { ...range, bucket: "day" as const, timezone: "Asia/Seoul" };
+
+  await Promise.all([
+    fixture.storage.getOverview(period),
+    fixture.storage.getDailyTimeseries(period),
+    fixture.storage.getLeaderboard({ ...period, scope: "user" }),
+    fixture.storage.getLeaderboard({ ...period, scope: "team" }),
+    fixture.storage.getProviderBreakdown(period),
+    fixture.storage.getUserModelTimeseries("user-1", period),
+    fixture.storage.getTeamMemberTimeseries({ ...period, teamId: "team-1", userIds: ["user-1"] }),
+  ]);
+
+  for (const table of [
+    "clickhouse_rollup_timezones",
+    "clickhouse_rollup_watermarks",
+    "clickhouse_rollup_dirty_buckets",
+    "clickhouse_timezone_rollup_jobs",
+    "clickhouse_timezone_rollup_coverage",
+  ]) {
+    assert.equal(
+      fixture.pgQueries.filter(({ sql }) => sql.includes(`FROM ${table}`)).length,
+      1,
+      `${table} concurrent snapshot query count`,
+    );
+  }
+
+  await fixture.storage.getOverview(period);
+  assert.equal(
+    fixture.pgQueries.filter(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones")).length,
+    2,
+    "settled snapshot is not reused by a later request",
+  );
+});
+
+test("동일한 timezone 기간의 순수 calendar bucket 계획은 bounded cache에서 재사용한다", () => {
+  const range = localDayRange("Europe/London", "2025-07-01", 2);
+  const { storage } = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+  const planner = storage as unknown as {
+    timezoneCacheBuckets(
+      resolution: "hour" | "day",
+      timezone: string,
+      query: { from: Date; to: Date },
+    ): Array<{ from: Date; to: Date }>;
+  };
+
+  const first = planner.timezoneCacheBuckets("day", "Europe/London", range);
+  const repeated = planner.timezoneCacheBuckets("day", "Europe/London", range);
+  const otherResolution = planner.timezoneCacheBuckets("hour", "Europe/London", range);
+
+  assert.strictEqual(repeated, first);
+  assert.notStrictEqual(otherResolution, first);
+
+  for (let index = 0; index < 65; index++) {
+    const from = new Date(range.from.getTime() + index * 86_400_000);
+    planner.timezoneCacheBuckets("day", "Europe/London", {
+      from,
+      to: new Date(from.getTime() + 2 * 86_400_000),
+    });
+  }
+  const plans = (storage as unknown as { timezoneBucketPlans: Map<string, unknown> }).timezoneBucketPlans;
+  assert.equal(plans.size, 64);
+});
+
+test("readiness snapshot 오류도 in-flight cache에서 제거되어 다음 호출이 재시도한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
+  const fixture = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    failRegistryOnce: true,
+  });
+  const period = { ...range, bucket: "day" as const, timezone: "Asia/Seoul" };
+
+  await fixture.storage.getOverview(period);
+  await fixture.storage.getOverview(period);
+
+  assert.equal(
+    fixture.pgQueries.filter(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones")).length,
+    2,
+  );
+  assert.match(fixture.queries[0]!.query, /usage_15m_rollup_v2|usage_events/);
+  assert.match(fixture.queries[1]!.query, /usage_daily_timezone_rollup FINAL/);
+});
+
+test("done job과 coverage 없는 mixed snapshot은 durable 완료 근거가 아니므로 exact fallback한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    coverageBuckets: [],
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  assert.match(queries.at(-1)!.query, /usage_15m_rollup_v2|usage_events/);
+  assert.doesNotMatch(queries.at(-1)!.query, /usage_daily_timezone_rollup FINAL/);
+});
+
+test("두 번째 cache bucket이 inflight면 첫 bucket만 cache하고 나머지는 exact tail로 읽는다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const jobs = [range.jobs[0]!, { ...range.jobs[1]!, status: "inflight" as const }];
+  const { storage, queries } = sourceRouterFixture({ watermark: range.to, jobs });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  const query = queries[0]!;
+  assert.match(query.query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(query.query, /usage_15m_rollup_v2/);
+  assert.equal(query.params.cache_from, range.from.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.cache_to, range.jobs[1]!.bucket.toISOString().replace("T", " ").replace("Z", ""));
+  assert.equal(query.params.tail_from, query.params.cache_to);
+  assert.equal(query.params.tail_to, range.to.toISOString().replace("T", " ").replace("Z", ""));
+});
+
+test("모든 dashboard 집계는 공통 router의 15분 v2 fallback을 사용한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({ active: false, watermark: range.to });
+  const period = { from: range.from, to: range.to, bucket: "day" as const, timezone: "Asia/Kathmandu" };
+
+  await storage.getOverview(period);
+  await storage.getDailyTimeseries(period);
+  await storage.getUserModelTimeseries("user-1", period);
+  await storage.getTeamMemberTimeseries({ ...period, teamId: "team-1", userIds: ["user-1"] });
+  await storage.getUserUsage("user-1", period);
+  await storage.getLeaderboard({ ...period, scope: "user" });
+  await storage.getProviderBreakdown(period);
+
+  assert.equal(queries.length, 10);
+  for (const { query } of queries) {
+    assert.match(query, /FROM[\s\S]*usage_15m_rollup_v2/);
+    assert.doesNotMatch(query, /usage_hourly_rollup/);
+  }
+});
+
+test("legacy flag만 켜져도 ready coverage가 있으면 guarded timezone source를 사용한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const flag = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    readRollup: flag.enabled,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Kathmandu",
+  });
+
+  assert.match(queries[0]!.query, /usage_daily_timezone_rollup FINAL/);
+  assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup/);
+  for (const guardTable of [
+    "clickhouse_rollup_timezones",
+    "clickhouse_rollup_watermarks",
+    "clickhouse_rollup_dirty_buckets",
+    "clickhouse_timezone_rollup_jobs",
+    "clickhouse_timezone_rollup_coverage",
+  ]) {
+    assert.ok(pgQueries.some(({ sql }) => sql.includes(guardTable)), `${guardTable} guard`);
+  }
+});
+
+test("legacy flag만 켜져도 coverage가 없으면 old hourly가 아니라 exact fallback한다", async () => {
+  const range = localDayRange("Asia/Kathmandu", "2026-07-01", 1);
+  const flag = resolveClickHouseRollupReadFlag({ CLICKHOUSE_READ_ROLLUP: "1" });
+  const { storage, queries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+    coverageBuckets: [],
+    readRollup: flag.enabled,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Kathmandu",
+  });
+
+  assert.match(queries[0]!.query, /usage_15m_rollup_v2|usage_events/);
+  assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup|usage_hourly_rollup/);
+});
+
+test("compose와 운영 문서는 legacy hourly source를 활성 경로로 안내하지 않는다", () => {
+  const compose = readFileSync(new URL("../../../docker-compose.yml", import.meta.url), "utf8");
+  const runbook = readFileSync(new URL("../../../docs/clickhouse-exact-rollup-runbook.md", import.meta.url), "utf8");
+  const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
+
+  assert.match(compose, /CLICKHOUSE_READ_ROLLUP:.*deprecated alias/);
+  assert.doesNotMatch(compose, /CLICKHOUSE_READ_ROLLUP:.*hourly rollup.*대시보드/);
+  assert.doesNotMatch(runbook, /CLICKHOUSE_READ_ROLLUP=1/);
+  assert.match(runbook, /schema.*rollup:activate-timezones.*worker.*coverage.*benchmark.*CLICKHOUSE_READ_TIMEZONE_ROLLUP.*unset/is);
+  assert.match(readme, /CLICKHOUSE_READ_ROLLUP.*deprecated alias/);
+  assert.match(readme, /schema.*activation CLI.*worker.*coverage.*benchmark.*new read flags.*legacy unset/is);
+});
+
+test("인사이트의 current·previous 집계도 공통 router의 ready timezone-day source를 사용한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const { storage, queries } = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
+
+  await storage.getUserInsightComparison("user-1", {
+    previous: { from: range.jobs[0]!.bucket, to: range.jobs[1]!.bucket },
+    current: { from: range.jobs[1]!.bucket, to: range.to },
+    timezone: "Asia/Seoul",
+  });
+
+  assert.equal(queries.length, 2);
+  for (const { query } of queries) {
+    assert.equal((query.match(/usage_daily_timezone_rollup FINAL/g) ?? []).length, 2);
+    assert.doesNotMatch(query, /usage_15m_rollup(?:_v2)?|usage_hourly_rollup/);
+  }
+});
+
+test("v2 read가 꺼진 dashboard router는 hourly가 아니라 raw source로 fallback한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const { storage, queries } = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+  });
+  const period = { ...range, bucket: "day" as const, timezone: "UTC" };
+
+  await storage.getOverview(period);
+
+  assert.match(queries[0]!.query, /FROM[\s\S]*usage_events/);
+  assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup|usage_15m_rollup_v2/);
+});
+
+test("v2 read는 opt-in을 유지하고 compactor worker는 default-on pause gate를 사용한다", () => {
+  const storageSource = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
+  const workerSource = readFileSync(new URL("../../../apps/web/lib/clickhouse-outbox.ts", import.meta.url), "utf8");
+  const instrumentationSource = readFileSync(new URL("../../../apps/web/instrumentation.ts", import.meta.url), "utf8");
+
+  assert.match(storageSource, /CLICKHOUSE_READ_15M_V2_ROLLUP/);
+  assert.match(storageSource, /CLICKHOUSE_READ_TIMEZONE_ROLLUP/);
+  assert.match(workerSource, /CLICKHOUSE_15M_V2_COMPACTOR/);
+  assert.match(workerSource, /CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR/);
+  assert.match(workerSource, /shadowWorkerEnabled\(process\.env, "CLICKHOUSE_15M_V2_COMPACTOR"\)/);
+  assert.match(workerSource, /shadowWorkerEnabled\(process\.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"\)/);
+  assert.match(workerSource, /runObservedWorkerTick\(\{/);
+  assert.match(workerSource, /worker: "usage_15m_v2"/);
+  assert.match(workerSource, /worker: "timezone"/);
+  assert.match(workerSource, /__toardClickHouseTimezoneRollupRunning/);
+  assert.match(workerSource, /__toardClickHouse15mV2RollupRunning/);
+  assert.match(workerSource, /__toardClickHouseOutboxRunning/);
+  assert.match(workerSource, /COMPACTOR_TICK_MS\s*=\s*60_000/);
+  assert.match(instrumentationSource, /startClickHouse15mV2Compaction/);
+  assert.match(instrumentationSource, /startClickHouseTimezoneRollupCompaction/);
+});
+
+test("ClickHouse ensure schema는 가격 상태를 가진 400일 15분 v2 테이블을 만든다", async () => {
+  const commands = await schemaCommands();
+  const rawPricingRevisionDdl = commands.find((query) => /usage_events ADD COLUMN.*pricing_revision_id/.test(query));
+  const rawCostStatusDdl = commands.find((query) => /usage_events ADD COLUMN.*cost_status/.test(query));
+  const ddl = commands.find((query) => query.includes("usage_15m_rollup_v2"));
+
+  assert.ok(rawPricingRevisionDdl);
+  assert.ok(rawCostStatusDdl);
+  assert.ok(ddl);
+  assert.match(ddl, /pricing_revision_id\s+String/);
+  assert.match(ddl, /cost_status\s+LowCardinality\(String\)/);
+  assert.match(ddl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
+  assert.match(ddl, /TTL\s+toDateTime\(bucket_15m\)\s*\+\s*INTERVAL\s+400\s+DAY\s+DELETE/);
+  assert.match(
+    ddl,
+    /ORDER BY\s*\(bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status\)/,
+  );
+});
+
+test("ClickHouse 기본 schema ensure는 opt-in raw TTL을 변경하지 않는다", async () => {
+  const commands = await schemaCommands();
+
+  assert.equal(commands.some((query) => /usage_events\s+MODIFY TTL/i.test(query)), false);
+});
+
+test("ClickHouse 기본 schema ensure는 보조 raw 7일과 legacy hourly 400일 TTL을 적용한다", async () => {
+  const commands = await schemaCommands();
+
+  assert.equal(
+    commands.filter((query) => /raw_events\s+MODIFY TTL\s+toDateTime\(received_at\)\s*\+\s*INTERVAL\s+7\s+DAY\s+DELETE/i.test(query)).length,
+    1,
+  );
+  assert.equal(
+    commands.filter((query) => /usage_hourly_rollup\s+MODIFY TTL\s+toDateTime\(bucket_hour\)\s*\+\s*INTERVAL\s+400\s+DAY\s+DELETE/i.test(query)).length,
+    1,
+  );
+});
+
+test("ClickHouse retention TTL을 명시하면 raw 원본에만 7일 grace를 포함한 97일 TTL을 적용한다", async () => {
+  const commands = await schemaCommands({ enforceRetentionTtl: true });
+
+  assert.equal(
+    commands.filter((query) => /usage_events\s+MODIFY TTL\s+toDateTime\(ts\)\s*\+\s*INTERVAL\s+97\s+DAY\s+DELETE/i.test(query)).length,
+    1,
+  );
+});
+
+test("ClickHouse init schema는 가격 상태 원본과 400일 15분 v2 테이블을 선언한다", () => {
+  const rawSchema = readFileSync(new URL("../../../clickhouse/init/001-schema.sql", import.meta.url), "utf8");
+  const rollupSchema = readFileSync(new URL("../../../clickhouse/init/004-rollup.sql", import.meta.url), "utf8");
+
+  assert.match(rawSchema, /pricing_revision_id\s+String/);
+  assert.match(rawSchema, /cost_status\s+LowCardinality\(String\)/);
+  assert.match(rawSchema, /runtime opt-in[\s\S]*97일/i);
+  assert.match(rollupSchema, /CREATE TABLE IF NOT EXISTS toard\.usage_15m_rollup_v2/);
+  assert.match(rollupSchema, /TTL\s+toDateTime\(bucket_15m\)\s*\+\s*INTERVAL\s+400\s+DAY\s+DELETE/);
+  assert.match(
+    rollupSchema,
+    /ORDER BY\s*\(bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status\)/,
+  );
+  assert.doesNotMatch(
+    `${rawSchema}\n${rollupSchema}`,
+    /ALTER TABLE toard\.usage_events\s+MODIFY TTL/,
+  );
+});
+
+test("ClickHouse init schema는 보조 raw 7일과 legacy hourly 400일 TTL을 선언한다", () => {
+  const rawSchema = readFileSync(new URL("../../../clickhouse/init/001-schema.sql", import.meta.url), "utf8");
+  const rollupSchema = readFileSync(new URL("../../../clickhouse/init/004-rollup.sql", import.meta.url), "utf8");
+  const runtime = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
+
+  assert.match(
+    rawSchema,
+    /ALTER TABLE toard\.raw_events\s+MODIFY TTL toDateTime\(received_at\) \+ INTERVAL 7 DAY DELETE/,
+  );
+  assert.match(
+    rollupSchema,
+    /ALTER TABLE toard\.usage_hourly_rollup\s+MODIFY TTL toDateTime\(bucket_hour\) \+ INTERVAL 400 DAY DELETE/,
+  );
+  assert.doesNotMatch(`${rawSchema}\n${rollupSchema}`, /ALTER TABLE toard\.usage_events\s+MODIFY TTL/);
+  assert.match(runtime, /table:\s*"usage_hourly_rollup"/);
+});
+
+test("0021 migration은 ClickHouse outbox에 가격 상태 컬럼만 추가한다", () => {
+  const migration = new URL("../../../migrations/1700000021_clickhouse_multiresolution.sql", import.meta.url);
+  assert.equal(existsSync(migration), true);
+  const sql = readFileSync(migration, "utf8");
+
+  assert.match(sql, /ALTER TABLE clickhouse_usage_outbox ADD COLUMN pricing_revision_id UUID/);
+  assert.match(sql, /ALTER TABLE clickhouse_usage_outbox ADD COLUMN cost_status TEXT NOT NULL DEFAULT 'legacy'/);
+  assert.match(sql, /CHECK \(cost_status IN \('priced', 'unpriced', 'legacy'\)\)/);
+});
+
+test("시간대 cache compactor는 v2 15분 canonical source만 소비한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const inserts: InsertedRows[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return {
+        json: async () => [{
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "team-1",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          host: "macbook",
+          pricing_revision_id: "revision-1",
+          cost_status: "priced",
+          event_count: "4",
+          input_tokens: "100",
+          output_tokens: "20",
+          cache_read_tokens: "5",
+          cache_creation_tokens: "3",
+          cost_usd: "0.01230000",
+        }],
+      };
+    },
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      inserts.push({ table, values });
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+  const bucket = new Date("2026-03-08T08:00:00.000Z");
+
+  const rows = await storage.compactTimezoneRollup("day", "America/Los_Angeles", bucket);
+
+  assert.equal(rows, 1);
+  const aggregate = queries.find(({ query }) => query.includes("toStartOfDay"));
+  assert.ok(aggregate);
+  assert.match(aggregate.query, /FROM usage_15m_rollup_v2 FINAL/);
+  assert.doesNotMatch(aggregate.query, /usage_events|usage_hourly_rollup/);
+  assert.match(aggregate.query, /toStartOfDay\(bucket_15m, 'America\/Los_Angeles'\)/);
+  assert.equal(aggregate.params.bucket, "2026-03-08 08:00:00.000");
+  assert.equal(aggregate.params.to, "2026-03-09 07:00:00.000");
+  assert.equal(inserts[0]?.table, "usage_daily_timezone_rollup");
+  assert.equal(inserts[0]?.values[0]?.bucket_start, "2026-03-08 08:00:00.000");
+});
+
+test("비정수 offset 시간대의 시간 cache도 timezone 식으로 v2를 집계한다", async () => {
+  const queries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  await storage.compactTimezoneRollup(
+    "hour",
+    "Asia/Kathmandu",
+    new Date("2026-07-01T00:15:00.000Z"),
+  );
+
+  const aggregate = queries.find((query) => query.includes("toStartOfInterval"));
+  assert.ok(aggregate);
+  assert.match(
+    aggregate,
+    /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Katmandu'\)/,
+  );
+  assert.match(aggregate, /FROM usage_15m_rollup_v2 FINAL/);
+});
+
+test("timezone capability는 canonical ID로 system.time_zones를 조회한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => [{ supported: "1" }] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  assert.equal(await storage.supportsTimezone("US/Pacific"), true);
+  assert.match(queries.at(-1)!.query, /FROM system\.time_zones/);
+  assert.equal(queries.at(-1)!.params.timezone, "America/Los_Angeles");
+  assert.equal(await storage.supportsTimezone("PST"), false);
+});
+
+test("timezone cache row에는 alias가 아닌 canonical timezone ID를 저장한다", async () => {
+  const inserts: InsertedRows[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async () => ({
+      json: async () => [{
+        provider_key: "anthropic", user_id: "user-1", team_id: "team-1",
+        session_id: "session-1", model: "model", host: "host",
+        pricing_revision_id: "revision-1", cost_status: "priced",
+        event_count: "1", input_tokens: "1", output_tokens: "1",
+        cache_read_tokens: "0", cache_creation_tokens: "0", cost_usd: "0.01000000",
+      }],
+    }),
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      inserts.push({ table, values });
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  await storage.compactTimezoneRollup("day", "US/Pacific", new Date("2026-03-08T08:00:00.000Z"));
+
+  assert.equal(inserts.at(-1)?.values[0]?.timezone, "America/Los_Angeles");
+});
+
+test("Santiago 자정 gap daily cache는 다음 local date 첫 instant까지 조회한다", async () => {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  await storage.compactTimezoneRollup(
+    "day",
+    "America/Santiago",
+    new Date("2025-09-07T04:00:00.000Z"),
+  );
+
+  const aggregate = queries.find(({ query }) => query.includes("toStartOfDay"));
+  assert.ok(aggregate);
+  assert.equal(aggregate.params.bucket, "2025-09-07 04:00:00.000");
+  assert.equal(aggregate.params.to, "2025-09-08 03:00:00.000");
+});
+
+test("rollup storage snapshot은 active part만 합산하고 raw min/max를 2초 제한으로 조회한다", async () => {
+  const queries: Array<{
+    query: string;
+    clickhouse_settings?: Record<string, unknown>;
+  }> = [];
+  const ch = {
+    query: async (args: {
+      query: string;
+      clickhouse_settings?: Record<string, unknown>;
+    }) => {
+      queries.push(args);
+      if (args.query.includes("system.parts")) {
+        return {
+          json: async () => [
+            { table: "usage_events", rows: "12", bytes: "2400" },
+            { table: "usage_15m_rollup_v2", rows: "4", bytes: "800" },
+          ],
+        };
+      }
+      return {
+        json: async () => [{
+          from: "2026-07-01 00:00:00.000",
+          to: "2026-07-12 11:45:00.000",
+        }],
+      };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const stats = await storage.getRollupStorageStats();
+
+  assert.equal(stats.tables.usage_events.rows, 12);
+  assert.equal(stats.tables.usage_events.bytes, 2400);
+  assert.equal(stats.tables.usage_15m_rollup_v2.rows, 4);
+  assert.deepEqual(stats.tables.usage_daily_timezone_rollup, { rows: 0, bytes: 0 });
+  assert.deepEqual(stats.rawRange, {
+    from: "2026-07-01T00:00:00.000Z",
+    to: "2026-07-12T11:45:00.000Z",
+  });
+  assert.ok(Number.isFinite(Date.parse(stats.collectedAt)));
+
+  assert.equal(queries.length, 2);
+  const parts = queries.find(({ query }) => query.includes("system.parts"));
+  const rawRange = queries.find(({ query }) => query.includes("min(ts)"));
+  assert.ok(parts);
+  assert.ok(rawRange);
+  assert.match(parts.query, /active\s*=\s*1/);
+  assert.match(parts.query, /sum\(rows\)/);
+  assert.match(parts.query, /sum\(bytes_on_disk\)/);
+  assert.match(rawRange.query, /min\(ts\)/);
+  assert.match(rawRange.query, /max\(ts\)/);
+  assert.ok(queries.every(({ clickhouse_settings }) => clickhouse_settings?.max_execution_time === 2));
+});
+
+test("ClickHouse runtime/init schema는 timezone cache 2종에 400일 TTL과 exact key를 둔다", async () => {
+  const commands = await schemaCommands();
+  const init = readFileSync(new URL("../../../clickhouse/init/004-rollup.sql", import.meta.url), "utf8");
+  const order = /ORDER BY\s*\(timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status\)/;
+  const ttl = /TTL\s+toDateTime\(bucket_start\)\s*\+\s*INTERVAL\s+400\s+DAY\s+DELETE/;
+
+  for (const table of ["usage_hourly_timezone_rollup", "usage_daily_timezone_rollup"]) {
+    const ddl = commands.find((query) => query.includes(`CREATE TABLE IF NOT EXISTS ${table}`));
+    assert.ok(ddl);
+    assert.match(ddl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
+    assert.match(ddl, order);
+    assert.match(ddl, ttl);
+    assert.match(init, new RegExp(`CREATE TABLE IF NOT EXISTS toard\\.${table}`));
+  }
+  assert.equal((init.match(new RegExp(ttl.source, "g")) ?? []).length, 2);
+  assert.equal((init.match(new RegExp(order.source, "g")) ?? []).length, 2);
+});
+
+test("0022 migration은 최대 활성 registry와 dedup timezone job queue를 선언한다", () => {
+  const migration = new URL("../../../migrations/1700000022_clickhouse_timezone_rollup.sql", import.meta.url);
+  assert.equal(existsSync(migration), true);
+  const sql = readFileSync(migration, "utf8");
+
+  assert.match(sql, /CREATE TABLE clickhouse_rollup_timezones/);
+  assert.match(sql, /timezone TEXT PRIMARY KEY/);
+  assert.match(sql, /CREATE TABLE clickhouse_timezone_rollup_jobs/);
+  assert.match(sql, /CHECK \(resolution IN \('hour', 'day'\)\)/);
+  assert.match(sql, /CHECK \(status IN \('pending', 'inflight', 'done'\)\)/);
+  assert.match(sql, /UNIQUE \(resolution, timezone, bucket\)/);
+});
+
+test("0023 migration은 cleanup 뒤에도 유지할 timezone cache coverage를 backfill한다", () => {
+  const migration = new URL("../../../migrations/1700000023_clickhouse_timezone_rollup_coverage.sql", import.meta.url);
+  assert.equal(existsSync(migration), true);
+  const sql = readFileSync(migration, "utf8");
+
+  assert.match(sql, /CREATE TABLE clickhouse_timezone_rollup_coverage/);
+  assert.match(sql, /PRIMARY KEY \(resolution, timezone, bucket\)/);
+  assert.match(sql, /FROM clickhouse_timezone_rollup_jobs AS job[\s\S]*JOIN clickhouse_rollup_timezones[\s\S]*WHERE job\.status = 'done'/);
+  assert.match(sql, /ON DELETE CASCADE/);
 });

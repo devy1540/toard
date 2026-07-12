@@ -3,6 +3,7 @@ import type {
   BucketOptions,
   DailyPoint,
   DeviceInfo,
+  FinalizedUsageEvent,
   HostBreakdown,
   InsightAggregateRow,
   InsightComparisonQuery,
@@ -22,10 +23,18 @@ import type {
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
+  UsageCostCoverage,
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
-import { buildUserInsightComparison } from "@toard/core";
+import {
+  addLocalCalendarDays,
+  buildUserInsightComparison,
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+  localDateKey,
+  CLICKHOUSE_RAW_RETENTION_DAYS,
+} from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
 /** CH/PG 는 큰 수·Decimal 을 string 으로 반환 → number 변환 */
@@ -59,6 +68,7 @@ function hourBucket(ts: Date | string): string {
 }
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
+const V2_ROLLUP_RETENTION_MS = 400 * 24 * 60 * 60 * 1_000;
 
 function fifteenMinuteBucket(ts: Date | string): string {
   const d = new Date(ts);
@@ -67,17 +77,27 @@ function fifteenMinuteBucket(ts: Date | string): string {
   return chTs(d);
 }
 
-function floorFifteenMinuteDate(ts: Date): Date {
-  return new Date(Math.floor(ts.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS);
+function floorRollupDate(ts: Date, intervalMs: number): Date {
+  return new Date(Math.floor(ts.getTime() / intervalMs) * intervalMs);
 }
 
-function ceilFifteenMinuteDate(ts: Date): Date {
-  const floor = floorFifteenMinuteDate(ts);
-  return floor.getTime() === ts.getTime() ? floor : new Date(floor.getTime() + FIFTEEN_MINUTES_MS);
+export function clampV2RollupStart(firstBucket: Date, eligibleTo: Date): Date {
+  const minimum = new Date(eligibleTo.getTime() - V2_ROLLUP_RETENTION_MS);
+  return firstBucket > minimum ? firstBucket : minimum;
+}
+
+function ceilRollupDate(ts: Date, intervalMs: number): Date {
+  const floor = floorRollupDate(ts, intervalMs);
+  return floor.getTime() === ts.getTime() ? floor : new Date(floor.getTime() + intervalMs);
 }
 
 function chDate(s: string): Date {
   return new Date(`${s.replace(" ", "T")}Z`);
+}
+
+function nextTimezoneDayStart(bucket: Date, timezone: string): Date {
+  const date = localDateKey(bucket, timezone);
+  return firstInstantOfLocalDate(addLocalCalendarDays(date, 1), timezone);
 }
 
 type ScopedQuery = PeriodQuery & { userId?: string; userIds?: string[]; teamId?: string };
@@ -86,17 +106,53 @@ type InsightSourcePart =
   | { kind: "hybrid"; source: string; params: Params }
   | { kind: "raw"; source: string; where: string; params: Params };
 type InsightSource = { source: string; params: Params };
+export type TimeseriesSource = {
+  source: string;
+  params: Params;
+  resolution: "raw" | "15m" | "timezone-hour" | "timezone-day";
+};
+type RollupSource = TimeseriesSource & { resolution: "15m"; from: Date; to: Date };
+type CacheBucket = { from: Date; to: Date };
+type CacheWindow = { from: Date; to: Date };
+type RollupSpec = {
+  name: "usage_15m" | "usage_15m_v2";
+  table: "usage_15m_rollup" | "usage_15m_rollup_v2";
+  bucketColumn: "bucket_15m";
+  intervalMs: number;
+  sourcePolicy: "dashboard" | "canonical_final";
+};
 
 export interface ClickHouseStorageOptions {
   /** 조직 타임존 (IANA, ADR-008) — 쿼리에 timezone 미지정 시 버킷 폴백. 기본 UTC. */
   timezone?: string;
   /** ReplacingMergeTree 중복 제거를 읽기 시점에 강제할지 여부. 기본 false. */
   readFinal?: boolean;
-  /** 대시보드 집계 읽기를 hourly rollup 테이블로 보낼지 여부. 기본 false. */
+  /** 완성된 요청 시간대별 hour/day cache를 대시보드에서 읽을지 여부. 기본 false. */
   readRollup?: boolean;
   /** finalized 15분 rollup + 최근 raw tail hybrid 시계열 조회를 사용할지 여부. 기본 false. */
   read15mRollup?: boolean;
+  /** 가격 provenance를 보존한 v2 15분 rollup 조회를 사용할지 여부. 기본 false. */
+  read15mV2Rollup?: boolean;
+  /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
+  enforceRetentionTtl?: boolean;
 }
+
+export const ROLLUP_STORAGE_TABLES = [
+  "raw_events",
+  "usage_events",
+  "usage_hourly_rollup",
+  "usage_15m_rollup_v2",
+  "usage_hourly_timezone_rollup",
+  "usage_daily_timezone_rollup",
+] as const;
+
+export type RollupStorageTable = (typeof ROLLUP_STORAGE_TABLES)[number];
+
+export type RollupStorageStats = {
+  collectedAt: string;
+  rawRange: { from: string | null; to: string | null };
+  tables: Record<RollupStorageTable, { rows: number; bytes: number }>;
+};
 
 /** CH 쿼리에 리터럴로 들어가므로 IANA 형식만 허용(주입 방지). 무효 시 fallback. */
 function safeTimezone(tz: string | undefined, fallback = "UTC"): string {
@@ -104,7 +160,26 @@ function safeTimezone(tz: string | undefined, fallback = "UTC"): string {
   return tz;
 }
 
-interface AggRow {
+function clickHouseTimestampToIso(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value !== "string") return null;
+  const normalized = /(?:Z|[+-]\d\d(?::?\d\d)?)$/.test(value)
+    ? value
+    : `${value.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+interface CostCoverageRow {
+  priced_events?: string;
+  unpriced_events?: string;
+  legacy_events?: string;
+}
+
+interface AggRow extends CostCoverageRow {
   sessions?: string;
   active_users?: string;
   cost?: string;
@@ -113,6 +188,12 @@ interface AggRow {
   cache_read?: string;
   cache_creation?: string;
 }
+
+const costCoverage = (row: CostCoverageRow | undefined): UsageCostCoverage => ({
+  pricedEvents: n(row?.priced_events),
+  unpricedEvents: n(row?.unpriced_events),
+  legacyEvents: n(row?.legacy_events),
+});
 
 interface OutboxBatch {
   id: string;
@@ -132,6 +213,8 @@ interface OutboxRow {
   cache_read_tokens: string;
   cache_creation_tokens: string;
   cost_usd: string;
+  pricing_revision_id: string | null;
+  cost_status: FinalizedUsageEvent["costStatus"];
   log_adapter: string | null;
   host: string | null;
 }
@@ -160,6 +243,8 @@ interface Rollup15mRow {
   session_id: string;
   model: string;
   host: string;
+  pricing_revision_id?: string;
+  cost_status?: FinalizedUsageEvent["costStatus"];
   event_count: number;
   input_tokens: number;
   output_tokens: number;
@@ -175,6 +260,23 @@ interface Rollup15mAggRow extends Omit<Rollup15mRow, "event_count" | "input_toke
   output_tokens?: string;
   cache_read_tokens?: string;
   cache_creation_tokens?: string;
+}
+
+interface TimezoneRollupAggRow {
+  provider_key: string;
+  user_id: string;
+  team_id: string;
+  session_id: string;
+  model: string;
+  host: string;
+  pricing_revision_id: string;
+  cost_status: FinalizedUsageEvent["costStatus"];
+  event_count?: string;
+  input_tokens?: string;
+  output_tokens?: string;
+  cache_read_tokens?: string;
+  cache_creation_tokens?: string;
+  cost_usd: string;
 }
 
 interface RollupAccumulator extends Omit<RollupRow, "event_count" | "cost_usd"> {
@@ -197,8 +299,17 @@ export interface CompactUsage15mRollupResult {
   watermark: string;
 }
 
+export interface CompactUsage15mV2Result {
+  buckets: number;
+  rows: number;
+  watermark: string;
+}
+
 const CLICKHOUSE_SCHEMA_DDL = [
   "ALTER TABLE usage_events MODIFY SETTING non_replicated_deduplication_window = 10000",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS pricing_revision_id String DEFAULT '' AFTER cost_usd",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_status LowCardinality(String) DEFAULT 'legacy' AFTER pricing_revision_id",
+  "ALTER TABLE raw_events MODIFY TTL toDateTime(received_at) + INTERVAL 7 DAY DELETE",
   "DROP VIEW IF EXISTS usage_hourly_rollup_mv",
   `CREATE TABLE IF NOT EXISTS usage_hourly_rollup
    (
@@ -221,6 +332,7 @@ const CLICKHOUSE_SCHEMA_DDL = [
    ORDER BY (bucket_hour, user_id, team_id, provider_key, model, host, session_id)
    SETTINGS non_replicated_deduplication_window = 10000`,
   "ALTER TABLE usage_hourly_rollup MODIFY SETTING non_replicated_deduplication_window = 10000",
+  "ALTER TABLE usage_hourly_rollup MODIFY TTL toDateTime(bucket_hour) + INTERVAL 400 DAY DELETE",
   `CREATE TABLE IF NOT EXISTS usage_15m_rollup
    (
      bucket_15m            DateTime64(3, 'UTC'),
@@ -241,13 +353,103 @@ const CLICKHOUSE_SCHEMA_DDL = [
    ENGINE = ReplacingMergeTree(version)
    PARTITION BY toYYYYMM(bucket_15m)
    ORDER BY (bucket_15m, user_id, team_id, provider_key, model, host, session_id)`,
+  `CREATE TABLE IF NOT EXISTS usage_15m_rollup_v2
+   (
+     bucket_15m            DateTime64(3, 'UTC'),
+     provider_key          LowCardinality(String),
+     user_id               String,
+     team_id               String,
+     session_id            String,
+     model                 LowCardinality(String),
+     host                  LowCardinality(String),
+     pricing_revision_id   String,
+     cost_status           LowCardinality(String),
+     event_count           UInt64,
+     input_tokens          UInt64,
+     output_tokens         UInt64,
+     cache_read_tokens     UInt64,
+     cache_creation_tokens UInt64,
+     cost_usd              Decimal(18, 8),
+     version               UInt64
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_15m)
+   ORDER BY (bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status)
+   TTL toDateTime(bucket_15m) + INTERVAL 400 DAY DELETE`,
+  `CREATE TABLE IF NOT EXISTS usage_hourly_timezone_rollup
+   (
+     timezone              LowCardinality(String),
+     bucket_start          DateTime64(3, 'UTC'),
+     user_id               String,
+     team_id               String,
+     provider_key          LowCardinality(String),
+     model                 LowCardinality(String),
+     host                  LowCardinality(String),
+     session_id            String,
+     pricing_revision_id   String,
+     cost_status           LowCardinality(String),
+     event_count           UInt64,
+     input_tokens          UInt64,
+     output_tokens         UInt64,
+     cache_read_tokens     UInt64,
+     cache_creation_tokens UInt64,
+     cost_usd              Decimal(18, 8),
+     version               UInt64
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_start)
+   ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
+   TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE`,
+  `CREATE TABLE IF NOT EXISTS usage_daily_timezone_rollup
+   (
+     timezone              LowCardinality(String),
+     bucket_start          DateTime64(3, 'UTC'),
+     user_id               String,
+     team_id               String,
+     provider_key          LowCardinality(String),
+     model                 LowCardinality(String),
+     host                  LowCardinality(String),
+     session_id            String,
+     pricing_revision_id   String,
+     cost_status           LowCardinality(String),
+     event_count           UInt64,
+     input_tokens          UInt64,
+     output_tokens         UInt64,
+     cache_read_tokens     UInt64,
+     cache_creation_tokens UInt64,
+     cost_usd              Decimal(18, 8),
+     version               UInt64
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_start)
+   ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
+   TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE`,
 ] as const;
+
+const CLICKHOUSE_RAW_RETENTION_DDL =
+  `ALTER TABLE usage_events MODIFY TTL toDateTime(ts) + INTERVAL ${CLICKHOUSE_RAW_RETENTION_DAYS} DAY DELETE`;
 
 const CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS = 5;
 const CLICKHOUSE_TRANSIENT_RETRY_BASE_MS = 150;
-const CLICKHOUSE_15M_ROLLUP_NAME = "usage_15m";
 const CLICKHOUSE_ROLLUP_DEFAULT_FINALIZE_DELAY_MS = 30 * 60 * 1000;
 const CLICKHOUSE_ROLLUP_DEFAULT_MAX_BUCKETS = 16;
+const TIMEZONE_ROLLUP_MAX_DAYS = 400;
+const TIMEZONE_ROLLUP_MAX_HOURS = TIMEZONE_ROLLUP_MAX_DAYS * 24;
+const USAGE_15M: RollupSpec = {
+  name: "usage_15m",
+  table: "usage_15m_rollup",
+  bucketColumn: "bucket_15m",
+  intervalMs: FIFTEEN_MINUTES_MS,
+  sourcePolicy: "dashboard",
+};
+const USAGE_15M_V2: RollupSpec = {
+  name: "usage_15m_v2",
+  table: "usage_15m_rollup_v2",
+  bucketColumn: "bucket_15m",
+  intervalMs: FIFTEEN_MINUTES_MS,
+  sourcePolicy: "canonical_final",
+};
+const USAGE_ROLLUPS = [USAGE_15M, USAGE_15M_V2] as const;
 const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
   "ECONNREFUSED",
   "ECONNRESET",
@@ -269,6 +471,10 @@ export class ClickHouseStorage implements StorageBackend {
   private readonly usageEventsSource: string;
   private readonly readRollup: boolean;
   private readonly read15mRollup: boolean;
+  private readonly read15mV2Rollup: boolean;
+  private readonly enforceRetentionTtl: boolean;
+  private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
+  private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
   private schemaReady: Promise<void> | undefined;
 
   constructor(
@@ -280,33 +486,63 @@ export class ClickHouseStorage implements StorageBackend {
     this.usageEventsSource = opts.readFinal ? "usage_events FINAL" : "usage_events";
     this.readRollup = opts.readRollup ?? false;
     this.read15mRollup = opts.read15mRollup ?? false;
+    this.read15mV2Rollup = opts.read15mV2Rollup ?? false;
+    this.enforceRetentionTtl = opts.enforceRetentionTtl ?? false;
+  }
+
+  async close(): Promise<void> {
+    await this.ch.close();
+  }
+
+  async getRollupStorageStats(): Promise<RollupStorageStats> {
+    type PartRow = { table: string; rows: string | number; bytes: string | number };
+    type RangeRow = { from: string | Date | null; to: string | Date | null };
+    const settings = { max_execution_time: 2 } as const;
+    const [partRows, rangeRows] = await Promise.all([
+      this.ch.query({
+        query: `SELECT table, sum(rows) AS rows, sum(bytes_on_disk) AS bytes
+                FROM system.parts
+                WHERE active = 1
+                  AND database = currentDatabase()
+                  AND table IN {tables:Array(String)}
+                GROUP BY table`,
+        query_params: { tables: [...ROLLUP_STORAGE_TABLES] },
+        clickhouse_settings: settings,
+        format: "JSONEachRow",
+      }).then((result) => result.json<PartRow>()),
+      this.ch.query({
+        query: `SELECT if(count() = 0, NULL, min(ts)) AS from,
+                       if(count() = 0, NULL, max(ts)) AS to
+                FROM usage_events`,
+        clickhouse_settings: settings,
+        format: "JSONEachRow",
+      }).then((result) => result.json<RangeRow>()),
+    ]);
+
+    const tables = Object.fromEntries(
+      ROLLUP_STORAGE_TABLES.map((table) => [table, { rows: 0, bytes: 0 }]),
+    ) as RollupStorageStats["tables"];
+    for (const row of partRows) {
+      if (!ROLLUP_STORAGE_TABLES.includes(row.table as RollupStorageTable)) continue;
+      tables[row.table as RollupStorageTable] = {
+        rows: n(row.rows),
+        bytes: n(row.bytes),
+      };
+    }
+    const range = rangeRows[0];
+    return {
+      collectedAt: new Date().toISOString(),
+      rawRange: {
+        from: clickHouseTimestampToIso(range?.from),
+        to: clickHouseTimestampToIso(range?.to),
+      },
+      tables,
+    };
   }
 
   // ── 공통 ──
   private periodWhere(q: ScopedQuery): { where: string; params: Params } {
     const conds = ["ts >= {from:DateTime64(3)}", "ts < {to:DateTime64(3)}"];
-    const params: Params = { from: chTs(q.from), to: chTs(q.to) };
-    if (q.providerKey) {
-      conds.push("provider_key = {pk:String}");
-      params.pk = q.providerKey;
-    }
-    if (q.userId) {
-      conds.push("user_id = {uid:String}");
-      params.uid = q.userId;
-    }
-    if (q.teamId) {
-      conds.push("team_id = {did:String}");
-      params.did = q.teamId;
-    }
-    if (q.userIds?.length) {
-      conds.push("user_id IN {userIds:Array(String)}");
-      params.userIds = q.userIds;
-    }
-    return { where: `WHERE ${conds.join(" AND ")}`, params };
-  }
-
-  private rollupWhere(q: ScopedQuery): { where: string; params: Params } {
-    const conds = ["bucket_hour >= {from:DateTime64(3)}", "bucket_hour < {to:DateTime64(3)}"];
     const params: Params = { from: chTs(q.from), to: chTs(q.to) };
     if (q.providerKey) {
       conds.push("provider_key = {pk:String}");
@@ -349,10 +585,6 @@ export class ClickHouseStorage implements StorageBackend {
     return { sql: conds.length > 0 ? ` AND ${conds.join(" AND ")}` : "", params };
   }
 
-  private canUseRollup(bucket?: TimeBucket): boolean {
-    return this.readRollup && bucket !== "30m" && bucket !== "15m";
-  }
-
   private bucketExpr(bucket: TimeBucket | undefined, timeCol: string, tz: string): string {
     if (bucket === "hour") return `formatDateTime(${timeCol}, '%Y-%m-%d %H:00', '${tz}')`;
     if (bucket === "30m") {
@@ -361,18 +593,266 @@ export class ClickHouseStorage implements StorageBackend {
     if (bucket === "15m") {
       return `formatDateTime(toStartOfInterval(${timeCol}, INTERVAL 15 minute, '${tz}'), '%Y-%m-%d %H:%i', '${tz}')`;
     }
-    return `toString(toDate(${timeCol}, '${tz}'))`;
+    return `formatDateTime(${timeCol}, '%Y-%m-%d', '${tz}')`;
   }
 
-  private async rollup15mWindow(q: ScopedQuery): Promise<{ rollupFrom: Date; rollupTo: Date } | null> {
-    if (!this.read15mRollup) return null;
+  private sourceBucketExpr(bucket: TimeBucket | undefined, source: TimeseriesSource, timezone: string): string {
+    const cached = source.resolution === "timezone-hour" || source.resolution === "timezone-day";
+    const timeCol = cached ? "bucket_start" : "ts";
+    const labelTimezone = cached ? (canonicalTimezoneId(timezone) ?? timezone) : timezone;
+    return this.bucketExpr(bucket, timeCol, labelTimezone);
+  }
+
+  private rawSource(q: ScopedQuery): TimeseriesSource {
+    const { where, params } = this.periodWhere(q);
+    return {
+      source: `(SELECT ts, provider_key, user_id, team_id, session_id, model, host,
+                       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                       cost_status, 1 AS event_count
+                FROM ${this.usageEventsSource} ${where})`,
+      params,
+      resolution: "raw",
+    };
+  }
+
+  private async exactTimeseriesSource(q: ScopedQuery): Promise<TimeseriesSource> {
+    return await this.rollup15mV2Source(q) ?? this.rawSource(q);
+  }
+
+  private namespaceTimeseriesSource(source: TimeseriesSource, prefix: string): TimeseriesSource {
+    let query = source.source;
+    const params: Params = {};
+    for (const [key, value] of Object.entries(source.params)) {
+      const namespaced = `${prefix}_${key}`;
+      query = query.replaceAll(`{${key}:`, `{${namespaced}:`);
+      params[namespaced] = value;
+    }
+    return { ...source, source: query, params };
+  }
+
+  private combineTimeseriesSources(
+    parts: Array<{ name: string; source: TimeseriesSource }>,
+  ): TimeseriesSource {
+    if (parts.length === 1) return parts[0]!.source;
+    const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                     cost_status, event_count`;
+    const namespaced = parts.map(({ name, source }) => ({
+      name,
+      source: this.namespaceTimeseriesSource(source, name),
+    }));
+    return {
+      source: `(${namespaced.map(({ source }) => `SELECT ${columns} FROM ${source.source}`).join("\nUNION ALL\n")})`,
+      params: Object.assign({}, ...namespaced.map(({ source }) => source.params)),
+      resolution: "15m",
+    };
+  }
+
+  private timezoneCacheBuckets(
+    resolution: "hour" | "day",
+    timezone: string,
+    q: ScopedQuery,
+  ): CacheBucket[] {
+    const planKey = [resolution, timezone, q.from.toISOString(), q.to.toISOString()].join("|");
+    const cached = resolution === "day" ? this.timezoneBucketPlans.get(planKey) : undefined;
+    if (cached) return cached;
+    if (q.to <= q.from) return [];
+    const buckets: CacheBucket[] = [];
+    let cursor = firstInstantOfLocalDate(localDateKey(q.from, timezone), timezone);
+    if (resolution === "day") {
+      if (cursor < q.from) cursor = nextTimezoneDayStart(cursor, timezone);
+    } else {
+      while (cursor < q.from) cursor = new Date(cursor.getTime() + 60 * 60 * 1000);
+    }
+    const maximum = resolution === "day" ? TIMEZONE_ROLLUP_MAX_DAYS : TIMEZONE_ROLLUP_MAX_HOURS;
+
+    while (cursor < q.to && buckets.length < maximum) {
+      const next = resolution === "day"
+        ? nextTimezoneDayStart(cursor, timezone)
+        : new Date(cursor.getTime() + 60 * 60 * 1000);
+      if (next <= cursor || next > q.to) break;
+      buckets.push({ from: cursor, to: next });
+      cursor = next;
+    }
+    if (resolution === "day" && this.timezoneBucketPlans.size >= 64) {
+      const oldest = this.timezoneBucketPlans.keys().next().value;
+      if (oldest) this.timezoneBucketPlans.delete(oldest);
+    }
+    if (resolution === "day") this.timezoneBucketPlans.set(planKey, buckets);
+    return buckets;
+  }
+
+  private async readCacheReadySnapshot(
+    resolution: "hour" | "day",
+    timezone: string,
+    q: ScopedQuery,
+  ): Promise<CacheWindow | null> {
+    const expected = this.timezoneCacheBuckets(resolution, timezone, q);
+    if (expected.length === 0) return null;
+    const registry = await this.pg.query(
+      "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
+      [timezone],
+    );
+    if (registry.rowCount !== 1) return null;
+
+    const [watermark, dirty, jobs, coverage] = await Promise.all([
+      this.pg.query<{ watermark: Date }>(
+        "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
+        [USAGE_15M_V2.name],
+      ),
+      this.pg.query<{ bucket: Date }>(
+        `SELECT min(bucket) AS bucket
+         FROM clickhouse_rollup_dirty_buckets
+         WHERE name = $1
+           AND bucket >= $2
+           AND bucket < $3`,
+        [USAGE_15M_V2.name, expected[0]!.from, expected.at(-1)!.to],
+      ),
+      this.pg.query<{ bucket: Date; status: "pending" | "inflight" | "done" }>(
+        `SELECT bucket, status
+         FROM clickhouse_timezone_rollup_jobs
+         WHERE resolution = $1
+           AND timezone = $2
+           AND bucket >= $3
+           AND bucket < $4
+         ORDER BY bucket`,
+        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
+      ),
+      this.pg.query<{ bucket: Date }>(
+        `SELECT bucket
+         FROM clickhouse_timezone_rollup_coverage
+         WHERE resolution = $1
+           AND timezone = $2
+           AND bucket >= $3
+           AND bucket < $4
+         ORDER BY bucket`,
+        [resolution, timezone, expected[0]!.from, expected.at(-1)!.to],
+      ),
+    ]);
+    const coveredTo = watermark.rows[0]?.watermark;
+    if (!coveredTo) return null;
+    const dirtyBucket = dirty.rows[0]?.bucket;
+    const jobStatus = new Map(
+      jobs.rows.map((job) => [new Date(job.bucket).getTime(), job.status]),
+    );
+    const covered = new Set(
+      coverage.rows.map(({ bucket }) => new Date(bucket).getTime()),
+    );
+    let cacheTo: Date | null = null;
+    for (const bucket of expected) {
+      if (bucket.to > coveredTo) break;
+      if (dirtyBucket && dirtyBucket < bucket.to) break;
+      const status = jobStatus.get(bucket.from.getTime());
+      if (!covered.has(bucket.from.getTime()) || (status != null && status !== "done")) break;
+      cacheTo = bucket.to;
+    }
+    return cacheTo ? { from: expected[0]!.from, to: cacheTo } : null;
+  }
+
+  private async cacheReady(
+    resolution: "hour" | "day",
+    timezoneInput: string,
+    q: ScopedQuery,
+  ): Promise<CacheWindow | null> {
+    if (!this.readRollup) return null;
+    const timezone = canonicalTimezoneId(timezoneInput);
+    if (!timezone) return null;
+    const key = [
+      resolution,
+      timezone,
+      q.from.toISOString(),
+      q.to.toISOString(),
+      this.readRollup ? "rollup" : "exact",
+    ].join("|");
+    let snapshot = this.cacheReadyInFlight.get(key);
+    if (!snapshot) {
+      snapshot = this.readCacheReadySnapshot(resolution, timezone, q);
+      this.cacheReadyInFlight.set(key, snapshot);
+      const settled = (): void => {
+        if (this.cacheReadyInFlight.get(key) === snapshot) this.cacheReadyInFlight.delete(key);
+      };
+      void snapshot.then(settled, settled);
+    }
+    try {
+      return await snapshot;
+    } catch {
+      return null;
+    }
+  }
+
+  private timezoneSource(
+    resolution: "hour" | "day",
+    timezone: string,
+    q: ScopedQuery,
+  ): TimeseriesSource {
+    const filter = this.scopedAndFilter(q);
+    const table = resolution === "hour"
+      ? "usage_hourly_timezone_rollup"
+      : "usage_daily_timezone_rollup";
+    return {
+      source: `(SELECT bucket_start, bucket_start AS ts, provider_key, user_id, team_id, session_id, model, host,
+                       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                       cost_status, event_count
+                FROM ${table} FINAL
+                WHERE timezone = {timezone:String}
+                  AND bucket_start >= {from:DateTime64(3)}
+                  AND bucket_start < {to:DateTime64(3)}
+                  ${filter.sql})`,
+      params: {
+        timezone,
+        from: chTs(q.from),
+        to: chTs(q.to),
+        ...filter.params,
+      },
+      resolution: resolution === "hour" ? "timezone-hour" : "timezone-day",
+    };
+  }
+
+  private async resolveTimeseriesSource(
+    q: ScopedQuery,
+    bucket: TimeBucket | undefined,
+    timezone: string,
+  ): Promise<TimeseriesSource> {
+    const canonical = canonicalTimezoneId(timezone);
+    const resolution = bucket === "day" ? "day" : bucket === "hour" ? "hour" : null;
+    const cache = canonical && resolution
+      ? await this.cacheReady(resolution, canonical, q)
+      : null;
+    if (!cache || !canonical || !resolution) {
+      return this.exactTimeseriesSource(q);
+    }
+
+    const parts: Array<{ name: "head" | "cache" | "tail"; source: TimeseriesSource }> = [];
+    if (q.from < cache.from) {
+      parts.push({
+        name: "head",
+        source: await this.exactTimeseriesSource({ ...q, from: q.from, to: cache.from }),
+      });
+    }
+    parts.push({
+      name: "cache",
+      source: this.timezoneSource(resolution, canonical, { ...q, from: cache.from, to: cache.to }),
+    });
+    if (cache.to < q.to) {
+      parts.push({
+        name: "tail",
+        source: await this.exactTimeseriesSource({ ...q, from: cache.to, to: q.to }),
+      });
+    }
+    return this.combineTimeseriesSources(parts);
+  }
+
+  private async rollupWindow(
+    q: ScopedQuery,
+    spec: RollupSpec,
+  ): Promise<{ rollupFrom: Date; rollupTo: Date } | null> {
     if (q.to <= q.from) return null;
-    const rollupFrom = ceilFifteenMinuteDate(q.from);
-    let rollupTo = floorFifteenMinuteDate(q.to);
+    const rollupFrom = ceilRollupDate(q.from, spec.intervalMs);
+    let rollupTo = floorRollupDate(q.to, spec.intervalMs);
     if (rollupTo <= rollupFrom) return null;
     const watermark = await this.pg.query<{ watermark: Date }>(
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
-      [CLICKHOUSE_15M_ROLLUP_NAME],
+      [spec.name],
     );
     const current = watermark.rows[0]?.watermark;
     if (!current) return null;
@@ -384,17 +864,23 @@ export class ClickHouseStorage implements StorageBackend {
        WHERE name = $1
          AND bucket >= $2
          AND bucket < $3`,
-      [CLICKHOUSE_15M_ROLLUP_NAME, rollupFrom, rollupTo],
+      [spec.name, rollupFrom, rollupTo],
     );
     const dirtyBucket = dirty.rows[0]?.bucket;
     if (dirtyBucket && dirtyBucket < rollupTo) rollupTo = dirtyBucket;
     return rollupTo > rollupFrom ? { rollupFrom, rollupTo } : null;
   }
 
-  private async rollup15mTimeseriesSource(q: ScopedQuery): Promise<{ source: string; params: Params } | null> {
-    const window = await this.rollup15mWindow(q);
+  private async rollupSource(q: ScopedQuery, spec: RollupSpec): Promise<RollupSource | null> {
+    const window = await this.rollupWindow(q, spec);
     if (!window) return null;
     const filter = this.scopedAndFilter(q);
+    const v2Dimensions = spec.name === USAGE_15M_V2.name
+      ? ", pricing_revision_id, cost_status"
+      : "";
+    const costStatusSelect = spec.name === USAGE_15M_V2.name
+      ? "cost_status"
+      : "'legacy' AS cost_status";
     const params = {
       from: chTs(q.from),
       rollupFrom: chTs(window.rollupFrom),
@@ -404,14 +890,16 @@ export class ClickHouseStorage implements StorageBackend {
     };
     const source = `(
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+             cost_status, 1 AS event_count
       FROM ${this.usageEventsSource}
       WHERE ts >= {from:DateTime64(3)}
         AND ts < {rollupFrom:DateTime64(3)}
         ${filter.sql}
       UNION ALL
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+             cost_status, event_count
       FROM (
         SELECT bucket_15m AS ts,
                provider_key,
@@ -424,22 +912,36 @@ export class ClickHouseStorage implements StorageBackend {
                argMax(output_tokens, version) AS output_tokens,
                argMax(cache_read_tokens, version) AS cache_read_tokens,
                argMax(cache_creation_tokens, version) AS cache_creation_tokens,
-               argMax(cost_usd, version) AS cost_usd
-        FROM usage_15m_rollup
-        WHERE bucket_15m >= {rollupFrom:DateTime64(3)}
-          AND bucket_15m < {rollupTo:DateTime64(3)}
+               argMax(cost_usd, version) AS cost_usd,
+               ${costStatusSelect},
+               argMax(event_count, version) AS event_count
+        FROM ${spec.table}
+        WHERE ${spec.bucketColumn} >= {rollupFrom:DateTime64(3)}
+          AND ${spec.bucketColumn} < {rollupTo:DateTime64(3)}
           ${filter.sql}
-        GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host
+        GROUP BY ${spec.bucketColumn}, provider_key, user_id, team_id, session_id, model, host${v2Dimensions}
       )
       UNION ALL
       SELECT ts, provider_key, user_id, team_id, session_id, model, host,
-             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+             cost_status, 1 AS event_count
       FROM ${this.usageEventsSource}
       WHERE ts >= {rollupTo:DateTime64(3)}
         AND ts < {to:DateTime64(3)}
         ${filter.sql}
     )`;
-    return { source, params };
+    return { source, params, resolution: "15m", from: window.rollupFrom, to: window.rollupTo };
+  }
+
+  private async rollup15mV2Source(q: ScopedQuery): Promise<RollupSource | null> {
+    if (!this.read15mV2Rollup) return null;
+    return this.rollupSource(q, USAGE_15M_V2);
+  }
+
+  private async rollup15mTimeseriesSource(q: ScopedQuery): Promise<RollupSource | null> {
+    if (this.read15mV2Rollup) return this.rollup15mV2Source(q);
+    if (!this.read15mRollup) return null;
+    return this.rollupSource(q, USAGE_15M);
   }
 
   private namespaceInsightSource(
@@ -461,28 +963,24 @@ export class ClickHouseStorage implements StorageBackend {
   private async insightPeriodSource(
     q: ScopedQuery,
     prefix: "previous" | "current",
+    timezone: string,
   ): Promise<{ source: string; where: string; params: Params }> {
-    const hybrid = await this.rollup15mTimeseriesSource(q);
-    if (hybrid) {
-      return this.namespaceInsightSource(
-        { kind: "hybrid", source: hybrid.source, params: hybrid.params },
-        prefix,
-      );
-    }
-    const raw = this.periodWhere(q);
+    const source = await this.resolveTimeseriesSource(q, "day", timezone);
     return this.namespaceInsightSource(
-      { kind: "raw", source: this.usageEventsSource, where: raw.where, params: raw.params },
+      { kind: "hybrid", source: source.source, params: source.params },
       prefix,
     );
   }
 
   private async insightSource(q: InsightComparisonQuery, userId: string): Promise<InsightSource> {
+    const timezone = safeTimezone(q.timezone, this.tz);
     const [previous, current] = await Promise.all([
-      this.insightPeriodSource({ ...q.previous, providerKey: q.providerKey, userId }, "previous"),
-      this.insightPeriodSource({ ...q.current, providerKey: q.providerKey, userId }, "current"),
+      this.insightPeriodSource({ ...q.previous, providerKey: q.providerKey, userId }, "previous", timezone),
+      this.insightPeriodSource({ ...q.current, providerKey: q.providerKey, userId }, "current", timezone),
     ]);
     const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
-                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd`;
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                     cost_status, event_count`;
     return {
       source: `(
         SELECT 'previous' AS period, ${columns}
@@ -498,6 +996,9 @@ export class ClickHouseStorage implements StorageBackend {
   private async ensureClickHouseSchema(): Promise<void> {
     for (const query of CLICKHOUSE_SCHEMA_DDL) {
       await this.ch.command({ query });
+    }
+    if (this.enforceRetentionTtl) {
+      await this.ch.command({ query: CLICKHOUSE_RAW_RETENTION_DDL });
     }
   }
 
@@ -532,7 +1033,7 @@ export class ClickHouseStorage implements StorageBackend {
     return id;
   }
 
-  async saveUsageEvents(events: UsageEvent[]): Promise<SaveResult> {
+  async saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
     const res = await this.enqueueUsageEvents(events);
     if (res.inserted > 0) {
@@ -545,7 +1046,7 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: res.inserted, deduped: res.deduped };
   }
 
-  private async enqueueUsageEvents(events: UsageEvent[]): Promise<EnqueueResult> {
+  private async enqueueUsageEvents(events: FinalizedUsageEvent[]): Promise<EnqueueResult> {
     const client = await this.pg.connect();
     try {
       await client.query("BEGIN");
@@ -567,8 +1068,8 @@ export class ClickHouseStorage implements StorageBackend {
           `INSERT INTO clickhouse_usage_outbox
              (dedup_key, batch_id, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter, host)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+              log_adapter, host, pricing_revision_id, cost_status)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey,
@@ -586,6 +1087,8 @@ export class ClickHouseStorage implements StorageBackend {
             e.costUsd,
             e.logAdapter ?? null,
             e.host ?? null,
+            e.pricingRevisionId,
+            e.costStatus,
           ],
         );
         if (r.rowCount === 1) inserted++;
@@ -636,7 +1139,8 @@ export class ClickHouseStorage implements StorageBackend {
         const batchRows = await client.query<OutboxRow>(
           `SELECT dedup_key, provider_key, user_id::text, team_id::text, session_id, model, ts,
                   input_tokens::text, output_tokens::text, cache_read_tokens::text,
-                  cache_creation_tokens::text, cost_usd::text, log_adapter, host
+                  cache_creation_tokens::text, cost_usd::text, log_adapter, host,
+                  pricing_revision_id::text, cost_status
            FROM clickhouse_usage_outbox
            WHERE batch_id = $1
            ORDER BY dedup_key`,
@@ -700,6 +1204,8 @@ export class ClickHouseStorage implements StorageBackend {
       cache_read_tokens: Number(e.cache_read_tokens),
       cache_creation_tokens: Number(e.cache_creation_tokens),
       cost_usd: e.cost_usd,
+      pricing_revision_id: e.pricing_revision_id ?? "",
+      cost_status: e.cost_status,
       log_adapter: e.log_adapter ?? "",
       host: e.host ?? "",
     }));
@@ -774,20 +1280,24 @@ export class ClickHouseStorage implements StorageBackend {
   private async mark15mRollupDirty(client: PoolClient, rows: OutboxRow[]): Promise<void> {
     const buckets = this.dirty15mBuckets(rows);
     if (buckets.length === 0) return;
-    await client.query(
-      `INSERT INTO clickhouse_rollup_dirty_buckets (name, bucket)
-       SELECT $1, unnest($2::timestamptz[])
-       ON CONFLICT (name, bucket) DO UPDATE
-         SET updated_at = now()`,
-      [CLICKHOUSE_15M_ROLLUP_NAME, buckets],
-    );
+    for (const spec of USAGE_ROLLUPS) {
+      await client.query(
+        `INSERT INTO clickhouse_rollup_dirty_buckets (name, bucket)
+         SELECT $1, unnest($2::timestamptz[])
+         ON CONFLICT (name, bucket) DO UPDATE
+           SET updated_at = now()`,
+        [spec.name, buckets],
+      );
+    }
   }
 
-  private async firstUsage15mBucket(): Promise<Date | null> {
+  private async firstRollupBucket(spec: RollupSpec): Promise<Date | null> {
+    const intervalMinutes = spec.intervalMs / 60_000;
+    const source = this.compactorSource(spec);
     const rows = await this.queryJson<{ events?: string; first_bucket?: string }>(
       `SELECT count() AS events,
-              min(toStartOfInterval(ts, INTERVAL 15 minute, 'UTC')) AS first_bucket
-       FROM ${this.usageEventsSource}`,
+              min(toStartOfInterval(ts, INTERVAL ${intervalMinutes} minute, 'UTC')) AS first_bucket
+       FROM ${source}`,
       {},
     );
     const row = rows[0];
@@ -795,52 +1305,79 @@ export class ClickHouseStorage implements StorageBackend {
     return chDate(row.first_bucket);
   }
 
-  private async readOrInit15mWatermark(client: PoolClient, eligibleTo: Date): Promise<Date> {
+  private async readOrInitWatermark(client: PoolClient, spec: RollupSpec, eligibleTo: Date): Promise<Date> {
     const current = await client.query<{ watermark: Date }>(
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
-      [CLICKHOUSE_15M_ROLLUP_NAME],
+      [spec.name],
     );
-    if (current.rows[0]) return current.rows[0].watermark;
+    if (current.rows[0]) {
+      return spec.name === USAGE_15M_V2.name
+        ? clampV2RollupStart(current.rows[0].watermark, eligibleTo)
+        : current.rows[0].watermark;
+    }
 
-    const firstBucket = await this.firstUsage15mBucket();
-    const watermark = firstBucket ?? eligibleTo;
+    const firstBucket = await this.firstRollupBucket(spec);
+    const watermark = firstBucket
+      ? spec.name === USAGE_15M_V2.name
+        ? clampV2RollupStart(firstBucket, eligibleTo)
+        : firstBucket
+      : eligibleTo;
     await client.query(
       `INSERT INTO clickhouse_rollup_watermarks (name, watermark)
        VALUES ($1, $2)
        ON CONFLICT (name) DO NOTHING`,
-      [CLICKHOUSE_15M_ROLLUP_NAME, watermark],
+      [spec.name, watermark],
     );
     const saved = await client.query<{ watermark: Date }>(
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
-      [CLICKHOUSE_15M_ROLLUP_NAME],
+      [spec.name],
     );
-    return saved.rows[0]?.watermark ?? watermark;
+    const savedWatermark = saved.rows[0]?.watermark ?? watermark;
+    return spec.name === USAGE_15M_V2.name
+      ? clampV2RollupStart(savedWatermark, eligibleTo)
+      : savedWatermark;
   }
 
-  private async aggregate15mBuckets(buckets: Date[], version: number): Promise<Rollup15mRow[]> {
+  private compactorSource(spec: RollupSpec): string {
+    return spec.sourcePolicy === "canonical_final" ? "usage_events FINAL" : this.usageEventsSource;
+  }
+
+  private async aggregateRollupBuckets(
+    spec: RollupSpec,
+    buckets: Date[],
+    version: number,
+  ): Promise<Rollup15mRow[]> {
     if (buckets.length === 0) return [];
     const sorted = [...buckets].sort((a, b) => a.getTime() - b.getTime());
     const from = sorted[0]!;
-    const to = new Date(sorted.at(-1)!.getTime() + FIFTEEN_MINUTES_MS);
+    const to = new Date(sorted.at(-1)!.getTime() + spec.intervalMs);
+    const intervalMinutes = spec.intervalMs / 60_000;
+    const v2 = spec.name === USAGE_15M_V2.name;
+    const pricingColumns = v2 ? "\n              pricing_revision_id,\n              cost_status," : "";
+    const costAggregate = v2
+      ? "sumIf(cost_usd, cost_status != 'unpriced')"
+      : "sum(cost_usd)";
+    const pricingGroup = v2 ? ", pricing_revision_id, cost_status" : "";
+    const source = this.compactorSource(spec);
     const rows = await this.queryJson<Rollup15mAggRow>(
-      `SELECT toStartOfInterval(ts, INTERVAL 15 minute, 'UTC') AS bucket_15m,
+      `SELECT toStartOfInterval(ts, INTERVAL ${intervalMinutes} minute, 'UTC') AS ${spec.bucketColumn},
               provider_key,
               user_id,
               team_id,
               session_id,
               model,
-              host,
+              host,${pricingColumns}
               count() AS event_count,
               sum(input_tokens) AS input_tokens,
               sum(output_tokens) AS output_tokens,
               sum(cache_read_tokens) AS cache_read_tokens,
               sum(cache_creation_tokens) AS cache_creation_tokens,
-              sum(cost_usd) AS cost_usd
-       FROM ${this.usageEventsSource}
+              ${costAggregate} AS cost_usd
+       FROM ${source}
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
-         AND has(arrayMap(x -> toDateTime64(x, 3, 'UTC'), {buckets:Array(String)}), toStartOfInterval(ts, INTERVAL 15 minute, 'UTC'))
-       GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host`,
+         AND has(arrayMap(x -> toDateTime64(x, 3, 'UTC'), {buckets:Array(String)}), toStartOfInterval(ts, INTERVAL ${intervalMinutes} minute, 'UTC'))
+       GROUP BY ${spec.bucketColumn}, provider_key, user_id, team_id, session_id, model, host${pricingGroup}`,
       { from: chTs(from), to: chTs(to), buckets: sorted.map(chTs) },
     );
     return rows.map((r) => ({
@@ -851,6 +1388,12 @@ export class ClickHouseStorage implements StorageBackend {
       session_id: r.session_id,
       model: r.model,
       host: r.host,
+      ...(v2
+        ? {
+            pricing_revision_id: r.pricing_revision_id ?? "",
+            cost_status: r.cost_status ?? "legacy",
+          }
+        : {}),
       event_count: n(r.event_count),
       input_tokens: n(r.input_tokens),
       output_tokens: n(r.output_tokens),
@@ -861,36 +1404,79 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  async compactUsage15mRollup(limitBuckets?: number): Promise<CompactUsage15mRollupResult> {
+  private async invalidateTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
+    if (buckets.length === 0) return;
+    await client.query(
+      `WITH affected(bucket) AS (
+         SELECT unnest($1::timestamptz[])
+       ), requested(resolution, timezone, bucket) AS (
+         SELECT DISTINCT resolution, timezone, date_trunc(resolution, affected.bucket, timezone)
+         FROM affected
+         CROSS JOIN clickhouse_rollup_timezones
+         CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS resolutions(resolution)
+       ), invalidated AS (
+         DELETE FROM clickhouse_timezone_rollup_coverage AS coverage
+         USING requested
+         WHERE coverage.resolution = requested.resolution
+           AND coverage.timezone = requested.timezone
+           AND coverage.bucket = requested.bucket
+       )
+       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
+       SELECT resolution, timezone, bucket
+       FROM requested
+       ON CONFLICT (resolution, timezone, bucket) DO UPDATE
+       SET status = 'pending', updated_at = now()`,
+      [buckets],
+    );
+  }
+
+  private async compactUsageRollup(
+    spec: RollupSpec,
+    limitBuckets?: number,
+  ): Promise<CompactUsage15mRollupResult> {
     await this.ensureSchema();
     const maxBuckets = Math.max(
       1,
       Math.min(256, Math.floor(limitBuckets ?? readPositiveIntEnv("CLICKHOUSE_ROLLUP_MAX_BUCKETS", CLICKHOUSE_ROLLUP_DEFAULT_MAX_BUCKETS))),
     );
     const delayMs = readPositiveIntEnv("CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS", CLICKHOUSE_ROLLUP_DEFAULT_FINALIZE_DELAY_MS);
-    const eligibleTo = floorFifteenMinuteDate(new Date(Date.now() - delayMs));
+    const eligibleTo = floorRollupDate(new Date(Date.now() - delayMs), spec.intervalMs);
     const client = await this.pg.connect();
     try {
       await client.query("BEGIN");
-      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`rollup:${CLICKHOUSE_15M_ROLLUP_NAME}`]);
-      const watermark = await this.readOrInit15mWatermark(client, eligibleTo);
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`rollup:${spec.name}`]);
+      const watermark = await this.readOrInitWatermark(client, spec, eligibleTo);
       const dirtyLimit = Math.max(1, Math.ceil(maxBuckets / 2));
-      const dirty = await client.query<{ bucket: Date }>(
-        `SELECT bucket
-         FROM clickhouse_rollup_dirty_buckets
-         WHERE name = $1 AND bucket < $2
-         ORDER BY bucket
-         LIMIT $3`,
-        [CLICKHOUSE_15M_ROLLUP_NAME, eligibleTo, dirtyLimit],
-      );
+      const dirty = spec.name === USAGE_15M_V2.name
+        ? await client.query<{ bucket: Date }>(
+            `SELECT bucket
+             FROM clickhouse_rollup_dirty_buckets
+             WHERE name = $1 AND bucket >= $2 AND bucket < $3
+             ORDER BY bucket
+             LIMIT $4`,
+            [
+              spec.name,
+              clampV2RollupStart(new Date(0), eligibleTo),
+              eligibleTo,
+              dirtyLimit,
+            ],
+          )
+        : await client.query<{ bucket: Date }>(
+            `SELECT bucket
+             FROM clickhouse_rollup_dirty_buckets
+             WHERE name = $1 AND bucket < $2
+             ORDER BY bucket
+             LIMIT $3`,
+            [spec.name, eligibleTo, dirtyLimit],
+          );
       const remaining = maxBuckets - dirty.rows.length;
       const contiguousCount = Math.min(
         remaining,
-        Math.max(0, Math.floor((eligibleTo.getTime() - watermark.getTime()) / FIFTEEN_MINUTES_MS)),
+        Math.max(0, Math.floor((eligibleTo.getTime() - watermark.getTime()) / spec.intervalMs)),
       );
       const contiguousBuckets = Array.from(
         { length: contiguousCount },
-        (_, i) => new Date(watermark.getTime() + i * FIFTEEN_MINUTES_MS),
+        (_, i) => new Date(watermark.getTime() + i * spec.intervalMs),
       );
       const bucketsByMs = new Map<number, Date>();
       for (const bucket of contiguousBuckets) bucketsByMs.set(bucket.getTime(), bucket);
@@ -903,28 +1489,31 @@ export class ClickHouseStorage implements StorageBackend {
       }
 
       const version = Date.now();
-      const rollupRows = await this.aggregate15mBuckets(buckets, version);
+      const rollupRows = await this.aggregateRollupBuckets(spec, buckets, version);
       if (rollupRows.length > 0) {
         await this.ch.insert({
-          table: "usage_15m_rollup",
+          table: spec.table,
           values: rollupRows,
           format: "JSONEachRow",
         });
       }
+      if (spec.name === USAGE_15M_V2.name) {
+        await this.invalidateTimezoneRollupJobs(client, buckets);
+      }
 
       const newWatermark = contiguousBuckets.length > 0
-        ? new Date(watermark.getTime() + contiguousBuckets.length * FIFTEEN_MINUTES_MS)
+        ? new Date(watermark.getTime() + contiguousBuckets.length * spec.intervalMs)
         : watermark;
       await client.query(
         `UPDATE clickhouse_rollup_watermarks
          SET watermark = $2, updated_at = now()
          WHERE name = $1`,
-        [CLICKHOUSE_15M_ROLLUP_NAME, newWatermark],
+        [spec.name, newWatermark],
       );
       await client.query(
         `DELETE FROM clickhouse_rollup_dirty_buckets
          WHERE name = $1 AND bucket = ANY($2::timestamptz[])`,
-        [CLICKHOUSE_15M_ROLLUP_NAME, buckets],
+        [spec.name, buckets],
       );
       await client.query("COMMIT");
       return { buckets: buckets.length, rows: rollupRows.length, watermark: newWatermark.toISOString() };
@@ -934,6 +1523,92 @@ export class ClickHouseStorage implements StorageBackend {
     } finally {
       client.release();
     }
+  }
+
+  async compactUsage15mRollup(limitBuckets?: number): Promise<CompactUsage15mRollupResult> {
+    return this.compactUsageRollup(USAGE_15M, limitBuckets);
+  }
+
+  async compactUsage15mV2(limitBuckets?: number): Promise<CompactUsage15mV2Result> {
+    return this.compactUsageRollup(USAGE_15M_V2, limitBuckets);
+  }
+
+  async supportsTimezone(timezoneInput: string): Promise<boolean> {
+    const timezone = canonicalTimezoneId(timezoneInput);
+    if (!timezone) return false;
+    const rows = await this.queryJson<{ supported?: string }>(
+      `SELECT count() AS supported
+       FROM system.time_zones
+       WHERE time_zone = {timezone:String}`,
+      { timezone },
+    );
+    return n(rows[0]?.supported) > 0;
+  }
+
+  async compactTimezoneRollup(
+    resolution: "hour" | "day",
+    timezone: string,
+    bucket: Date,
+  ): Promise<number> {
+    const tz = canonicalTimezoneId(timezone);
+    if (!tz) throw new Error(`invalid IANA timezone: ${timezone}`);
+    const bucketExpression = resolution === "hour"
+      ? `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${tz}')`
+      : `toStartOfDay(bucket_15m, '${tz}')`;
+    const to = resolution === "hour"
+      ? new Date(bucket.getTime() + 60 * 60 * 1000)
+      : nextTimezoneDayStart(bucket, tz);
+    const rows = await this.queryJson<TimezoneRollupAggRow>(
+      `SELECT ${bucketExpression} AS bucket_start,
+              provider_key,
+              user_id,
+              team_id,
+              session_id,
+              model,
+              host,
+              pricing_revision_id,
+              cost_status,
+              sum(event_count) AS event_count,
+              sum(input_tokens) AS input_tokens,
+              sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              sum(cache_creation_tokens) AS cache_creation_tokens,
+              sum(cost_usd) AS cost_usd
+       FROM usage_15m_rollup_v2 FINAL
+       WHERE bucket_15m >= {bucket:DateTime64(3)}
+         AND bucket_15m < {to:DateTime64(3)}
+         AND ${bucketExpression} = {bucket:DateTime64(3)}
+       GROUP BY bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status`,
+      { bucket: chTs(bucket), to: chTs(to) },
+    );
+    if (rows.length === 0) return 0;
+
+    const version = Date.now();
+    await this.ch.insert({
+      table: resolution === "hour" ? "usage_hourly_timezone_rollup" : "usage_daily_timezone_rollup",
+      values: rows.map((row) => ({
+        timezone: tz,
+        bucket_start: chTs(bucket),
+        user_id: row.user_id,
+        team_id: row.team_id,
+        provider_key: row.provider_key,
+        model: row.model,
+        host: row.host,
+        session_id: row.session_id,
+        pricing_revision_id: row.pricing_revision_id,
+        cost_status: row.cost_status,
+        event_count: n(row.event_count),
+        input_tokens: n(row.input_tokens),
+        output_tokens: n(row.output_tokens),
+        cache_read_tokens: n(row.cache_read_tokens),
+        cache_creation_tokens: n(row.cache_creation_tokens),
+        cost_usd: row.cost_usd,
+        version,
+      })),
+      format: "JSONEachRow",
+    });
+    return rows.length;
   }
 
   private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
@@ -952,18 +1627,22 @@ export class ClickHouseStorage implements StorageBackend {
   async recomputeDaily(): Promise<void> {}
 
   // ── 읽기 ──
-  private async overviewQuery(q: ScopedQuery): Promise<OverviewStats> {
-    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
+  private async overviewQuery(q: ScopedQuery & Partial<BucketOptions>): Promise<OverviewStats> {
+    const timezone = safeTimezone(q.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(q, q.bucket, timezone);
     const rows = await this.queryJson<AggRow>(
       `SELECT uniqExactIf(session_id, session_id != '') AS sessions,
               uniqExactIf(user_id, user_id != '')       AS active_users,
-              sum(cost_usd)     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
-              sum(cache_creation_tokens) AS cache_creation
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}`,
-      params,
+              sum(cache_creation_tokens) AS cache_creation,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
+       FROM ${source.source}`,
+      source.params,
     );
     const r = rows[0];
     return {
@@ -974,31 +1653,28 @@ export class ClickHouseStorage implements StorageBackend {
       totalOutputTokens: n(r?.output),
       totalCacheReadTokens: n(r?.cache_read),
       totalCacheCreationTokens: n(r?.cache_creation),
+      costCoverage: costCoverage(r),
     };
   }
 
   private async dailyQuery(q: ScopedQuery & BucketOptions): Promise<DailyPoint[]> {
-    const hybrid = await this.rollup15mTimeseriesSource(q);
-    const readRollup = !hybrid && this.canUseRollup(q.bucket);
-    const { where, params } = hybrid ? { where: "", params: hybrid.params } : readRollup ? this.rollupWhere(q) : this.periodWhere(q);
     // 버킷 타임존 — 요청(뷰어) 타임존 우선, 없으면 조직 타임존 (ADR-008 개정). 리터럴 삽입이라 재검증 필수.
     const tz = safeTimezone(q.timezone, this.tz);
-    const timeCol = hybrid || !readRollup ? "ts" : "bucket_hour";
-    const source = hybrid?.source ?? (readRollup ? "usage_hourly_rollup" : this.usageEventsSource);
+    const source = await this.resolveTimeseriesSource(q, q.bucket, tz);
     // 하루 안 버킷은 'YYYY-MM-DD HH:mm', 일 버킷은 'YYYY-MM-DD' (storage 계약 참조)
-    const bucketExpr = this.bucketExpr(q.bucket, timeCol, tz);
+    const bucketExpr = this.sourceBucketExpr(q.bucket, source, tz);
     const rows = await this.queryJson<{ day: string } & AggRow>(
       `SELECT ${bucketExpr}                                   AS day,
               uniqExactIf(session_id, session_id != '')       AS sessions,
               uniqExactIf(user_id, user_id != '')             AS active_users,
-              sum(cost_usd)     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
               sum(cache_creation_tokens) AS cache_creation
-       FROM ${source} ${where}
+       FROM ${source.source}
        GROUP BY day ORDER BY day`,
-      params,
+      source.params,
     );
     return rows.map((r) => ({
       day: r.day,
@@ -1012,43 +1688,44 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  private async modelBreakdown(q: ScopedQuery): Promise<ModelBreakdown[]> {
-    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
-    const rows = await this.queryJson<{ model: string; cost?: string; tokens?: string; sessions?: string }>(
+  private async modelBreakdown(q: ScopedQuery & Partial<BucketOptions>): Promise<ModelBreakdown[]> {
+    const timezone = safeTimezone(q.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(q, q.bucket, timezone);
+    const rows = await this.queryJson<{ model: string; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT if(model = '', '(unknown)', model)               AS model,
-              sum(cost_usd)                                     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '')         AS sessions
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+              uniqExactIf(session_id, session_id != '')         AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
+       FROM ${source.source}
        GROUP BY model ORDER BY cost DESC`,
-      params,
+      source.params,
     );
     return rows.map((r) => ({
       model: r.model,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
   // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)
   async getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]> {
     const scoped = { ...q, userId };
-    const hybrid = await this.rollup15mTimeseriesSource(scoped);
-    const readRollup = !hybrid && this.canUseRollup(q.bucket);
-    const { where, params } = hybrid ? { where: "", params: hybrid.params } : readRollup ? this.rollupWhere(scoped) : this.periodWhere(scoped);
     const tz = safeTimezone(q.timezone, this.tz);
-    const timeCol = hybrid || !readRollup ? "ts" : "bucket_hour";
-    const source = hybrid?.source ?? (readRollup ? "usage_hourly_rollup" : this.usageEventsSource);
-    const bucketExpr = this.bucketExpr(q.bucket, timeCol, tz);
+    const source = await this.resolveTimeseriesSource(scoped, q.bucket, tz);
+    const bucketExpr = this.sourceBucketExpr(q.bucket, source, tz);
     const rows = await this.queryJson<{ day: string; model: string; cost?: string; tokens?: string }>(
       `SELECT ${bucketExpr}                                    AS day,
               if(model = '', '(unknown)', model)               AS model,
-              sum(cost_usd)                                     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens
-       FROM ${source} ${where}
+       FROM ${source.source}
        GROUP BY day, model ORDER BY day, cost DESC`,
-      params,
+      source.params,
     );
     return rows.map((r) => ({ day: r.day, model: r.model, costUsd: n(r.cost), totalTokens: n(r.tokens) }));
   }
@@ -1060,22 +1737,27 @@ export class ClickHouseStorage implements StorageBackend {
 
   // 컴퓨터(호스트)별 분해 — modelBreakdown 동형. 빈 문자열('') 은 nullIf 로 NULL 정규화해
   // PG 의 NULL 과 동일하게 UI "(알 수 없음)" 버킷으로 접힌다.
-  private async hostBreakdown(q: ScopedQuery): Promise<HostBreakdown[]> {
-    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
-    const rows = await this.queryJson<{ host: string | null; cost?: string; tokens?: string; sessions?: string }>(
+  private async hostBreakdown(q: ScopedQuery & Partial<BucketOptions>): Promise<HostBreakdown[]> {
+    const timezone = safeTimezone(q.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(q, q.bucket, timezone);
+    const rows = await this.queryJson<{ host: string | null; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT nullIf(host, '')                                 AS host,
-              sum(cost_usd)                                     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '')         AS sessions
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+              uniqExactIf(session_id, session_id != '')         AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
+       FROM ${source.source}
        GROUP BY host ORDER BY cost DESC`,
-      params,
+      source.params,
     );
     return rows.map((r) => ({
       host: r.host ?? null,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1093,26 +1775,22 @@ export class ClickHouseStorage implements StorageBackend {
     q: PeriodQuery & BucketOptions & { teamId: string; userIds: string[] },
   ): Promise<TeamMemberTimeseriesPoint[]> {
     if (q.userIds.length === 0) return [];
-    const hybrid = await this.rollup15mTimeseriesSource(q);
-    const readRollup = !hybrid && this.canUseRollup(q.bucket);
-    const { where, params } = hybrid ? { where: "", params: hybrid.params } : readRollup ? this.rollupWhere(q) : this.periodWhere(q);
     const tz = safeTimezone(q.timezone, this.tz);
-    const timeCol = hybrid || !readRollup ? "ts" : "bucket_hour";
-    const source = hybrid?.source ?? (readRollup ? "usage_hourly_rollup" : this.usageEventsSource);
-    const bucketExpr = this.bucketExpr(q.bucket, timeCol, tz);
+    const source = await this.resolveTimeseriesSource(q, q.bucket, tz);
+    const bucketExpr = this.sourceBucketExpr(q.bucket, source, tz);
     const rows = await this.queryJson<{ day: string; user_id: string } & AggRow>(
       `SELECT ${bucketExpr}                                   AS day,
               user_id,
               uniqExactIf(session_id, session_id != '')       AS sessions,
               uniqExactIf(user_id, user_id != '')             AS active_users,
-              sum(cost_usd)     AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens) AS input,
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
               sum(cache_creation_tokens) AS cache_creation
-       FROM ${source} ${where}
+       FROM ${source.source}
        GROUP BY day, user_id ORDER BY day, user_id`,
-      params,
+      source.params,
     );
     return rows.map((r) => ({
       userId: r.user_id,
@@ -1129,10 +1807,12 @@ export class ClickHouseStorage implements StorageBackend {
 
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
     const scoped = { ...q, userId }; // bucket/timezone 은 dailyQuery 만 소비, 나머지 쿼리는 무시
-    const overview = await this.overviewQuery(scoped);
-    const daily = await this.dailyQuery(scoped);
-    const byModel = await this.modelBreakdown(scoped);
-    const byHost = await this.hostBreakdown(scoped);
+    const [overview, daily, byModel, byHost] = await Promise.all([
+      this.overviewQuery(scoped),
+      this.dailyQuery(scoped),
+      this.modelBreakdown(scoped),
+      this.hostBreakdown(scoped),
+    ]);
     return { overview, daily, byModel, byHost };
   }
 
@@ -1147,7 +1827,7 @@ export class ClickHouseStorage implements StorageBackend {
         cost?: string;
         sessions?: string;
         tokens?: string;
-      }>(
+      } & CostCoverageRow>(
         `WITH '/* user-insights */' AS query_tag,
          tagged AS (
            SELECT period,
@@ -1156,19 +1836,27 @@ export class ClickHouseStorage implements StorageBackend {
                      dateDiff('day', {previous_from:DateTime64(3)}, ts, '${tz}')) AS position,
                   session_id,
                   cost_usd,
+                  cost_status,
+                  event_count,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
            FROM ${source.source}
          )
          SELECT 'summary' AS kind, period, CAST(NULL AS Nullable(Int64)) AS position,
-                sum(cost_usd) AS cost,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost,
                 uniqExactIf(session_id, session_id != '') AS sessions,
-                sum(tokens) AS tokens
+                sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM tagged GROUP BY period
          UNION ALL
          SELECT 'trend' AS kind, period, position,
-                sum(cost_usd) AS cost,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost,
                 uniqExactIf(session_id, session_id != '') AS sessions,
-                sum(tokens) AS tokens
+                sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM tagged GROUP BY period, position
          ORDER BY kind, position, period`,
         source.params,
@@ -1179,22 +1867,30 @@ export class ClickHouseStorage implements StorageBackend {
         period: "current" | "previous";
         cost?: string;
         tokens?: string;
-      }>(
+      } & CostCoverageRow>(
         `WITH '/* user-insights */' AS query_tag,
          scoped AS (
            SELECT period,
                   if(model = '', '(unknown)', model) AS model,
                   provider_key,
                   cost_usd,
+                  cost_status,
+                  event_count,
                   input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens AS tokens
            FROM ${source.source}
          )
          SELECT 'model' AS dimension, model AS key, period,
-                sum(cost_usd) AS cost, sum(tokens) AS tokens
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost, sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM scoped GROUP BY model, period
          UNION ALL
          SELECT 'provider' AS dimension, provider_key AS key, period,
-                sum(cost_usd) AS cost, sum(tokens) AS tokens
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost, sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'priced') AS priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS legacy_events
          FROM scoped GROUP BY provider_key, period`,
         source.params,
       ),
@@ -1207,6 +1903,7 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       sessions: n(r.sessions),
       totalTokens: n(r.tokens),
+      costCoverage: costCoverage(r),
     }));
     const compositions: InsightCompositionRow[] = compositionRows.map((r) => ({
       dimension: r.dimension,
@@ -1214,6 +1911,7 @@ export class ClickHouseStorage implements StorageBackend {
       period: r.period,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
+      costCoverage: costCoverage(r),
     }));
     return buildUserInsightComparison(aggregates, compositions);
   }
@@ -1250,7 +1948,7 @@ export class ClickHouseStorage implements StorageBackend {
       cache_creation?: string;
       cost?: string;
       events?: string;
-    }>(
+    } & CostCoverageRow>(
       `SELECT session_id,
               groupUniqArrayIf(model, model != '') AS models,
               groupUniqArrayIf(host,  host  != '') AS hosts,
@@ -1258,8 +1956,11 @@ export class ClickHouseStorage implements StorageBackend {
               sum(output_tokens)         AS output,
               sum(cache_read_tokens)     AS cache_read,
               sum(cache_creation_tokens) AS cache_creation,
-              sum(cost_usd)              AS cost,
-              count()                    AS events
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+              count()                    AS events,
+              countIf(cost_status = 'priced')   AS priced_events,
+              countIf(cost_status = 'unpriced') AS unpriced_events,
+              countIf(cost_status = 'legacy')   AS legacy_events
        FROM ${this.usageEventsSource}
        WHERE user_id = {uid:String} AND session_id IN {sids:Array(String)}
        GROUP BY session_id`,
@@ -1275,6 +1976,7 @@ export class ClickHouseStorage implements StorageBackend {
       cacheCreationTokens: n(r.cache_creation),
       costUsd: n(r.cost),
       eventCount: n(r.events),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1288,6 +1990,7 @@ export class ClickHouseStorage implements StorageBackend {
       cache_read?: string;
       cache_creation?: string;
       cost?: string;
+      cost_status: SessionUsageEventRow["costStatus"];
     }>(
       `SELECT ts,
               nullIf(model, '')          AS model,
@@ -1295,7 +1998,8 @@ export class ClickHouseStorage implements StorageBackend {
               output_tokens              AS output,
               cache_read_tokens          AS cache_read,
               cache_creation_tokens      AS cache_creation,
-              cost_usd                   AS cost
+              cost_usd                   AS cost,
+              cost_status
        FROM ${this.usageEventsSource}
        WHERE user_id = {uid:String} AND session_id = {sid:String}
        ORDER BY ts ASC`,
@@ -1310,21 +2014,27 @@ export class ClickHouseStorage implements StorageBackend {
       cacheReadTokens: n(r.cache_read),
       cacheCreationTokens: n(r.cache_creation),
       costUsd: n(r.cost),
+      costStatus: r.cost_status,
     }));
   }
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string; orderBy?: "cost" | "tokens" }): Promise<LeaderRow[]> {
-    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
+    const dashboardQuery = q as ScopedQuery & Partial<BucketOptions>;
+    const timezone = safeTimezone(dashboardQuery.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(dashboardQuery, dashboardQuery.bucket, timezone);
     const col = q.scope === "user" ? "user_id" : "team_id";
     const orderColumn = q.orderBy === "tokens" ? "tokens" : "cost";
-    const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string }>(
+    const rows = await this.queryJson<{ key: string; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT ${col} AS key,
-              sum(cost_usd)                             AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '') AS sessions
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where} AND ${col} != ''
+              uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
+       FROM ${source.source} WHERE ${col} != ''
        GROUP BY key ORDER BY ${orderColumn} DESC LIMIT 100`,
-      params,
+      source.params,
     );
     const labels = await this.labelMap(
       q.scope,
@@ -1336,25 +2046,32 @@ export class ClickHouseStorage implements StorageBackend {
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
   async getProviderBreakdown(q: PeriodQuery & { teamId?: string }): Promise<ProviderBreakdown[]> {
-    const { where, params } = this.readRollup ? this.rollupWhere(q) : this.periodWhere(q);
-    const rows = await this.queryJson<{ provider_key: string; cost?: string; tokens?: string; sessions?: string }>(
+    const dashboardQuery = q as ScopedQuery & Partial<BucketOptions>;
+    const timezone = safeTimezone(dashboardQuery.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(dashboardQuery, dashboardQuery.bucket, timezone);
+    const rows = await this.queryJson<{ provider_key: string; cost?: string; tokens?: string; sessions?: string } & CostCoverageRow>(
       `SELECT provider_key,
-              sum(cost_usd) AS cost,
+              sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
-              uniqExactIf(session_id, session_id != '') AS sessions
-       FROM ${this.readRollup ? "usage_hourly_rollup" : this.usageEventsSource} ${where}
+              uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(event_count, cost_status = 'priced') AS priced_events,
+              sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+              sumIf(event_count, cost_status = 'legacy') AS legacy_events
+       FROM ${source.source}
        GROUP BY provider_key ORDER BY tokens DESC`,
-      params,
+      source.params,
     );
     return rows.map((r) => ({
       providerKey: r.provider_key,
       costUsd: n(r.cost),
       totalTokens: n(r.tokens),
       sessions: n(r.sessions),
+      costCoverage: costCoverage(r),
     }));
   }
 
@@ -1384,12 +2101,62 @@ function readEnvFlag(name: string, defaultValue = false): boolean {
   return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "on";
 }
 
+type RollupReadEnvironment = Record<string, string | undefined>;
+
+export type ClickHouseRollupReadFlag = {
+  enabled: boolean;
+  legacyFlagMigration: "deprecated_alias" | null;
+};
+
+let legacyRollupWarningEmitted = false;
+
+function envFlagValue(value: string | undefined, defaultValue = false): boolean {
+  if (value == null || value.trim() === "") return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "1" || normalized === "true" || normalized === "on";
+}
+
+/**
+ * 예전 hourly read 플래그는 새 timezone cache read 요청의 deprecated alias다.
+ * source 선택 자체는 ClickHouseStorage의 registry/coverage/dirty guard가 결정한다.
+ */
+export function resolveClickHouseRollupReadFlag(
+  env: RollupReadEnvironment = process.env,
+): ClickHouseRollupReadFlag {
+  const legacyValue = env.CLICKHOUSE_READ_ROLLUP?.trim();
+  const newValue = env.CLICKHOUSE_READ_TIMEZONE_ROLLUP?.trim();
+  const legacyPresent = legacyValue != null && legacyValue !== "";
+  const newExplicit = newValue != null && newValue !== "";
+
+  if (legacyPresent && !legacyRollupWarningEmitted) {
+    legacyRollupWarningEmitted = true;
+    console.warn(JSON.stringify({
+      level: "warn",
+      event: "clickhouse_read_rollup_deprecated",
+      legacyFlag: "CLICKHOUSE_READ_ROLLUP",
+      replacementFlag: "CLICKHOUSE_READ_TIMEZONE_ROLLUP",
+      message: "Legacy hourly rollup source was removed; the legacy flag now aliases guarded timezone cache reads with exact fallback.",
+      action: "Deploy schema, run pnpm rollup:activate-timezones, verify v2/timezone shadow worker coverage and benchmark, set CLICKHOUSE_READ_TIMEZONE_ROLLUP, then unset CLICKHOUSE_READ_ROLLUP.",
+    }));
+  }
+
+  return {
+    enabled: newExplicit
+      ? envFlagValue(newValue)
+      : envFlagValue(legacyValue),
+    legacyFlagMigration: legacyPresent ? "deprecated_alias" : null,
+  };
+}
+
 /** 환경변수로 CH 클라이언트를 구성해 스토리지를 만든다 (메타용 PG 풀은 주입). */
 export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
+  const rollupRead = resolveClickHouseRollupReadFlag();
   return new ClickHouseStorage(createClickHouseClient(), pg, {
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
-    readRollup: readEnvFlag("CLICKHOUSE_READ_ROLLUP", false),
+    readRollup: rollupRead.enabled,
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
+    read15mV2Rollup: readEnvFlag("CLICKHOUSE_READ_15M_V2_ROLLUP", false),
+    enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),
     ...opts,
   });
 }

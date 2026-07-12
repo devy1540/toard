@@ -1,5 +1,6 @@
 -- ClickHouse 스키마 (설계 §4.3). 옵트인 모드: 이벤트·집계만, 메타는 PG.
 -- 팀 시점 귀속을 위해 team_id 를 비정규화(수집 시점 스냅샷)한다.
+-- 정규화 usage_events TTL은 init에서 켜지 않는다. runtime opt-in 플래그가 90일 논리 기간 + 7일 grace = 97일을 적용한다.
 CREATE DATABASE IF NOT EXISTS toard;
 
 CREATE TABLE IF NOT EXISTS toard.usage_events
@@ -16,6 +17,8 @@ CREATE TABLE IF NOT EXISTS toard.usage_events
   cache_read_tokens     UInt64,
   cache_creation_tokens UInt64,
   cost_usd              Decimal(18, 8),
+  pricing_revision_id   String DEFAULT '',
+  cost_status           LowCardinality(String) DEFAULT 'legacy',
   log_adapter           LowCardinality(String) DEFAULT '',  -- logfile 경로 전용(§5.6), otel = ''
   host                  LowCardinality(String) DEFAULT '',  -- 발생 컴퓨터(호스트) 라벨, 미상 = ''
   inserted_at           DateTime64(3, 'UTC') DEFAULT now64(3)
@@ -36,3 +39,6 @@ CREATE TABLE IF NOT EXISTS toard.raw_events
 )
 ENGINE = MergeTree
 ORDER BY (received_at, id);
+
+ALTER TABLE toard.raw_events
+  MODIFY TTL toDateTime(received_at) + INTERVAL 7 DAY DELETE;

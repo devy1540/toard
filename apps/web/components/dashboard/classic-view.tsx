@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Activity, ArrowUpDown, DollarSign, Inbox } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import type { ChartMetric } from "@/components/dashboard/metric-toggle";
+import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,9 +11,23 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
+import { costCoverageState } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
+import type { UsageCostCoverage } from "@toard/core";
+
+function coveredCost(
+  costUsd: number,
+  coverage: UsageCostCoverage,
+  labels: { partial: string; unpriced: string; legacy: string },
+): string {
+  const state = costCoverageState(coverage);
+  if (state === "unpriced") return labels.unpriced;
+  if (state === "partial") return `${fmtUsd(costUsd)} · ${labels.partial}`;
+  if (state === "legacy") return `${fmtUsd(costUsd)} · ${labels.legacy}`;
+  return fmtUsd(costUsd);
+}
 
 /** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */
 function shareOf(cost: number, tokens: number, costSum: number, tokenSum: number): number {
@@ -87,6 +102,11 @@ export async function ClassicView({
   const tokenMetaPromise = getActiveTokenMeta(userId);
   const { overview, daily, byModel, byHost } = await storage.getUserUsage(userId, period);
   const prevOverview = await storage.getOverview({ ...previousPeriod(period), userId });
+  const costLabels = {
+    partial: t("costCoverage.partial"),
+    unpriced: t("costCoverage.unpriced"),
+    legacy: t("costCoverage.legacy"),
+  };
   const tokenMeta = await tokenMetaPromise;
   // 미설치 추정: 토큰이 없거나 한 번도 수신된 적 없음 → 빈 상태에서 설치 CTA 노출
   const notInstalled = !tokenMeta || !tokenMeta.lastUsedAt;
@@ -100,7 +120,9 @@ export async function ClassicView({
     tokens: series.map((d) => d.inputTokens + d.outputTokens + d.cacheReadTokens + d.cacheCreationTokens),
   };
 
-  const costDelta = pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd);
+  const costDelta = overview.costCoverage.unpricedEvents === 0 && prevOverview.costCoverage.unpricedEvents === 0
+    ? pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)
+    : null;
   const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
   const tokensDelta = pctDelta(
     overview.totalInputTokens +
@@ -122,7 +144,9 @@ export async function ClassicView({
 
   return (
     <>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      <PricingNotice coverage={overview.costCoverage} />
+
+      <div data-dashboard-ready="user-overview" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard
           label={t("statTokens")}
           value={fmtCompact(
@@ -142,7 +166,7 @@ export async function ClassicView({
         />
         <StatCard
           label={t(`costLabel.${period.preset}`)}
-          value={fmtUsd(overview.totalCostUsd)}
+          value={coveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
           delta={costDelta}
           hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
           spark={spark.cost}
@@ -209,7 +233,7 @@ export async function ClassicView({
                     key={m.model}
                     name={formatModelName(m.model) ?? m.model}
                     hoverTitle={m.model}
-                    cost={fmtUsd(m.costUsd)}
+                    cost={coveredCost(m.costUsd, m.costCoverage, costLabels)}
                     sub={t("breakdownSub", { tokens: fmtCompact(m.totalTokens), sessions: fmtNum(m.sessions) })}
                     share={shareOf(m.costUsd, m.totalTokens, modelCostSum, modelTokenSum)}
                   />
@@ -245,7 +269,7 @@ export async function ClassicView({
                     key={h.host ?? "__unknown__"}
                     name={h.host ?? t("unknownHost")}
                     muted={h.host == null}
-                    cost={fmtUsd(h.costUsd)}
+                    cost={coveredCost(h.costUsd, h.costCoverage, costLabels)}
                     sub={t("breakdownSub", { tokens: fmtCompact(h.totalTokens), sessions: fmtNum(h.sessions) })}
                     share={shareOf(h.costUsd, h.totalTokens, hostCostSum, hostTokenSum)}
                   />

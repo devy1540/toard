@@ -9,6 +9,8 @@ const POSTGRES_RAW_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_RAW_EVENT_LIMIT = 1_000;
 const STARTUP_DELAY_MS = 45_000;
 const DAILY_TICK_MS = 24 * 60 * 60 * 1_000;
+const RAW_DRAIN_FOLLOWUP_DELAY_MS = 1_000;
+const RAW_DRAIN_ERROR_BACKOFF_MS = 60_000;
 
 type QueryResult<Row extends Record<string, unknown> = Record<string, unknown>> = {
   rows: Row[];
@@ -41,10 +43,95 @@ export type UsageRetentionResult = {
   clickhouseUsage: "completed" | "failed";
 };
 
+type RetentionTimerHandle = {
+  unref?(): unknown;
+};
+
+export type PostgresRawRetentionDrainOptions<Handle extends RetentionTimerHandle> = {
+  prunePostgresRawEvents(now: Date): Promise<{ rawEvents: number }>;
+  now(): Date;
+  schedule(callback: () => void, delayMs: number): Handle;
+  clear(handle: Handle): void;
+  warn(message: string): void;
+  batchLimit?: number;
+  followupDelayMs?: number;
+  errorBackoffMs?: number;
+};
+
+export type PostgresRawRetentionDrain = {
+  run(now?: Date): Promise<"completed" | "overlap" | "stopped">;
+  stop(): void;
+};
+
 export { timezoneCoverageCutoffs };
 
 function requireValidNow(now: Date): void {
   if (!Number.isFinite(now.getTime())) throw new Error("유효한 retention 기준 시각이 아님");
+}
+
+export function createPostgresRawRetentionDrain<Handle extends RetentionTimerHandle>(
+  options: PostgresRawRetentionDrainOptions<Handle>,
+): PostgresRawRetentionDrain {
+  const batchLimit = options.batchLimit ?? DEFAULT_RAW_EVENT_LIMIT;
+  const followupDelayMs = options.followupDelayMs ?? RAW_DRAIN_FOLLOWUP_DELAY_MS;
+  const errorBackoffMs = options.errorBackoffMs ?? RAW_DRAIN_ERROR_BACKOFF_MS;
+  if (!Number.isFinite(batchLimit) || batchLimit <= 0) {
+    throw new Error("raw event drain batch limit은 양수여야 함");
+  }
+  if (!Number.isFinite(followupDelayMs) || followupDelayMs < 0) {
+    throw new Error("raw event drain followup delay는 음수가 아니어야 함");
+  }
+  if (!Number.isFinite(errorBackoffMs) || errorBackoffMs <= 0) {
+    throw new Error("raw event drain error backoff는 양수여야 함");
+  }
+
+  let inFlight = false;
+  let stopped = false;
+  let timer: Handle | null = null;
+
+  const clearScheduled = () => {
+    if (!timer) return;
+    options.clear(timer);
+    timer = null;
+  };
+
+  let run: PostgresRawRetentionDrain["run"];
+  const scheduleNext = (delayMs: number) => {
+    if (stopped || timer) return;
+    timer = options.schedule(() => {
+      timer = null;
+      void run(options.now()).catch(() => {
+        options.warn("[toard] postgresRawEvents retention drain failed — retrying with backoff");
+      });
+    }, delayMs);
+    timer.unref?.();
+  };
+
+  run = async (now = options.now()) => {
+    requireValidNow(now);
+    if (stopped) return "stopped";
+    if (inFlight) return "overlap";
+    clearScheduled();
+    inFlight = true;
+    try {
+      const result = await options.prunePostgresRawEvents(now);
+      if (result.rawEvents >= batchLimit) scheduleNext(followupDelayMs);
+      return "completed";
+    } catch (error) {
+      scheduleNext(errorBackoffMs);
+      throw error;
+    } finally {
+      inFlight = false;
+    }
+  };
+
+  return {
+    run,
+    stop() {
+      stopped = true;
+      clearScheduled();
+    },
+  };
 }
 
 export async function prunePostgresRawEventsAt(
@@ -157,7 +244,8 @@ export async function runUsageRetentionAt(
       await cleanup();
     } catch {
       result[key] = "failed";
-      dependencies.warn(`[toard] ${key} retention cleanup failed — retrying next daily tick`);
+      const retry = key === "postgresRawEvents" ? "retrying with backoff" : "retrying next daily tick";
+      dependencies.warn(`[toard] ${key} retention cleanup failed — ${retry}`);
     }
   };
 
@@ -178,6 +266,19 @@ export function startUsageRetentionCleanup(): void {
   const globalState = globalThis as { __toardUsageRetentionStarted?: true };
   if (globalState.__toardUsageRetentionStarted) return;
   globalState.__toardUsageRetentionStarted = true;
-  setTimeout(() => void runUsageRetentionAt(new Date()), STARTUP_DELAY_MS).unref();
-  setInterval(() => void runUsageRetentionAt(new Date()), DAILY_TICK_MS).unref();
+  const dependencies = defaultDependencies();
+  const rawDrain = createPostgresRawRetentionDrain({
+    prunePostgresRawEvents: (now) => prunePostgresRawEventsAt(getPool(), now),
+    now: () => new Date(),
+    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+    warn: dependencies.warn,
+  });
+  const scheduledDependencies: UsageRetentionDependencies = {
+    ...dependencies,
+    prunePostgresRawEvents: (now) => rawDrain.run(now),
+  };
+  const tick = () => void runUsageRetentionAt(new Date(), scheduledDependencies);
+  setTimeout(tick, STARTUP_DELAY_MS).unref();
+  setInterval(tick, DAILY_TICK_MS).unref();
 }

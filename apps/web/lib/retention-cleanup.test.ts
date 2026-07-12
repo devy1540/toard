@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { addLocalCalendarDays, firstInstantOfLocalDate } from "@toard/core";
 import {
+  createPostgresRawRetentionDrain,
   prunePostgresRawEventsAt,
   pruneTimezoneCoverageAt,
   retentionSchedulerEligible,
@@ -10,6 +11,42 @@ import {
   timezoneCoverageCutoffs,
   type UsageRetentionDependencies,
 } from "./retention-cleanup";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+function drainSchedulerFixture() {
+  const scheduled: Array<{
+    callback: () => void;
+    delayMs: number;
+    cleared: boolean;
+    unrefCalled: boolean;
+  }> = [];
+  return {
+    scheduled,
+    schedule(callback: () => void, delayMs: number) {
+      const handle = {
+        callback,
+        delayMs,
+        cleared: false,
+        unrefCalled: false,
+        unref() {
+          handle.unrefCalled = true;
+        },
+      };
+      scheduled.push(handle);
+      return handle;
+    },
+    clear(handle: unknown) {
+      (handle as { cleared: boolean }).cleared = true;
+    },
+  };
+}
 
 function retentionFixture(options: { failDelete?: boolean } = {}) {
   const sql: string[] = [];
@@ -70,6 +107,146 @@ test("Postgres raw payload cleanup 실패는 rollback하고 client를 반환한�
   );
   assert.deepEqual(fixture.transactions, ["BEGIN", "ROLLBACK"]);
   assert.equal(fixture.released, true);
+});
+
+test("raw retention full batch는 1초 뒤 raw-only batch를 이어가고 short batch에서 멈춘다", async () => {
+  const scheduler = drainSchedulerFixture();
+  const batches = [1000, 37];
+  const calls: string[] = [];
+  const controller = createPostgresRawRetentionDrain({
+    prunePostgresRawEvents: async () => {
+      calls.push("raw");
+      return { rawEvents: batches.shift()! };
+    },
+    now: () => new Date("2026-07-12T00:00:01.000Z"),
+    schedule: scheduler.schedule,
+    clear: scheduler.clear,
+    warn: () => undefined,
+    batchLimit: 1000,
+    followupDelayMs: 1000,
+    errorBackoffMs: 60_000,
+  });
+
+  await controller.run(new Date("2026-07-12T00:00:00.000Z"));
+  assert.deepEqual(calls, ["raw"]);
+  assert.equal(scheduler.scheduled.length, 1);
+  assert.equal(scheduler.scheduled[0]!.delayMs, 1000);
+  assert.equal(scheduler.scheduled[0]!.unrefCalled, true);
+
+  scheduler.scheduled.shift()!.callback();
+  await Promise.resolve();
+  assert.deepEqual(calls, ["raw", "raw"]);
+  assert.equal(scheduler.scheduled.length, 0);
+});
+
+test("raw retention 오류는 tight loop 대신 backoff 뒤 재시도한다", async () => {
+  const scheduler = drainSchedulerFixture();
+  let attempts = 0;
+  const warnings: string[] = [];
+  const controller = createPostgresRawRetentionDrain({
+    prunePostgresRawEvents: async () => {
+      attempts++;
+      if (attempts === 1) throw new Error("raw unavailable");
+      return { rawEvents: 0 };
+    },
+    now: () => new Date("2026-07-12T00:01:00.000Z"),
+    schedule: scheduler.schedule,
+    clear: scheduler.clear,
+    warn: (message) => warnings.push(message),
+    batchLimit: 1000,
+    followupDelayMs: 1000,
+    errorBackoffMs: 60_000,
+  });
+
+  await assert.rejects(controller.run(), /raw unavailable/);
+  assert.equal(attempts, 1);
+  assert.equal(scheduler.scheduled.length, 1);
+  assert.equal(scheduler.scheduled[0]!.delayMs, 60_000);
+
+  scheduler.scheduled.shift()!.callback();
+  await Promise.resolve();
+  assert.equal(attempts, 2);
+  assert.equal(scheduler.scheduled.length, 0);
+  assert.deepEqual(warnings, []);
+});
+
+test("raw retention drain은 같은 process의 overlap을 건너뛴다", async () => {
+  const scheduler = drainSchedulerFixture();
+  const batch = deferred<{ rawEvents: number }>();
+  let calls = 0;
+  const controller = createPostgresRawRetentionDrain({
+    prunePostgresRawEvents: async () => {
+      calls++;
+      return batch.promise;
+    },
+    now: () => new Date("2026-07-12T00:00:00.000Z"),
+    schedule: scheduler.schedule,
+    clear: scheduler.clear,
+    warn: () => undefined,
+    batchLimit: 1000,
+    followupDelayMs: 1000,
+    errorBackoffMs: 60_000,
+  });
+
+  const first = controller.run();
+  assert.equal(await controller.run(), "overlap");
+  assert.equal(calls, 1);
+  batch.resolve({ rawEvents: 1 });
+  assert.equal(await first, "completed");
+});
+
+test("raw followup은 timer를 unref하고 stop에서 정리할 수 있다", async () => {
+  const scheduler = drainSchedulerFixture();
+  const controller = createPostgresRawRetentionDrain({
+    prunePostgresRawEvents: async () => ({ rawEvents: 1000 }),
+    now: () => new Date("2026-07-12T00:00:00.000Z"),
+    schedule: scheduler.schedule,
+    clear: scheduler.clear,
+    warn: () => undefined,
+    batchLimit: 1000,
+    followupDelayMs: 1000,
+    errorBackoffMs: 60_000,
+  });
+
+  await controller.run();
+  const handle = scheduler.scheduled[0]!;
+  assert.equal(handle.unrefCalled, true);
+  controller.stop();
+  assert.equal(handle.cleared, true);
+});
+
+test("raw followup은 raw만 재실행하고 다른 retention cleanup은 daily 1회만 실행한다", async () => {
+  const scheduler = drainSchedulerFixture();
+  const calls: string[] = [];
+  const rawBatches = [1000, 0];
+  const controller = createPostgresRawRetentionDrain({
+    prunePostgresRawEvents: async () => {
+      calls.push("raw");
+      return { rawEvents: rawBatches.shift()! };
+    },
+    now: () => new Date("2026-07-12T00:00:01.000Z"),
+    schedule: scheduler.schedule,
+    clear: scheduler.clear,
+    warn: () => undefined,
+    batchLimit: 1000,
+    followupDelayMs: 1000,
+    errorBackoffMs: 60_000,
+  });
+
+  await runUsageRetentionAt(new Date("2026-07-12T00:00:00.000Z"), {
+    prunePostgresRawEvents: (now) => controller.run(now),
+    pruneTimezoneCoverage: async () => {
+      calls.push("coverage");
+    },
+    pruneClickHouseUsageRetention: async () => {
+      calls.push("outbox");
+    },
+    warn: () => undefined,
+  });
+  scheduler.scheduled.shift()!.callback();
+  await Promise.resolve();
+
+  assert.deepEqual(calls, ["raw", "coverage", "outbox", "raw"]);
 });
 
 test("coverage cutoff은 DST를 통과하는 local day 경계를 사용한다", () => {

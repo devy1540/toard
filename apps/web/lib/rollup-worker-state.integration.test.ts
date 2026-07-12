@@ -2,20 +2,15 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Pool } from "pg";
 import { PgRollupWorkerRepository } from "./rollup-worker-state";
+import { createIsolatedPostgresPoolConfig } from "./rollup-worker-state.integration-test-support";
 
 const databaseUrl = process.env.ROLLUP_WORKER_ISOLATED_TEST_DATABASE_URL;
 
 test("격리 PostgreSQL에서 markSucceeded가 누적값과 EMA를 갱신한다", {
   skip: databaseUrl ? false : "ROLLUP_WORKER_ISOLATED_TEST_DATABASE_URL is not set",
 }, async () => {
-  const url = new URL(databaseUrl!);
-  assert.ok(
-    (url.hostname === "127.0.0.1" || url.hostname === "localhost") &&
-      url.pathname.endsWith("_test"),
-    "integration test requires a localhost database whose name ends with _test",
-  );
-
-  const pool = new Pool({ connectionString: url.toString() });
+  const poolConfig = createIsolatedPostgresPoolConfig(databaseUrl!);
+  const pool = new Pool(poolConfig);
   try {
     const activatedAt = new Date("2026-07-12T11:50:00.000Z");
     await pool.query(

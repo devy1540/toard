@@ -137,10 +137,40 @@ export interface ClickHouseStorageOptions {
   enforceRetentionTtl?: boolean;
 }
 
+export const ROLLUP_STORAGE_TABLES = [
+  "raw_events",
+  "usage_events",
+  "usage_hourly_rollup",
+  "usage_15m_rollup_v2",
+  "usage_hourly_timezone_rollup",
+  "usage_daily_timezone_rollup",
+] as const;
+
+export type RollupStorageTable = (typeof ROLLUP_STORAGE_TABLES)[number];
+
+export type RollupStorageStats = {
+  collectedAt: string;
+  rawRange: { from: string | null; to: string | null };
+  tables: Record<RollupStorageTable, { rows: number; bytes: number }>;
+};
+
 /** CH 쿼리에 리터럴로 들어가므로 IANA 형식만 허용(주입 방지). 무효 시 fallback. */
 function safeTimezone(tz: string | undefined, fallback = "UTC"): string {
   if (!tz || !/^[A-Za-z0-9_+/-]+$/.test(tz)) return fallback;
   return tz;
+}
+
+function clickHouseTimestampToIso(value: unknown): string | null {
+  if (value == null || value === "") return null;
+  if (value instanceof Date) {
+    return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+  }
+  if (typeof value !== "string") return null;
+  const normalized = /(?:Z|[+-]\d\d(?::?\d\d)?)$/.test(value)
+    ? value
+    : `${value.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
 }
 
 interface CostCoverageRow {
@@ -462,6 +492,52 @@ export class ClickHouseStorage implements StorageBackend {
 
   async close(): Promise<void> {
     await this.ch.close();
+  }
+
+  async getRollupStorageStats(): Promise<RollupStorageStats> {
+    type PartRow = { table: string; rows: string | number; bytes: string | number };
+    type RangeRow = { from: string | Date | null; to: string | Date | null };
+    const settings = { max_execution_time: 2 } as const;
+    const [partRows, rangeRows] = await Promise.all([
+      this.ch.query({
+        query: `SELECT table, sum(rows) AS rows, sum(bytes_on_disk) AS bytes
+                FROM system.parts
+                WHERE active = 1
+                  AND database = currentDatabase()
+                  AND table IN {tables:Array(String)}
+                GROUP BY table`,
+        query_params: { tables: [...ROLLUP_STORAGE_TABLES] },
+        clickhouse_settings: settings,
+        format: "JSONEachRow",
+      }).then((result) => result.json<PartRow>()),
+      this.ch.query({
+        query: `SELECT if(count() = 0, NULL, min(ts)) AS from,
+                       if(count() = 0, NULL, max(ts)) AS to
+                FROM usage_events`,
+        clickhouse_settings: settings,
+        format: "JSONEachRow",
+      }).then((result) => result.json<RangeRow>()),
+    ]);
+
+    const tables = Object.fromEntries(
+      ROLLUP_STORAGE_TABLES.map((table) => [table, { rows: 0, bytes: 0 }]),
+    ) as RollupStorageStats["tables"];
+    for (const row of partRows) {
+      if (!ROLLUP_STORAGE_TABLES.includes(row.table as RollupStorageTable)) continue;
+      tables[row.table as RollupStorageTable] = {
+        rows: n(row.rows),
+        bytes: n(row.bytes),
+      };
+    }
+    const range = rangeRows[0];
+    return {
+      collectedAt: new Date().toISOString(),
+      rawRange: {
+        from: clickHouseTimestampToIso(range?.from),
+        to: clickHouseTimestampToIso(range?.to),
+      },
+      tables,
+    };
   }
 
   // ── 공통 ──

@@ -1454,6 +1454,60 @@ test("Santiago 자정 gap daily cache는 다음 local date 첫 instant까지 조
   assert.equal(aggregate.params.to, "2025-09-08 03:00:00.000");
 });
 
+test("rollup storage snapshot은 active part만 합산하고 raw min/max를 2초 제한으로 조회한다", async () => {
+  const queries: Array<{
+    query: string;
+    clickhouse_settings?: Record<string, unknown>;
+  }> = [];
+  const ch = {
+    query: async (args: {
+      query: string;
+      clickhouse_settings?: Record<string, unknown>;
+    }) => {
+      queries.push(args);
+      if (args.query.includes("system.parts")) {
+        return {
+          json: async () => [
+            { table: "usage_events", rows: "12", bytes: "2400" },
+            { table: "usage_15m_rollup_v2", rows: "4", bytes: "800" },
+          ],
+        };
+      }
+      return {
+        json: async () => [{
+          from: "2026-07-01 00:00:00.000",
+          to: "2026-07-12 11:45:00.000",
+        }],
+      };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const stats = await storage.getRollupStorageStats();
+
+  assert.equal(stats.tables.usage_events.rows, 12);
+  assert.equal(stats.tables.usage_events.bytes, 2400);
+  assert.equal(stats.tables.usage_15m_rollup_v2.rows, 4);
+  assert.deepEqual(stats.tables.usage_daily_timezone_rollup, { rows: 0, bytes: 0 });
+  assert.deepEqual(stats.rawRange, {
+    from: "2026-07-01T00:00:00.000Z",
+    to: "2026-07-12T11:45:00.000Z",
+  });
+  assert.ok(Number.isFinite(Date.parse(stats.collectedAt)));
+
+  assert.equal(queries.length, 2);
+  const parts = queries.find(({ query }) => query.includes("system.parts"));
+  const rawRange = queries.find(({ query }) => query.includes("min(ts)"));
+  assert.ok(parts);
+  assert.ok(rawRange);
+  assert.match(parts.query, /active\s*=\s*1/);
+  assert.match(parts.query, /sum\(rows\)/);
+  assert.match(parts.query, /sum\(bytes_on_disk\)/);
+  assert.match(rawRange.query, /min\(ts\)/);
+  assert.match(rawRange.query, /max\(ts\)/);
+  assert.ok(queries.every(({ clickhouse_settings }) => clickhouse_settings?.max_execution_time === 2));
+});
+
 test("ClickHouse runtime/init schema는 timezone cache 2종에 400일 TTL과 exact key를 둔다", async () => {
   const commands = await schemaCommands();
   const init = readFileSync(new URL("../../../clickhouse/init/004-rollup.sql", import.meta.url), "utf8");

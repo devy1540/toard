@@ -10,8 +10,13 @@ const execFileAsync = promisify(execFile);
 
 async function waitForPostgres(connectionString: string): Promise<void> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const probe = new Client({ connectionString });
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const probe = new Client({
+      connectionString,
+      connectionTimeoutMillis: 1_000,
+      query_timeout: 1_000,
+    });
     try {
       await probe.connect();
       await probe.query("SELECT 1");
@@ -20,7 +25,10 @@ async function waitForPostgres(connectionString: string): Promise<void> {
     } catch (error) {
       lastError = error;
       await probe.end().catch(() => undefined);
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      const remaining = deadline - Date.now();
+      if (remaining > 0) {
+        await new Promise((resolve) => setTimeout(resolve, Math.min(500, remaining)));
+      }
     }
   }
   throw lastError;

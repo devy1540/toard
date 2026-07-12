@@ -1,18 +1,48 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { canonicalTimezoneId } from "@toard/core";
+import {
+  addLocalCalendarDays,
+  canonicalTimezoneId,
+  firstInstantOfLocalDate,
+} from "@toard/core";
 import {
   MAX_ACTIVE_ROLLUP_TIMEZONES,
+  TIMEZONE_ROLLUP_DAY_PREWARM_DAYS,
+  TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS,
   TIMEZONE_ROLLUP_JOBS_PER_TICK,
   activateTimezoneRollupWith,
   createTimezoneRollupActivationGate,
   enqueueTimezoneRollupWith,
   resolveSupportedRollupTimezone,
   runTimezoneRollupWorkerWith,
+  timezoneCoverageCutoffs,
   type TimezoneRollupJob,
   type TimezoneRollupRepository,
 } from "./timezone-rollup";
+
+test("retention coverage 경계는 prewarm local day window와 같은 상수를 사용한다", () => {
+  const timezone = "America/Los_Angeles";
+  const cutoffs = timezoneCoverageCutoffs(
+    timezone,
+    new Date("2026-11-02T12:00:00.000Z"),
+  );
+
+  assert.equal(
+    cutoffs.day.toISOString(),
+    firstInstantOfLocalDate(
+      addLocalCalendarDays("2026-11-02", -(TIMEZONE_ROLLUP_DAY_PREWARM_DAYS - 1)),
+      timezone,
+    ).toISOString(),
+  );
+  assert.equal(
+    cutoffs.hour.toISOString(),
+    firstInstantOfLocalDate(
+      addLocalCalendarDays("2026-11-02", -(TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS - 1)),
+      timezone,
+    ).toISOString(),
+  );
+});
 
 function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
   const jobs = new Map<string, TimezoneRollupJob>();

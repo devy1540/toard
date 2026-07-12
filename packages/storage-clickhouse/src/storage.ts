@@ -279,6 +279,7 @@ const CLICKHOUSE_SCHEMA_DDL = [
   "ALTER TABLE usage_events MODIFY SETTING non_replicated_deduplication_window = 10000",
   "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS pricing_revision_id String DEFAULT '' AFTER cost_usd",
   "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_status LowCardinality(String) DEFAULT 'legacy' AFTER pricing_revision_id",
+  "ALTER TABLE raw_events MODIFY TTL toDateTime(received_at) + INTERVAL 7 DAY DELETE",
   "DROP VIEW IF EXISTS usage_hourly_rollup_mv",
   `CREATE TABLE IF NOT EXISTS usage_hourly_rollup
    (
@@ -301,6 +302,7 @@ const CLICKHOUSE_SCHEMA_DDL = [
    ORDER BY (bucket_hour, user_id, team_id, provider_key, model, host, session_id)
    SETTINGS non_replicated_deduplication_window = 10000`,
   "ALTER TABLE usage_hourly_rollup MODIFY SETTING non_replicated_deduplication_window = 10000",
+  "ALTER TABLE usage_hourly_rollup MODIFY TTL toDateTime(bucket_hour) + INTERVAL 400 DAY DELETE",
   `CREATE TABLE IF NOT EXISTS usage_15m_rollup
    (
      bucket_15m            DateTime64(3, 'UTC'),

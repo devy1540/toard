@@ -4,6 +4,8 @@ export async function register(): Promise<void> {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
   const { schedulerEligible, startPricingAutoSync } = await import("./lib/pricing-auto-sync");
   if (schedulerEligible(process.env)) startPricingAutoSync();
+  const { retentionSchedulerEligible, startUsageRetentionCleanup } = await import("./lib/retention-cleanup");
+  if (retentionSchedulerEligible(process.env)) startUsageRetentionCleanup();
   if (process.env.STORAGE_BACKEND === "clickhouse") {
     const {
       startClickHouse15mV2Compaction,

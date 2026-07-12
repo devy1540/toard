@@ -64,12 +64,32 @@ function requireCanonicalTimezone(timezone: string): string {
   return canonical;
 }
 
+/** coverage retention과 prewarm이 공유하는 DST-safe local calendar 경계. */
+export function timezoneCoverageCutoffs(
+  timezone: string,
+  now = new Date(),
+): { hour: Date; day: Date } {
+  if (!Number.isFinite(now.getTime())) throw new Error("유효한 coverage 기준 시각이 아님");
+  const canonical = requireCanonicalTimezone(timezone);
+  const today = localDateKey(now, canonical);
+  return {
+    hour: firstInstantOfLocalDate(
+      addLocalCalendarDays(today, -(TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS - 1)),
+      canonical,
+    ),
+    day: firstInstantOfLocalDate(
+      addLocalCalendarDays(today, -(TIMEZONE_ROLLUP_DAY_PREWARM_DAYS - 1)),
+      canonical,
+    ),
+  };
+}
+
 function dailyPrewarmBuckets(timezone: string, now: Date): Date[] {
-  const today = localDateKey(now, timezone);
+  const firstDate = localDateKey(timezoneCoverageCutoffs(timezone, now).day, timezone);
   return Array.from(
     { length: TIMEZONE_ROLLUP_DAY_PREWARM_DAYS },
     (_, index) => firstInstantOfLocalDate(
-      addLocalCalendarDays(today, index - TIMEZONE_ROLLUP_DAY_PREWARM_DAYS + 1),
+      addLocalCalendarDays(firstDate, index),
       timezone,
     ),
   );
@@ -77,10 +97,7 @@ function dailyPrewarmBuckets(timezone: string, now: Date): Date[] {
 
 function hourlyPrewarmBuckets(timezone: string, now: Date): Date[] {
   const today = localDateKey(now, timezone);
-  const from = firstInstantOfLocalDate(
-    addLocalCalendarDays(today, -TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS + 1),
-    timezone,
-  );
+  const from = timezoneCoverageCutoffs(timezone, now).hour;
   const to = firstInstantOfLocalDate(addLocalCalendarDays(today, 1), timezone);
   const buckets: Date[] = [];
   for (let cursor = from.getTime(); cursor < to.getTime(); cursor += 60 * 60 * 1_000) {

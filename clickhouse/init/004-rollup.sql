@@ -40,6 +40,9 @@ SETTINGS non_replicated_deduplication_window = 10000;
 ALTER TABLE toard.usage_hourly_rollup
   MODIFY SETTING non_replicated_deduplication_window = 10000;
 
+ALTER TABLE toard.usage_hourly_rollup
+  MODIFY TTL toDateTime(bucket_hour) + INTERVAL 400 DAY DELETE;
+
 CREATE TABLE IF NOT EXISTS toard.usage_15m_rollup
 (
   bucket_15m            DateTime64(3, 'UTC'),

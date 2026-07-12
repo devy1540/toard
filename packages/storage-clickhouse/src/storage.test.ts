@@ -1249,6 +1249,19 @@ test("ClickHouse 기본 schema ensure는 opt-in raw TTL을 변경하지 않는�
   assert.equal(commands.some((query) => /usage_events\s+MODIFY TTL/i.test(query)), false);
 });
 
+test("ClickHouse 기본 schema ensure는 보조 raw 7일과 legacy hourly 400일 TTL을 적용한다", async () => {
+  const commands = await schemaCommands();
+
+  assert.equal(
+    commands.filter((query) => /raw_events\s+MODIFY TTL\s+toDateTime\(received_at\)\s*\+\s*INTERVAL\s+7\s+DAY\s+DELETE/i.test(query)).length,
+    1,
+  );
+  assert.equal(
+    commands.filter((query) => /usage_hourly_rollup\s+MODIFY TTL\s+toDateTime\(bucket_hour\)\s*\+\s*INTERVAL\s+400\s+DAY\s+DELETE/i.test(query)).length,
+    1,
+  );
+});
+
 test("ClickHouse retention TTL을 명시하면 raw 원본에만 7일 grace를 포함한 97일 TTL을 적용한다", async () => {
   const commands = await schemaCommands({ enforceRetentionTtl: true });
 
@@ -1271,7 +1284,27 @@ test("ClickHouse init schema는 가격 상태 원본과 400일 15분 v2 테이�
     rollupSchema,
     /ORDER BY\s*\(bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status\)/,
   );
-  assert.doesNotMatch(`${rawSchema}\n${rollupSchema}`, /usage_events[\s\S]*MODIFY TTL/);
+  assert.doesNotMatch(
+    `${rawSchema}\n${rollupSchema}`,
+    /ALTER TABLE toard\.usage_events\s+MODIFY TTL/,
+  );
+});
+
+test("ClickHouse init schema는 보조 raw 7일과 legacy hourly 400일 TTL을 선언한다", () => {
+  const rawSchema = readFileSync(new URL("../../../clickhouse/init/001-schema.sql", import.meta.url), "utf8");
+  const rollupSchema = readFileSync(new URL("../../../clickhouse/init/004-rollup.sql", import.meta.url), "utf8");
+  const runtime = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
+
+  assert.match(
+    rawSchema,
+    /ALTER TABLE toard\.raw_events\s+MODIFY TTL toDateTime\(received_at\) \+ INTERVAL 7 DAY DELETE/,
+  );
+  assert.match(
+    rollupSchema,
+    /ALTER TABLE toard\.usage_hourly_rollup\s+MODIFY TTL toDateTime\(bucket_hour\) \+ INTERVAL 400 DAY DELETE/,
+  );
+  assert.doesNotMatch(`${rawSchema}\n${rollupSchema}`, /ALTER TABLE toard\.usage_events\s+MODIFY TTL/);
+  assert.match(runtime, /table:\s*"usage_hourly_rollup"/);
 });
 
 test("0021 migration은 ClickHouse outbox에 가격 상태 컬럼만 추가한다", () => {

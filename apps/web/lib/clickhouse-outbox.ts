@@ -11,7 +11,6 @@ import {
 const STARTUP_DELAY_MS = 15_000;
 const TICK_MS = 30_000;
 const COMPACTOR_TICK_MS = 60_000;
-const RETENTION_TICK_MS = 24 * 60 * 60 * 1_000;
 const DEFAULT_LIMIT = 10;
 const DELIVERED_RETENTION_MS = CLICKHOUSE_RAW_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const COMPLETED_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -365,27 +364,12 @@ async function compactTimezoneTick(): Promise<void> {
   }
 }
 
-async function retentionTick(): Promise<void> {
-  try {
-    const r = await pruneClickHouseUsageRetention();
-    const deleted = r.deliveredOutboxRows + r.deliveredBatches + r.completedTimezoneJobs;
-    if (deleted > 0) {
-      console.log(
-        `[toard] ClickHouse retention cleanup — ${r.deliveredOutboxRows} outbox rows, ${r.deliveredBatches} batches, ${r.completedTimezoneJobs} timezone jobs`,
-      );
-    }
-  } catch (e) {
-    console.warn(`[toard] ClickHouse retention cleanup failed — ${String(e)} — retrying later`);
-  }
-}
-
 export function startClickHouseOutboxFlush(): void {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
   const g = globalThis as {
     __toardClickHouseOutboxFlush?: true;
     __toardClickHouseOutboxRunning?: true;
     __toardClickHouse15mRollupRunning?: true;
-    __toardClickHouseRetentionRunning?: true;
   };
   if (g.__toardClickHouseOutboxFlush) return;
   g.__toardClickHouseOutboxFlush = true;
@@ -408,15 +392,6 @@ export function startClickHouseOutboxFlush(): void {
   };
   setTimeout(guardedCompactTick, STARTUP_DELAY_MS + 5_000).unref();
   setInterval(guardedCompactTick, COMPACTOR_TICK_MS).unref();
-  const guardedRetentionTick = () => {
-    if (g.__toardClickHouseRetentionRunning) return;
-    g.__toardClickHouseRetentionRunning = true;
-    retentionTick().finally(() => {
-      g.__toardClickHouseRetentionRunning = undefined;
-    });
-  };
-  setTimeout(guardedRetentionTick, STARTUP_DELAY_MS + 30_000).unref();
-  setInterval(guardedRetentionTick, RETENTION_TICK_MS).unref();
 }
 
 export function startClickHouse15mV2Compaction(): void {

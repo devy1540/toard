@@ -1310,7 +1310,11 @@ export class ClickHouseStorage implements StorageBackend {
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
       [spec.name],
     );
-    if (current.rows[0]) return current.rows[0].watermark;
+    if (current.rows[0]) {
+      return spec.name === USAGE_15M_V2.name
+        ? clampV2RollupStart(current.rows[0].watermark, eligibleTo)
+        : current.rows[0].watermark;
+    }
 
     const firstBucket = await this.firstRollupBucket(spec);
     const watermark = firstBucket
@@ -1328,7 +1332,10 @@ export class ClickHouseStorage implements StorageBackend {
       "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
       [spec.name],
     );
-    return saved.rows[0]?.watermark ?? watermark;
+    const savedWatermark = saved.rows[0]?.watermark ?? watermark;
+    return spec.name === USAGE_15M_V2.name
+      ? clampV2RollupStart(savedWatermark, eligibleTo)
+      : savedWatermark;
   }
 
   private compactorSource(spec: RollupSpec): string {

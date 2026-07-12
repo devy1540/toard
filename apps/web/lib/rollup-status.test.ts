@@ -154,6 +154,22 @@ test("비정렬 watermark의 contiguous remaining은 compactor와 같은 floor �
   const targetTo = new Date("2026-07-01T11:00:00.000Z");
   const cases = [
     {
+      name: "targetFrom 15분 이전",
+      watermark: new Date("2026-07-01T09:45:00.000Z"),
+      completedUnits: 0,
+      remainingUnits: 4,
+      progressPercent: 0,
+      etaMinutes: 4,
+    },
+    {
+      name: "target보다 훨씬 이전",
+      watermark: new Date("2024-01-01T00:00:00.000Z"),
+      completedUnits: 0,
+      remainingUnits: 4,
+      progressPercent: 0,
+      etaMinutes: 4,
+    },
+    {
       name: "target 내부",
       watermark: new Date("2026-07-01T10:31:00.000Z"),
       completedUnits: 3,
@@ -168,14 +184,6 @@ test("비정렬 watermark의 contiguous remaining은 compactor와 같은 floor �
       remainingUnits: 0,
       progressPercent: 100,
       etaMinutes: 0,
-    },
-    {
-      name: "target 범위 이전",
-      watermark: new Date("2026-07-01T09:59:00.000Z"),
-      completedUnits: 0,
-      remainingUnits: 4,
-      progressPercent: 0,
-      etaMinutes: 4,
     },
     {
       name: "target 범위 이후",
@@ -198,8 +206,17 @@ test("비정렬 watermark의 contiguous remaining은 compactor와 같은 floor �
     });
 
     assert.equal(view.totalUnits, 4, expected.name);
+    const effectiveWatermarkMs = Math.min(
+      targetTo.getTime(),
+      Math.max(targetFrom.getTime(), expected.watermark.getTime()),
+    );
+    const compactorStyleRemaining = Math.max(
+      0,
+      Math.floor((targetTo.getTime() - effectiveWatermarkMs) / (15 * 60 * 1000)),
+    );
     assert.equal(view.completedUnits, expected.completedUnits, expected.name);
     assert.equal(view.remainingUnits, expected.remainingUnits, expected.name);
+    assert.equal(view.remainingUnits, compactorStyleRemaining, `${expected.name} compactor-style`);
     assert.equal(view.completedUnits + view.remainingUnits, view.totalUnits, expected.name);
     assert.equal(view.progressPercent, expected.progressPercent, expected.name);
     assert.equal(view.etaMinutes, expected.etaMinutes, expected.name);

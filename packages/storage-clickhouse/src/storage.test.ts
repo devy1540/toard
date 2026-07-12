@@ -101,20 +101,28 @@ function storageWithInsertedRows(
   return new ClickHouseStorage(ch, pg);
 }
 
-function v2CompactorFixture(): {
+function v2CompactorFixture(options: {
+  watermark?: Date;
+  failAggregate?: boolean;
+} = {}): {
   storage: ClickHouseStorage;
   aggregateQueries: string[];
+  aggregateParams: Array<Record<string, unknown>>;
   inserts: InsertedRows[];
   pgQueries: string[];
+  pgCalls: Array<{ sql: string; params: unknown[] }>;
 } {
   const aggregateQueries: string[] = [];
+  const aggregateParams: Array<Record<string, unknown>> = [];
   const inserts: InsertedRows[] = [];
   const pgQueries: string[] = [];
+  const pgCalls: Array<{ sql: string; params: unknown[] }> = [];
   const bucket = new Date(Math.floor((Date.now() - 2 * 60 * 60 * 1000) / (15 * 60 * 1000)) * (15 * 60 * 1000));
-  let watermark = bucket;
+  let watermark = options.watermark ?? bucket;
   const client = {
     query: async (sql: string, params: unknown[] = []) => {
       pgQueries.push(sql);
+      pgCalls.push({ sql, params });
       const normalized = sql.replace(/\s+/g, " ").trim();
       if (normalized.startsWith("SELECT watermark")) {
         return { rows: [{ watermark }], rowCount: 1 };
@@ -134,11 +142,15 @@ function v2CompactorFixture(): {
   } as unknown as Pool;
   const ch = {
     command: async () => undefined,
-    query: async ({ query }: { query: string }) => {
+    query: async ({ query, query_params }: { query: string; query_params: Record<string, unknown> }) => {
       aggregateQueries.push(query);
+      aggregateParams.push(query_params);
+      if (options.failAggregate) throw new Error("aggregate failed");
+      const firstBucket = (query_params.buckets as string[] | undefined)?.[0]
+        ?? bucket.toISOString().replace("T", " ").replace("Z", "");
       return {
         json: async () => [{
-          bucket_15m: bucket.toISOString().replace("T", " ").replace("Z", ""),
+          bucket_15m: firstBucket,
           provider_key: "anthropic",
           user_id: "user-1",
           team_id: "team-1",
@@ -160,7 +172,14 @@ function v2CompactorFixture(): {
       inserts.push({ table, values });
     },
   } as unknown as ClickHouseClient;
-  return { storage: new ClickHouseStorage(ch, pg), aggregateQueries, inserts, pgQueries };
+  return {
+    storage: new ClickHouseStorage(ch, pg),
+    aggregateQueries,
+    aggregateParams,
+    inserts,
+    pgQueries,
+    pgCalls,
+  };
 }
 
 type RouterJobStatus = "pending" | "inflight" | "done";
@@ -461,6 +480,61 @@ test("v2 최초 watermark는 최근 400일보다 오래 시작하지 않는다",
     clampV2RollupStart(new Date("2026-07-01T00:00:00.000Z"), eligible).toISOString(),
     "2026-07-01T00:00:00.000Z",
   );
+});
+
+test("v2 compactor는 기존 watermark도 최근 400일 시작점으로 clamp한다", async () => {
+  const { storage, aggregateParams, pgCalls } = v2CompactorFixture({
+    watermark: new Date("2024-01-01T00:00:00.000Z"),
+  });
+
+  const result = await storage.compactUsage15mV2(1);
+  const dirtyQuery = pgCalls.find(({ sql }) => sql.includes("FROM clickhouse_rollup_dirty_buckets"));
+  assert.ok(dirtyQuery);
+  const targetFrom = dirtyQuery.params[1] as Date;
+  const processedBuckets = aggregateParams[0]?.buckets as string[] | undefined;
+  assert.deepEqual(processedBuckets, [targetFrom.toISOString().replace("T", " ").replace("Z", "")]);
+
+  const watermarkUpdate = pgCalls.find(({ sql }) => sql.includes("UPDATE clickhouse_rollup_watermarks"));
+  assert.ok(watermarkUpdate);
+  assert.equal(
+    (watermarkUpdate.params[1] as Date).toISOString(),
+    new Date(targetFrom.getTime() + 15 * 60 * 1000).toISOString(),
+  );
+  assert.equal(result.watermark, (watermarkUpdate.params[1] as Date).toISOString());
+});
+
+test("v2 compactor 실패 전에는 clamp 진척을 watermark에 저장하지 않는다", async () => {
+  const { storage, pgCalls } = v2CompactorFixture({
+    watermark: new Date("2024-01-01T00:00:00.000Z"),
+    failAggregate: true,
+  });
+
+  await assert.rejects(storage.compactUsage15mV2(1), /aggregate failed/);
+  assert.equal(
+    pgCalls.some(({ sql }) => sql.includes("UPDATE clickhouse_rollup_watermarks")),
+    false,
+  );
+  assert.equal(pgCalls.some(({ sql }) => sql === "ROLLBACK"), true);
+});
+
+test("v1 compactor의 기존 watermark는 retention 시작점으로 clamp하지 않는다", async () => {
+  const persistedWatermark = new Date("2024-01-01T00:00:00.000Z");
+  const { storage, aggregateParams, pgCalls } = v2CompactorFixture({ watermark: persistedWatermark });
+
+  const result = await storage.compactUsage15mRollup(1);
+  const processedBuckets = aggregateParams[0]?.buckets as string[] | undefined;
+  assert.deepEqual(
+    processedBuckets,
+    [persistedWatermark.toISOString().replace("T", " ").replace("Z", "")],
+  );
+
+  const watermarkUpdate = pgCalls.find(({ sql }) => sql.includes("UPDATE clickhouse_rollup_watermarks"));
+  assert.ok(watermarkUpdate);
+  assert.equal(
+    (watermarkUpdate.params[1] as Date).toISOString(),
+    new Date(persistedWatermark.getTime() + 15 * 60 * 1000).toISOString(),
+  );
+  assert.equal(result.watermark, (watermarkUpdate.params[1] as Date).toISOString());
 });
 
 test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한다", async () => {

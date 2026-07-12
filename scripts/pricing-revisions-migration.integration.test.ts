@@ -8,15 +8,19 @@ import { Client } from "pg";
 
 const execFileAsync = promisify(execFile);
 
-async function waitForPostgres(container: string): Promise<void> {
+async function waitForPostgres(connectionString: string): Promise<void> {
   let lastError: unknown;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const probe = new Client({ connectionString });
     try {
-      await execFileAsync("docker", ["exec", container, "pg_isready", "-U", "postgres", "-d", "toard"]);
+      await probe.connect();
+      await probe.query("SELECT 1");
+      await probe.end();
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await probe.end().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
   }
   throw lastError;
@@ -34,13 +38,14 @@ test("pricing revision migration deduplicates legacy rows with the same revision
       "-p", "127.0.0.1::5432",
       "postgres:16-alpine",
     ]);
-    await waitForPostgres(container);
 
     const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
     const port = stdout.trim().match(/:(\d+)$/)?.[1];
     assert.ok(port, `failed to resolve PostgreSQL port from: ${stdout}`);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
 
-    client = new Client({ connectionString: `postgresql://postgres:postgres@127.0.0.1:${port}/toard` });
+    client = new Client({ connectionString });
     await client.connect();
     await client.query(`
       CREATE TABLE pricing_models (

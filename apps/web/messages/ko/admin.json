@@ -104,7 +104,82 @@
     "updatePhaseFailed": "업데이트 실패",
     "autoSyncLabel": "자동 동기화 (일 1회)",
     "autoSyncHint": "켜면 서버가 매일(조직 타임존 기준) 한 번 자동으로 동기화합니다. 변경은 재시작 없이 최대 1시간 안에 반영됩니다.",
-    "autoSyncUnavailable": "이 배포는 내장 스케줄러가 비활성입니다(Vercel cron 또는 PRICING_AUTO_SYNC=off) — 외부 스케줄러가 동기화를 담당합니다."
+    "autoSyncUnavailable": "이 배포는 내장 스케줄러가 비활성입니다(Vercel cron 또는 PRICING_AUTO_SYNC=off) — 외부 스케줄러가 동기화를 담당합니다.",
+    "rollupTitle": "Rollup 운영 상태",
+    "rollupDescription": "15분·시간대별 rollup의 백필 진행률과 저장 규모를 확인하고 worker를 일시 중지하거나 재개합니다. 읽기 전환과 raw TTL은 서버 설정에서만 변경합니다."
+  },
+  "rollup": {
+    "summary": {
+      "healthy": "정상",
+      "degraded": "일부 확인 실패",
+      "notApplicable": "PostgreSQL 모드"
+    },
+    "states": {
+      "not_applicable": "해당 없음",
+      "disabled": "서버에서 비활성",
+      "paused": "일시 중지",
+      "starting": "시작 중",
+      "catching_up": "백필 중",
+      "ready": "완료",
+      "stalled": "진행 정체",
+      "error": "오류"
+    },
+    "worker": {
+      "usage15mV2": "15분 v2",
+      "timezone": "시간대별 cache"
+    },
+    "progress": "진행률",
+    "progressLabel": "{worker} 진행률",
+    "sourceProgress": "기준",
+    "watermark": "watermark {value}",
+    "coverage": "hour {hour} · day {day}",
+    "remaining": "남은 단위",
+    "eta": "예상 완료",
+    "etaMinutes": "약 {minutes}분",
+    "etaConfigured": "설정 기준 추정",
+    "etaUnavailable": "계산 불가",
+    "lastBatch": "최근 batch",
+    "lastBatchValue": "{units}개 단위 · {rows}행 · {duration}ms",
+    "lastSuccess": "마지막 성공",
+    "lastError": "최근 실행 실패 {value} · 서버 로그에서 상세 원인을 확인하세요.",
+    "pause": "일시 중지",
+    "resume": "재개",
+    "disabledByServer": "서버 설정에서 비활성화되어 재개할 수 없습니다.",
+    "updatedAt": "갱신 {value}",
+    "refresh": "상태 새로고침",
+    "unavailable": "Rollup 상태를 확인하지 못했습니다. 시스템 탭의 다른 기능은 계속 사용할 수 있습니다.",
+    "requestFailed": "상태 요청에 실패했습니다. 다음 poll에서 다시 시도합니다.",
+    "on": "ON",
+    "off": "OFF",
+    "readSource": {
+      "label": "읽기 source",
+      "usage15mV2": "15분 v2",
+      "timezone": "시간대별 cache"
+    },
+    "rawTtl": {
+      "label": "정규화 raw TTL",
+      "enabled": "ON · {days}일",
+      "disabled": "OFF"
+    },
+    "activeTimezones": "활성 시간대 {count}개",
+    "jobs": "pending {pending} · inflight {inflight}",
+    "storage": {
+      "title": "저장 규모",
+      "unavailable": "ClickHouse 저장 규모를 확인하지 못했습니다.",
+      "postgresRawEvents": "PostgreSQL raw {count}행",
+      "table": "테이블",
+      "rows": "행",
+      "bytes": "디스크",
+      "rawRange": "정규화 raw 범위 {from} → {to}",
+      "tables": {
+        "raw_events": "raw_events",
+        "usage_events": "usage_events",
+        "usage_hourly_rollup": "usage_hourly_rollup",
+        "usage_15m_rollup_v2": "usage_15m_rollup_v2",
+        "usage_hourly_timezone_rollup": "usage_hourly_timezone_rollup",
+        "usage_daily_timezone_rollup": "usage_daily_timezone_rollup"
+      }
+    }
   },
   "errors": {
     "onlyAdminInvite": "관리자만 초대할 수 있습니다.",

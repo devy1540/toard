@@ -104,7 +104,82 @@
     "updatePhaseFailed": "Update failed",
     "autoSyncLabel": "Auto sync (daily)",
     "autoSyncHint": "When on, the server syncs once a day (org timezone). Changes take effect within an hour, no restart needed.",
-    "autoSyncUnavailable": "The built-in scheduler is inactive in this deployment (Vercel cron or PRICING_AUTO_SYNC=off) — an external scheduler handles syncing."
+    "autoSyncUnavailable": "The built-in scheduler is inactive in this deployment (Vercel cron or PRICING_AUTO_SYNC=off) — an external scheduler handles syncing.",
+    "rollupTitle": "Rollup operations",
+    "rollupDescription": "Monitor backfill progress and storage size for 15-minute and timezone rollups, and pause or resume workers. Read cutover and raw TTL remain server-only settings."
+  },
+  "rollup": {
+    "summary": {
+      "healthy": "Healthy",
+      "degraded": "Partially unavailable",
+      "notApplicable": "PostgreSQL mode"
+    },
+    "states": {
+      "not_applicable": "Not applicable",
+      "disabled": "Disabled by server",
+      "paused": "Paused",
+      "starting": "Starting",
+      "catching_up": "Backfilling",
+      "ready": "Ready",
+      "stalled": "Stalled",
+      "error": "Error"
+    },
+    "worker": {
+      "usage15mV2": "15-minute v2",
+      "timezone": "Timezone cache"
+    },
+    "progress": "Progress",
+    "progressLabel": "{worker} progress",
+    "sourceProgress": "Basis",
+    "watermark": "watermark {value}",
+    "coverage": "hour {hour} · day {day}",
+    "remaining": "Remaining units",
+    "eta": "Estimated completion",
+    "etaMinutes": "about {minutes} min",
+    "etaConfigured": "configured estimate",
+    "etaUnavailable": "Unavailable",
+    "lastBatch": "Latest batch",
+    "lastBatchValue": "{units} units · {rows} rows · {duration}ms",
+    "lastSuccess": "Last success",
+    "lastError": "Latest run failed {value} · check server logs for the detailed cause.",
+    "pause": "Pause",
+    "resume": "Resume",
+    "disabledByServer": "This worker is disabled by server configuration and cannot be resumed.",
+    "updatedAt": "Updated {value}",
+    "refresh": "Refresh status",
+    "unavailable": "Rollup status is unavailable. Other functions in the System tab remain available.",
+    "requestFailed": "The status request failed. The next poll will retry.",
+    "on": "ON",
+    "off": "OFF",
+    "readSource": {
+      "label": "Read source",
+      "usage15mV2": "15-minute v2",
+      "timezone": "Timezone cache"
+    },
+    "rawTtl": {
+      "label": "Normalized raw TTL",
+      "enabled": "ON · {days} days",
+      "disabled": "OFF"
+    },
+    "activeTimezones": "{count} active timezones",
+    "jobs": "pending {pending} · inflight {inflight}",
+    "storage": {
+      "title": "Storage size",
+      "unavailable": "ClickHouse storage size is unavailable.",
+      "postgresRawEvents": "PostgreSQL raw {count} rows",
+      "table": "Table",
+      "rows": "Rows",
+      "bytes": "Disk",
+      "rawRange": "Normalized raw range {from} → {to}",
+      "tables": {
+        "raw_events": "raw_events",
+        "usage_events": "usage_events",
+        "usage_hourly_rollup": "usage_hourly_rollup",
+        "usage_15m_rollup_v2": "usage_15m_rollup_v2",
+        "usage_hourly_timezone_rollup": "usage_hourly_timezone_rollup",
+        "usage_daily_timezone_rollup": "usage_daily_timezone_rollup"
+      }
+    }
   },
   "errors": {
     "onlyAdminInvite": "Only administrators can send invitations.",

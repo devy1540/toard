@@ -14,11 +14,13 @@ import { listPendingInvites } from "@/lib/invites";
 import { getPricingStatus } from "@/lib/pricing";
 import { isAutoSyncEnabled, schedulerEligible } from "@/lib/pricing-auto-sync";
 import { getPublicBaseUrl } from "@/lib/public-url";
+import { getRollupAdminStatus } from "@/lib/rollup-status";
 import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
 import { PricingSyncPanel } from "./pricing-panel";
 import { RoleSelect } from "./role-select";
+import { RollupStatusPanel } from "./rollup-status-panel";
 import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
@@ -223,11 +225,12 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const [pricing, autoSync, serverUpdate, t] = await Promise.all([
+  const [pricing, autoSync, serverUpdate, rollupStatus, t] = await Promise.all([
     getPricingStatus(),
     // 마이그레이션 전 등 조회 실패 시 기본값(on)으로 표시 — 시스템 탭이 깨지지 않게
     isAutoSyncEnabled().catch(() => true),
     getServerUpdateStatus(),
+    getRollupAdminStatus().catch(() => null),
     getTranslations("admin"),
   ]);
   const contentEnabled = contentCollectionEnabled();
@@ -247,6 +250,14 @@ async function SystemTab() {
             autoSync={autoSync}
             builtinScheduler={schedulerEligible(process.env)}
           />
+        </SettingsRow>
+
+        <SettingsRow
+          wide
+          label={t("system.rollupTitle")}
+          description={t("system.rollupDescription")}
+        >
+          <RollupStatusPanel initialStatus={rollupStatus} />
         </SettingsRow>
 
         <SettingsRow

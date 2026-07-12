@@ -27,6 +27,52 @@ test("visible boolean settings use the shared switch control", () => {
   assert.match(source("app/(dashboard)/settings/onboarding-panel.tsx"), /@\/components\/ui\/switch/);
 });
 
+test("관리자 시스템 탭은 rollup 상태를 표시하되 read와 TTL을 제어하지 않는다", () => {
+  const page = source("app/(dashboard)/admin/page.tsx");
+  const panel = source("app/(dashboard)/admin/rollup-status-panel.tsx");
+
+  assert.match(page, /getRollupAdminStatus\(\)\.catch\(\(\) => null\)/);
+  assert.match(page, /<RollupStatusPanel initialStatus=\{rollupStatus\}/);
+  assert.match(panel, /const POLL_MS = 10_000/);
+  assert.match(panel, /document\.visibilityState === "visible"/);
+  assert.match(panel, /\/api\/admin\/rollups\/status/);
+  assert.match(panel, /\/api\/admin\/rollups\/control/);
+  assert.match(panel, /await refresh\(\)/);
+  assert.match(panel, /role="progressbar"/);
+  assert.match(panel, /aria-valuenow=\{/);
+  assert.match(panel, /!worker\.hardEnabled/);
+  assert.match(panel, /status\.backend === "postgres"/);
+  assert.match(panel, /const summaryLabel = status\.degraded[\s\S]*status\.backend === "postgres"/);
+  assert.match(panel, /formatDateTime\(worker\.lastErrorAt, locale\)/);
+  assert.doesNotMatch(panel, /CLICKHOUSE_READ_|CLICKHOUSE_ENFORCE_RETENTION_TTL/);
+  assert.doesNotMatch(panel, />\{worker\.lastError\}</);
+});
+
+test("rollup 관리자 메시지는 한영 shape와 상태·storage 계약을 같이 유지한다", () => {
+  const ko = JSON.parse(source("messages/ko/admin.json")) as Record<string, unknown>;
+  const en = JSON.parse(source("messages/en/admin.json")) as Record<string, unknown>;
+  const koRollup = ko.rollup as Record<string, unknown> | undefined;
+  const enRollup = en.rollup as Record<string, unknown> | undefined;
+
+  assert.deepEqual(messageShape(ko), messageShape(en));
+  assert.equal(typeof (ko.system as Record<string, unknown>)?.rollupTitle, "string");
+  assert.equal(typeof (en.system as Record<string, unknown>)?.rollupDescription, "string");
+  for (const catalog of [koRollup, enRollup]) {
+    assert.equal(typeof catalog?.progress, "string");
+    assert.equal(typeof catalog?.eta, "string");
+    assert.equal(typeof catalog?.etaConfigured, "string");
+    assert.equal(typeof catalog?.lastError, "string");
+    assert.equal(typeof catalog?.pause, "string");
+    assert.equal(typeof catalog?.resume, "string");
+    assert.equal(typeof catalog?.disabledByServer, "string");
+    assert.equal(typeof catalog?.readSource, "object");
+    assert.equal(typeof catalog?.rawTtl, "object");
+    assert.equal(typeof catalog?.states, "object");
+    assert.equal(typeof catalog?.worker, "object");
+    assert.equal(typeof catalog?.storage, "object");
+  }
+});
+
 test("dashboard disclosures use the shared disclosure wrapper", () => {
   assert.match(source("components/ui/disclosure.tsx"), /function Disclosure/);
   assert.match(source("app/(dashboard)/history/session-detail.tsx"), /@\/components\/ui\/disclosure/);

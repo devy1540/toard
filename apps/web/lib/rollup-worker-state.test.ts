@@ -26,6 +26,7 @@ function createPool(responses: Response[] = []) {
 const workerRow = {
   worker: "usage_15m_v2",
   paused: false,
+  activated_at: new Date("2026-07-12T11:50:00.000Z"),
   last_started_at: new Date("2026-07-12T11:59:00.000Z"),
   last_finished_at: new Date("2026-07-12T12:00:00.000Z"),
   last_success_at: new Date("2026-07-12T12:00:00.000Z"),
@@ -50,12 +51,14 @@ test("shadow worker는 미설정이면 켜지고 명시적 false면 hard disable
 
 test("pause와 최근 진행 시각으로 운영 상태를 파생한다", () => {
   const now = new Date("2026-07-12T12:00:00.000Z");
-  assert.equal(deriveWorkerState({ hardDisabled: false, paused: true, remaining: 4, now }), "paused");
-  assert.equal(deriveWorkerState({ hardDisabled: false, paused: false, remaining: 0, now }), "ready");
+  const activatedAt = new Date("2026-07-12T11:50:00.000Z");
+  assert.equal(deriveWorkerState({ hardDisabled: false, paused: true, remaining: 4, activatedAt, now }), "paused");
+  assert.equal(deriveWorkerState({ hardDisabled: false, paused: false, remaining: 0, activatedAt, now }), "ready");
   assert.equal(deriveWorkerState({
     hardDisabled: false,
     paused: false,
     remaining: 4,
+    activatedAt,
     lastProgressAt: new Date("2026-07-12T11:55:00.000Z"),
     now,
   }), "stalled");
@@ -63,11 +66,13 @@ test("pause와 최근 진행 시각으로 운영 상태를 파생한다", () => 
 
 test("disabled와 최신 오류가 진행 상태보다 우선하고 성공 뒤에는 복구한다", () => {
   const now = new Date("2026-07-12T12:00:00.000Z");
-  assert.equal(deriveWorkerState({ hardDisabled: true, paused: true, remaining: 2, now }), "disabled");
+  const activatedAt = new Date("2026-07-12T11:50:00.000Z");
+  assert.equal(deriveWorkerState({ hardDisabled: true, paused: true, remaining: 2, activatedAt, now }), "disabled");
   assert.equal(deriveWorkerState({
     hardDisabled: false,
     paused: false,
     remaining: 2,
+    activatedAt,
     lastSuccessAt: new Date("2026-07-12T11:50:00.000Z"),
     lastErrorAt: new Date("2026-07-12T11:55:00.000Z"),
     now,
@@ -76,6 +81,7 @@ test("disabled와 최신 오류가 진행 상태보다 우선하고 성공 뒤�
     hardDisabled: false,
     paused: false,
     remaining: 2,
+    activatedAt,
     lastSuccessAt: new Date("2026-07-12T11:59:00.000Z"),
     lastErrorAt: new Date("2026-07-12T11:55:00.000Z"),
     lastProgressAt: new Date("2026-07-12T11:59:00.000Z"),
@@ -89,6 +95,7 @@ test("성공 전 worker는 시작 유예 뒤 stalled로 바뀐다", () => {
     hardDisabled: false,
     paused: false,
     remaining: 2,
+    activatedAt: new Date("2026-07-12T11:50:00.000Z"),
     lastStartedAt: new Date("2026-07-12T11:59:00.000Z"),
     now,
   }), "starting");
@@ -96,8 +103,30 @@ test("성공 전 worker는 시작 유예 뒤 stalled로 바뀐다", () => {
     hardDisabled: false,
     paused: false,
     remaining: 2,
+    activatedAt: new Date("2026-07-12T11:50:00.000Z"),
     lastStartedAt: new Date("2026-07-12T11:55:00.000Z"),
     now,
+  }), "stalled");
+});
+
+test("시작 기록이 없는 활성 worker는 정확히 3분까지 starting이고 이후 stalled다", () => {
+  const activatedAt = new Date("2026-07-12T11:57:00.000Z");
+
+  assert.equal(deriveWorkerState({
+    hardDisabled: false,
+    paused: false,
+    remaining: 2,
+    activatedAt,
+    lastStartedAt: null,
+    now: new Date("2026-07-12T12:00:00.000Z"),
+  }), "starting");
+  assert.equal(deriveWorkerState({
+    hardDisabled: false,
+    paused: false,
+    remaining: 2,
+    activatedAt,
+    lastStartedAt: null,
+    now: new Date("2026-07-12T12:00:00.001Z"),
   }), "stalled");
 });
 
@@ -118,6 +147,7 @@ test("migration은 worker 상태와 누적 관측 필드를 만들고 두 worker
   );
   assert.match(migration, /CREATE TABLE clickhouse_rollup_worker_status/);
   assert.match(migration, /worker IN \('usage_15m_v2', 'timezone'\)/);
+  assert.match(migration, /activated_at TIMESTAMPTZ NOT NULL DEFAULT now\(\)/);
   assert.match(migration, /processed_units_total BIGINT NOT NULL DEFAULT 0/);
   assert.match(migration, /throughput_units_per_minute DOUBLE PRECISION/);
   assert.match(migration, /VALUES \('usage_15m_v2'\), \('timezone'\)/);
@@ -133,6 +163,7 @@ test("repository get은 PostgreSQL snake case와 bigint를 domain record로 매�
   assert.deepEqual(record, {
     worker: "usage_15m_v2",
     paused: false,
+    activatedAt: workerRow.activated_at,
     lastStartedAt: workerRow.last_started_at,
     lastFinishedAt: workerRow.last_finished_at,
     lastSuccessAt: workerRow.last_success_at,
@@ -173,7 +204,8 @@ test("repository 성공 기록은 누적값을 원자 증가시키고 최소 1�
   assert.match(query.sql, /processed_units_total \+ \$4/);
   assert.match(query.sql, /processed_rows_total \+ \$5/);
   assert.match(query.sql, /throughput_units_per_minute \* 0\.7/);
-  assert.match(query.sql, /\$6 \* 0\.3/);
+  assert.match(query.sql, /WHEN throughput_units_per_minute IS NULL THEN \$6::double precision/);
+  assert.match(query.sql, /\$6::double precision \* 0\.3/);
   assert.deepEqual(query.params, ["timezone", startedAt, finishedAt, 8, 120, 8, 10000]);
 });
 

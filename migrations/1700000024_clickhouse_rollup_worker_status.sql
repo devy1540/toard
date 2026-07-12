@@ -3,6 +3,7 @@
 CREATE TABLE clickhouse_rollup_worker_status (
   worker TEXT PRIMARY KEY CHECK (worker IN ('usage_15m_v2', 'timezone')),
   paused BOOLEAN NOT NULL DEFAULT false,
+  activated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   last_started_at TIMESTAMPTZ,
   last_finished_at TIMESTAMPTZ,
   last_success_at TIMESTAMPTZ,

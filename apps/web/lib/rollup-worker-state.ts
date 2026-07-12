@@ -18,6 +18,7 @@ export type RollupWorkerState =
 export type RollupWorkerRecord = {
   worker: RollupWorkerName;
   paused: boolean;
+  activatedAt: Date;
   lastStartedAt: Date | null;
   lastFinishedAt: Date | null;
   lastSuccessAt: Date | null;
@@ -70,6 +71,7 @@ export type DeriveWorkerStateInput = {
   hardDisabled: boolean;
   paused: boolean;
   remaining: number;
+  activatedAt: Date;
   lastStartedAt?: Date | null;
   lastSuccessAt?: Date | null;
   lastProgressAt?: Date | null;
@@ -96,10 +98,10 @@ export function deriveWorkerState(input: DeriveWorkerStateInput): RollupWorkerSt
       : "stalled";
   }
   if (!input.lastSuccessAt) {
-    if (!input.lastStartedAt || nowMs - input.lastStartedAt.getTime() <= STALLED_AFTER_MS) {
-      return "starting";
-    }
-    return "stalled";
+    const startedOrActivatedAt = input.lastStartedAt ?? input.activatedAt;
+    return nowMs - startedOrActivatedAt.getTime() <= STALLED_AFTER_MS
+      ? "starting"
+      : "stalled";
   }
   return "stalled";
 }
@@ -107,6 +109,7 @@ export function deriveWorkerState(input: DeriveWorkerStateInput): RollupWorkerSt
 type RollupWorkerRow = {
   worker: RollupWorkerName;
   paused: boolean;
+  activated_at: Date;
   last_started_at: Date | null;
   last_finished_at: Date | null;
   last_success_at: Date | null;
@@ -122,7 +125,7 @@ type RollupWorkerRow = {
 };
 
 const SELECT_FIELDS = `
-  worker, paused, last_started_at, last_finished_at, last_success_at,
+  worker, paused, activated_at, last_started_at, last_finished_at, last_success_at,
   last_progress_at, last_error_at, last_error, last_duration_ms,
   last_processed_units, last_processed_rows, processed_units_total,
   processed_rows_total, throughput_units_per_minute`;
@@ -135,6 +138,7 @@ function mapWorkerRow(row: RollupWorkerRow): RollupWorkerRecord {
   return {
     worker: row.worker,
     paused: row.paused,
+    activatedAt: row.activated_at,
     lastStartedAt: row.last_started_at,
     lastFinishedAt: row.last_finished_at,
     lastSuccessAt: row.last_success_at,
@@ -213,8 +217,8 @@ export class PgRollupWorkerRepository implements RollupWorkerRepository {
            processed_rows_total = processed_rows_total + $5,
            throughput_units_per_minute = CASE
              WHEN $4 <= 0 THEN throughput_units_per_minute
-             WHEN throughput_units_per_minute IS NULL THEN $6
-             ELSE throughput_units_per_minute * 0.7 + $6 * 0.3
+             WHEN throughput_units_per_minute IS NULL THEN $6::double precision
+             ELSE throughput_units_per_minute * 0.7 + $6::double precision * 0.3
            END,
            updated_at = $3
        WHERE worker = $1`,

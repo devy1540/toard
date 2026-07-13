@@ -4,6 +4,7 @@ import test from "node:test";
 import type { ToolCatalogSubmission } from "@toard/core";
 import {
   archiveToolCatalogItemWithDb,
+  composeToolCatalogItems,
   createToolCatalogItemWithDb,
   getWorkspaceToolCatalogItemWithDb,
   listWorkspaceToolCatalogWithDb,
@@ -11,6 +12,7 @@ import {
   updateToolCatalogItemWithDb,
   type ToolCatalogDb,
 } from "./tool-catalog";
+import { PUBLIC_TOOL_CATALOG } from "./tool-catalog-public";
 
 type Call = { sql: string; params?: unknown[] };
 type Response = { rows: Record<string, unknown>[]; rowCount?: number };
@@ -173,4 +175,77 @@ test("관리자는 신뢰·수명주기·사유만 변경한다", async () => {
   assert.deepEqual(result, { ok: true });
   assert.deepEqual(db.calls[0]!.params, ["item-1", "community", "blocked", "credential exposure"]);
   assert.doesNotMatch(db.calls[0]!.sql, /source_url\s*=|owner_user_id\s*=/);
+});
+
+test("공개 카탈로그는 공식 원본과 고유 slug를 가진 읽기 전용 항목이다", () => {
+  assert.equal(PUBLIC_TOOL_CATALOG.length, 3);
+  assert.equal(new Set(PUBLIC_TOOL_CATALOG.map((item) => item.slug)).size, PUBLIC_TOOL_CATALOG.length);
+  assert.deepEqual(
+    PUBLIC_TOOL_CATALOG.map((item) => [item.slug, item.sourceUrl, item.sourceRef]),
+    [
+      ["github-mcp-server", "https://github.com/github/github-mcp-server", "v0.31.0"],
+      ["context7", "https://github.com/upstash/context7", "@upstash/context7-mcp@3.2.0"],
+      ["superpowers", "https://github.com/obra/superpowers", "v5.0.7"],
+    ],
+  );
+  assert.ok(
+    PUBLIC_TOOL_CATALOG.every(
+      (item) =>
+        item.origin === "public" &&
+        item.ownerUserId === null &&
+        item.trustStatus === "verified" &&
+        item.lifecycleStatus === "published",
+    ),
+  );
+});
+
+test("워크스페이스 게시물은 공개 slug와 충돌할 수 없다", async () => {
+  const db = new RecordingDb([]);
+
+  const result = await createToolCatalogItemWithDb(db, "user-1", {
+    ...submission,
+    slug: "github-mcp-server",
+  });
+
+  assert.deepEqual(result, { ok: false, reason: "slug-conflict" });
+  assert.equal(db.calls.length, 0);
+});
+
+test("공개·워크스페이스 합성은 필터와 설치 상태를 함께 계산한다", () => {
+  const items = composeToolCatalogItems(
+    [
+      {
+        ...submission,
+        id: "item-1",
+        origin: "workspace",
+        trustStatus: "community",
+        lifecycleStatus: "published",
+        statusReason: null,
+        ownerUserId: "user-1",
+        ownerName: "owner@example.com",
+        createdAt: new Date("2026-07-13T00:00:00Z"),
+        updatedAt: new Date("2026-07-13T00:00:00Z"),
+      },
+    ],
+    { id: "user-1", role: "member" },
+    { scope: "mine", kind: "skill", query: "pull request" },
+    [],
+  );
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.slug, "github-pr-review");
+  assert.deepEqual(items[0]?.installState, { status: "not_installed" });
+});
+
+test("인벤토리 조회 실패는 카탈로그를 막지 않고 확인 불가 상태가 된다", () => {
+  const items = composeToolCatalogItems(
+    [],
+    { id: "user-1", role: "member" },
+    { scope: "public", kind: "mcp", query: "github" },
+    null,
+  );
+
+  assert.equal(items.length, 1);
+  assert.equal(items[0]?.slug, "github-mcp-server");
+  assert.deepEqual(items[0]?.installState, { status: "unavailable" });
 });

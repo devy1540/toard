@@ -1,10 +1,20 @@
 import type {
+  CatalogInstallState,
+  DeviceToolInventory,
+  ToolCatalogFilter,
   ToolCatalogItem,
   ToolCatalogLifecycle,
   ToolCatalogSubmission,
   ToolCatalogTrust,
 } from "@toard/core";
+import { filterToolCatalogItems, resolveCatalogInstallState } from "@toard/core";
 import { getPool } from "./db";
+import { getMyDeviceInventories } from "./tool-metadata";
+import {
+  getPublicToolCatalogItem,
+  PUBLIC_TOOL_CATALOG,
+  PUBLIC_TOOL_CATALOG_SLUGS,
+} from "./tool-catalog-public";
 
 type QueryResult = { rows: Record<string, unknown>[]; rowCount?: number | null };
 
@@ -18,6 +28,9 @@ export type CatalogModeration = {
   lifecycleStatus: ToolCatalogLifecycle;
   statusReason: string | null;
 };
+
+export type CatalogListFilter = Omit<ToolCatalogFilter, "viewerId">;
+export type ToolCatalogListItem = ToolCatalogItem & { installState: CatalogInstallState };
 
 type CatalogMutationResult =
   | { ok: true; id: string; slug: string }
@@ -128,6 +141,7 @@ export async function createToolCatalogItemWithDb(
   ownerUserId: string,
   submission: ToolCatalogSubmission,
 ): Promise<CatalogMutationResult> {
+  if (PUBLIC_TOOL_CATALOG_SLUGS.has(submission.slug)) return { ok: false, reason: "slug-conflict" };
   try {
     const result = await db.query(
       `INSERT INTO tool_catalog_items
@@ -154,6 +168,7 @@ export async function updateToolCatalogItemWithDb(
   id: string,
   submission: ToolCatalogSubmission,
 ): Promise<CatalogMutationResult> {
+  if (PUBLIC_TOOL_CATALOG_SLUGS.has(submission.slug)) return { ok: false, reason: "slug-conflict" };
   try {
     const result = await db.query(
       `UPDATE tool_catalog_items SET
@@ -242,4 +257,40 @@ export function moderateToolCatalogItem(
   moderation: CatalogModeration,
 ): Promise<CatalogStatusResult> {
   return moderateToolCatalogItemWithDb(getPool(), viewer, id, moderation);
+}
+
+export function composeToolCatalogItems(
+  workspaceItems: readonly ToolCatalogItem[],
+  viewer: CatalogViewer,
+  filter: CatalogListFilter,
+  inventories: readonly DeviceToolInventory[] | null,
+): ToolCatalogListItem[] {
+  return filterToolCatalogItems([...PUBLIC_TOOL_CATALOG, ...workspaceItems], {
+    ...filter,
+    viewerId: viewer.id,
+  }).map((item) => ({
+    ...item,
+    installState: resolveCatalogInstallState(item, inventories),
+  }));
+}
+
+export async function listToolCatalog(
+  viewer: CatalogViewer,
+  filter: CatalogListFilter,
+): Promise<ToolCatalogListItem[]> {
+  const [workspaceItems, inventories] = await Promise.all([
+    listWorkspaceToolCatalog(viewer),
+    getMyDeviceInventories(viewer.id).catch(() => null),
+  ]);
+  return composeToolCatalogItems(workspaceItems, viewer, filter, inventories);
+}
+
+export async function getToolCatalogItem(
+  viewer: CatalogViewer,
+  slug: string,
+): Promise<ToolCatalogListItem | null> {
+  const item = getPublicToolCatalogItem(slug) ?? (await getWorkspaceToolCatalogItem(viewer, slug));
+  if (!item) return null;
+  const inventories = await getMyDeviceInventories(viewer.id).catch(() => null);
+  return { ...item, installState: resolveCatalogInstallState(item, inventories) };
 }

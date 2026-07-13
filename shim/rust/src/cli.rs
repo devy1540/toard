@@ -8,7 +8,7 @@ use crate::claude_env;
 use crate::codex;
 use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
 use crate::fsx;
-use crate::resolve::{find_real_binary, first_in_path};
+use crate::resolve::{find_real_binary, first_in_path, is_shim_executable_path};
 
 /// 릴리스 빌드는 CI 가 태그를 주입(TOARD_SHIM_BUILD_VERSION), 개발 빌드는 0.0.0.
 pub fn version() -> &'static str {
@@ -272,7 +272,12 @@ fn doctor() -> i32 {
         match first_in_path(tool) {
             Some(first) => {
                 let first_canon = first.canonicalize().ok();
-                if first_canon.is_some() && first_canon == self_canon {
+                let first_is_shim = first_canon.as_deref().is_some_and(|candidate| {
+                    self_canon.as_deref().is_some_and(|current| {
+                        is_shim_executable_path(candidate, current, cfg!(windows))
+                    })
+                });
+                if first_is_shim {
                     ok(&format!("PATH: '{tool}' 은 shim 이 우선 가로챕니다"));
                     match find_real_binary(tool) {
                         Some(real) => ok(&format!("진짜 {tool}: {}", real.display())),
@@ -327,6 +332,12 @@ fn doctor() -> i32 {
 
     // 5. 주기 수집 데몬 + 최근 수집 시각 — 수집이 조용히 멈춘 상태를 드러낸다 (#65)
     let daemon_interval = match crate::daemon::state() {
+        crate::daemon::State::Unsupported { os } => {
+            info(&format!(
+                "주기 수집 자동 등록 미지원({os}) — Claude/Codex CLI 실행 시 수집됩니다"
+            ));
+            None
+        }
         crate::daemon::State::Installed {
             backend,
             interval,

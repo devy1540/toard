@@ -15,6 +15,7 @@ pub const MIN_INTERVAL_SECS: u64 = 60;
 const LAUNCHD_LABEL: &str = "dev.toard.collect";
 const SYSTEMD_UNIT: &str = "toard-collect";
 const CRON_MARKER: &str = "# toard-collect";
+const WINDOWS_TASK_NAME: &str = "toard-collect";
 
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -61,7 +62,12 @@ fn parse_interval(args: &[String]) -> Result<u64, String> {
 /// (자동 업데이트는 실파일 `claude` 를 교체하고 링크는 유지되므로 링크가 안정적 경로다.)
 fn shim_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let named = exe.parent().map(|d| d.join("toard-shim"))?;
+    let filename = if cfg!(windows) {
+        "toard-shim.exe"
+    } else {
+        "toard-shim"
+    };
+    let named = exe.parent().map(|d| d.join(filename))?;
     Some(if named.exists() { named } else { exe })
 }
 
@@ -94,6 +100,7 @@ fn state_for_os(os: &'static str) -> State {
                 s
             }
         }
+        "windows" => windows_state(),
         other => State::Unsupported { os: other },
     }
 }
@@ -148,8 +155,9 @@ fn install(interval: u64) -> i32 {
                 cron_install(&exe, interval)
             }
         }
+        "windows" => windows_install(&exe, interval),
         other => {
-            eprintln!("toard-shim: 지원하지 않는 OS: {other} (macos/linux)");
+            eprintln!("toard-shim: 지원하지 않는 OS: {other} (macos/linux/windows)");
             1
         }
     }
@@ -168,11 +176,218 @@ fn uninstall() -> i32 {
                 1
             }
         }
+        "windows" => windows_uninstall(),
         other => {
-            eprintln!("toard-shim: 지원하지 않는 OS: {other} (macos/linux)");
+            eprintln!("toard-shim: 지원하지 않는 OS: {other} (macos/linux/windows)");
             1
         }
     }
+}
+
+// ── Windows: Task Scheduler ──
+
+fn windows_identity_sid() -> Option<String> {
+    let out = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let sid = windows_output_text(&out.stdout).trim().to_string();
+    (!sid.is_empty()).then_some(sid)
+}
+
+fn windows_output_text(bytes: &[u8]) -> String {
+    let looks_utf16le = bytes.starts_with(&[0xff, 0xfe])
+        || (bytes.len() >= 2 && bytes[1] == 0 && bytes.iter().skip(1).step_by(2).any(|b| *b == 0));
+    if !looks_utf16le {
+        return String::from_utf8_lossy(bytes).into_owned();
+    }
+    let start = usize::from(bytes.starts_with(&[0xff, 0xfe])) * 2;
+    let words = bytes[start..]
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect::<Vec<_>>();
+    String::from_utf16_lossy(&words)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+        out.push(ALPHABET[(a >> 2) as usize] as char);
+        out.push(ALPHABET[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(c & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Windows PowerShell의 `-EncodedCommand` 계약(UTF-16LE 뒤 Base64)에 맞춘다.
+fn powershell_encoded_command(script: &str) -> String {
+    let bytes = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect::<Vec<_>>();
+    base64_encode(&bytes)
+}
+
+/// UAC 승인을 받은 별도 PowerShell에서 스크립트를 실행한다.
+/// 등록 스크립트에는 원래 사용자의 SID를 명시하므로 다른 관리자 계정으로 승인해도
+/// 예약 작업의 실행 사용자와 `%USERPROFILE%`은 바뀌지 않는다.
+fn windows_run_elevated(script: &str) -> bool {
+    let encoded = powershell_encoded_command(script);
+    let launcher = format!(
+        "$ErrorActionPreference = 'Stop'; try {{ $p = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand','{encoded}') -Wait -PassThru; exit $p.ExitCode }} catch {{ Write-Error $_; exit 1 }}"
+    );
+    Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &launcher,
+        ])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// 원래 로그인한 사용자의 InteractiveToken으로 실행되는 제한 권한 작업 XML을 만든다.
+/// UAC는 등록 권한에만 쓰며, 작업 자체는 관리자 권한으로 실행하지 않는다.
+fn windows_registration_script(exe: &str, user_sid: &str, interval: u64) -> String {
+    let minutes = interval.div_ceil(60).max(1);
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+Import-Module ScheduledTasks
+[xml]$task = @'
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>Collect toard usage periodically.</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <TimeTrigger>
+      <Enabled>true</Enabled>
+      <StartBoundary>2000-01-01T00:00:00</StartBoundary>
+      <Repetition>
+        <Interval>PT{minutes}M</Interval>
+        <StopAtDurationEnd>false</StopAtDurationEnd>
+      </Repetition>
+    </TimeTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user_sid}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <Enabled>true</Enabled>
+    <ExecutionTimeLimit>PT1H</ExecutionTimeLimit>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{exe}</Command>
+      <Arguments>collect --quiet</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+'@
+$task.Task.Triggers.TimeTrigger.StartBoundary = (Get-Date).AddMinutes(1).ToString('s')
+Register-ScheduledTask -TaskName '{task_name}' -Xml $task.OuterXml -Force | Out-Null
+"#,
+        user_sid = xml_escape(user_sid),
+        exe = xml_escape(exe),
+        task_name = WINDOWS_TASK_NAME,
+    )
+}
+
+fn windows_install(exe: &str, interval: u64) -> i32 {
+    let Some(sid) = windows_identity_sid() else {
+        eprintln!("toard-shim: 현재 Windows 사용자 SID를 확인하지 못했습니다");
+        return 1;
+    };
+    println!("  - Windows 주기 수집 등록을 위해 권한 승인을 요청합니다");
+    if !windows_run_elevated(&windows_registration_script(exe, &sid, interval)) {
+        eprintln!("toard-shim: Windows 예약 작업 등록 실패 또는 권한 승인 취소");
+        return 1;
+    }
+    println!(
+        "  ✓ 주기 수집 등록됨 — Windows Task Scheduler, {}초 간격",
+        interval.div_ceil(60) * 60
+    );
+    println!("    작업: {WINDOWS_TASK_NAME}");
+    println!("    제거: toard-shim daemon uninstall");
+    0
+}
+
+fn windows_state() -> State {
+    let Ok(out) = Command::new("schtasks.exe")
+        .args(["/Query", "/TN", WINDOWS_TASK_NAME, "/XML"])
+        .output()
+    else {
+        return State::NotInstalled;
+    };
+    if !out.status.success() {
+        return State::NotInstalled;
+    }
+    let xml = windows_output_text(&out.stdout);
+    windows_state_from_xml(Some(&xml))
+}
+
+fn windows_state_from_xml(xml: Option<&str>) -> State {
+    let Some(xml) = xml else {
+        return State::NotInstalled;
+    };
+    let active = !xml.contains("<Enabled>false</Enabled>");
+    let interval = xml
+        .split("<Interval>PT")
+        .nth(1)
+        .and_then(|s| s.split('M').next())
+        .and_then(|minutes| minutes.parse::<u64>().ok())
+        .map(|minutes| minutes * 60);
+    State::Installed {
+        backend: "Windows Task Scheduler",
+        interval,
+        active,
+    }
+}
+
+fn windows_uninstall() -> i32 {
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'\nImport-Module ScheduledTasks\nUnregister-ScheduledTask -TaskName '{WINDOWS_TASK_NAME}' -Confirm:$false -ErrorAction SilentlyContinue\n"
+    );
+    println!("  - Windows 주기 수집 제거를 위해 권한 승인을 요청합니다");
+    if !windows_run_elevated(&script) {
+        eprintln!("toard-shim: Windows 예약 작업 제거 실패 또는 권한 승인 취소");
+        return 1;
+    }
+    println!("  ✓ 주기 수집 제거됨 — Windows Task Scheduler");
+    0
 }
 
 // ── macOS: launchd LaunchAgent ──
@@ -626,10 +841,76 @@ mod tests {
     }
 
     #[test]
-    fn windows_periodic_collection_is_reported_unsupported() {
+    fn windows_task_uses_current_user_limited_five_minute_schedule() {
+        let script = windows_registration_script(
+            r"C:\Users\GA\.toard\bin\toard-shim.exe",
+            "S-1-5-21-1234-5678-9012-1001",
+            DEFAULT_INTERVAL_SECS,
+        );
+
+        assert!(script.contains("Register-ScheduledTask -TaskName 'toard-collect'"));
+        assert!(script.contains("<Interval>PT5M</Interval>"));
+        assert!(script.contains("<UserId>S-1-5-21-1234-5678-9012-1001</UserId>"));
+        assert!(script.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(script.contains("<RunLevel>LeastPrivilege</RunLevel>"));
+        assert!(script.contains(r"<Command>C:\Users\GA\.toard\bin\toard-shim.exe</Command>"));
+        assert!(script.contains("<Arguments>collect --quiet</Arguments>"));
+        assert!(
+            !script.contains("agent_key"),
+            "예약 작업에 토큰을 넣지 않음"
+        );
+    }
+
+    #[test]
+    fn windows_task_script_escapes_xml_values() {
+        let script =
+            windows_registration_script(r"C:\Users\A&B\<toard>\toard-shim.exe", "S-1-5-21-1&2", 61);
+
+        assert!(script.contains(r"C:\Users\A&amp;B\&lt;toard&gt;\toard-shim.exe"));
+        assert!(script.contains("<UserId>S-1-5-21-1&amp;2</UserId>"));
+        assert!(script.contains("<Interval>PT2M</Interval>"), "분 단위 올림");
+    }
+
+    #[test]
+    fn powershell_encoded_command_uses_utf16le_base64() {
+        assert_eq!(powershell_encoded_command("A"), "QQA=");
+    }
+
+    #[test]
+    fn windows_output_decodes_utf16le_xml() {
+        let expected = "<Enabled>false</Enabled>";
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(expected.encode_utf16().flat_map(u16::to_le_bytes));
+
+        assert_eq!(windows_output_text(&bytes), expected);
+    }
+
+    #[test]
+    fn windows_task_xml_maps_interval_and_enabled_state() {
+        let active = windows_state_from_xml(Some(
+            "<Task><Settings><Enabled>true</Enabled></Settings><Triggers><TimeTrigger><Repetition><Interval>PT5M</Interval></Repetition></TimeTrigger></Triggers></Task>",
+        ));
+        assert!(matches!(
+            active,
+            State::Installed {
+                backend: "Windows Task Scheduler",
+                interval: Some(300),
+                active: true,
+            }
+        ));
+
+        let disabled = windows_state_from_xml(Some(
+            "<Task><Settings><Enabled>false</Enabled></Settings></Task>",
+        ));
+        assert!(matches!(disabled, State::Installed { active: false, .. }));
+        assert!(matches!(windows_state_from_xml(None), State::NotInstalled));
+    }
+
+    #[test]
+    fn windows_periodic_collection_uses_task_scheduler() {
         assert!(matches!(
             state_for_os("windows"),
-            State::Unsupported { os: "windows" }
+            State::NotInstalled | State::Installed { .. }
         ));
     }
 }

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  getTokenConnectionStatusWithPool,
+  issueDeviceTokenWithPool,
   issueTokenWithPool,
   listActiveTokensWithPool,
   recordTokenHostWithPool,
@@ -12,8 +14,9 @@ type Query = { sql: string; params?: unknown[] };
 test("issueToken adds a new active token without revoking existing machine tokens", async () => {
   const queries: Query[] = [];
   const pool = {
-    async query(sql: string, params?: unknown[]): Promise<void> {
+    async query(sql: string, params?: unknown[]) {
       queries.push({ sql, params });
+      return { rows: [{ id: "token-1" }] };
     },
   };
 
@@ -30,6 +33,40 @@ test("issueToken adds a new active token without revoking existing machine token
   assert.equal(queries[0]!.params?.[0], "user-1");
   assert.equal(typeof queries[0]!.params?.[1], "string");
   assert.equal(queries[0]!.params?.[2], "MacBook Pro");
+});
+
+test("issueDeviceToken returns token ID without revoking existing tokens", async () => {
+  const queries: Query[] = [];
+  const pool = {
+    async query(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: [{ id: "token-new" }] };
+    },
+  };
+
+  const issued = await issueDeviceTokenWithPool("user-1", pool);
+
+  assert.match(issued.token, /^tk_[0-9a-f]{48}$/);
+  assert.equal(issued.tokenId, "token-new");
+  assert.match(queries[0]!.sql, /RETURNING id/);
+  assert.equal(queries.some((query) => /revoked_at = now/.test(query.sql)), false);
+});
+
+test("connection status lookup requires both owner and token ID", async () => {
+  const queries: Query[] = [];
+  const usedAt = new Date("2026-07-13T01:00:00Z");
+  const pool = {
+    async query(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: [{ last_used_at: usedAt, last_host: null }] };
+    },
+  };
+
+  const status = await getTokenConnectionStatusWithPool("user-1", "token-1", pool);
+
+  assert.deepEqual(status, { connected: true, lastUsedAt: usedAt, lastHost: null });
+  assert.match(queries[0]!.sql, /user_id = \$1 AND id = \$2/);
+  assert.deepEqual(queries[0]!.params, ["user-1", "token-1"]);
 });
 
 test("listActiveTokens maps active token metadata without exposing hashes", async () => {

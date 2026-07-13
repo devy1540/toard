@@ -31,7 +31,7 @@ function installScript(endpoint: string, contentDefaultOn: boolean): string {
     'BIN_DIR="${TOARD_BIN_DIR:-$HOME/.toard/bin}"',
     "",
     "# 1) 바이너리 설치(다운로드 + SHA 검증)는 릴리스 install.sh 에 위임",
-    "curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh",
+    'curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | TOARD_INSTALL_DAEMON="${TOARD_INSTALL_DAEMON:-1}" sh',
     "",
     "# 2) 자격 증명 자동 작성",
     'if [ -n "$TOKEN" ]; then',

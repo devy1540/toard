@@ -6,6 +6,10 @@ function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
+function repoSource(path: string): string {
+  return readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
+}
+
 function messageShape(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return typeof value;
   return Object.fromEntries(
@@ -24,7 +28,7 @@ test("dashboard and settings segmented choices use the shared segmented control"
 test("visible boolean settings use the shared switch control", () => {
   assert.match(source("components/ui/switch.tsx"), /function Switch/);
   assert.match(source("app/(dashboard)/admin/pricing-panel.tsx"), /@\/components\/ui\/switch/);
-  assert.match(source("app/(dashboard)/settings/onboarding-panel.tsx"), /@\/components\/ui\/switch/);
+  assert.match(source("app/(dashboard)/settings/onboarding-wizard.tsx"), /@\/components\/ui\/switch/);
 });
 
 test("관리자 시스템 탭은 rollup 상태를 표시하되 read와 TTL을 제어하지 않는다", () => {
@@ -110,6 +114,59 @@ test("demo open mode can render settings with the dashboard viewer fallback", ()
     settings,
     /const session = await auth\(\);\s*const userId = session\?\.user\?\.id;\s*if \(!userId\) redirect\("\/login"\);/s,
   );
+});
+
+test("onboarding token actions issue once and poll within the authenticated owner", () => {
+  const actions = source("app/(dashboard)/settings/token-actions.ts");
+  assert.match(actions, /issueOnboardingTokenAction/);
+  assert.match(actions, /issueDeviceToken\(userId\)/);
+  assert.match(actions, /checkTokenConnectionAction/);
+  assert.match(actions, /getTokenConnectionStatus\(userId, tokenId\)/);
+});
+
+test("Windows installer routes serve generated no-store PowerShell", () => {
+  const install = source("app/install.ps1/route.ts");
+  const uninstall = source("app/uninstall.ps1/route.ts");
+  assert.match(install, /buildPowerShellInstallScript/);
+  assert.match(install, /getIngestEndpoint/);
+  assert.match(install, /cache-control.*no-store/s);
+  assert.match(uninstall, /buildPowerShellUninstallScript/);
+  assert.match(uninstall, /cache-control.*no-store/s);
+});
+
+test("macOS and Linux one-line installer does not stop for a daemon prompt", () => {
+  const install = source("app/install.sh/route.ts");
+  assert.match(install, /TOARD_INSTALL_DAEMON/);
+  assert.match(install, /:-1/);
+});
+
+test("shim CI parses generated PowerShell when installer routes change", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  assert.match(workflow, /apps\/web\/lib\/powershell-installer\.ts/);
+  assert.match(workflow, /apps\/web\/app\/install\.ps1\/\*\*/);
+  assert.match(workflow, /scriptblock.*Create/s);
+});
+
+test("device onboarding uses OS-aware wizard and separate management", () => {
+  const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
+  const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");
+  assert.match(wizard, /detectInstallPlatform/);
+  assert.match(wizard, /issueOnboardingTokenAction/);
+  assert.match(wizard, /checkTokenConnectionAction/);
+  assert.match(wizard, /2_000/);
+  assert.match(wizard, /120_000/);
+  assert.match(wizard, /href="\/"/);
+  assert.match(panel, /uninstall\.ps1/);
+  assert.doesNotMatch(panel, /issueOnboardingTokenAction/);
+});
+
+test("settings catalogs keep wizard shape aligned", () => {
+  const ko = JSON.parse(source("messages/ko/settings.json"));
+  const en = JSON.parse(source("messages/en/settings.json"));
+  assert.equal(ko.tabInstall, "컴퓨터 연결");
+  assert.equal(en.tabInstall, "Connect computer");
+  assert.equal(typeof ko.wizard, "object");
+  assert.deepEqual(messageShape(ko.wizard), messageShape(en.wizard));
 });
 
 test("personal navigation includes insights between usage and history", () => {

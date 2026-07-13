@@ -150,15 +150,21 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
 
-**한 줄 설치(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 토큰을 발급하면 아래 명령이 내 토큰으로 채워진다. toard 가 서빙하는 `install.sh` 가 바이너리 설치(SHA 검증) + `~/.toard/credentials`(토큰·endpoint 자동 주입) + PATH 설정까지 처리한다. 사용량은 로컬 세션 파일 pull 로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필). 같은 탭의 **"연결 확인"** 으로 실제 수신 여부를 즉시 점검한다:
+**한 줄 설치(권장)** — 로그인 후 **설정 → 컴퓨터 연결**에서 운영체제를 확인하고 안내된 명령을 복사한다. 이 컴퓨터용 토큰은 자동 발급되며, 설치 후 첫 인증 요청까지 화면이 자동으로 확인한다. 사용량은 로컬 세션 파일 pull로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필).
 
 ```bash
 curl -fsSL <toard 주소>/install.sh | TOARD_INGEST_TOKEN=<내 토큰> sh
 ```
 
-**직접 설정(고급)** — 바이너리만 [GitHub 릴리스 install.sh](https://github.com/devy1540/toard/releases/latest/download/install.sh) 로 설치하고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 를 직접 작성 + `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 둔다. 사용량은 pull 로 자동 수집(Desktop·IDE 포함, env 불필요). 릴리스는 `v*` 태그 push 시 GitHub Actions 가 5-플랫폼(macOS·Linux arm64/x64, Windows x64) 빌드 후 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정). Windows 는 `install.sh` 대신 `npx @toard/shim` 으로 설치한다(주기 수집 데몬 등록은 아직 미지원).
+Windows x64에서는 같은 화면이 PowerShell 명령을 제공한다:
 
-**제거** — `curl -fsSL <toard>/uninstall.sh | sh` (shim·자격증명·PATH·claude-env(`settings.json`)·codex `[otel]` 블록을 백업 남기고 되돌림. 진짜 claude/codex 는 그대로).
+```powershell
+$env:TOARD_INGEST_TOKEN='<내 토큰>'; irm '<toard 주소>/install.ps1' | iex
+```
+
+**직접 설정(고급)** — 설정 화면의 `연결된 컴퓨터 관리`에서 OS별 진단·업데이트·제거 명령과 credentials 경로를 확인한다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows는 GitHub Release 바이너리를 PowerShell 설치기가 직접 내려받아 SHA256을 검증하며, Windows 주기 수집 데몬 등록은 아직 지원하지 않는다.
+
+**제거** — macOS·Linux는 `curl -fsSL <toard>/uninstall.sh | sh`, Windows는 `irm '<toard>/uninstall.ps1' | iex`. toard가 설치한 shim·자격증명·PATH 설정만 제거하고 기존 Claude/Codex는 유지한다.
 
 ## 🧊 ClickHouse 모드 (옵트인)
 

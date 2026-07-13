@@ -60,10 +60,19 @@ wrap 실행 경로에는 네트워크가 없다 — 6h 스로틀 파일(`~/.toar
 - 미러/에어갭: `TOARD_SHIM_RELEASE_BASE=<host>` (기본 `https://github.com`)
 
 ## 설치
+가장 쉬운 방법은 toard의 **설정 → 컴퓨터 연결**에서 OS별 명령을 복사하는 것이다. macOS·Linux 직접 설치:
+
 ```sh
 curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | sh
 ```
-OS/arch(darwin·linux × x64·arm64) 를 자동 감지해 해당 바이너리를 `~/.toard/bin/{claude,codex,toard-shim}` 에 설치한다(다운로드 후 `SHA256SUMS` 대조). 릴리즈는 `v*` 태그 push 시 GitHub Actions 가 OS 네이티브 매트릭스(macOS 러너에서 arm64 native + x64 cross, Ubuntu x64·arm64 native)로 4-플랫폼을 빌드해 GitHub Release(+npm) 에 업로드한다.
+
+Windows x64는 toard 서버가 제공하는 PowerShell 설치기를 사용한다:
+
+```powershell
+$env:TOARD_INGEST_TOKEN='<내 토큰>'; irm 'https://toard.example.com/install.ps1' | iex
+```
+
+macOS·Linux는 OS/arch를 자동 감지해 `~/.toard/bin/{claude,codex,toard-shim}`에 설치한다. Windows 설치기는 GitHub Release의 `toard-shim-x86_64-pc-windows-msvc.exe`를 내려받아 같은 릴리스의 `SHA256SUMS`와 대조한 뒤 `%USERPROFILE%\.toard\bin`에 사본을 설치한다. 릴리스 워크플로는 macOS·Linux arm64/x64와 Windows x64의 5개 바이너리를 게시한다. Windows 주기 수집 데몬은 아직 지원하지 않는다.
 
 ## 설정
 `~/.toard/credentials` (또는 동명 env `TOARD_INGEST_TOKEN`/`TOARD_INGEST_ENDPOINT`):
@@ -77,7 +86,7 @@ endpoint=https://toard.example.com/api
 cargo build --manifest-path shim/rust/Cargo.toml --release
 # → shim/rust/target/release/shim  (release profile: opt-level z + LTO + strip ≈ 312KB)
 ```
-4-플랫폼 빌드는 GitHub Actions OS 네이티브 매트릭스(macOS arm 러너에서 x64 는 동일 SDK 로 cross). 배포는 `install.sh`(curl) 또는 `npx @toard/shim`.
+5-플랫폼 빌드는 GitHub Actions OS 네이티브 매트릭스로 수행한다. 배포는 macOS·Linux의 `install.sh`와 Windows의 toard 서버 `/install.ps1`을 기본 경로로 사용한다.
 
 ## 언어 선택 근거 (ADR-006)
 PoC 로 Go·Rust 둘 다 측정: 바이너리 **Go 1.4MB vs Rust 312KB(4.4배)**, cold start Rust 우위. Go PoC 는 비교 자료로 git 히스토리(커밋 `5c01d18`)에 보존.

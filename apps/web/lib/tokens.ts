@@ -3,6 +3,12 @@ import { getPool } from "./db";
 
 // ingest 토큰: 평문은 발급 시 1회만 노출, DB 엔 sha256 해시만 저장(seed·ingest-auth 와 동일 방식).
 export type TokenMeta = { createdAt: Date; lastUsedAt: Date | null };
+export type IssuedIngestToken = { token: string; tokenId: string };
+export type TokenConnectionStatus = {
+  connected: boolean;
+  lastUsedAt: Date | null;
+  lastHost: string | null;
+};
 export type IngestTokenRow = {
   id: string;
   label: string | null;
@@ -49,14 +55,62 @@ export async function issueTokenWithPool(
   pool: Queryable,
   label?: string | null,
 ): Promise<string> {
+  return (await createTokenWithPool(userId, pool, label)).token;
+}
+
+async function createTokenWithPool(
+  userId: string,
+  pool: Queryable,
+  label?: string | null,
+): Promise<IssuedIngestToken> {
   const token = genToken();
   const hash = hashToken(token);
-  await pool.query("INSERT INTO ingest_tokens (user_id, token_hash, device_label) VALUES ($1, $2, $3)", [
-    userId,
-    hash,
-    normalizeLabel(label),
-  ]);
-  return token;
+  const result = await pool.query(
+    "INSERT INTO ingest_tokens (user_id, token_hash, device_label) VALUES ($1, $2, $3) RETURNING id",
+    [userId, hash, normalizeLabel(label)],
+  );
+  const tokenId = result?.rows[0]?.id;
+  if (typeof tokenId !== "string") throw new Error("ingest token id missing");
+  return { token, tokenId };
+}
+
+export async function issueDeviceToken(userId: string): Promise<IssuedIngestToken> {
+  return issueDeviceTokenWithPool(userId, getPool());
+}
+
+export async function issueDeviceTokenWithPool(
+  userId: string,
+  pool: Queryable,
+): Promise<IssuedIngestToken> {
+  return createTokenWithPool(userId, pool, null);
+}
+
+export async function getTokenConnectionStatus(
+  userId: string,
+  tokenId: string,
+): Promise<TokenConnectionStatus> {
+  return getTokenConnectionStatusWithPool(userId, tokenId, getPool());
+}
+
+export async function getTokenConnectionStatusWithPool(
+  userId: string,
+  tokenId: string,
+  pool: Queryable,
+): Promise<TokenConnectionStatus> {
+  const result = await pool.query(
+    `SELECT last_used_at, last_host FROM ingest_tokens
+     WHERE user_id = $1 AND id = $2 AND revoked_at IS NULL
+       AND (expires_at IS NULL OR expires_at > now())`,
+    [userId, tokenId],
+  );
+  const row = result?.rows[0] as
+    | { last_used_at: Date | null; last_host: string | null }
+    | undefined;
+  return {
+    connected: Boolean(row?.last_used_at),
+    lastUsedAt: row?.last_used_at ?? null,
+    lastHost: row?.last_host ?? null,
+  };
 }
 
 export async function listActiveTokens(userId: string): Promise<IngestTokenRow[]> {

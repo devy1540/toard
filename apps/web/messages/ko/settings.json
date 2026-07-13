@@ -1,7 +1,7 @@
 {
   "pageTitle": "설정",
   "tabAccount": "계정",
-  "tabInstall": "설치 · 토큰",
+  "tabInstall": "컴퓨터 연결",
   "account": {
     "changeTitle": "비밀번호 변경",
     "setTitle": "비밀번호 설정",
@@ -19,9 +19,9 @@
     "googleNotConfigured": "서버에 Google OAuth가 설정되어 있지 않습니다."
   },
   "install": {
-    "issueTitle": "내 토큰 발급 · 설치",
-    "issueDescription": "내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를 설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. <b>프롬프트·코드 내용은 수집하지 않습니다</b> — 토큰 수·모델·비용·<b>기기명(호스트)</b> 등 사용량 메타데이터만 전송됩니다.",
-    "issueDescriptionWithContent": "내 사용량을 toard 로 보내도록 <code>claude</code>/<code>codex</code> 래퍼(shim)를 설치합니다. 토큰은 본인에게 귀속되어 사용량이 <b>내 계정</b>으로 집계됩니다. 기본은 <b>프롬프트·코드 내용을 수집하지 않고</b> 사용량 메타데이터만 보냅니다 — 아래에서 본문 수집을 켤 수 있습니다.",
+    "issueTitle": "내 컴퓨터 연결",
+    "issueDescription": "Claude와 Codex 사용량을 내 계정에서 확인할 수 있습니다.",
+    "issueDescriptionWithContent": "Claude와 Codex 사용량을 내 계정에서 확인할 수 있습니다.",
     "devicesTitle": "내 기기 · 수신 확인",
     "devicesDescription": "기기별 마지막 수신과 shim 버전입니다.",
     "deviceComputer": "컴퓨터",
@@ -102,6 +102,62 @@
     "uninstallTitle": "제거",
     "uninstallCopied": "제거 명령을 복사했습니다.",
     "uninstallDescription": "이 기기의 toard 수집 설정을 제거합니다. 기존 Claude/Codex 설치는 유지됩니다."
+  },
+  "wizard": {
+    "introTitle": "이 컴퓨터를 toard에 연결하세요",
+    "introDescription": "Claude와 Codex 사용량이 내 계정에 자동으로 기록됩니다.",
+    "introPrivacyMetadata": "프롬프트와 코드 내용은 보내지 않고 사용량 정보만 기록합니다.",
+    "introPrivacyContent": "프롬프트와 응답도 암호화해 내 히스토리에 기록합니다.",
+    "start": "이 컴퓨터 연결하기",
+    "platformTitle": "어떤 컴퓨터를 사용하고 있나요?",
+    "platformDescription": "자동으로 선택했어요. 다르면 바꿔주세요.",
+    "detected": "{platform}(으)로 선택됨",
+    "windows": "Windows",
+    "macos": "macOS",
+    "linux": "Linux",
+    "continue": "네, 계속할게요",
+    "issuing": "연결 준비 중…",
+    "installTitle": {
+      "windows": "PowerShell에 명령을 붙여넣으세요",
+      "macos": "터미널에 명령을 붙여넣으세요",
+      "linux": "터미널에 명령을 붙여넣으세요"
+    },
+    "openTerminal": {
+      "windows": "시작 메뉴에서 PowerShell을 검색해 여세요.",
+      "macos": "Spotlight에서 터미널을 검색해 여세요.",
+      "linux": "사용 중인 터미널을 여세요."
+    },
+    "copyInstall": "설치 명령 복사",
+    "copiedInstall": "설치 명령을 복사했어요",
+    "pasteAndRun": "붙여넣고 Enter를 누르세요.",
+    "ranCommand": "명령을 실행했어요",
+    "verifyTitle": "연결을 확인하고 있어요",
+    "verifyDescription": "PowerShell 또는 터미널 창을 닫지 마세요.",
+    "waiting": "새 컴퓨터의 첫 신호를 기다리는 중…",
+    "connectedTitle": "연결됐어요",
+    "connectedDescription": "{computer}에서 사용량을 받을 준비가 됐습니다.",
+    "viewUsage": "내 사용량 보러 가기",
+    "connectAnother": "다른 컴퓨터도 연결하기",
+    "stalledTitle": "아직 연결 신호를 받지 못했어요",
+    "stalledDescription": "터미널의 완료 메시지를 확인하거나 명령을 다시 실행해 주세요.",
+    "copyAgain": "설치 명령 다시 복사",
+    "copyDoctor": "진단 명령 복사",
+    "copiedDoctor": "진단 명령을 복사했어요",
+    "choosePlatformAgain": "컴퓨터 종류 다시 선택",
+    "progress": "연결 단계 {current}/{total}",
+    "contentLabel": "프롬프트와 응답도 기록",
+    "contentMetadataOnly": "사용량 정보만 기록하고 프롬프트와 코드는 보내지 않습니다.",
+    "contentWithPrompts": "프롬프트와 응답을 암호화해 내 히스토리에 함께 기록합니다."
+  },
+  "management": {
+    "title": "연결된 컴퓨터 관리",
+    "description": "진단, 업데이트, 직접 설정, 제거 같은 고급 작업입니다.",
+    "platform": "명령을 실행할 컴퓨터",
+    "manual": "직접 설정",
+    "doctor": "진단",
+    "update": "업데이트",
+    "uninstall": "toard 연결 제거",
+    "copy": "명령 복사"
   },
   "errors": {
     "loginRequired": "로그인이 필요합니다.",

@@ -3,11 +3,14 @@ import test from "node:test";
 import type { PricingSchedule } from "@toard/pricing";
 import type { PricingRepairResolver, StorageBackend } from "@toard/core";
 import {
+  nextPricingRepairBatchLimit,
+  PgPricingRepairRepository,
   pricingRepairCandidateFromStatus,
   runPricingRepairTaskWith,
   type PricingRepairRepository,
   type PricingRepairStatusRecord,
 } from "./pricing-repair";
+import type { Pool } from "pg";
 
 const NOW = new Date("2026-07-14T00:00:00.000Z");
 const GENERATION = "2026-07-14T00:00:00.000Z";
@@ -139,4 +142,30 @@ test("pending과 오래 멈춘 running만 coordinator 후보가 된다", () => {
     state: "running",
     lastStartedAt: new Date(NOW.getTime() - 6 * 60 * 1_000),
   }), NOW)?.due, true);
+});
+
+test("가격 복구 batch는 가득 찬 빠른 처리만 25% 늘리고 10초 이상이면 절반으로 줄인다", () => {
+  assert.deepEqual(nextPricingRepairBatchLimit(100, 500, false), { limit: 100, loadState: "normal" });
+  assert.deepEqual(nextPricingRepairBatchLimit(100, 2_000, true), { limit: 125, loadState: "normal" });
+  assert.deepEqual(nextPricingRepairBatchLimit(100, 5_000, true), { limit: 100, loadState: "normal" });
+  assert.deepEqual(nextPricingRepairBatchLimit(100, 10_000, true), { limit: 50, loadState: "throttled" });
+  assert.deepEqual(nextPricingRepairBatchLimit(25, 10_000, true), { limit: 25, loadState: "throttled" });
+  assert.deepEqual(nextPricingRepairBatchLimit(500, 100, true), { limit: 500, loadState: "normal" });
+});
+
+test("가격 복구 실패 backoff는 최대 5분으로 제한한다", async () => {
+  let query = "";
+  const pool = {
+    async query(sql: string) {
+      query = sql;
+      return { rowCount: 1, rows: [{ singleton: true }] };
+    },
+  } as unknown as Pool;
+
+  assert.equal(await new PgPricingRepairRepository(pool).markFailed(
+    GENERATION,
+    NOW,
+    "temporary failure",
+  ), true);
+  assert.match(query, /LEAST\(300,/);
 });

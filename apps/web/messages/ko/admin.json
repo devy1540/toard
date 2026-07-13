@@ -266,6 +266,7 @@
     "emailAlreadyExists": "이미 가입된 이메일입니다.",
     "teamRequired": "초대할 팀을 선택하세요.",
     "teamNotFound": "선택한 팀을 찾을 수 없습니다.",
+    "onlyAdmin": "관리자만 가능합니다.",
     "teamNameRequired": "팀 이름을 입력하세요.",
     "teamNameTooLong": "팀 이름은 50자 이내로 입력하세요.",
     "teamNameExists": "이미 있는 팀 이름입니다.",

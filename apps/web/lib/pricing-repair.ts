@@ -189,7 +189,7 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
            last_error = $3,
            consecutive_failures = consecutive_failures + 1,
            next_attempt_at = $2 + make_interval(
-             secs => LEAST(3600, 60 * power(2, consecutive_failures)::integer)
+             secs => LEAST(300, 60 * power(2, consecutive_failures)::integer)
            ),
            updated_at = $2
        WHERE singleton AND generation = $1::timestamptz
@@ -257,12 +257,19 @@ function supportedModels(
   return [...models];
 }
 
-function adaptiveLimit(current: number, durationMs: number): { limit: number; loadState: "normal" | "throttled" } {
-  if (durationMs > 2_000) {
+export function nextPricingRepairBatchLimit(
+  current: number,
+  durationMs: number,
+  fullBatch: boolean,
+): { limit: number; loadState: "normal" | "throttled" } {
+  if (durationMs >= 10_000) {
     return { limit: Math.max(25, Math.floor(current / 2)), loadState: "throttled" };
   }
-  if (durationMs < 500) {
-    return { limit: Math.min(500, Math.max(25, current * 2)), loadState: "normal" };
+  if (fullBatch && durationMs <= 2_000) {
+    return {
+      limit: Math.min(500, Math.max(25, Math.ceil(current * 1.25))),
+      loadState: "normal",
+    };
   }
   return { limit: Math.min(500, Math.max(25, current)), loadState: "normal" };
 }
@@ -331,7 +338,11 @@ export async function runPricingRepairTaskWith(
     const remaining = after.reduce((sum, item) => sum + item.events, 0);
     const remainingSupported = supportedModels(after, schedule).length > 0;
     const at = dependencies.now();
-    const adaptive = adaptiveLimit(claimed.adaptiveLimit, at.getTime() - startedAt.getTime());
+    const adaptive = nextPricingRepairBatchLimit(
+      claimed.adaptiveLimit,
+      at.getTime() - startedAt.getTime(),
+      result.scanned >= claimed.adaptiveLimit,
+    );
     const state = remaining === 0 ? "idle" : remainingSupported ? "pending" : "waiting_for_catalog";
     const applied = await dependencies.repository.markProgress({
       generation: claimed.generation,

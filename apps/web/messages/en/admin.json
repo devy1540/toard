@@ -266,6 +266,7 @@
     "emailAlreadyExists": "This email is already registered.",
     "teamRequired": "Please choose a team for the invitation.",
     "teamNotFound": "The selected team could not be found.",
+    "onlyAdmin": "Only administrators are allowed.",
     "teamNameRequired": "Please enter a team name.",
     "teamNameTooLong": "Team names must be 50 characters or fewer.",
     "teamNameExists": "That team name already exists.",

@@ -304,5 +304,6 @@ test("전체 보존 재가격 action과 UI와 번역은 제거한다", () => {
   for (const messages of [ko, en]) {
     assert.equal(Object.keys(messages.system).some((key) => key.startsWith("reprice")), false);
     assert.equal(Object.keys(messages.errors).some((key) => key.startsWith("reprice")), false);
+    assert.equal(typeof messages.errors.onlyAdmin, "string");
   }
 });

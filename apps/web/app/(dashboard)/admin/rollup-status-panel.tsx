@@ -348,7 +348,7 @@ export function RollupStatusPanel({
               </dl>
 
               {!worker.hardEnabled ? <p className="text-muted-foreground text-xs">{t("rollup.disabledByServer")}</p> : null}
-              {worker.lastError ? (
+              {worker.state === "error" && worker.lastError ? (
                 <p className="text-destructive text-xs">
                   {t("rollup.lastError", { value: formatDateTime(worker.lastErrorAt, locale) })}
                 </p>

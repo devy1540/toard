@@ -173,6 +173,24 @@ type RollupValidationSummary = {
   fingerprint?: string | number;
 };
 
+function validationSummarySelect(bucketColumn: "bucket_15m" | "bucket_start"): string {
+  const source = "validation_source";
+  return `SELECT count() AS rows,
+              sum(${source}.event_count) AS events,
+              sum(${source}.input_tokens) AS input_tokens,
+              sum(${source}.output_tokens) AS output_tokens,
+              sum(${source}.cache_read_tokens) AS cache_read_tokens,
+              sum(${source}.cache_creation_tokens) AS cache_creation_tokens,
+              sum(${source}.cost_usd) AS cost_usd,
+              groupBitXor(cityHash64(
+                ${source}.${bucketColumn}, ${source}.provider_key, ${source}.user_id,
+                ${source}.team_id, ${source}.session_id, ${source}.model, ${source}.host,
+                ${source}.pricing_revision_id, ${source}.cost_status, ${source}.event_count,
+                ${source}.input_tokens, ${source}.output_tokens, ${source}.cache_read_tokens,
+                ${source}.cache_creation_tokens, ${source}.cost_usd
+              )) AS fingerprint`;
+}
+
 export type RollupStorageStats = {
   collectedAt: string;
   rawRange: { from: string | null; to: string | null };
@@ -637,18 +655,7 @@ export class ClickHouseStorage implements StorageBackend {
     const from = parsedRawFrom && Number.isFinite(parsedRawFrom.getTime())
       ? new Date(Math.floor(parsedRawFrom.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS)
       : requestedFrom;
-    const summarySelect = `SELECT count() AS rows,
-              sum(event_count) AS events,
-              sum(input_tokens) AS input_tokens,
-              sum(output_tokens) AS output_tokens,
-              sum(cache_read_tokens) AS cache_read_tokens,
-              sum(cache_creation_tokens) AS cache_creation_tokens,
-              sum(cost_usd) AS cost_usd,
-              groupBitXor(cityHash64(
-                bucket_15m, provider_key, user_id, team_id, session_id, model, host,
-                pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens, cost_usd
-              )) AS fingerprint`;
+    const summarySelect = validationSummarySelect("bucket_15m");
     const raw = await this.queryJson<RollupValidationSummary>(
       `${summarySelect}
        FROM (
@@ -666,15 +673,15 @@ export class ClickHouseStorage implements StorageBackend {
            AND ts < {to:DateTime64(3)}
          GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host,
                   pricing_revision_id, cost_status
-       )`,
+       ) AS validation_source`,
       { from: chTs(from), to: chTs(targetTo) },
       ROLLUP_VALIDATION_SETTINGS,
     );
     const rollup = await this.queryJson<RollupValidationSummary>(
       `${summarySelect}
-       FROM usage_15m_rollup_v2 FINAL
-       WHERE bucket_15m >= {from:DateTime64(3)}
-         AND bucket_15m < {to:DateTime64(3)}`,
+       FROM usage_15m_rollup_v2 AS validation_source FINAL
+       WHERE validation_source.bucket_15m >= {from:DateTime64(3)}
+         AND validation_source.bucket_15m < {to:DateTime64(3)}`,
       { from: chTs(from), to: chTs(targetTo) },
       ROLLUP_VALIDATION_SETTINGS,
     );
@@ -713,18 +720,7 @@ export class ClickHouseStorage implements StorageBackend {
       "cost_usd",
       "fingerprint",
     ] as const;
-    const summarySelect = `SELECT count() AS rows,
-              sum(event_count) AS events,
-              sum(input_tokens) AS input_tokens,
-              sum(output_tokens) AS output_tokens,
-              sum(cache_read_tokens) AS cache_read_tokens,
-              sum(cache_creation_tokens) AS cache_creation_tokens,
-              sum(cost_usd) AS cost_usd,
-              groupBitXor(cityHash64(
-                bucket_start, provider_key, user_id, team_id, session_id, model, host,
-                pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
-                cache_read_tokens, cache_creation_tokens, cost_usd
-              )) AS fingerprint`;
+    const summarySelect = validationSummarySelect("bucket_start");
 
     for (const timezoneInput of new Set(timezones)) {
       const timezone = canonicalTimezoneId(timezoneInput);
@@ -778,16 +774,16 @@ export class ClickHouseStorage implements StorageBackend {
                AND bucket_15m < {to:DateTime64(3)}
              GROUP BY bucket_start, provider_key, user_id, team_id, session_id, model, host,
                       pricing_revision_id, cost_status
-           )`,
+           ) AS validation_source`,
           params,
           ROLLUP_VALIDATION_SETTINGS,
         );
         const rollup = await this.queryJson<RollupValidationSummary>(
           `${summarySelect}
-           FROM ${range.table} FINAL
-           WHERE timezone = {timezone:String}
-             AND bucket_start >= {from:DateTime64(3)}
-             AND bucket_start < {to:DateTime64(3)}`,
+           FROM ${range.table} AS validation_source FINAL
+           WHERE validation_source.timezone = {timezone:String}
+             AND validation_source.bucket_start >= {from:DateTime64(3)}
+             AND validation_source.bucket_start < {to:DateTime64(3)}`,
           params,
           ROLLUP_VALIDATION_SETTINGS,
         );

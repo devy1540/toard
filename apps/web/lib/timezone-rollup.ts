@@ -10,6 +10,7 @@ import { getOrgTimezone } from "./org-time";
 
 export const MAX_ACTIVE_ROLLUP_TIMEZONES = 64;
 export const TIMEZONE_ROLLUP_JOBS_PER_TICK = 8;
+export const TIMEZONE_ROLLUP_MAX_JOBS_PER_TICK = 32;
 export const TIMEZONE_ROLLUP_DAY_PREWARM_DAYS = 400;
 export const TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS = 32;
 export const TIMEZONE_ROLLUP_PREWARM_CHUNK_BUCKETS = 16;
@@ -173,10 +174,12 @@ export async function activateTimezoneRollupWith(
 export async function runTimezoneRollupWorkerWith(
   repository: TimezoneRollupRepository,
   compactor: TimezoneRollupCompactor,
+  limit = TIMEZONE_ROLLUP_JOBS_PER_TICK,
 ): Promise<{ jobs: number; rows: number }> {
-  const claimed = await repository.claimJobs(TIMEZONE_ROLLUP_JOBS_PER_TICK);
+  const claimed = await repository.claimJobs(limit);
   let jobs = 0;
   let rows = 0;
+  let failure: unknown;
 
   for (const job of claimed) {
     try {
@@ -195,15 +198,22 @@ export async function runTimezoneRollupWorkerWith(
       await repository.markDone(job.id);
       jobs++;
       rows += result.value;
-    } catch {
-      await repository.markPending(job.id);
+    } catch (error) {
+      try {
+        await repository.markPending(job.id);
+      } catch (markPendingError) {
+        failure ??= markPendingError;
+        continue;
+      }
+      failure ??= error;
     }
   }
 
+  if (failure) throw failure;
   return { jobs, rows };
 }
 
-class PgTimezoneRollupRepository implements TimezoneRollupRepository {
+export class PgTimezoneRollupRepository implements TimezoneRollupRepository {
   constructor(private readonly pool: Pool) {}
 
   async ensureRegisteredTimezone(
@@ -292,7 +302,7 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
        FROM candidate
        WHERE job.id = candidate.id
        RETURNING job.id::text, job.resolution, job.timezone, job.bucket`,
-      [Math.min(TIMEZONE_ROLLUP_JOBS_PER_TICK, Math.max(0, Math.floor(limit)))],
+      [Math.min(TIMEZONE_ROLLUP_MAX_JOBS_PER_TICK, Math.max(0, Math.floor(limit)))],
     );
     return claimed.rows.map((job) => ({ ...job, status: "inflight" }));
   }
@@ -504,12 +514,12 @@ export async function enqueueTimezoneRollup(
   await enqueueTimezoneRollupWith(new PgTimezoneRollupRepository(getPool()), resolution, canonical, bucket);
 }
 
-export async function runTimezoneRollupWorker(): Promise<{ jobs: number; rows: number }> {
+export async function runTimezoneRollupWorker(limit?: number): Promise<{ jobs: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
   const { getStorage } = await import("./storage");
   const storage = getStorage();
   if (!isTimezoneRollupCompactor(storage) || !isTimezoneCapability(storage)) return { jobs: 0, rows: 0 };
-  return runTimezoneRollupWorkerWith(new PgTimezoneRollupRepository(getPool()), storage);
+  return runTimezoneRollupWorkerWith(new PgTimezoneRollupRepository(getPool()), storage, limit);
 }
 
 export function createTimezoneRollupActivationGate(

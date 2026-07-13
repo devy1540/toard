@@ -6,8 +6,10 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
 } from "@toard/core";
+import type { Pool } from "pg";
 import {
   MAX_ACTIVE_ROLLUP_TIMEZONES,
+  PgTimezoneRollupRepository,
   TIMEZONE_ROLLUP_DAY_PREWARM_DAYS,
   TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS,
   TIMEZONE_ROLLUP_JOBS_PER_TICK,
@@ -49,6 +51,7 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
   const chunks: Date[][] = [];
   const coverage = new Set<string>();
   const lockKeys: string[] = [];
+  const claimLimits: number[] = [];
   const activeTimezones = new Set<string>();
   let sequence = 0;
   let lockHeld = false;
@@ -82,6 +85,7 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
       return inserted;
     },
     async claimJobs(limit) {
+      claimLimits.push(limit);
       return [...jobs.values()]
         .filter((job) => job.status === "pending")
         .slice(0, limit)
@@ -119,7 +123,7 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
     },
   };
 
-  return { repo, jobs, chunks, lockKeys, activeTimezones };
+  return { repo, jobs, chunks, lockKeys, claimLimits, activeTimezones };
 }
 
 test("같은 시간대·해상도·버킷 작업은 한 번만 enqueue한다", async () => {
@@ -236,7 +240,7 @@ test("Santiago 자정 gap 날짜 prewarm은 실제 local date 첫 instant를 사
   assert.equal(starts.has("2025-09-07T03:00:00.000Z"), false);
 });
 
-test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은 pending으로 복귀한다", async () => {
+test("worker는 기본 8개를 처리하고 실패 작업은 pending 복귀 후 tick을 실패시킨다", async () => {
   const fixture = fakeTimezoneRollupRepository();
   for (let i = 0; i < 9; i++) {
     await enqueueTimezoneRollupWith(
@@ -247,22 +251,63 @@ test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은
     );
   }
 
-  const result = await runTimezoneRollupWorkerWith(fixture.repo, {
-    async supportsTimezone() {
-      return true;
-    },
-    async compactTimezoneRollup(_resolution, _timezone, bucket) {
-      if (bucket.toISOString() === "2026-07-02T00:00:00.000Z") throw new Error("ClickHouse unavailable");
-      return 3;
-    },
-  });
+  await assert.rejects(
+    runTimezoneRollupWorkerWith(fixture.repo, {
+      async supportsTimezone() {
+        return true;
+      },
+      async compactTimezoneRollup(_resolution, _timezone, bucket) {
+        if (bucket.toISOString() === "2026-07-02T00:00:00.000Z") throw new Error("ClickHouse unavailable");
+        return 3;
+      },
+    }),
+    /ClickHouse unavailable/,
+  );
 
-  assert.deepEqual(result, { jobs: 7, rows: 21 });
   assert.equal(fixture.lockKeys.length, TIMEZONE_ROLLUP_JOBS_PER_TICK);
   assert.equal(fixture.lockKeys[0], "timezone-rollup:day:Asia/Seoul");
   assert.equal(fixture.lockKeys[1], "timezone-rollup:hour:Asia/Seoul");
   assert.equal([...fixture.jobs.values()].filter((job) => job.status === "done").length, 7);
   assert.equal([...fixture.jobs.values()].filter((job) => job.status === "pending").length, 2);
+});
+
+test("worker는 adaptive job 한도를 queue claim에 전달한다", async () => {
+  const fixture = fakeTimezoneRollupRepository();
+  for (let index = 0; index < 5; index++) {
+    await enqueueTimezoneRollupWith(
+      fixture.repo,
+      "hour",
+      "Asia/Seoul",
+      new Date(Date.UTC(2026, 6, 1, index)),
+    );
+  }
+
+  const result = await runTimezoneRollupWorkerWith(fixture.repo, {
+    async supportsTimezone() {
+      return true;
+    },
+    async compactTimezoneRollup() {
+      return 1;
+    },
+  }, 3);
+
+  assert.deepEqual(result, { jobs: 3, rows: 3 });
+  assert.deepEqual(fixture.claimLimits, [3]);
+});
+
+test("PostgreSQL queue claim은 adaptive 한도를 기존 기본값 8로 다시 제한하지 않는다", async () => {
+  let requestedLimit: unknown;
+  const pool = {
+    async query(_sql: string, params?: unknown[]) {
+      requestedLimit = params?.[0];
+      return { rows: [] };
+    },
+  } as unknown as Pool;
+  const repository = new PgTimezoneRollupRepository(pool);
+
+  await repository.claimJobs(20);
+
+  assert.equal(requestedLimit, 20);
 });
 
 test("ClickHouse capability가 사라진 timezone job은 한 tick에 drain되어 정상 queue를 굶기지 않는다", async () => {

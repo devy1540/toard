@@ -39,6 +39,8 @@ const workerRow = {
   processed_units_total: "40",
   processed_rows_total: "1200",
   throughput_units_per_minute: 3.5,
+  adaptive_limit: 16,
+  load_state: "normal",
 };
 
 test("shadow worker는 미설정이면 켜지고 명시적 false면 hard disable된다", () => {
@@ -176,6 +178,8 @@ test("repository get은 PostgreSQL snake case와 bigint를 domain record로 매�
     processedUnitsTotal: 40,
     processedRowsTotal: 1200,
     throughputUnitsPerMinute: 3.5,
+    adaptiveLimit: 16,
+    loadState: "normal",
   });
   assert.deepEqual(fixture.queries[0]?.params, ["usage_15m_v2"]);
 });
@@ -247,4 +251,41 @@ test("repository 실패 기록도 오류를 다시 sanitize한다", async () => 
     "postgres://[redacted]@db/toard?token=[redacted]",
     5000,
   ]);
+});
+
+test("repository는 adaptive 한도와 부하 상태를 함께 저장한다", async () => {
+  const fixture = createPool();
+  const repository = new PgRollupWorkerRepository(fixture.pool);
+
+  await repository.setAdaptiveState("timezone", 4, "throttled");
+
+  assert.match(fixture.queries[0]!.sql, /adaptive_limit = \$2, load_state = \$3/);
+  assert.deepEqual(fixture.queries[0]!.params, ["timezone", 4, "throttled"]);
+});
+
+test("repository shared load slot은 lock을 얻은 실행만 허용하고 반드시 해제한다", async () => {
+  const queries: Query[] = [];
+  let released = 0;
+  const client = {
+    async query(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: sql.includes("pg_try_advisory_lock") ? [{ locked: true }] : [] };
+    },
+    release() {
+      released++;
+    },
+  };
+  const pool = {
+    async connect() {
+      return client;
+    },
+  } as unknown as Pool;
+  const repository = new PgRollupWorkerRepository(pool);
+
+  const result = await repository.withLoadSlot(async () => "completed");
+
+  assert.deepEqual(result, { acquired: true, value: "completed" });
+  assert.match(queries[0]!.sql, /pg_try_advisory_lock/);
+  assert.match(queries[1]!.sql, /pg_advisory_unlock/);
+  assert.equal(released, 1);
 });

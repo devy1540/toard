@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RollupWorkerName, RollupWorkerRecord } from "./rollup-worker-state";
+import type { RollupCutoverLayer, RollupCutoverRecord } from "./rollup-cutover-state";
 import {
   deriveRollupProgress,
   getRollupAdminStatusWith,
@@ -10,6 +11,26 @@ import {
 } from "./rollup-status";
 
 const NOW = new Date("2026-07-12T12:00:00.000Z");
+
+function cutoverRecord(
+  layer: RollupCutoverLayer,
+  overrides: Partial<RollupCutoverRecord> = {},
+): RollupCutoverRecord {
+  return {
+    layer,
+    state: "backfilling",
+    targetWatermark: null,
+    healthySeconds: 0,
+    lastCheckedAt: null,
+    lastValidationAt: null,
+    consecutiveFailures: 0,
+    lastFailureKind: null,
+    lastFailure: null,
+    activatedAt: null,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
 
 function workerRecord(
   worker: RollupWorkerName,
@@ -31,6 +52,8 @@ function workerRecord(
     processedUnitsTotal: 0,
     processedRowsTotal: 0,
     throughputUnitsPerMinute: null,
+    adaptiveLimit: worker === "usage_15m_v2" ? 16 : 8,
+    loadState: "normal",
     ...overrides,
   };
 }
@@ -59,6 +82,10 @@ function dependencies(
     loadWorkerRecords: async () => [
       workerRecord("usage_15m_v2"),
       workerRecord("timezone"),
+    ],
+    loadCutoverRecords: async () => [
+      cutoverRecord("usage_15m_v2"),
+      cutoverRecord("timezone"),
     ],
     loadPostgresProgress: async () => ({
       watermark: new Date("2026-07-12T11:30:00.000Z"),
@@ -480,6 +507,37 @@ test("read flags와 normalized raw TTL은 명시 opt-in이 없으면 OFF다", as
   });
   assert.equal(status.workers.usage15mV2.state, "not_applicable");
   assert.equal(status.workers.timezone.state, "not_applicable");
+});
+
+test("자동 전환 active 상태는 effective read source와 관찰 정보를 노출한다", async () => {
+  const status = await getRollupAdminStatusWith(dependencies({
+    loadCutoverRecords: async () => [
+      cutoverRecord("usage_15m_v2", {
+        state: "active",
+        targetWatermark: new Date("2026-07-12T11:30:00.000Z"),
+        healthySeconds: 3_600,
+        lastValidationAt: NOW,
+        activatedAt: NOW,
+      }),
+      cutoverRecord("timezone", {
+        state: "observing",
+        targetWatermark: new Date("2026-07-12T11:30:00.000Z"),
+        healthySeconds: 1_200,
+        lastValidationAt: NOW,
+      }),
+    ],
+  }));
+
+  assert.deepEqual(status.readSources, {
+    usage15mV2: true,
+    timezone: false,
+  });
+  assert.equal(status.cutover.mode, "auto");
+  assert.equal(status.cutover.usage15mV2.state, "active");
+  assert.equal(status.cutover.usage15mV2.healthySeconds, 3_600);
+  assert.equal(status.cutover.timezone.state, "observing");
+  assert.equal(status.workers.usage15mV2.adaptiveLimit, 16);
+  assert.equal(status.workers.usage15mV2.loadState, "normal");
 });
 
 test("worker 상태는 disabled와 paused를 오류·ready보다 우선한다", async () => {

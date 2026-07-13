@@ -194,6 +194,8 @@ function sourceRouterFixture({
   watermark,
   readRollup = true,
   read15mV2Rollup = true,
+  runtimeStates,
+  runtimeStateError = false,
 }: {
   active?: boolean;
   coverageBuckets?: Date[];
@@ -202,8 +204,10 @@ function sourceRouterFixture({
   jsonRows?: Array<Record<string, unknown>>;
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
-  readRollup?: boolean;
-  read15mV2Rollup?: boolean;
+  readRollup?: boolean | "auto";
+  read15mV2Rollup?: boolean | "auto";
+  runtimeStates?: Partial<Record<"usage_15m_v2" | "timezone", "active" | "fallback">>;
+  runtimeStateError?: boolean;
 }) {
   const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
@@ -211,6 +215,13 @@ function sourceRouterFixture({
   const pg = {
     query: async (sql: string, params: unknown[] = []) => {
       pgQueries.push({ sql, params });
+      if (sql.includes("FROM clickhouse_rollup_cutover_status")) {
+        if (runtimeStateError) throw new Error("runtime state unavailable");
+        return {
+          rows: Object.entries(runtimeStates ?? {}).map(([layer, state]) => ({ layer, state })),
+          rowCount: Object.keys(runtimeStates ?? {}).length,
+        };
+      }
       if (sql.includes("FROM clickhouse_rollup_timezones")) {
         if (registryFailures > 0) {
           registryFailures--;
@@ -300,6 +311,84 @@ test("legacy rollup flag는 deprecated alias이며 새 flag의 명시값이 우�
   assert.match(String(warning.action), /shadow/);
   assert.match(String(warning.action), /unset/);
   assert.doesNotMatch(warnings[0]!, /CLICKHOUSE_PASSWORD|DATABASE_URL|AUTH_SECRET/);
+});
+
+test("15분 기준 rollup validator는 가격 provenance를 포함한 원본과 rollup fingerprint를 비교한다", async () => {
+  const queries: string[] = [];
+  const settings: Array<Record<string, unknown> | undefined> = [];
+  const summary = {
+    rows: "1",
+    events: "2",
+    input_tokens: "100",
+    output_tokens: "20",
+    cache_read_tokens: "5",
+    cache_creation_tokens: "3",
+    cost_usd: "0.01230000",
+    fingerprint: "1234",
+  };
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query, clickhouse_settings }: { query: string; clickhouse_settings?: Record<string, unknown> }) => {
+      queries.push(query);
+      settings.push(clickhouse_settings);
+      if (query.includes("min(ts) AS from")) {
+        return { json: async () => [{ from: "2026-07-12 00:00:00.000" }] };
+      }
+      return { json: async () => [summary] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const result = await storage.validateUsage15mV2(
+    new Date("2026-07-13T00:00:00.000Z"),
+    24 * 60 * 60 * 1_000,
+  );
+
+  assert.deepEqual(result, { ok: true, detail: null });
+  assert.match(queries[1]!, /FROM usage_events FINAL/);
+  assert.match(queries[1]!, /pricing_revision_id, cost_status/);
+  assert.match(queries[1]!, /cache_read_tokens/);
+  assert.match(queries[1]!, /cache_creation_tokens/);
+  assert.match(queries[1]!, /groupBitXor\(cityHash64/);
+  assert.match(queries[2]!, /FROM usage_15m_rollup_v2 FINAL/);
+  assert.deepEqual(settings[1], { max_threads: 2, max_execution_time: 30 });
+  assert.deepEqual(settings[2], { max_threads: 2, max_execution_time: 30 });
+});
+
+test("시간대별 validator는 활성 시간대의 최근 완료 hour와 local day를 15분 기준으로 비교한다", async () => {
+  const queries: string[] = [];
+  const settings: Array<Record<string, unknown> | undefined> = [];
+  const summary = {
+    rows: "1",
+    events: "2",
+    input_tokens: "100",
+    output_tokens: "20",
+    cache_read_tokens: "5",
+    cache_creation_tokens: "3",
+    cost_usd: "0.01230000",
+    fingerprint: "1234",
+  };
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query, clickhouse_settings }: { query: string; clickhouse_settings?: Record<string, unknown> }) => {
+      queries.push(query);
+      settings.push(clickhouse_settings);
+      return { json: async () => [summary] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const result = await storage.validateTimezoneRollups(
+    ["Asia/Seoul"],
+    new Date("2026-07-13T02:35:00.000Z"),
+  );
+
+  assert.deepEqual(result, { ok: true, detail: null });
+  assert.match(queries[0]!, /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Seoul'\)/);
+  assert.match(queries[1]!, /FROM usage_hourly_timezone_rollup FINAL/);
+  assert.match(queries[2]!, /toStartOfDay\(bucket_15m, 'Asia\/Seoul'\)/);
+  assert.match(queries[3]!, /FROM usage_daily_timezone_rollup FINAL/);
+  assert.ok(settings.every((value) => value?.max_threads === 2 && value.max_execution_time === 30));
 });
 
 function localDayRange(timezone: string, date: string, days: number) {
@@ -622,6 +711,69 @@ test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async (
   assert.match(queries[0]!.query, /FROM usage_15m_rollup_v2/);
   assert.match(queries[0]!.query, /ts >= \{rollupTo:DateTime64\(3\)\}/);
   assert.equal(queries[0]!.params.rollupTo, "2026-04-15 10:15:00.000");
+});
+
+test("auto read는 active runtime 15분 계층을 조회하고 상태를 한 번 확인한다", async () => {
+  const range = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-01T01:00:00.000Z"),
+  };
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    readRollup: "auto",
+    read15mV2Rollup: "auto",
+    runtimeStates: { usage_15m_v2: "active", timezone: "fallback" },
+  });
+
+  await storage.getDailyTimeseries({ ...range, bucket: "15m", timezone: "UTC" });
+
+  assert.match(queries[0]!.query, /usage_15m_rollup_v2/);
+  assert.equal(
+    pgQueries.filter(({ sql }) => sql.includes("clickhouse_rollup_cutover_status")).length,
+    1,
+  );
+});
+
+test("auto read는 fallback 상태나 runtime 조회 실패에서 세밀한 원본으로 fail-closed한다", async () => {
+  const range = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-01T01:00:00.000Z"),
+  };
+  for (const runtimeStateError of [false, true]) {
+    const { storage, queries } = sourceRouterFixture({
+      watermark: range.to,
+      readRollup: "auto",
+      read15mV2Rollup: "auto",
+      runtimeStates: { usage_15m_v2: "fallback", timezone: "fallback" },
+      runtimeStateError,
+    });
+
+    await storage.getDailyTimeseries({ ...range, bucket: "15m", timezone: "UTC" });
+
+    assert.match(queries[0]!.query, /FROM usage_events/);
+    assert.doesNotMatch(queries[0]!.query, /usage_15m_rollup_v2/);
+  }
+});
+
+test("명시적 read OFF는 active runtime 상태를 조회하지 않고 우선한다", async () => {
+  const range = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-01T01:00:00.000Z"),
+  };
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    readRollup: false,
+    read15mV2Rollup: false,
+    runtimeStates: { usage_15m_v2: "active", timezone: "active" },
+  });
+
+  await storage.getDailyTimeseries({ ...range, bucket: "15m", timezone: "UTC" });
+
+  assert.match(queries[0]!.query, /FROM usage_events/);
+  assert.equal(
+    pgQueries.some(({ sql }) => sql.includes("clickhouse_rollup_cutover_status")),
+    false,
+  );
 });
 
 test("활성 Seoul 시간대의 12개월 일별 요청은 ready timezone-day source를 사용한다", async () => {
@@ -1035,6 +1187,24 @@ test("7일 cleanup으로 done job이 사라져도 실제 cache bucket coverage�
   assert.doesNotMatch(queries.at(-1)!.query, /usage_15m_rollup_v2|usage_events/);
 });
 
+test("시간대 cache는 개별 validator marker가 있는 registry만 읽는다", async () => {
+  const range = localDayRange("Asia/Seoul", "2025-07-01", 1);
+  const { storage, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    jobs: range.jobs,
+  });
+
+  await storage.getDailyTimeseries({
+    from: range.from,
+    to: range.to,
+    bucket: "day",
+    timezone: "Asia/Seoul",
+  });
+
+  const registry = pgQueries.find(({ sql }) => sql.includes("FROM clickhouse_rollup_timezones"));
+  assert.match(registry!.sql, /validated_at IS NOT NULL/);
+});
+
 test("동시 dashboard 집계는 readiness snapshot 한 세트만 공유하고 settle 뒤 새 상태를 조회한다", async () => {
   const range = localDayRange("Asia/Seoul", "2025-07-01", 2);
   const fixture = sourceRouterFixture({ watermark: range.to, jobs: range.jobs });
@@ -1231,7 +1401,7 @@ test("legacy flag만 켜져도 coverage가 없으면 old hourly가 아니라 exa
   assert.doesNotMatch(queries[0]!.query, /usage_daily_timezone_rollup|usage_hourly_rollup/);
 });
 
-test("compose와 운영 문서는 legacy hourly source를 활성 경로로 안내하지 않는다", () => {
+test("compose와 운영 문서는 legacy hourly를 제거하고 runtime 자동 전환을 안내한다", () => {
   const compose = readFileSync(new URL("../../../docker-compose.yml", import.meta.url), "utf8");
   const runbook = readFileSync(new URL("../../../docs/clickhouse-exact-rollup-runbook.md", import.meta.url), "utf8");
   const readme = readFileSync(new URL("../../../README.md", import.meta.url), "utf8");
@@ -1239,9 +1409,9 @@ test("compose와 운영 문서는 legacy hourly source를 활성 경로로 안�
   assert.match(compose, /CLICKHOUSE_READ_ROLLUP:.*deprecated alias/);
   assert.doesNotMatch(compose, /CLICKHOUSE_READ_ROLLUP:.*hourly rollup.*대시보드/);
   assert.doesNotMatch(runbook, /CLICKHOUSE_READ_ROLLUP=1/);
-  assert.match(runbook, /schema.*rollup:activate-timezones.*worker.*coverage.*benchmark.*CLICKHOUSE_READ_TIMEZONE_ROLLUP.*unset/is);
+  assert.match(runbook, /schema.*rollup:activate-timezones.*worker.*coverage.*benchmark.*unset.*자동/is);
   assert.match(readme, /CLICKHOUSE_READ_ROLLUP.*deprecated alias/);
-  assert.match(readme, /schema.*activation CLI.*worker.*coverage.*benchmark.*new read flags.*legacy unset/is);
+  assert.match(readme, /schema 배포.*worker 자동 백필.*T0 고정.*60분.*자동 전환/is);
 });
 
 test("인사이트의 current·previous 집계도 공통 router의 ready timezone-day source를 사용한다", async () => {
@@ -1276,7 +1446,7 @@ test("v2 read가 꺼진 dashboard router는 hourly가 아니라 raw source로 fa
   assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup|usage_15m_rollup_v2/);
 });
 
-test("v2 read는 opt-in을 유지하고 compactor worker는 default-on pause gate를 사용한다", () => {
+test("v2 read는 runtime auto와 비상 override를 지원하고 compactor worker는 default-on pause gate를 사용한다", () => {
   const storageSource = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
   const workerSource = readFileSync(new URL("../../../apps/web/lib/clickhouse-outbox.ts", import.meta.url), "utf8");
   const instrumentationSource = readFileSync(new URL("../../../apps/web/instrumentation.ts", import.meta.url), "utf8");

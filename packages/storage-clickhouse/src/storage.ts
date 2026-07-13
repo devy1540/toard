@@ -1,4 +1,8 @@
-import { type ClickHouseClient, createClient } from "@clickhouse/client";
+import {
+  type ClickHouseClient,
+  type ClickHouseSettings,
+  createClient,
+} from "@clickhouse/client";
 import type {
   BucketOptions,
   DailyPoint,
@@ -69,6 +73,10 @@ function hourBucket(ts: Date | string): string {
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const V2_ROLLUP_RETENTION_MS = 400 * 24 * 60 * 60 * 1_000;
+const ROLLUP_VALIDATION_SETTINGS = {
+  max_threads: 2,
+  max_execution_time: 30,
+} as const satisfies ClickHouseSettings;
 
 function fifteenMinuteBucket(ts: Date | string): string {
   const d = new Date(ts);
@@ -128,11 +136,11 @@ export interface ClickHouseStorageOptions {
   /** ReplacingMergeTree 중복 제거를 읽기 시점에 강제할지 여부. 기본 false. */
   readFinal?: boolean;
   /** 완성된 요청 시간대별 hour/day cache를 대시보드에서 읽을지 여부. 기본 false. */
-  readRollup?: boolean;
+  readRollup?: RollupReadMode;
   /** finalized 15분 rollup + 최근 raw tail hybrid 시계열 조회를 사용할지 여부. 기본 false. */
   read15mRollup?: boolean;
   /** 가격 provenance를 보존한 v2 15분 rollup 조회를 사용할지 여부. 기본 false. */
-  read15mV2Rollup?: boolean;
+  read15mV2Rollup?: RollupReadMode;
   /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
   enforceRetentionTtl?: boolean;
 }
@@ -147,6 +155,23 @@ export const ROLLUP_STORAGE_TABLES = [
 ] as const;
 
 export type RollupStorageTable = (typeof ROLLUP_STORAGE_TABLES)[number];
+export type RollupReadMode = boolean | "auto";
+
+export type RollupDataValidationResult = {
+  ok: boolean;
+  detail: string | null;
+};
+
+type RollupValidationSummary = {
+  rows?: string | number;
+  events?: string | number;
+  input_tokens?: string | number;
+  output_tokens?: string | number;
+  cache_read_tokens?: string | number;
+  cache_creation_tokens?: string | number;
+  cost_usd?: string | number;
+  fingerprint?: string | number;
+};
 
 export type RollupStorageStats = {
   collectedAt: string;
@@ -469,12 +494,18 @@ const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
 export class ClickHouseStorage implements StorageBackend {
   private readonly tz: string;
   private readonly usageEventsSource: string;
-  private readonly readRollup: boolean;
+  private readonly readRollup: RollupReadMode;
   private readonly read15mRollup: boolean;
-  private readonly read15mV2Rollup: boolean;
+  private readonly read15mV2Rollup: RollupReadMode;
   private readonly enforceRetentionTtl: boolean;
   private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
   private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
+  private runtimeReadStateCache:
+    | { expiresAt: number; states: Map<"usage_15m_v2" | "timezone", string> }
+    | undefined;
+  private runtimeReadStateInFlight:
+    | Promise<Map<"usage_15m_v2" | "timezone", string>>
+    | undefined;
   private schemaReady: Promise<void> | undefined;
 
   constructor(
@@ -492,6 +523,46 @@ export class ClickHouseStorage implements StorageBackend {
 
   async close(): Promise<void> {
     await this.ch.close();
+  }
+
+  private async runtimeReadStates(): Promise<Map<"usage_15m_v2" | "timezone", string>> {
+    const now = Date.now();
+    if (this.runtimeReadStateCache && now < this.runtimeReadStateCache.expiresAt) {
+      return this.runtimeReadStateCache.states;
+    }
+    if (this.runtimeReadStateInFlight) return this.runtimeReadStateInFlight;
+    let inFlight: Promise<Map<"usage_15m_v2" | "timezone", string>>;
+    inFlight = this.pg.query<{ layer: "usage_15m_v2" | "timezone"; state: string }>(
+      `SELECT layer, state
+       FROM clickhouse_rollup_cutover_status
+       WHERE layer IN ('usage_15m_v2', 'timezone')`,
+    ).then(
+      (result) => {
+        const states = new Map(result.rows.map(({ layer, state }) => [layer, state]));
+        this.runtimeReadStateCache = { expiresAt: Date.now() + 10_000, states };
+        return states;
+      },
+      (error: unknown) => {
+        this.runtimeReadStateCache = undefined;
+        throw error;
+      },
+    ).finally(() => {
+      if (this.runtimeReadStateInFlight === inFlight) this.runtimeReadStateInFlight = undefined;
+    });
+    this.runtimeReadStateInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async readLayerEnabled(
+    layer: "usage_15m_v2" | "timezone",
+    mode: RollupReadMode,
+  ): Promise<boolean> {
+    if (mode !== "auto") return mode;
+    try {
+      return (await this.runtimeReadStates()).get(layer) === "active";
+    } catch {
+      return false;
+    }
   }
 
   async getRollupStorageStats(): Promise<RollupStorageStats> {
@@ -538,6 +609,202 @@ export class ClickHouseStorage implements StorageBackend {
       },
       tables,
     };
+  }
+
+  async validateUsage15mV2(
+    targetTo: Date,
+    lookbackMs = 400 * 24 * 60 * 60 * 1_000,
+  ): Promise<RollupDataValidationResult> {
+    if (!Number.isFinite(targetTo.getTime())) throw new Error("invalid rollup validation target");
+    const boundedLookback = Number.isFinite(lookbackMs) && lookbackMs > 0
+      ? lookbackMs
+      : 24 * 60 * 60 * 1_000;
+    const requestedFrom = new Date(targetTo.getTime() - boundedLookback);
+    const rawRange = await this.queryJson<{ from?: string | Date | null }>(
+      `SELECT if(count() = 0, NULL, min(ts)) AS from
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}`,
+      { from: chTs(requestedFrom), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
+    );
+    const rawFrom = rawRange[0]?.from;
+    const parsedRawFrom = rawFrom instanceof Date
+      ? rawFrom
+      : typeof rawFrom === "string" && rawFrom !== ""
+        ? chDate(rawFrom)
+        : null;
+    const from = parsedRawFrom && Number.isFinite(parsedRawFrom.getTime())
+      ? new Date(Math.floor(parsedRawFrom.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS)
+      : requestedFrom;
+    const summarySelect = `SELECT count() AS rows,
+              sum(event_count) AS events,
+              sum(input_tokens) AS input_tokens,
+              sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              sum(cache_creation_tokens) AS cache_creation_tokens,
+              sum(cost_usd) AS cost_usd,
+              groupBitXor(cityHash64(
+                bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, cost_usd
+              )) AS fingerprint`;
+    const raw = await this.queryJson<RollupValidationSummary>(
+      `${summarySelect}
+       FROM (
+         SELECT toStartOfInterval(ts, INTERVAL 15 minute, 'UTC') AS bucket_15m,
+                provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status,
+                count() AS event_count,
+                sum(input_tokens) AS input_tokens,
+                sum(output_tokens) AS output_tokens,
+                sum(cache_read_tokens) AS cache_read_tokens,
+                sum(cache_creation_tokens) AS cache_creation_tokens,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost_usd
+         FROM usage_events FINAL
+         WHERE ts >= {from:DateTime64(3)}
+           AND ts < {to:DateTime64(3)}
+         GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                  pricing_revision_id, cost_status
+       )`,
+      { from: chTs(from), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
+    );
+    const rollup = await this.queryJson<RollupValidationSummary>(
+      `${summarySelect}
+       FROM usage_15m_rollup_v2 FINAL
+       WHERE bucket_15m >= {from:DateTime64(3)}
+         AND bucket_15m < {to:DateTime64(3)}`,
+      { from: chTs(from), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
+    );
+    const fields = [
+      "rows",
+      "events",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "cost_usd",
+      "fingerprint",
+    ] as const;
+    const rawSummary = raw[0] ?? {};
+    const rollupSummary = rollup[0] ?? {};
+    const mismatches = fields.filter(
+      (field) => String(rawSummary[field] ?? 0) !== String(rollupSummary[field] ?? 0),
+    );
+    return mismatches.length === 0
+      ? { ok: true, detail: null }
+      : { ok: false, detail: `15m validation mismatch: ${mismatches.join(",")}` };
+  }
+
+  async validateTimezoneRollups(
+    timezones: readonly string[],
+    now = new Date(),
+  ): Promise<RollupDataValidationResult> {
+    if (!Number.isFinite(now.getTime())) throw new Error("invalid timezone rollup validation time");
+    const fields = [
+      "rows",
+      "events",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "cost_usd",
+      "fingerprint",
+    ] as const;
+    const summarySelect = `SELECT count() AS rows,
+              sum(event_count) AS events,
+              sum(input_tokens) AS input_tokens,
+              sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              sum(cache_creation_tokens) AS cache_creation_tokens,
+              sum(cost_usd) AS cost_usd,
+              groupBitXor(cityHash64(
+                bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, cost_usd
+              )) AS fingerprint`;
+
+    for (const timezoneInput of new Set(timezones)) {
+      const timezone = canonicalTimezoneId(timezoneInput);
+      if (!timezone) {
+        return { ok: false, detail: `timezone validation rejected: ${timezoneInput}` };
+      }
+      const today = localDateKey(now, timezone);
+      const todayStart = firstInstantOfLocalDate(today, timezone);
+      const previousDayStart = firstInstantOfLocalDate(addLocalCalendarDays(today, -1), timezone);
+      const currentHourIndex = Math.floor(
+        Math.max(0, now.getTime() - todayStart.getTime()) / (60 * 60 * 1_000),
+      );
+      const currentHourStart = new Date(todayStart.getTime() + currentHourIndex * 60 * 60 * 1_000);
+      const ranges = [
+        {
+          resolution: "hour" as const,
+          from: new Date(currentHourStart.getTime() - 60 * 60 * 1_000),
+          to: currentHourStart,
+          expression: `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${timezone}')`,
+          table: "usage_hourly_timezone_rollup",
+        },
+        {
+          resolution: "day" as const,
+          from: previousDayStart,
+          to: todayStart,
+          expression: `toStartOfDay(bucket_15m, '${timezone}')`,
+          table: "usage_daily_timezone_rollup",
+        },
+      ];
+
+      for (const range of ranges) {
+        const params = {
+          timezone,
+          from: chTs(range.from),
+          to: chTs(range.to),
+        };
+        const source = await this.queryJson<RollupValidationSummary>(
+          `${summarySelect}
+           FROM (
+             SELECT ${range.expression} AS bucket_start,
+                    provider_key, user_id, team_id, session_id, model, host,
+                    pricing_revision_id, cost_status,
+                    sum(event_count) AS event_count,
+                    sum(input_tokens) AS input_tokens,
+                    sum(output_tokens) AS output_tokens,
+                    sum(cache_read_tokens) AS cache_read_tokens,
+                    sum(cache_creation_tokens) AS cache_creation_tokens,
+                    sum(cost_usd) AS cost_usd
+             FROM usage_15m_rollup_v2 FINAL
+             WHERE bucket_15m >= {from:DateTime64(3)}
+               AND bucket_15m < {to:DateTime64(3)}
+             GROUP BY bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                      pricing_revision_id, cost_status
+           )`,
+          params,
+          ROLLUP_VALIDATION_SETTINGS,
+        );
+        const rollup = await this.queryJson<RollupValidationSummary>(
+          `${summarySelect}
+           FROM ${range.table} FINAL
+           WHERE timezone = {timezone:String}
+             AND bucket_start >= {from:DateTime64(3)}
+             AND bucket_start < {to:DateTime64(3)}`,
+          params,
+          ROLLUP_VALIDATION_SETTINGS,
+        );
+        const sourceSummary = source[0] ?? {};
+        const rollupSummary = rollup[0] ?? {};
+        const mismatches = fields.filter(
+          (field) => String(sourceSummary[field] ?? 0) !== String(rollupSummary[field] ?? 0),
+        );
+        if (mismatches.length > 0) {
+          return {
+            ok: false,
+            detail: `${timezone} ${range.resolution} validation mismatch: ${mismatches.join(",")}`,
+          };
+        }
+      }
+    }
+    return { ok: true, detail: null };
   }
 
   // ── 공통 ──
@@ -690,7 +957,10 @@ export class ClickHouseStorage implements StorageBackend {
     const expected = this.timezoneCacheBuckets(resolution, timezone, q);
     if (expected.length === 0) return null;
     const registry = await this.pg.query(
-      "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
+      `SELECT timezone
+       FROM clickhouse_rollup_timezones
+       WHERE timezone = $1
+         AND validated_at IS NOT NULL`,
       [timezone],
     );
     if (registry.rowCount !== 1) return null;
@@ -754,7 +1024,7 @@ export class ClickHouseStorage implements StorageBackend {
     timezoneInput: string,
     q: ScopedQuery,
   ): Promise<CacheWindow | null> {
-    if (!this.readRollup) return null;
+    if (!(await this.readLayerEnabled("timezone", this.readRollup))) return null;
     const timezone = canonicalTimezoneId(timezoneInput);
     if (!timezone) return null;
     const key = [
@@ -762,7 +1032,7 @@ export class ClickHouseStorage implements StorageBackend {
       timezone,
       q.from.toISOString(),
       q.to.toISOString(),
-      this.readRollup ? "rollup" : "exact",
+      "rollup",
     ].join("|");
     let snapshot = this.cacheReadyInFlight.get(key);
     if (!snapshot) {
@@ -934,12 +1204,13 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   private async rollup15mV2Source(q: ScopedQuery): Promise<RollupSource | null> {
-    if (!this.read15mV2Rollup) return null;
+    if (!(await this.readLayerEnabled("usage_15m_v2", this.read15mV2Rollup))) return null;
     return this.rollupSource(q, USAGE_15M_V2);
   }
 
   private async rollup15mTimeseriesSource(q: ScopedQuery): Promise<RollupSource | null> {
-    if (this.read15mV2Rollup) return this.rollup15mV2Source(q);
+    const v2 = await this.rollup15mV2Source(q);
+    if (v2) return v2;
     if (!this.read15mRollup) return null;
     return this.rollupSource(q, USAGE_15M);
   }
@@ -1010,10 +1281,19 @@ export class ClickHouseStorage implements StorageBackend {
     return this.schemaReady;
   }
 
-  private async queryJson<T>(query: string, query_params: Params): Promise<T[]> {
+  private async queryJson<T>(
+    query: string,
+    query_params: Params,
+    clickhouse_settings?: ClickHouseSettings,
+  ): Promise<T[]> {
     return retryTransientClickHouseError(async () => {
       await this.ensureSchema();
-      const rs = await this.ch.query({ query, query_params, format: "JSONEachRow" });
+      const rs = await this.ch.query({
+        query,
+        query_params,
+        clickhouse_settings,
+        format: "JSONEachRow",
+      });
       return rs.json<T>();
     });
   }
@@ -2116,6 +2396,19 @@ function envFlagValue(value: string | undefined, defaultValue = false): boolean 
   return normalized === "1" || normalized === "true" || normalized === "on";
 }
 
+export function resolveRollupReadMode(value: string | undefined): RollupReadMode {
+  if (value == null || value.trim() === "") return "auto";
+  return envFlagValue(value);
+}
+
+function resolveTimezoneRollupReadMode(env: RollupReadEnvironment): RollupReadMode {
+  const current = env.CLICKHOUSE_READ_TIMEZONE_ROLLUP;
+  if (current != null && current.trim() !== "") return resolveRollupReadMode(current);
+  const legacy = env.CLICKHOUSE_READ_ROLLUP;
+  if (legacy != null && legacy.trim() !== "") return resolveRollupReadMode(legacy);
+  return "auto";
+}
+
 /**
  * 예전 hourly read 플래그는 새 timezone cache read 요청의 deprecated alias다.
  * source 선택 자체는 ClickHouseStorage의 registry/coverage/dirty guard가 결정한다.
@@ -2150,12 +2443,12 @@ export function resolveClickHouseRollupReadFlag(
 
 /** 환경변수로 CH 클라이언트를 구성해 스토리지를 만든다 (메타용 PG 풀은 주입). */
 export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
-  const rollupRead = resolveClickHouseRollupReadFlag();
+  resolveClickHouseRollupReadFlag();
   return new ClickHouseStorage(createClickHouseClient(), pg, {
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
-    readRollup: rollupRead.enabled,
+    readRollup: resolveTimezoneRollupReadMode(process.env),
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
-    read15mV2Rollup: readEnvFlag("CLICKHOUSE_READ_15M_V2_ROLLUP", false),
+    read15mV2Rollup: resolveRollupReadMode(process.env.CLICKHOUSE_READ_15M_V2_ROLLUP),
     enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),
     ...opts,
   });

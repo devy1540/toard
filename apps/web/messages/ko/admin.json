@@ -106,7 +106,7 @@
     "autoSyncHint": "켜면 서버가 매일(조직 타임존 기준) 한 번 자동으로 동기화합니다. 변경은 재시작 없이 최대 1시간 안에 반영됩니다.",
     "autoSyncUnavailable": "이 배포는 내장 스케줄러가 비활성입니다(Vercel cron 또는 PRICING_AUTO_SYNC=off) — 외부 스케줄러가 동기화를 담당합니다.",
     "rollupTitle": "Rollup 운영 상태",
-    "rollupDescription": "15분·시간대별 rollup의 백필 진행률과 저장 규모를 확인하고 worker를 일시 중지하거나 재개합니다. 읽기 전환과 raw TTL은 서버 설정에서만 변경합니다."
+    "rollupDescription": "15분 기준 rollup과 시간대별 1시간·1일 rollup의 백필·자동 읽기 전환·서버 부하를 확인합니다. 원본 TTL은 서버 설정에서만 변경합니다."
   },
   "rollup": {
     "summary": {
@@ -125,14 +125,54 @@
       "error": "오류"
     },
     "worker": {
-      "usage15mV2": "15분 v2",
-      "timezone": "시간대별 cache"
+      "usage15mV2": "15분 기준 rollup",
+      "timezone": "시간대별 1시간·1일 rollup"
+    },
+    "cutover": {
+      "title": "자동 읽기 전환",
+      "description": "고정된 과거 목표까지 검증하고 정상 상태를 60분 누적하면 자동으로 rollup 읽기를 사용합니다.",
+      "mode": "운영 모드",
+      "modes": {
+        "auto": "자동",
+        "forced_on": "서버 강제 ON",
+        "forced_off": "서버 강제 OFF",
+        "mixed": "계층별 서버 설정"
+      },
+      "layer": {
+        "usage15mV2": "15분 기준 rollup",
+        "timezone": "시간대별 1시간·1일 rollup"
+      },
+      "states": {
+        "backfilling": "백필 중",
+        "observing": "검증 관찰 중",
+        "active": "rollup 읽기 사용",
+        "fallback": "대체 조회",
+        "unavailable": "상태 확인 불가"
+      },
+      "target": "고정 목표",
+      "observation": "정상 관찰",
+      "observationValue": "{current}분 / {required}분",
+      "lastValidation": "마지막 검증",
+      "failure": "최근 상태",
+      "failures": {
+        "mismatch": "데이터 불일치",
+        "lag": "처리 지연",
+        "unavailable": "일시 확인 실패"
+      }
+    },
+    "load": {
+      "limit": "다음 batch 상한 {limit}",
+      "state": "부하 상태 {state}",
+      "states": {
+        "normal": "정상",
+        "throttled": "자동 감속"
+      }
     },
     "progress": "진행률",
     "progressLabel": "{worker} 진행률",
     "sourceProgress": "기준",
     "watermark": "watermark {value}",
-    "coverage": "hour {hour} · day {day}",
+    "coverage": "1시간 {hour} · 1일 {day}",
     "remaining": "남은 단위",
     "eta": "예상 완료",
     "etaMinutes": "약 {minutes}분",
@@ -152,9 +192,9 @@
     "on": "ON",
     "off": "OFF",
     "readSource": {
-      "label": "읽기 source",
-      "usage15mV2": "15분 v2",
-      "timezone": "시간대별 cache"
+      "label": "실제 조회",
+      "usage15mV2": "15분 기준 rollup",
+      "timezone": "시간대별 1시간·1일 rollup"
     },
     "rawTtl": {
       "label": "정규화 raw TTL",

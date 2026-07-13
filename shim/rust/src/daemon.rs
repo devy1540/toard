@@ -68,6 +68,9 @@ fn shim_exe() -> Option<PathBuf> {
 // ── 상태 (doctor 공유) ──
 
 pub enum State {
+    Unsupported {
+        os: &'static str,
+    },
     NotInstalled,
     Installed {
         backend: &'static str,
@@ -77,7 +80,11 @@ pub enum State {
 }
 
 pub fn state() -> State {
-    match std::env::consts::OS {
+    state_for_os(std::env::consts::OS)
+}
+
+fn state_for_os(os: &'static str) -> State {
+    match os {
         "macos" => launchd_state(),
         "linux" => {
             let s = systemd_state();
@@ -87,12 +94,16 @@ pub fn state() -> State {
                 s
             }
         }
-        _ => State::NotInstalled,
+        other => State::Unsupported { os: other },
     }
 }
 
 fn status() -> i32 {
     match state() {
+        State::Unsupported { os } => {
+            println!("  - 주기 수집 자동 등록 미지원({os}) — Claude/Codex CLI 실행 시 수집됩니다");
+            0
+        }
         State::NotInstalled => {
             println!("  - 주기 수집 미등록 — 등록: toard-shim daemon install");
             0
@@ -612,5 +623,13 @@ mod tests {
             "제거 시 toard 항목만 사라짐"
         );
         assert!(removed.contains("echo hi"));
+    }
+
+    #[test]
+    fn windows_periodic_collection_is_reported_unsupported() {
+        assert!(matches!(
+            state_for_os("windows"),
+            State::Unsupported { os: "windows" }
+        ));
     }
 }

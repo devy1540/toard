@@ -28,9 +28,34 @@ test("installer escapes endpoint and applies content default only when absent", 
   );
 });
 
+test("installer uses USERPROFILE for the persistent Windows home", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+
+  assert.match(
+    script,
+    /\$userHome = if \(\$env:USERPROFILE\) \{ \$env:USERPROFILE \} else \{ \$HOME \}/,
+  );
+  assert.match(script, /\$toardDir = Join-Path \$userHome '\.toard'/);
+});
+
+test("installer doctor verifies persisted credentials and gates success", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+
+  assert.match(script, /Remove-Item Env:TOARD_INGEST_TOKEN/);
+  assert.match(script, /Remove-Item Env:TOARD_INGEST_ENDPOINT/);
+  assert.match(script, /\$doctorExit = \$LASTEXITCODE/);
+  assert.match(script, /if \(\$doctorExit -ne 0\) \{ throw/);
+  assert.ok(script.indexOf("$doctorExit -ne 0") < script.indexOf("toard 연결 완료"));
+});
+
 test("uninstaller only targets toard-owned aliases, credentials, and PATH", () => {
   const script = buildPowerShellUninstallScript();
 
+  assert.match(
+    script,
+    /\$userHome = if \(\$env:USERPROFILE\) \{ \$env:USERPROFILE \} else \{ \$HOME \}/,
+  );
+  assert.match(script, /\$toardDir = Join-Path \$userHome '\.toard'/);
   for (const name of ["claude.exe", "codex.exe", "toard-shim.exe"]) {
     assert.match(script, new RegExp(name.replace(".", "\\.")));
   }

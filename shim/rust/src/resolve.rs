@@ -2,7 +2,7 @@
 
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn tool_name_from(arg0: Option<OsString>) -> String {
     arg0.map(PathBuf::from)
@@ -43,6 +43,26 @@ pub fn first_in_path(name: &str) -> Option<PathBuf> {
         .find(|cand| cand.is_file())
 }
 
+/// 현재 실행 파일과 같은 shim 설치물인지 판정한다.
+/// Windows 설치기는 심볼릭 링크 대신 동일 바이너리를 이름별로 복사하므로,
+/// 관리 CLI(`toard-shim.exe`)에서 본 같은 디렉터리의 별칭도 자기 자신이다.
+pub fn is_shim_executable_path(candidate: &Path, current_exe: &Path, windows: bool) -> bool {
+    if candidate == current_exe {
+        return true;
+    }
+    if !windows || candidate.parent() != current_exe.parent() {
+        return false;
+    }
+    let current_name = current_exe
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase());
+    let candidate_name = candidate
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_ascii_lowercase());
+    current_name.as_deref() == Some("toard-shim")
+        && matches!(candidate_name.as_deref(), Some("claude" | "codex"))
+}
+
 /// PATH 에서 진짜 바이너리 탐색 (자기 자신 제외).
 pub fn find_real_binary(name: &str) -> Option<PathBuf> {
     let self_canon = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
@@ -56,7 +76,10 @@ pub fn find_real_binary(name: &str) -> Option<PathBuf> {
             let Ok(cc) = cand.canonicalize() else {
                 continue;
             };
-            if self_canon.as_ref() == Some(&cc) {
+            if self_canon
+                .as_deref()
+                .is_some_and(|current| is_shim_executable_path(&cc, current, cfg!(windows)))
+            {
                 continue;
             }
             return Some(cand);
@@ -98,5 +121,16 @@ mod tests {
             tool_name_from(Some("/Users/x/.toard/bin/toard-shim".into())),
             "toard-shim"
         );
+    }
+
+    #[test]
+    fn windows_sibling_aliases_are_the_same_shim_installation() {
+        let manager = std::path::Path::new("/Users/x/.toard/bin/toard-shim.exe");
+        let claude = std::path::Path::new("/Users/x/.toard/bin/claude.exe");
+        let real = std::path::Path::new("/Program Files/Claude/claude.exe");
+
+        assert!(is_shim_executable_path(claude, manager, true));
+        assert!(!is_shim_executable_path(real, manager, true));
+        assert!(!is_shim_executable_path(claude, manager, false));
     }
 }

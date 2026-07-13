@@ -120,7 +120,8 @@
   "costCoverage": {
     "partial": "Partial total",
     "unpriced": "Price unconfirmed",
-    "legacy": "Stored legacy cost"
+    "legacy": "Stored legacy cost",
+    "legacyHint": "{count} events use earlier stored prices"
   },
   "chart": {
     "cost": "Cost",

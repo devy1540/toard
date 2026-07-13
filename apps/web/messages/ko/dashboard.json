@@ -120,7 +120,8 @@
   "costCoverage": {
     "partial": "부분 합계",
     "unpriced": "가격 미확정",
-    "legacy": "기존 저장 비용"
+    "legacy": "기존 저장 비용",
+    "legacyHint": "{count}건은 이전 가격 기준"
   },
   "chart": {
     "cost": "비용",

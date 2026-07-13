@@ -7,6 +7,7 @@ import {
   assertLocalBenchmarkTarget,
   assertNonProductionBenchmarkEnvironment,
   assertReferenceContainerLimits,
+  assertTimezoneFixtureCoverage,
   benchmarkExecutionMode,
   benchmarkPercentiles,
   dashboardFixtureStart,
@@ -14,6 +15,36 @@ import {
   parseDashboardBenchmarkOptions,
   REFERENCE_RESOURCE_LIMITS,
 } from "./benchmark-dashboard-http-lib";
+
+test("timezone benchmark coverage는 eligible을 모두 소진하고 finalized 대기만 허용한다", () => {
+  assert.doesNotThrow(() => assertTimezoneFixtureCoverage({
+    eligible: 0,
+    dayJobs: 400,
+    dayCoverage: 399,
+    dayWaiting: 1,
+    hourJobs: 768,
+    hourCoverage: 753,
+    hourWaiting: 15,
+  }));
+  assert.throws(() => assertTimezoneFixtureCoverage({
+    eligible: 1,
+    dayJobs: 400,
+    dayCoverage: 399,
+    dayWaiting: 1,
+    hourJobs: 768,
+    hourCoverage: 753,
+    hourWaiting: 15,
+  }), /eligible/);
+  assert.throws(() => assertTimezoneFixtureCoverage({
+    eligible: 0,
+    dayJobs: 400,
+    dayCoverage: 398,
+    dayWaiting: 1,
+    hourJobs: 768,
+    hourCoverage: 753,
+    hourWaiting: 15,
+  }), /coverage/);
+});
 
 test("dashboard benchmark only accepts the fixed release-gate fixture", () => {
   assert.deepEqual(parseDashboardBenchmarkOptions([]), {

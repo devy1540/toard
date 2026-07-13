@@ -77,6 +77,58 @@ test("15분 worker가 먼저 등록돼도 timezone을 굶기지 않는다", () =
   }
 });
 
+test("30분 가속 soak 동안 heavy 작업은 하나씩 실행되고 outbox는 독립적으로 소진된다", async () => {
+  const lastStarted = new Map<RollupSchedulerTask, Date | null>([
+    ["usage_15m_v2", null],
+    ["timezone", null],
+  ]);
+  const selected = new Map<RollupSchedulerTask, number[]>([
+    ["usage_15m_v2", []],
+    ["timezone", []],
+  ]);
+  let heavyInFlight = 0;
+  let maximumHeavyConcurrency = 0;
+  let outboxPending = 181;
+  let outboxDelivered = 0;
+  let lastHeartbeatAt = START;
+
+  for (let seconds = 0; seconds <= 30 * 60; seconds += 10) {
+    const now = new Date(START.getTime() + seconds * 1_000);
+    lastHeartbeatAt = now;
+
+    if (outboxPending > 0) {
+      outboxPending--;
+      outboxDelivered++;
+    }
+
+    const task = selectRollupTask([
+      candidate("usage_15m_v2", { lastStartedAt: lastStarted.get("usage_15m_v2") ?? null }),
+      candidate("timezone", { lastStartedAt: lastStarted.get("timezone") ?? null }),
+    ], now);
+    if (!task) continue;
+
+    heavyInFlight++;
+    maximumHeavyConcurrency = Math.max(maximumHeavyConcurrency, heavyInFlight);
+    await Promise.resolve();
+    selected.get(task)!.push(now.getTime());
+    lastStarted.set(task, now);
+    heavyInFlight--;
+  }
+
+  assert.equal(maximumHeavyConcurrency, 1);
+  assert.equal(outboxPending, 0);
+  assert.equal(outboxDelivered, 181);
+  assert.ok(START.getTime() + 30 * 60 * 1_000 - lastHeartbeatAt.getTime() <= 120_000);
+  for (const task of ["usage_15m_v2", "timezone"] as const) {
+    const times = selected.get(task)!;
+    assert.ok(times.length > 2, `${task}가 반복 선택되어야 함`);
+    assert.ok(
+      times.slice(1).every((at, index) => at - times[index]! <= 120_000),
+      `${task}가 stalled 없이 120초 안에 다시 선택되어야 함`,
+    );
+  }
+});
+
 test("validation, 120초 대기, 가장 오래 미실행 순으로 선택한다", () => {
   const now = new Date(START.getTime() + 130_000);
   assert.equal(selectRollupTask([

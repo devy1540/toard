@@ -470,7 +470,7 @@ git commit -m "feat(admin): rollup coordinator 상태를 표시"
 - Produces: real PostgreSQL migration verification for source windows and generation CAS.
 - Preserves: `pnpm benchmark:dashboard-http` release contract and eight authenticated scenarios.
 
-- [ ] **Step 1: Write failing PostgreSQL integration test**
+- [x] **Step 1: Write failing PostgreSQL integration test**
 
 ```ts
 test("migration 26은 기존 DST day job의 source_to와 generation을 보존한다", async () => {
@@ -483,39 +483,39 @@ test("migration 26은 기존 DST day job의 source_to와 generation을 보존한
 });
 ```
 
-- [ ] **Step 2: Run integration test and confirm failure**
+- [x] **Step 2: Run integration test and confirm failure**
 
 Run: `node --import tsx --test scripts/rollup-coordinator-migration.integration.test.ts`
 
 Expected: FAIL until the Docker-backed PostgreSQL fixture and migration assertions are complete.
 
-- [ ] **Step 3: Complete integration harness and package script**
+- [x] **Step 3: Complete integration harness and package script**
 
 Add the test to `test:migrations` after the pricing migration test. Use an isolated PostgreSQL 16 container, random host port, and cleanup in `finally`; never connect to production.
 
-- [ ] **Step 4: Run full correctness gates**
+- [x] **Step 4: Run full correctness gates**
 
 Run: `pnpm test && pnpm typecheck && pnpm build && git diff --check`
 
 Expected: all suites, migration integrations, typecheck, and Next production build pass.
 
-- [ ] **Step 5: Run exact rollup verifier**
+- [x] **Step 5: Run exact rollup verifier**
 
 Run: `pnpm tsx scripts/verify-clickhouse-exact-rollup.ts`
 
 Expected: `{ "ok": true }` with zero event/token/cost/fingerprint mismatches.
 
-- [ ] **Step 6: Run official release benchmark with active coordinator**
+- [x] **Step 6: Run official release benchmark with active coordinator**
 
 Run: `pnpm benchmark:dashboard-http`
 
 Expected: fixed 1,000,000-event, 400-day, five-timezone fixture; eight authenticated scenarios x100; every p95 <= 2,000 ms; no 5xx; `RELEASE_PASS`.
 
-- [ ] **Step 7: Run a 30-minute fairness soak or deterministic accelerated equivalent**
+- [x] **Step 7: Run a 30-minute fairness soak or deterministic accelerated equivalent**
 
 Use an accelerated deterministic fake clock to cover 30 minutes of scheduler time. Capture scheduler status and assert heavy concurrency <=1, both eligible workers' maximum selection gap <=120 seconds, outbox continues to drain, and no worker remains stalled. This deterministic soak is the mandatory release gate.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add scripts/rollup-coordinator-migration.integration.test.ts package.json

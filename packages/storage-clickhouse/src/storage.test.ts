@@ -1448,7 +1448,7 @@ test("v2 read가 꺼진 dashboard router는 hourly가 아니라 raw source로 fa
   assert.doesNotMatch(queries[0]!.query, /usage_hourly_rollup|usage_15m_rollup_v2/);
 });
 
-test("v2 read는 runtime auto와 비상 override를 지원하고 compactor worker는 default-on pause gate를 사용한다", () => {
+test("v2 read는 runtime auto와 비상 override를 지원하고 compactor는 단일 coordinator를 사용한다", () => {
   const storageSource = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
   const workerSource = readFileSync(new URL("../../../apps/web/lib/clickhouse-outbox.ts", import.meta.url), "utf8");
   const instrumentationSource = readFileSync(new URL("../../../apps/web/instrumentation.ts", import.meta.url), "utf8");
@@ -1466,8 +1466,9 @@ test("v2 read는 runtime auto와 비상 override를 지원하고 compactor worke
   assert.match(workerSource, /__toardClickHouse15mV2RollupRunning/);
   assert.match(workerSource, /__toardClickHouseOutboxRunning/);
   assert.match(workerSource, /COMPACTOR_TICK_MS\s*=\s*60_000/);
-  assert.match(instrumentationSource, /startClickHouse15mV2Compaction/);
-  assert.match(instrumentationSource, /startClickHouseTimezoneRollupCompaction/);
+  assert.equal(instrumentationSource.match(/startRollupCoordinator\(\)/g)?.length, 1);
+  assert.doesNotMatch(instrumentationSource, /startClickHouse15mV2Compaction\(\)/);
+  assert.doesNotMatch(instrumentationSource, /startClickHouseTimezoneRollupCompaction\(\)/);
 });
 
 test("ClickHouse ensure schema는 가격 상태를 가진 400일 15분 v2 테이블을 만든다", async () => {

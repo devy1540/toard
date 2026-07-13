@@ -17,7 +17,7 @@ import {
 } from "@/lib/insight-period";
 import { generateInsightCandidates, type InsightRuleKey } from "@/lib/insight-rules";
 import { getEnabledProviders, resolveInsightProvider } from "@/lib/providers";
-import { formatCostForCoverage } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getCachedUserInsights } from "@/lib/user-insights";
 import { getViewerTimezone } from "@/lib/viewer-time";
@@ -112,6 +112,18 @@ export default async function InsightsPage({
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
   };
+  const currentLegacyCount = costComplete
+    ? legacyCostHintCount(comparison.current.costCoverage)
+    : null;
+  const costComparison = currentLegacyCount == null
+    ? costComplete
+      ? comparison.previous.costUsd === 0
+        ? t("kpi.noPrevious")
+        : t("kpi.previousPeriod")
+      : comparisonCoverage.pricedEvents + comparisonCoverage.legacyEvents > 0
+        ? costLabels.partial
+        : costLabels.unpriced
+    : dashboardT("costCoverage.legacyHint", { count: format.number(currentLegacyCount) });
   const hasCurrentUsage =
     comparison.current.sessions > 0 || comparison.current.costUsd > 0 || comparison.current.totalTokens > 0;
 
@@ -263,15 +275,7 @@ export default async function InsightsPage({
                 costLabels,
               )}
               delta={costDelta}
-              comparison={
-                costComplete
-                  ? comparison.previous.costUsd === 0
-                    ? t("kpi.noPrevious")
-                    : t("kpi.previousPeriod")
-                  : comparisonCoverage.pricedEvents + comparisonCoverage.legacyEvents > 0
-                    ? costLabels.partial
-                    : costLabels.unpriced
-              }
+              comparison={costComparison}
             />
           </section>
 

@@ -23,7 +23,7 @@ import {
   usagePerActiveUser,
 } from "@/lib/org-overview";
 import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
-import { formatCostForCoverage } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -475,15 +475,22 @@ async function OverviewTab({
           diff: fmtCompact(tokenDiff),
         })
       : t("hero.noTokenComparison");
-  const costComparison =
+  const legacyCount = overview.costCoverage.unpricedEvents === 0 && prevOverview.costCoverage.unpricedEvents === 0
+    ? legacyCostHintCount(overview.costCoverage)
+    : null;
+  const legacyHint = legacyCount == null
+    ? null
+    : dashboardT("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
+  const costComparison = legacyHint ?? (
     overview.costCoverage.unpricedEvents > 0 || prevOverview.costCoverage.unpricedEvents > 0
       ? dashboardT("costCoverage.partial")
       : prevOverview.totalCostUsd > 0
-      ? t(overview.totalCostUsd <= prevOverview.totalCostUsd ? "hero.lessThanPrev" : "hero.moreThanPrev", {
-          prev: fmtUsd(prevOverview.totalCostUsd),
-          diff: fmtUsd(costDiff),
-        })
-      : t("hero.noComparison");
+        ? t(overview.totalCostUsd <= prevOverview.totalCostUsd ? "hero.lessThanPrev" : "hero.moreThanPrev", {
+            prev: fmtUsd(prevOverview.totalCostUsd),
+            diff: fmtUsd(costDiff),
+          })
+        : t("hero.noComparison")
+  );
   const topThreeCost = topUsers.slice(0, 3).reduce((sum, row) => sum + row.costUsd, 0);
   const topThreeShare = overview.costCoverage.unpricedEvents > 0
     ? null

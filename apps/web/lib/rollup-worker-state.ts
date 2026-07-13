@@ -31,6 +31,8 @@ export type RollupWorkerRecord = {
   processedUnitsTotal: number;
   processedRowsTotal: number;
   throughputUnitsPerMinute: number | null;
+  adaptiveLimit: number;
+  loadState: "normal" | "throttled";
 };
 
 export interface RollupWorkerRepository {
@@ -49,6 +51,14 @@ export interface RollupWorkerRepository {
     finishedAt: Date,
     error: string,
   ): Promise<void>;
+  setAdaptiveState(
+    worker: RollupWorkerName,
+    limit: number,
+    loadState: "normal" | "throttled",
+  ): Promise<void>;
+  withLoadSlot<T>(operation: () => Promise<T>): Promise<
+    { acquired: false } | { acquired: true; value: T }
+  >;
 }
 
 export function shadowWorkerEnabled(
@@ -122,13 +132,15 @@ type RollupWorkerRow = {
   processed_units_total: string | number;
   processed_rows_total: string | number;
   throughput_units_per_minute: string | number | null;
+  adaptive_limit: string | number;
+  load_state: "normal" | "throttled";
 };
 
 const SELECT_FIELDS = `
   worker, paused, activated_at, last_started_at, last_finished_at, last_success_at,
   last_progress_at, last_error_at, last_error, last_duration_ms,
   last_processed_units, last_processed_rows, processed_units_total,
-  processed_rows_total, throughput_units_per_minute`;
+  processed_rows_total, throughput_units_per_minute, adaptive_limit, load_state`;
 
 function nullableNumber(value: string | number | null): number | null {
   return value == null ? null : Number(value);
@@ -151,6 +163,8 @@ function mapWorkerRow(row: RollupWorkerRow): RollupWorkerRecord {
     processedUnitsTotal: Number(row.processed_units_total),
     processedRowsTotal: Number(row.processed_rows_total),
     throughputUnitsPerMinute: nullableNumber(row.throughput_units_per_minute),
+    adaptiveLimit: Number(row.adaptive_limit),
+    loadState: row.load_state,
   };
 }
 
@@ -244,5 +258,37 @@ export class PgRollupWorkerRepository implements RollupWorkerRepository {
        WHERE worker = $1`,
       [worker, startedAt, finishedAt, sanitizeRollupError(error), durationMs],
     );
+  }
+
+  async setAdaptiveState(
+    worker: RollupWorkerName,
+    limit: number,
+    loadState: "normal" | "throttled",
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE clickhouse_rollup_worker_status
+       SET adaptive_limit = $2, load_state = $3, updated_at = now()
+       WHERE worker = $1`,
+      [worker, Math.max(1, Math.floor(limit)), loadState],
+    );
+  }
+
+  async withLoadSlot<T>(operation: () => Promise<T>): Promise<
+    { acquired: false } | { acquired: true; value: T }
+  > {
+    const client = await this.pool.connect();
+    try {
+      const result = await client.query<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
+        ["toard:rollup-load-slot"],
+      );
+      if (!result.rows[0]?.locked) return { acquired: false };
+      return { acquired: true, value: await operation() };
+    } finally {
+      await client
+        .query("SELECT pg_advisory_unlock(hashtext($1))", ["toard:rollup-load-slot"])
+        .catch(() => undefined);
+      client.release();
+    }
   }
 }

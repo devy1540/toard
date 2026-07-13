@@ -39,6 +39,8 @@ const workerRow = {
   processed_units_total: "40",
   processed_rows_total: "1200",
   throughput_units_per_minute: 3.5,
+  adaptive_limit: 16,
+  load_state: "normal",
 };
 
 test("shadow worker는 미설정이면 켜지고 명시적 false면 hard disable된다", () => {
@@ -176,6 +178,8 @@ test("repository get은 PostgreSQL snake case와 bigint를 domain record로 매�
     processedUnitsTotal: 40,
     processedRowsTotal: 1200,
     throughputUnitsPerMinute: 3.5,
+    adaptiveLimit: 16,
+    loadState: "normal",
   });
   assert.deepEqual(fixture.queries[0]?.params, ["usage_15m_v2"]);
 });

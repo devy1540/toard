@@ -31,6 +31,8 @@ function workerRecord(
     processedUnitsTotal: 0,
     processedRowsTotal: 0,
     throughputUnitsPerMinute: null,
+    adaptiveLimit: worker === "usage_15m_v2" ? 16 : 8,
+    loadState: "normal",
     ...overrides,
   };
 }

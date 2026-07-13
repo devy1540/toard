@@ -28,6 +28,8 @@ function fakeWorkerRepository(seed: { paused: boolean }): RollupWorkerRepository
     processedUnitsTotal: 0,
     processedRowsTotal: 0,
     throughputUnitsPerMinute: null,
+    adaptiveLimit: worker === "usage_15m_v2" ? 16 : 8,
+    loadState: "normal",
   });
   return {
     get: async (worker) => record(worker),
@@ -35,6 +37,8 @@ function fakeWorkerRepository(seed: { paused: boolean }): RollupWorkerRepository
     markStarted: async () => undefined,
     markSucceeded: async () => undefined,
     markFailed: async () => undefined,
+    setAdaptiveState: async () => undefined,
+    withLoadSlot: async (operation) => ({ acquired: true, value: await operation() }),
   };
 }
 

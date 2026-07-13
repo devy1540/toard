@@ -20,6 +20,7 @@ function pendingStatus(overrides: Partial<PricingRepairStatusRecord> = {}): Pric
     processedEvents: 0,
     recoveredEvents: 0,
     remainingUnpricedEvents: 3,
+    unresolvedModels: [],
     lastStartedAt: null,
     lastSucceededAt: null,
     lastError: null,
@@ -46,6 +47,7 @@ test("가격 복구 worker는 지원 모델의 unpriced를 확정하고 idle로 
         processedEvents: status.processedEvents + input.processed,
         recoveredEvents: status.recoveredEvents + input.recovered,
         remainingUnpricedEvents: input.remaining,
+        unresolvedModels: input.unresolvedModels,
         adaptiveLimit: input.adaptiveLimit,
         lastSucceededAt: input.at,
         nextAttemptAt: input.nextAttemptAt,
@@ -100,7 +102,12 @@ test("가격표가 없는 모델은 실패가 아니라 자동 재확인 대기 
     get: async () => status,
     claim: async () => ({ ...status, state: "running", lastStartedAt: NOW }),
     async markProgress(input) {
-      status = { ...status, state: input.state, remainingUnpricedEvents: input.remaining };
+      status = {
+        ...status,
+        state: input.state,
+        remainingUnpricedEvents: input.remaining,
+        unresolvedModels: input.unresolvedModels,
+      };
       return true;
     },
     async markFailed() {

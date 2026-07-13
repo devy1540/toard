@@ -14,6 +14,13 @@ const WAITING_RETRY_MS = 60 * 60 * 1_000;
 
 export type PricingRepairState = "idle" | "pending" | "running" | "waiting_for_catalog" | "failed";
 
+export type PricingUnresolvedModel = {
+  model: string | null;
+  events: number;
+  firstAt: string;
+  lastAt: string;
+};
+
 export type PricingRepairStatusRecord = {
   generation: string | null;
   state: PricingRepairState;
@@ -21,6 +28,7 @@ export type PricingRepairStatusRecord = {
   processedEvents: number;
   recoveredEvents: number;
   remainingUnpricedEvents: number;
+  unresolvedModels: PricingUnresolvedModel[];
   lastStartedAt: Date | null;
   lastSucceededAt: Date | null;
   lastError: string | null;
@@ -39,6 +47,7 @@ type PricingRepairStatusRow = {
   processed_events: string | number;
   recovered_events: string | number;
   remaining_unpriced_events: string | number;
+  unresolved_models: PricingUnresolvedModel[] | null;
   last_started_at: Date | null;
   last_succeeded_at: Date | null;
   last_error: string | null;
@@ -52,7 +61,7 @@ type PricingRepairStatusRow = {
 
 const SELECT_FIELDS = `
   generation, state, target_to, processed_events, recovered_events,
-  remaining_unpriced_events, last_started_at, last_succeeded_at, last_error,
+  remaining_unpriced_events, unresolved_models, last_started_at, last_succeeded_at, last_error,
   adaptive_limit, load_state, eligible_since, next_attempt_at,
   consecutive_failures, updated_at`;
 
@@ -64,6 +73,7 @@ function mapStatus(row: PricingRepairStatusRow): PricingRepairStatusRecord {
     processedEvents: Number(row.processed_events),
     recoveredEvents: Number(row.recovered_events),
     remainingUnpricedEvents: Number(row.remaining_unpriced_events),
+    unresolvedModels: row.unresolved_models ?? [],
     lastStartedAt: row.last_started_at,
     lastSucceededAt: row.last_succeeded_at,
     lastError: row.last_error,
@@ -87,6 +97,7 @@ export type PricingRepairProgress = {
   processed: number;
   recovered: number;
   remaining: number;
+  unresolvedModels: PricingUnresolvedModel[];
   adaptiveLimit: number;
   loadState: "normal" | "throttled";
   nextAttemptAt: Date | null;
@@ -144,14 +155,15 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
            processed_events = processed_events + $3,
            recovered_events = recovered_events + $4,
            remaining_unpriced_events = $5,
-           last_succeeded_at = $6,
+           unresolved_models = $6::jsonb,
+           last_succeeded_at = $7,
            last_error = NULL,
-           adaptive_limit = $7,
-           load_state = $8,
-           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $6) ELSE NULL END,
-           next_attempt_at = $9,
+           adaptive_limit = $8,
+           load_state = $9,
+           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $7) ELSE NULL END,
+           next_attempt_at = $10,
            consecutive_failures = 0,
-           updated_at = $6
+           updated_at = $7
        WHERE singleton AND generation = $1::timestamptz
        RETURNING singleton`,
       [
@@ -160,6 +172,7 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
         input.processed,
         input.recovered,
         input.remaining,
+        JSON.stringify(input.unresolvedModels),
         input.at,
         input.adaptiveLimit,
         input.loadState,
@@ -254,6 +267,17 @@ function adaptiveLimit(current: number, durationMs: number): { limit: number; lo
   return { limit: Math.min(500, Math.max(25, current)), loadState: "normal" };
 }
 
+function unresolvedModels(
+  diagnostics: Awaited<ReturnType<StorageBackend["getUnpricedUsageModels"]>>,
+): PricingUnresolvedModel[] {
+  return diagnostics.map((item) => ({
+    model: item.model,
+    events: item.events,
+    firstAt: item.firstAt.toISOString(),
+    lastAt: item.lastAt.toISOString(),
+  }));
+}
+
 export async function runPricingRepairTaskWith(
   dependencies: PricingRepairTaskDependencies,
 ): Promise<RollupSchedulerOutcome> {
@@ -277,6 +301,7 @@ export async function runPricingRepairTaskWith(
         processed: 0,
         recovered: 0,
         remaining,
+        unresolvedModels: unresolvedModels(diagnostics),
         adaptiveLimit: claimed.adaptiveLimit,
         loadState: "normal",
         nextAttemptAt: state === "waiting_for_catalog" ? new Date(at.getTime() + WAITING_RETRY_MS) : null,
@@ -314,6 +339,7 @@ export async function runPricingRepairTaskWith(
       processed: result.scanned,
       recovered: result.recovered,
       remaining,
+      unresolvedModels: unresolvedModels(after),
       adaptiveLimit: adaptive.limit,
       loadState: adaptive.loadState,
       nextAttemptAt: state === "waiting_for_catalog"

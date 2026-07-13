@@ -9,6 +9,7 @@ CREATE TABLE pricing_repair_status (
   processed_events BIGINT NOT NULL DEFAULT 0,
   recovered_events BIGINT NOT NULL DEFAULT 0,
   remaining_unpriced_events BIGINT NOT NULL DEFAULT 0,
+  unresolved_models JSONB NOT NULL DEFAULT '[]'::jsonb,
   last_started_at TIMESTAMPTZ,
   last_succeeded_at TIMESTAMPTZ,
   last_error TEXT,

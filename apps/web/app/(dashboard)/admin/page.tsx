@@ -11,8 +11,8 @@ import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { listAllHostShims, worstShimByUser } from "@/lib/host-shims";
 import { listPendingInvites } from "@/lib/invites";
-import { getPricingStatus } from "@/lib/pricing";
-import { isAutoSyncEnabled, schedulerEligible } from "@/lib/pricing-auto-sync";
+import { getPricingAdminStatus } from "@/lib/pricing-admin-status";
+import { schedulerEligible } from "@/lib/pricing-auto-sync";
 import { getPublicBaseUrl } from "@/lib/public-url";
 import { getRollupAdminStatus } from "@/lib/rollup-status";
 import { getServerUpdateStatus } from "@/lib/server-update";
@@ -225,10 +225,8 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const [pricing, autoSync, serverUpdate, rollupStatus, t] = await Promise.all([
-    getPricingStatus(),
-    // 마이그레이션 전 등 조회 실패 시 기본값(on)으로 표시 — 시스템 탭이 깨지지 않게
-    isAutoSyncEnabled().catch(() => true),
+  const [pricing, serverUpdate, rollupStatus, t] = await Promise.all([
+    getPricingAdminStatus(),
     getServerUpdateStatus(),
     getRollupAdminStatus().catch(() => null),
     getTranslations("admin"),
@@ -245,9 +243,7 @@ async function SystemTab() {
 
         <SettingsRow wide label={t("system.pricingTitle")} description={t("system.pricingDescription")}>
           <PricingSyncPanel
-            models={pricing.models}
-            lastDay={pricing.lastDay}
-            autoSync={autoSync}
+            initialStatus={pricing}
             builtinScheduler={schedulerEligible(process.env)}
           />
         </SettingsRow>

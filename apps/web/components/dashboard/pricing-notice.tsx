@@ -1,9 +1,7 @@
 import { getTranslations } from "next-intl/server";
-import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
 import type { UsageCostCoverage } from "@toard/core";
 import { costCoverageState } from "@/lib/pricing";
-import { getSessionUser } from "@/lib/session-user";
 
 /**
  * 이미 조회한 usage aggregate의 가격 상태를 사용한다. 별도 가격-table 조회를 하지 않아
@@ -14,7 +12,6 @@ export async function PricingNotice({ coverage }: { coverage: UsageCostCoverage 
   if (state === "complete" || state === "legacy") return null;
 
   const t = await getTranslations("dashboard");
-  const isAdmin = (await getSessionUser())?.role === "admin";
 
   return (
     <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
@@ -24,18 +21,7 @@ export async function PricingNotice({ coverage }: { coverage: UsageCostCoverage 
           {t("pricingNotice.unpricedTitle", { count: coverage.unpricedEvents })}
         </p>
         <p className="text-muted-foreground mt-0.5 text-xs">
-          {isAdmin
-            ? t.rich("pricingNotice.unpricedAdminAction", {
-                link: (chunks) => (
-                  <Link
-                    href="/admin?tab=system"
-                    className="text-primary underline-offset-4 hover:underline"
-                  >
-                    {chunks}
-                  </Link>
-                ),
-              })
-            : t("pricingNotice.unpricedMemberAction")}
+          {t("pricingNotice.unpricedAction")}
         </p>
       </div>
     </div>

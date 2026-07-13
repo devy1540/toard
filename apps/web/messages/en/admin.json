@@ -68,14 +68,25 @@
   },
   "system": {
     "pricingTitle": "Pricing sync",
-    "pricingDescription": "Fetches LiteLLM model pricing for cost calculation. Without pricing, costs are calculated as $0 — you can run it manually here, independent of auto sync.",
+    "pricingDescription": "Syncs LiteLLM pricing daily and automatically repairs unconfirmed costs. No administrator action is required.",
     "modelsCount": "{count} models",
     "lastSync": "· Last synced {day}",
-    "noPricing": "No pricing has been synced — collected costs are calculated as $0.",
-    "syncing": "Syncing…",
-    "syncNow": "Sync now",
-    "syncedWithDay": "Sync complete — {count} models applied ({day})",
-    "synced": "Sync complete — {count} models applied",
+    "noPricing": "No pricing synced",
+    "autoSyncActive": "Automatic operation active",
+    "repairTitle": "Automatic unconfirmed-cost recovery",
+    "repairStates": {
+      "idle": "Healthy",
+      "pending": "Waiting to check prices",
+      "running": "Applying automatically",
+      "waiting_for_catalog": "Waiting for catalog support",
+      "failed": "Temporary error · retrying automatically"
+    },
+    "recoveredEvents": "Recovered",
+    "remainingEvents": "Unconfirmed remaining",
+    "lastRepair": "Last automatic run",
+    "unresolvedModels": "Models not yet found in the price catalog",
+    "unresolvedEvents": "{count} events",
+    "pricingStatusFailed": "The automatic price recovery status is temporarily unavailable. Automatic retries continue.",
     "contentTitle": "Prompt content",
     "contentBadgeOn": "Enabled",
     "contentBadgeOff": "Disabled",
@@ -102,9 +113,7 @@
     "updatePhaseVerifying": "Verifying health",
     "updatePhaseCompleted": "Update complete",
     "updatePhaseFailed": "Update failed",
-    "autoSyncLabel": "Auto sync (daily)",
-    "autoSyncHint": "When on, the server syncs once a day (org timezone). Changes take effect within an hour, no restart needed.",
-    "autoSyncUnavailable": "The built-in scheduler is inactive in this deployment (Vercel cron or PRICING_AUTO_SYNC=off) — an external scheduler handles syncing.",
+    "autoSyncUnavailable": "Built-in automation inactive",
     "rollupTitle": "Rollup operations",
     "rollupDescription": "Monitor backfill, automatic read cutover, and server load for the 15-minute base rollup and timezone hourly/daily rollups. Raw TTL remains a server setting."
   },
@@ -257,7 +266,6 @@
     "emailAlreadyExists": "This email is already registered.",
     "teamRequired": "Please choose a team for the invitation.",
     "teamNotFound": "The selected team could not be found.",
-    "onlyAdmin": "Only administrators are allowed.",
     "teamNameRequired": "Please enter a team name.",
     "teamNameTooLong": "Team names must be 50 characters or fewer.",
     "teamNameExists": "That team name already exists.",
@@ -265,9 +273,6 @@
     "teamHasEvents": "A team with attributed collection history cannot be deleted.",
     "roleInvalid": "The selected role is not valid.",
     "userNotFound": "The selected member could not be found.",
-    "lastAdminRequired": "The last administrator cannot be changed to member.",
-    "pricingDownloadKept": "Pricing download failed, so the existing snapshot was kept — {error}",
-    "pricingSyncFailed": "Sync failed — {error}",
-    "autoSyncSaveFailed": "Failed to save auto sync setting: {error}"
+    "lastAdminRequired": "The last administrator cannot be changed to member."
   }
 }

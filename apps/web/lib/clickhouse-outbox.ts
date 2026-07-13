@@ -18,6 +18,13 @@ const TIMEZONE_ROLLUP_MAX_LAG_SECONDS = 30 * 60;
 const TIMEZONE_ROLLUP_MAX_PENDING_JOBS = 10_000;
 const ROLLUP_BUCKET_MS = 15 * 60 * 1_000;
 const DEFAULT_ROLLUP_FINALIZE_DELAY_MS = 30 * 60 * 1_000;
+const ADAPTIVE_MINIMUM = 1;
+const ADAPTIVE_MAXIMUM = {
+  usage_15m_v2: 64,
+  timezone: 32,
+} as const;
+const ADAPTIVE_FAST_BATCH_MS = 2_000;
+const ADAPTIVE_SLOW_BATCH_MS = 10_000;
 
 export type ClickHouseUsageRetentionResult = {
   deliveredOutboxRows: number;
@@ -62,37 +69,101 @@ export async function runObservedWorkerTick(options: {
   worker: RollupWorkerName;
   hardEnabled: boolean;
   repository: RollupWorkerRepository;
-  run(): Promise<{ units: number; rows: number }>;
+  maximumLimit?: number;
+  run(limit: number): Promise<{ units: number; rows: number }>;
   now(): Date;
-}): Promise<"disabled" | "paused" | "completed" | "failed"> {
+}): Promise<"disabled" | "paused" | "busy" | "completed" | "failed"> {
   if (!options.hardEnabled) return "disabled";
   const record = await options.repository.get(options.worker);
   if (record.paused) return "paused";
+  const maximumLimit = Math.max(
+    ADAPTIVE_MINIMUM,
+    Math.min(
+      ADAPTIVE_MAXIMUM[options.worker],
+      Math.floor(options.maximumLimit ?? ADAPTIVE_MAXIMUM[options.worker]),
+    ),
+  );
+  const currentLimit = Math.min(maximumLimit, Math.max(ADAPTIVE_MINIMUM, record.adaptiveLimit));
 
   const warnObservationFailure = (error: unknown) => {
     console.warn(
       `[toard] ${options.worker} worker observation write failed — ${sanitizeRollupError(error)}`,
     );
   };
-  const startedAt = options.now();
-  await options.repository.markStarted(options.worker, startedAt).catch(warnObservationFailure);
+  let startedAt: Date | null = null;
   try {
-    const result = await options.run();
+    const slot = await options.repository.withLoadSlot(async () => {
+      startedAt = options.now();
+      await options.repository.markStarted(options.worker, startedAt).catch(warnObservationFailure);
+      return options.run(currentLimit);
+    });
+    if (!slot.acquired) return "busy";
+    const result = slot.value;
+    const finishedAt = options.now();
+    const durationMs = Math.max(0, finishedAt.getTime() - startedAt!.getTime());
+    const nextLimit = nextAdaptiveLimit({
+      limit: currentLimit,
+      processed: result.units,
+      durationMs,
+      failed: false,
+      minimum: ADAPTIVE_MINIMUM,
+      maximum: maximumLimit,
+    });
     await options.repository
-      .markSucceeded(options.worker, startedAt, options.now(), result)
+      .markSucceeded(options.worker, startedAt!, finishedAt, result)
+      .catch(warnObservationFailure);
+    await options.repository
+      .setAdaptiveState(
+        options.worker,
+        nextLimit,
+        durationMs >= ADAPTIVE_SLOW_BATCH_MS ? "throttled" : "normal",
+      )
       .catch(warnObservationFailure);
     return "completed";
   } catch (error) {
+    const finishedAt = options.now();
+    const failedStartedAt: Date = startedAt ?? finishedAt;
+    const nextLimit = nextAdaptiveLimit({
+      limit: currentLimit,
+      processed: 0,
+      durationMs: Math.max(0, finishedAt.getTime() - failedStartedAt.getTime()),
+      failed: true,
+      minimum: ADAPTIVE_MINIMUM,
+      maximum: maximumLimit,
+    });
     await options.repository
       .markFailed(
         options.worker,
-        startedAt,
-        options.now(),
+        failedStartedAt,
+        finishedAt,
         sanitizeRollupError(error),
       )
       .catch(warnObservationFailure);
+    await options.repository
+      .setAdaptiveState(options.worker, nextLimit, "throttled")
+      .catch(warnObservationFailure);
     return "failed";
   }
+}
+
+export function nextAdaptiveLimit(input: {
+  limit: number;
+  processed: number;
+  durationMs: number;
+  failed: boolean;
+  minimum: number;
+  maximum: number;
+}): number {
+  const minimum = Math.max(1, Math.floor(input.minimum));
+  const maximum = Math.max(minimum, Math.floor(input.maximum));
+  const limit = Math.min(maximum, Math.max(minimum, Math.floor(input.limit)));
+  if (input.failed || input.durationMs >= ADAPTIVE_SLOW_BATCH_MS) {
+    return Math.max(minimum, Math.floor(limit / 2));
+  }
+  if (input.processed >= limit && input.durationMs <= ADAPTIVE_FAST_BATCH_MS) {
+    return Math.min(maximum, Math.ceil(limit * 1.25));
+  }
+  return limit;
 }
 
 export function toTimezoneRollupReadyPayload(
@@ -133,6 +204,11 @@ function isV2Compactable(storage: unknown): storage is V2CompactableStorage {
 
 function enabled(name: string): boolean {
   return enabledIn(process.env, name);
+}
+
+function optionalPositiveInt(env: ReadyEnvironment, name: string): number | undefined {
+  const value = Number(env[name]);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
 }
 
 function enabledIn(env: ReadyEnvironment, name: string): boolean {
@@ -230,11 +306,11 @@ export async function compactClickHouse15mV2Rollup(limitBuckets?: number): Promi
 }
 
 /** 활성 시간대 queue에서 bounded batch를 처리한다. */
-export async function compactClickHouseTimezoneRollups(): Promise<{ jobs: number; rows: number }> {
+export async function compactClickHouseTimezoneRollups(limit?: number): Promise<{ jobs: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
   if (!shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return { jobs: 0, rows: 0 };
   const { runTimezoneRollupWorker } = await import("./timezone-rollup");
-  return runTimezoneRollupWorker();
+  return runTimezoneRollupWorker(limit);
 }
 
 export async function pruneClickHouseUsageRetentionAt(
@@ -327,8 +403,9 @@ async function compactV2Tick(): Promise<void> {
       worker: "usage_15m_v2",
       hardEnabled: shadowWorkerEnabled(process.env, "CLICKHOUSE_15M_V2_COMPACTOR"),
       repository,
-      run: async () => {
-        r = await compactClickHouse15mV2Rollup();
+      maximumLimit: optionalPositiveInt(process.env, "CLICKHOUSE_ROLLUP_MAX_BUCKETS"),
+      run: async (limit) => {
+        r = await compactClickHouse15mV2Rollup(limit);
         return { units: r.buckets, rows: r.rows };
       },
       now: () => new Date(),
@@ -350,8 +427,8 @@ async function compactTimezoneTick(): Promise<void> {
       worker: "timezone",
       hardEnabled: shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"),
       repository,
-      run: async () => {
-        r = await compactClickHouseTimezoneRollups();
+      run: async (limit) => {
+        r = await compactClickHouseTimezoneRollups(limit);
         return { units: r.jobs, rows: r.rows };
       },
       now: () => new Date(),

@@ -277,17 +277,21 @@ export class PgRollupWorkerRepository implements RollupWorkerRepository {
     { acquired: false } | { acquired: true; value: T }
   > {
     const client = await this.pool.connect();
+    let acquired = false;
     try {
       const result = await client.query<{ locked: boolean }>(
         "SELECT pg_try_advisory_lock(hashtext($1)) AS locked",
         ["toard:rollup-load-slot"],
       );
       if (!result.rows[0]?.locked) return { acquired: false };
+      acquired = true;
       return { acquired: true, value: await operation() };
     } finally {
-      await client
-        .query("SELECT pg_advisory_unlock(hashtext($1))", ["toard:rollup-load-slot"])
-        .catch(() => undefined);
+      if (acquired) {
+        await client
+          .query("SELECT pg_advisory_unlock(hashtext($1))", ["toard:rollup-load-slot"])
+          .catch(() => undefined);
+      }
       client.release();
     }
   }

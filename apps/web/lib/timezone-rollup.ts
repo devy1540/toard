@@ -173,8 +173,9 @@ export async function activateTimezoneRollupWith(
 export async function runTimezoneRollupWorkerWith(
   repository: TimezoneRollupRepository,
   compactor: TimezoneRollupCompactor,
+  limit = TIMEZONE_ROLLUP_JOBS_PER_TICK,
 ): Promise<{ jobs: number; rows: number }> {
-  const claimed = await repository.claimJobs(TIMEZONE_ROLLUP_JOBS_PER_TICK);
+  const claimed = await repository.claimJobs(limit);
   let jobs = 0;
   let rows = 0;
 
@@ -504,12 +505,12 @@ export async function enqueueTimezoneRollup(
   await enqueueTimezoneRollupWith(new PgTimezoneRollupRepository(getPool()), resolution, canonical, bucket);
 }
 
-export async function runTimezoneRollupWorker(): Promise<{ jobs: number; rows: number }> {
+export async function runTimezoneRollupWorker(limit?: number): Promise<{ jobs: number; rows: number }> {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return { jobs: 0, rows: 0 };
   const { getStorage } = await import("./storage");
   const storage = getStorage();
   if (!isTimezoneRollupCompactor(storage) || !isTimezoneCapability(storage)) return { jobs: 0, rows: 0 };
-  return runTimezoneRollupWorkerWith(new PgTimezoneRollupRepository(getPool()), storage);
+  return runTimezoneRollupWorkerWith(new PgTimezoneRollupRepository(getPool()), storage, limit);
 }
 
 export function createTimezoneRollupActivationGate(

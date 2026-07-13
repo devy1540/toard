@@ -7,6 +7,7 @@ import type {
 } from "./rollup-worker-state";
 import {
   getTimezoneRollupReadinessAt,
+  nextAdaptiveLimit,
   runObservedWorkerTick,
   toTimezoneRollupReadyPayload,
 } from "./clickhouse-outbox";
@@ -128,6 +129,114 @@ test("compactor 실패는 정제된 오류를 기록하고 failed로 반환한�
   assert.equal(result, "failed");
   assert.doesNotMatch(recordedError, /admin:pw|token=abc/);
   assert.match(recordedError, /\[redacted\]/);
+});
+
+test("adaptive batch는 빠른 full batch만 늘리고 느리거나 실패하면 절반으로 줄인다", () => {
+  assert.equal(nextAdaptiveLimit({
+    limit: 16,
+    processed: 16,
+    durationMs: 1_000,
+    failed: false,
+    minimum: 1,
+    maximum: 64,
+  }), 20);
+  assert.equal(nextAdaptiveLimit({
+    limit: 20,
+    processed: 20,
+    durationMs: 12_000,
+    failed: false,
+    minimum: 1,
+    maximum: 64,
+  }), 10);
+  assert.equal(nextAdaptiveLimit({
+    limit: 8,
+    processed: 0,
+    durationMs: 100,
+    failed: false,
+    minimum: 1,
+    maximum: 32,
+  }), 8);
+  assert.equal(nextAdaptiveLimit({
+    limit: 1,
+    processed: 0,
+    durationMs: 100,
+    failed: true,
+    minimum: 1,
+    maximum: 32,
+  }), 1);
+});
+
+test("shared load slot을 얻지 못하면 compactor를 실행하지 않는다", async () => {
+  const repository = fakeWorkerRepository({ paused: false });
+  repository.withLoadSlot = async () => ({ acquired: false });
+  let calls = 0;
+
+  const result = await runObservedWorkerTick({
+    worker: "usage_15m_v2",
+    hardEnabled: true,
+    repository,
+    run: async () => {
+      calls++;
+      return { units: 1, rows: 1 };
+    },
+    now: () => new Date("2026-07-12T12:00:00.000Z"),
+  });
+
+  assert.equal(result, "busy");
+  assert.equal(calls, 0);
+});
+
+test("observed worker는 저장된 adaptive 한도를 compactor에 전달하고 다음 한도를 저장한다", async () => {
+  const repository = fakeWorkerRepository({ paused: false });
+  let requestedLimit = 0;
+  let saved: { limit: number; loadState: string } | null = null;
+  repository.setAdaptiveState = async (_worker, limit, loadState) => {
+    saved = { limit, loadState };
+  };
+  let tick = 0;
+  const times = [
+    new Date("2026-07-12T12:00:00.000Z"),
+    new Date("2026-07-12T12:00:01.000Z"),
+  ];
+
+  const result = await runObservedWorkerTick({
+    worker: "usage_15m_v2",
+    hardEnabled: true,
+    repository,
+    run: async (limit) => {
+      requestedLimit = limit;
+      return { units: limit, rows: 10 };
+    },
+    now: () => times[Math.min(tick++, times.length - 1)]!,
+  });
+
+  assert.equal(result, "completed");
+  assert.equal(requestedLimit, 16);
+  assert.deepEqual(saved, { limit: 20, loadState: "normal" });
+});
+
+test("운영자가 설정한 최대 batch는 저장된 adaptive 한도보다 우선한다", async () => {
+  const repository = fakeWorkerRepository({ paused: false });
+  let requestedLimit = 0;
+  let savedLimit = 0;
+  repository.setAdaptiveState = async (_worker, limit) => {
+    savedLimit = limit;
+  };
+
+  await runObservedWorkerTick({
+    worker: "usage_15m_v2",
+    hardEnabled: true,
+    repository,
+    maximumLimit: 12,
+    run: async (limit) => {
+      requestedLimit = limit;
+      return { units: limit, rows: 10 };
+    },
+    now: () => new Date("2026-07-12T12:00:00.000Z"),
+  });
+
+  assert.equal(requestedLimit, 12);
+  assert.equal(savedLimit, 12);
 });
 
 function readyPool(watermark: Date, pendingJobs = 0) {

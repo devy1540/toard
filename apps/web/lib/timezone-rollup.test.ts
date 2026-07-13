@@ -49,6 +49,7 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
   const chunks: Date[][] = [];
   const coverage = new Set<string>();
   const lockKeys: string[] = [];
+  const claimLimits: number[] = [];
   const activeTimezones = new Set<string>();
   let sequence = 0;
   let lockHeld = false;
@@ -82,6 +83,7 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
       return inserted;
     },
     async claimJobs(limit) {
+      claimLimits.push(limit);
       return [...jobs.values()]
         .filter((job) => job.status === "pending")
         .slice(0, limit)
@@ -119,7 +121,7 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
     },
   };
 
-  return { repo, jobs, chunks, lockKeys, activeTimezones };
+  return { repo, jobs, chunks, lockKeys, claimLimits, activeTimezones };
 }
 
 test("같은 시간대·해상도·버킷 작업은 한 번만 enqueue한다", async () => {
@@ -263,6 +265,30 @@ test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은
   assert.equal(fixture.lockKeys[1], "timezone-rollup:hour:Asia/Seoul");
   assert.equal([...fixture.jobs.values()].filter((job) => job.status === "done").length, 7);
   assert.equal([...fixture.jobs.values()].filter((job) => job.status === "pending").length, 2);
+});
+
+test("worker는 adaptive job 한도를 queue claim에 전달한다", async () => {
+  const fixture = fakeTimezoneRollupRepository();
+  for (let index = 0; index < 5; index++) {
+    await enqueueTimezoneRollupWith(
+      fixture.repo,
+      "hour",
+      "Asia/Seoul",
+      new Date(Date.UTC(2026, 6, 1, index)),
+    );
+  }
+
+  const result = await runTimezoneRollupWorkerWith(fixture.repo, {
+    async supportsTimezone() {
+      return true;
+    },
+    async compactTimezoneRollup() {
+      return 1;
+    },
+  }, 3);
+
+  assert.deepEqual(result, { jobs: 3, rows: 3 });
+  assert.deepEqual(fixture.claimLimits, [3]);
 });
 
 test("ClickHouse capability가 사라진 timezone job은 한 tick에 drain되어 정상 queue를 굶기지 않는다", async () => {

@@ -65,7 +65,7 @@ BASE_URL="http://127.0.0.1:$(cat "$PORT_FILE")"
 
 TOARD_E2E_INSTALLER="$INSTALLER" TOARD_E2E_ENDPOINT="$BASE_URL/api" \
   pnpm --filter @toard/web exec tsx -e \
-  "import { writeFileSync } from 'node:fs'; import { installScript } from './app/install.sh/route.ts'; writeFileSync(process.env.TOARD_E2E_INSTALLER, installScript(process.env.TOARD_E2E_ENDPOINT, false));"
+  "import { writeFileSync } from 'node:fs'; import { installScript } from './lib/shell-installer.ts'; writeFileSync(process.env.TOARD_E2E_INSTALLER, installScript(process.env.TOARD_E2E_ENDPOINT, false));"
 
 TOARD_INSTALL_DAEMON=${TOARD_E2E_DAEMON:-0} \
 TOARD_SHIM_RELEASE_BASE="$BASE_URL/release" \

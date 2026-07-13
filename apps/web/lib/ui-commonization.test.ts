@@ -173,6 +173,18 @@ test("macOS and Linux one-line installer does not stop for a daemon prompt", () 
   assert.match(install, /:-1/);
 });
 
+test("shell installer builder stays outside the Next.js route module", () => {
+  const route = source("app/install.sh/route.ts");
+  assert.match(route, /@\/lib\/shell-installer/);
+  assert.doesNotMatch(route, /export function installScript/);
+
+  const installer = source("lib/shell-installer.ts");
+  assert.match(installer, /export function installScript/);
+
+  const e2e = repoSource(".github/scripts/test-shim-installer-unix.sh");
+  assert.match(e2e, /lib\/shell-installer\.ts/);
+});
+
 test("installers accept an explicit release mirror for pre-release E2E", () => {
   const install = source("app/install.sh/route.ts");
   const releaseInstall = repoSource("shim/install.sh");

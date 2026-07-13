@@ -106,7 +106,7 @@
     "autoSyncHint": "When on, the server syncs once a day (org timezone). Changes take effect within an hour, no restart needed.",
     "autoSyncUnavailable": "The built-in scheduler is inactive in this deployment (Vercel cron or PRICING_AUTO_SYNC=off) — an external scheduler handles syncing.",
     "rollupTitle": "Rollup operations",
-    "rollupDescription": "Monitor backfill progress and storage size for 15-minute and timezone rollups, and pause or resume workers. Read cutover and raw TTL remain server-only settings."
+    "rollupDescription": "Monitor backfill, automatic read cutover, and server load for the 15-minute base rollup and timezone hourly/daily rollups. Raw TTL remains a server setting."
   },
   "rollup": {
     "summary": {
@@ -125,14 +125,54 @@
       "error": "Error"
     },
     "worker": {
-      "usage15mV2": "15-minute v2",
-      "timezone": "Timezone cache"
+      "usage15mV2": "15-minute base rollup",
+      "timezone": "Timezone hourly/daily rollup"
+    },
+    "cutover": {
+      "title": "Automatic read cutover",
+      "description": "Rollup reads turn on automatically after the frozen historical target is verified and healthy time accumulates for 60 minutes.",
+      "mode": "Operating mode",
+      "modes": {
+        "auto": "Automatic",
+        "forced_on": "Forced ON by server",
+        "forced_off": "Forced OFF by server",
+        "mixed": "Per-layer server settings"
+      },
+      "layer": {
+        "usage15mV2": "15-minute base rollup",
+        "timezone": "Timezone hourly/daily rollup"
+      },
+      "states": {
+        "backfilling": "Backfilling",
+        "observing": "Validation observation",
+        "active": "Using rollup reads",
+        "fallback": "Fallback reads",
+        "unavailable": "Status unavailable"
+      },
+      "target": "Frozen target",
+      "observation": "Healthy observation",
+      "observationValue": "{current} min / {required} min",
+      "lastValidation": "Last validation",
+      "failure": "Latest state",
+      "failures": {
+        "mismatch": "Data mismatch",
+        "lag": "Processing lag",
+        "unavailable": "Temporarily unavailable"
+      }
+    },
+    "load": {
+      "limit": "Next batch limit {limit}",
+      "state": "Load state {state}",
+      "states": {
+        "normal": "Normal",
+        "throttled": "Auto-throttled"
+      }
     },
     "progress": "Progress",
     "progressLabel": "{worker} progress",
     "sourceProgress": "Basis",
     "watermark": "watermark {value}",
-    "coverage": "hour {hour} · day {day}",
+    "coverage": "hourly {hour} · daily {day}",
     "remaining": "Remaining units",
     "eta": "Estimated completion",
     "etaMinutes": "about {minutes} min",
@@ -152,9 +192,9 @@
     "on": "ON",
     "off": "OFF",
     "readSource": {
-      "label": "Read source",
-      "usage15mV2": "15-minute v2",
-      "timezone": "Timezone cache"
+      "label": "Effective reads",
+      "usage15mV2": "15-minute base rollup",
+      "timezone": "Timezone hourly/daily rollup"
     },
     "rawTtl": {
       "label": "Normalized raw TTL",

@@ -302,6 +302,77 @@ test("legacy rollup flag는 deprecated alias이며 새 flag의 명시값이 우�
   assert.doesNotMatch(warnings[0]!, /CLICKHOUSE_PASSWORD|DATABASE_URL|AUTH_SECRET/);
 });
 
+test("15분 기준 rollup validator는 가격 provenance를 포함한 원본과 rollup fingerprint를 비교한다", async () => {
+  const queries: string[] = [];
+  const summary = {
+    rows: "1",
+    events: "2",
+    input_tokens: "100",
+    output_tokens: "20",
+    cache_read_tokens: "5",
+    cache_creation_tokens: "3",
+    cost_usd: "0.01230000",
+    fingerprint: "1234",
+  };
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      if (query.includes("min(ts) AS from")) {
+        return { json: async () => [{ from: "2026-07-12 00:00:00.000" }] };
+      }
+      return { json: async () => [summary] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const result = await storage.validateUsage15mV2(
+    new Date("2026-07-13T00:00:00.000Z"),
+    24 * 60 * 60 * 1_000,
+  );
+
+  assert.deepEqual(result, { ok: true, detail: null });
+  assert.match(queries[1]!, /FROM usage_events FINAL/);
+  assert.match(queries[1]!, /pricing_revision_id, cost_status/);
+  assert.match(queries[1]!, /cache_read_tokens/);
+  assert.match(queries[1]!, /cache_creation_tokens/);
+  assert.match(queries[1]!, /groupBitXor\(cityHash64/);
+  assert.match(queries[2]!, /FROM usage_15m_rollup_v2 FINAL/);
+});
+
+test("시간대별 validator는 활성 시간대의 최근 완료 hour와 local day를 15분 기준으로 비교한다", async () => {
+  const queries: string[] = [];
+  const summary = {
+    rows: "1",
+    events: "2",
+    input_tokens: "100",
+    output_tokens: "20",
+    cache_read_tokens: "5",
+    cache_creation_tokens: "3",
+    cost_usd: "0.01230000",
+    fingerprint: "1234",
+  };
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      return { json: async () => [summary] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+
+  const result = await storage.validateTimezoneRollups(
+    ["Asia/Seoul"],
+    new Date("2026-07-13T02:35:00.000Z"),
+  );
+
+  assert.deepEqual(result, { ok: true, detail: null });
+  assert.match(queries[0]!, /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Seoul'\)/);
+  assert.match(queries[1]!, /FROM usage_hourly_timezone_rollup FINAL/);
+  assert.match(queries[2]!, /toStartOfDay\(bucket_15m, 'Asia\/Seoul'\)/);
+  assert.match(queries[3]!, /FROM usage_daily_timezone_rollup FINAL/);
+});
+
 function localDayRange(timezone: string, date: string, days: number) {
   const canonical = canonicalTimezoneId(timezone);
   assert.ok(canonical);

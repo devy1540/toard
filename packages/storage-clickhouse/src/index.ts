@@ -7,4 +7,5 @@ export {
   type ClickHouseRollupReadFlag,
   type RollupStorageStats,
   type RollupStorageTable,
+  type RollupDataValidationResult,
 } from "./storage";

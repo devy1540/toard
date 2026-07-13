@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import type {
   RollupWorkerName,
@@ -294,4 +295,17 @@ test("새 flag가 명시되면 legacy alias보다 우선하되 남은 legacy 값
   assert.equal(readiness.status, "fallback");
   assert.equal(readiness.watermark, null);
   assert.equal(readiness.legacyFlagMigration, "deprecated_alias");
+});
+
+test("서버 instrumentation은 자동 전환 controller를 한 번 시작한다", () => {
+  const instrumentation = readFileSync(
+    new URL("../instrumentation.ts", import.meta.url),
+    "utf8",
+  );
+  const outbox = readFileSync(new URL("./clickhouse-outbox.ts", import.meta.url), "utf8");
+
+  assert.match(instrumentation, /startClickHouseRollupCutover/);
+  assert.match(instrumentation, /startClickHouseRollupCutover\(\)/);
+  assert.match(outbox, /export function startClickHouseRollupCutover/);
+  assert.match(outbox, /advanceRollupCutover/);
 });

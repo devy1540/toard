@@ -148,6 +148,22 @@ export const ROLLUP_STORAGE_TABLES = [
 
 export type RollupStorageTable = (typeof ROLLUP_STORAGE_TABLES)[number];
 
+export type RollupDataValidationResult = {
+  ok: boolean;
+  detail: string | null;
+};
+
+type RollupValidationSummary = {
+  rows?: string | number;
+  events?: string | number;
+  input_tokens?: string | number;
+  output_tokens?: string | number;
+  cache_read_tokens?: string | number;
+  cache_creation_tokens?: string | number;
+  cost_usd?: string | number;
+  fingerprint?: string | number;
+};
+
 export type RollupStorageStats = {
   collectedAt: string;
   rawRange: { from: string | null; to: string | null };
@@ -538,6 +554,197 @@ export class ClickHouseStorage implements StorageBackend {
       },
       tables,
     };
+  }
+
+  async validateUsage15mV2(
+    targetTo: Date,
+    lookbackMs = 400 * 24 * 60 * 60 * 1_000,
+  ): Promise<RollupDataValidationResult> {
+    if (!Number.isFinite(targetTo.getTime())) throw new Error("invalid rollup validation target");
+    const boundedLookback = Number.isFinite(lookbackMs) && lookbackMs > 0
+      ? lookbackMs
+      : 24 * 60 * 60 * 1_000;
+    const requestedFrom = new Date(targetTo.getTime() - boundedLookback);
+    const rawRange = await this.queryJson<{ from?: string | Date | null }>(
+      `SELECT if(count() = 0, NULL, min(ts)) AS from
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}`,
+      { from: chTs(requestedFrom), to: chTs(targetTo) },
+    );
+    const rawFrom = rawRange[0]?.from;
+    const parsedRawFrom = rawFrom instanceof Date
+      ? rawFrom
+      : typeof rawFrom === "string" && rawFrom !== ""
+        ? chDate(rawFrom)
+        : null;
+    const from = parsedRawFrom && Number.isFinite(parsedRawFrom.getTime())
+      ? new Date(Math.floor(parsedRawFrom.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS)
+      : requestedFrom;
+    const summarySelect = `SELECT count() AS rows,
+              sum(event_count) AS events,
+              sum(input_tokens) AS input_tokens,
+              sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              sum(cache_creation_tokens) AS cache_creation_tokens,
+              sum(cost_usd) AS cost_usd,
+              groupBitXor(cityHash64(
+                bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, cost_usd
+              )) AS fingerprint`;
+    const raw = await this.queryJson<RollupValidationSummary>(
+      `${summarySelect}
+       FROM (
+         SELECT toStartOfInterval(ts, INTERVAL 15 minute, 'UTC') AS bucket_15m,
+                provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status,
+                count() AS event_count,
+                sum(input_tokens) AS input_tokens,
+                sum(output_tokens) AS output_tokens,
+                sum(cache_read_tokens) AS cache_read_tokens,
+                sum(cache_creation_tokens) AS cache_creation_tokens,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost_usd
+         FROM usage_events FINAL
+         WHERE ts >= {from:DateTime64(3)}
+           AND ts < {to:DateTime64(3)}
+         GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                  pricing_revision_id, cost_status
+       )`,
+      { from: chTs(from), to: chTs(targetTo) },
+    );
+    const rollup = await this.queryJson<RollupValidationSummary>(
+      `${summarySelect}
+       FROM usage_15m_rollup_v2 FINAL
+       WHERE bucket_15m >= {from:DateTime64(3)}
+         AND bucket_15m < {to:DateTime64(3)}`,
+      { from: chTs(from), to: chTs(targetTo) },
+    );
+    const fields = [
+      "rows",
+      "events",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "cost_usd",
+      "fingerprint",
+    ] as const;
+    const rawSummary = raw[0] ?? {};
+    const rollupSummary = rollup[0] ?? {};
+    const mismatches = fields.filter(
+      (field) => String(rawSummary[field] ?? 0) !== String(rollupSummary[field] ?? 0),
+    );
+    return mismatches.length === 0
+      ? { ok: true, detail: null }
+      : { ok: false, detail: `15m validation mismatch: ${mismatches.join(",")}` };
+  }
+
+  async validateTimezoneRollups(
+    timezones: readonly string[],
+    now = new Date(),
+  ): Promise<RollupDataValidationResult> {
+    if (!Number.isFinite(now.getTime())) throw new Error("invalid timezone rollup validation time");
+    const fields = [
+      "rows",
+      "events",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "cost_usd",
+      "fingerprint",
+    ] as const;
+    const summarySelect = `SELECT count() AS rows,
+              sum(event_count) AS events,
+              sum(input_tokens) AS input_tokens,
+              sum(output_tokens) AS output_tokens,
+              sum(cache_read_tokens) AS cache_read_tokens,
+              sum(cache_creation_tokens) AS cache_creation_tokens,
+              sum(cost_usd) AS cost_usd,
+              groupBitXor(cityHash64(
+                bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+                cache_read_tokens, cache_creation_tokens, cost_usd
+              )) AS fingerprint`;
+
+    for (const timezoneInput of new Set(timezones)) {
+      const timezone = canonicalTimezoneId(timezoneInput);
+      if (!timezone) {
+        return { ok: false, detail: `timezone validation rejected: ${timezoneInput}` };
+      }
+      const today = localDateKey(now, timezone);
+      const todayStart = firstInstantOfLocalDate(today, timezone);
+      const previousDayStart = firstInstantOfLocalDate(addLocalCalendarDays(today, -1), timezone);
+      const currentHourIndex = Math.floor(
+        Math.max(0, now.getTime() - todayStart.getTime()) / (60 * 60 * 1_000),
+      );
+      const currentHourStart = new Date(todayStart.getTime() + currentHourIndex * 60 * 60 * 1_000);
+      const ranges = [
+        {
+          resolution: "hour" as const,
+          from: new Date(currentHourStart.getTime() - 60 * 60 * 1_000),
+          to: currentHourStart,
+          expression: `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${timezone}')`,
+          table: "usage_hourly_timezone_rollup",
+        },
+        {
+          resolution: "day" as const,
+          from: previousDayStart,
+          to: todayStart,
+          expression: `toStartOfDay(bucket_15m, '${timezone}')`,
+          table: "usage_daily_timezone_rollup",
+        },
+      ];
+
+      for (const range of ranges) {
+        const params = {
+          timezone,
+          from: chTs(range.from),
+          to: chTs(range.to),
+        };
+        const source = await this.queryJson<RollupValidationSummary>(
+          `${summarySelect}
+           FROM (
+             SELECT ${range.expression} AS bucket_start,
+                    provider_key, user_id, team_id, session_id, model, host,
+                    pricing_revision_id, cost_status,
+                    sum(event_count) AS event_count,
+                    sum(input_tokens) AS input_tokens,
+                    sum(output_tokens) AS output_tokens,
+                    sum(cache_read_tokens) AS cache_read_tokens,
+                    sum(cache_creation_tokens) AS cache_creation_tokens,
+                    sum(cost_usd) AS cost_usd
+             FROM usage_15m_rollup_v2 FINAL
+             WHERE bucket_15m >= {from:DateTime64(3)}
+               AND bucket_15m < {to:DateTime64(3)}
+             GROUP BY bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                      pricing_revision_id, cost_status
+           )`,
+          params,
+        );
+        const rollup = await this.queryJson<RollupValidationSummary>(
+          `${summarySelect}
+           FROM ${range.table} FINAL
+           WHERE timezone = {timezone:String}
+             AND bucket_start >= {from:DateTime64(3)}
+             AND bucket_start < {to:DateTime64(3)}`,
+          params,
+        );
+        const sourceSummary = source[0] ?? {};
+        const rollupSummary = rollup[0] ?? {};
+        const mismatches = fields.filter(
+          (field) => String(sourceSummary[field] ?? 0) !== String(rollupSummary[field] ?? 0),
+        );
+        if (mismatches.length > 0) {
+          return {
+            ok: false,
+            detail: `${timezone} ${range.resolution} validation mismatch: ${mismatches.join(",")}`,
+          };
+        }
+      }
+    }
+    return { ok: true, detail: null };
   }
 
   // ── 공통 ──

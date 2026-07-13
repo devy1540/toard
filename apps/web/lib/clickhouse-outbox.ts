@@ -11,6 +11,7 @@ import {
 const STARTUP_DELAY_MS = 15_000;
 const TICK_MS = 30_000;
 const COMPACTOR_TICK_MS = 60_000;
+const CUTOVER_STARTUP_DELAY_MS = 45_000;
 const DEFAULT_LIMIT = 10;
 const DELIVERED_RETENTION_MS = CLICKHOUSE_RAW_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const COMPLETED_JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -441,6 +442,21 @@ async function compactTimezoneTick(): Promise<void> {
   }
 }
 
+async function rollupCutoverTick(): Promise<void> {
+  try {
+    const [{ getPool }, { advanceRollupCutover }] = await Promise.all([
+      import("./db"),
+      import("./rollup-cutover"),
+    ]);
+    const repository = new PgRollupWorkerRepository(getPool());
+    await repository.withLoadSlot(() => advanceRollupCutover());
+  } catch (error) {
+    console.warn(
+      `[toard] rollup automatic cutover check failed — ${sanitizeRollupError(error)} — retrying later`,
+    );
+  }
+}
+
 export function startClickHouseOutboxFlush(): void {
   if (process.env.STORAGE_BACKEND !== "clickhouse") return;
   const g = globalThis as {
@@ -509,4 +525,23 @@ export function startClickHouseTimezoneRollupCompaction(): void {
   };
   setTimeout(guardedCompactTimezoneTick, STARTUP_DELAY_MS + 20_000).unref();
   setInterval(guardedCompactTimezoneTick, COMPACTOR_TICK_MS).unref();
+}
+
+export function startClickHouseRollupCutover(): void {
+  if (process.env.STORAGE_BACKEND !== "clickhouse") return;
+  const g = globalThis as {
+    __toardClickHouseRollupCutoverStarted?: true;
+    __toardClickHouseRollupCutoverRunning?: true;
+  };
+  if (g.__toardClickHouseRollupCutoverStarted) return;
+  g.__toardClickHouseRollupCutoverStarted = true;
+  const guardedCutoverTick = () => {
+    if (g.__toardClickHouseRollupCutoverRunning) return;
+    g.__toardClickHouseRollupCutoverRunning = true;
+    rollupCutoverTick().finally(() => {
+      g.__toardClickHouseRollupCutoverRunning = undefined;
+    });
+  };
+  setTimeout(guardedCutoverTick, CUTOVER_STARTUP_DELAY_MS).unref();
+  setInterval(guardedCutoverTick, COMPACTOR_TICK_MS).unref();
 }

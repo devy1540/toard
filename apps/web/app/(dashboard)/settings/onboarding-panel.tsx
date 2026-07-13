@@ -1,207 +1,104 @@
 "use client";
 
-import { useActionState, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { CopyButton } from "@/components/dashboard/copy-button";
+import { Button } from "@/components/ui/button";
 import { Disclosure } from "@/components/ui/disclosure";
-import { Input } from "@/components/ui/input";
-import { Switch } from "@/components/ui/switch";
-import { issueTokenAction, type TokenState } from "./token-actions";
+import { detectInstallPlatform, type InstallPlatform } from "@/lib/onboarding-install";
 
-const RELEASE_INSTALL = "https://github.com/devy1540/toard/releases/latest/download/install.sh";
-const INITIAL: TokenState = {};
-const ISSUE_FORM_ID = "issue-token-form";
+const PLATFORMS: InstallPlatform[] = ["windows", "macos", "linux"];
 
-/** 한 줄 설치 — toard 가 서빙하는 install.sh 에 토큰을 env 로 넘김(바이너리+자격+PATH 자동). */
-function oneLiner(token: string, baseUrl: string, collectContent: boolean): string {
-  const content = collectContent ? " TOARD_SHIM_COLLECT_CONTENT=1" : "";
-  return `curl -fsSL ${baseUrl}/install.sh | TOARD_INGEST_TOKEN=${token}${content} sh`;
-}
+type NavigatorWithUserAgentData = Navigator & {
+  userAgentData?: { platform?: string };
+};
 
-/** 수동(고급) — 릴리스 install.sh + 직접 자격/PATH 설정. */
-function manualSnippet(token: string, endpoint: string, collectContent: boolean): string {
-  return [
-    `curl -fsSL ${RELEASE_INSTALL} | sh`,
-    "mkdir -p ~/.toard && chmod 700 ~/.toard",
-    "cat > ~/.toard/credentials <<'EOF'",
-    `agent_key=${token}`,
-    `endpoint=${endpoint}`,
-    ...(collectContent ? ["collect_content=true"] : []),
-    "EOF",
-    "chmod 600 ~/.toard/credentials",
-    'export PATH="$HOME/.toard/bin:$PATH"   # ~/.zshrc 에 추가',
-  ].join("\n");
-}
-
-export function OnboardingPanel({
-  baseUrl,
-  endpoint,
-  hasToken,
-  createdAt,
-  lastUsedAt,
-  contentEnabled,
-  contentDefaultOn = false,
-}: {
-  baseUrl: string;
-  endpoint: string;
-  hasToken: boolean;
-  createdAt: string | null;
-  lastUsedAt: string | null;
-  contentEnabled: boolean;
-  contentDefaultOn?: boolean;
-}) {
+export function OnboardingPanel({ baseUrl, endpoint }: { baseUrl: string; endpoint: string }) {
   const t = useTranslations("settings");
-  const [state, action, pending] = useActionState(issueTokenAction, INITIAL);
-  // 운영자 정책이 opt-out(CONTENT_COLLECTION_DEFAULT=on)이면 기본 체크.
-  const [collectContent, setCollectContent] = useState(contentDefaultOn);
-  const token = state.token;
-  const fmt = (s: string | null) => (s ? new Date(s).toLocaleString() : "—");
-  const placeholder = t("onboarding.tokenPlaceholder");
-  const one = oneLiner(token ?? placeholder, baseUrl, collectContent);
-  // 발급 결과 토스트 — 같은 토큰으로 중복 발화 방지
-  const toastedToken = useRef<string | null>(null);
+  const [platform, setPlatform] = useState<InstallPlatform>("macos");
 
   useEffect(() => {
-    if (state.token && toastedToken.current !== state.token) {
-      toastedToken.current = state.token;
-      toast.success(t("onboarding.issueSuccess"));
-    }
-  }, [state.token, t]);
-  useEffect(() => {
-    if (state.error) toast.error(state.error);
-  }, [state.error]);
+    const nav = navigator as NavigatorWithUserAgentData;
+    const detected = detectInstallPlatform({
+      userAgentDataPlatform: nav.userAgentData?.platform,
+      platform: nav.platform,
+      userAgent: nav.userAgent,
+    });
+    if (detected) setPlatform(detected);
+  }, []);
 
-  const issueLabel = hasToken || Boolean(token) ? "onboarding.issueAdditional" : "onboarding.issue";
+  const commands = managementCommands(platform, baseUrl, endpoint);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-sm">
-          <span className="text-muted-foreground">{t("onboarding.tokenLabel")}</span>
-          {token ? (
-            <span>
-              {t("onboarding.issued")}{" "}
-              <span className="text-muted-foreground">{t("onboarding.justNow")}</span>
-            </span>
-          ) : hasToken ? (
-            <span>
-              {t("onboarding.issued")}{" "}
-              {/* 로캘·타임존 의존 포맷 — SSR 과 달라질 수 있어 클라이언트 값 유지 */}
-              <span className="text-muted-foreground" suppressHydrationWarning>
-                {t("onboarding.createdInfo", {
-                  createdAt: fmt(createdAt),
-                  lastUsed: lastUsedAt
-                    ? t("onboarding.lastUsedSuffix", { lastUsedAt: fmt(lastUsedAt) })
-                    : "",
-                })}
-              </span>
-            </span>
-          ) : (
-            <span className="text-muted-foreground">{t("onboarding.notYet")}</span>
-          )}
-        </div>
-        <form id={ISSUE_FORM_ID} action={action} className="flex flex-wrap items-end justify-end gap-2">
-          <div className="w-48 space-y-1">
-            <label className="text-muted-foreground text-xs" htmlFor="token-device-label">
-              {t("onboarding.deviceLabel")}
-            </label>
-            <Input
-              id="token-device-label"
-              name="label"
-              maxLength={80}
-              placeholder={t("onboarding.deviceLabelPlaceholder")}
-              disabled={pending}
-            />
+    <Disclosure
+      trigger={t("management.title")}
+      triggerClassName="text-muted-foreground hover:text-foreground text-sm"
+    >
+      <div className="mt-3 space-y-5 rounded-lg border p-4">
+        <p className="text-muted-foreground text-xs">{t("management.description")}</p>
+        <div className="space-y-2">
+          <p className="text-xs font-medium">{t("management.platform")}</p>
+          <div className="flex flex-wrap gap-2">
+            {PLATFORMS.map((value) => (
+              <Button
+                key={value}
+                type="button"
+                size="sm"
+                variant={platform === value ? "default" : "outline"}
+                aria-pressed={platform === value}
+                onClick={() => setPlatform(value)}
+              >
+                {t(`wizard.${value}`)}
+              </Button>
+            ))}
           </div>
-          <Button type="submit" disabled={pending}>
-            {pending ? t("onboarding.issuing") : t(issueLabel)}
-          </Button>
-        </form>
+        </div>
+        <ManagementCommand title={t("management.manual")} command={commands.manual} />
+        <ManagementCommand title={t("management.doctor")} command={commands.doctor} />
+        <ManagementCommand title={t("management.update")} command={commands.update} />
+        <ManagementCommand title={t("management.uninstall")} command={commands.uninstall} />
       </div>
+    </Disclosure>
+  );
+}
 
-      {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
-
-      {token ? (
-        <div className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
-          <p className="font-medium">{t("onboarding.newTokenNotice")}</p>
-          <p className="text-muted-foreground mt-1 text-xs">
-            {t("onboarding.newTokenReissueHint")}
-          </p>
-        </div>
-      ) : null}
-
-      {/* 쉬운 설치 — 한 줄 */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{t("onboarding.oneLinerTitle")}</h2>
-          <CopyButton
-            text={one}
-            label={t("onboarding.copyCommandLabel")}
-            message={t("onboarding.oneLinerCopied")}
-          />
-        </div>
-        {!token ? (
-          <p className="text-muted-foreground text-xs">
-            {t.rich("onboarding.issueHint", { b: (chunks) => <b>{chunks}</b> })}
-          </p>
-        ) : null}
-        {contentEnabled ? (
-          <div className="flex items-start gap-2 text-xs">
-            <Switch
-              id="collect-content"
-              className="mt-0.5"
-              checked={collectContent}
-              onCheckedChange={setCollectContent}
-            />
-            <label htmlFor="collect-content">
-              {t.rich("onboarding.collectContentLabel", {
-                muted: (chunks) => <span className="text-muted-foreground">{chunks}</span>,
-                link: (chunks) => (
-                  <a className="text-primary underline-offset-4 hover:underline" href="/history">
-                    {chunks}
-                  </a>
-                ),
-              })}
-            </label>
-          </div>
-        ) : (
-          <p className="text-muted-foreground text-xs">{t("onboarding.collectContentGated")}</p>
-        )}
-        <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{one}</pre>
-        <p className="text-muted-foreground text-xs">{t("onboarding.oneLinerDescription")}</p>
+function ManagementCommand({ title, command }: { title: string; command: string }) {
+  const t = useTranslations("settings");
+  return (
+    <div className="space-y-2 border-t pt-4 first:border-0 first:pt-0">
+      <div className="flex items-center justify-between gap-3">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <CopyButton text={command} label={t("management.copy")} />
       </div>
-
-      {/* 수동(고급) — 접기 */}
-      <Disclosure
-        trigger={t("onboarding.manualSummary")}
-        triggerClassName="text-muted-foreground hover:text-foreground text-sm"
-      >
-        <div className="mt-2 flex items-center justify-end">
-          <CopyButton
-            text={manualSnippet(token ?? placeholder, endpoint, collectContent)}
-            message={t("onboarding.manualCopied")}
-          />
-        </div>
-        <pre className="bg-muted mt-1 overflow-x-auto rounded-md p-3 text-xs leading-relaxed">
-          {manualSnippet(token ?? placeholder, endpoint, collectContent)}
-        </pre>
-      </Disclosure>
-
-      {/* 제거 */}
-      <div className="space-y-2 border-t pt-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold">{t("onboarding.uninstallTitle")}</h2>
-          <CopyButton
-            text={`curl -fsSL ${baseUrl}/uninstall.sh | sh`}
-            label={t("onboarding.copyCommandLabel")}
-            message={t("onboarding.uninstallCopied")}
-          />
-        </div>
-        <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs leading-relaxed">{`curl -fsSL ${baseUrl}/uninstall.sh | sh`}</pre>
-        <p className="text-muted-foreground text-xs">{t("onboarding.uninstallDescription")}</p>
-      </div>
+      <pre className="bg-muted max-w-full overflow-x-auto rounded-md p-3 text-xs leading-relaxed">
+        <code>{command}</code>
+      </pre>
     </div>
   );
+}
+
+function managementCommands(platform: InstallPlatform, baseUrl: string, endpoint: string) {
+  const base = baseUrl.replace(/\/+$/, "");
+  if (platform === "windows") {
+    const shim = '"$HOME\\.toard\\bin\\toard-shim.exe"';
+    return {
+      manual: `notepad "$HOME\\.toard\\credentials"\n# agent_key=<내 토큰>\n# endpoint=${endpoint}`,
+      doctor: `& ${shim} doctor`,
+      update: `& ${shim} update`,
+      uninstall: `irm '${base}/uninstall.ps1' | iex`,
+    };
+  }
+  return {
+    manual: [
+      "mkdir -p ~/.toard && chmod 700 ~/.toard",
+      "cat > ~/.toard/credentials <<'EOF'",
+      "agent_key=<내 토큰>",
+      `endpoint=${endpoint}`,
+      "EOF",
+      "chmod 600 ~/.toard/credentials",
+    ].join("\n"),
+    doctor: "toard-shim doctor",
+    update: "toard-shim update",
+    uninstall: `curl -fsSL '${base}/uninstall.sh' | sh`,
+  };
 }

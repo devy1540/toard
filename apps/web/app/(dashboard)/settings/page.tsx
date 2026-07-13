@@ -15,7 +15,7 @@ import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
-import { getActiveTokenMeta, listActiveTokens } from "@/lib/tokens";
+import { listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
@@ -23,6 +23,7 @@ import { AppearanceForm } from "./appearance-form";
 import { DeviceActions } from "./device-actions";
 import { DeviceInventory } from "./device-inventory";
 import { OnboardingPanel } from "./onboarding-panel";
+import { OnboardingWizard } from "./onboarding-wizard";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
@@ -156,8 +157,7 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [meta, tokens, endpoint, baseUrl, devices, shims, inventories] = await Promise.all([
-    getActiveTokenMeta(userId),
+  const [tokens, endpoint, baseUrl, devices, shims, inventories] = await Promise.all([
     listActiveTokens(userId),
     getIngestEndpoint(),
     getPublicBaseUrl(),
@@ -187,23 +187,17 @@ async function InstallTab({ userId }: { userId: string }) {
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("install.issueTitle")}</CardTitle>
-          <CardDescription>
-            {t.rich(contentEnabled ? "install.issueDescriptionWithContent" : "install.issueDescription", {
-              code: (chunks) => <code>{chunks}</code>,
-              b: (chunks) => <b>{chunks}</b>,
-            })}
-          </CardDescription>
+          <CardDescription>{t("install.issueDescription")}</CardDescription>
         </CardHeader>
-        <CardContent className="min-w-0">
-          <OnboardingPanel
+        <CardContent className="min-w-0 space-y-6">
+          <OnboardingWizard
             baseUrl={baseUrl}
-            endpoint={endpoint}
-            hasToken={Boolean(meta)}
-            createdAt={meta?.createdAt.toISOString() ?? null}
-            lastUsedAt={meta?.lastUsedAt?.toISOString() ?? null}
             contentEnabled={contentEnabled}
             contentDefaultOn={contentDefaultOn}
           />
+          <div className="border-t pt-4">
+            <OnboardingPanel baseUrl={baseUrl} endpoint={endpoint} />
+          </div>
         </CardContent>
       </Card>
 

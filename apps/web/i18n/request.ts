@@ -14,7 +14,7 @@ export async function resolveLocale(): Promise<Locale> {
 
 /** 로케일별 메시지를 영역 파일에서 조립. 영역 추가 시 이 목록에 등록. */
 async function loadMessages(locale: Locale) {
-  const [common, nav, auth, invite, dashboard, insights, org, settings, admin] = await Promise.all([
+  const [common, nav, auth, invite, dashboard, insights, org, settings, admin, library] = await Promise.all([
     import(`../messages/${locale}/common.json`),
     import(`../messages/${locale}/nav.json`),
     import(`../messages/${locale}/auth.json`),
@@ -24,6 +24,7 @@ async function loadMessages(locale: Locale) {
     import(`../messages/${locale}/org.json`),
     import(`../messages/${locale}/settings.json`),
     import(`../messages/${locale}/admin.json`),
+    import(`../messages/${locale}/library.json`),
   ]);
   return {
     common: common.default,
@@ -35,6 +36,7 @@ async function loadMessages(locale: Locale) {
     org: org.default,
     settings: settings.default,
     admin: admin.default,
+    library: library.default,
   };
 }
 

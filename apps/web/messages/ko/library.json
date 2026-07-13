@@ -1,0 +1,94 @@
+{
+  "title": "도구 라이브러리",
+  "description": "공개 도구와 워크스페이스에서 공유한 MCP, 스킬, 플러그인을 찾아보세요.",
+  "share": "내 도구 공유",
+  "scope": {
+    "all": "전체",
+    "public": "공개 도구",
+    "workspace": "워크스페이스",
+    "mine": "내가 공유함"
+  },
+  "kind": {
+    "all": "모든 유형",
+    "mcp": "MCP",
+    "skill": "스킬",
+    "plugin": "플러그인"
+  },
+  "trust": {
+    "community": "커뮤니티",
+    "verified": "검증됨"
+  },
+  "lifecycle": {
+    "published": "게시됨",
+    "deprecated": "사용 중단 예정",
+    "blocked": "차단됨",
+    "archived": "보관됨"
+  },
+  "state": {
+    "not_installed": "미설치",
+    "unavailable": "확인할 수 없음",
+    "installed": "설치됨",
+    "versionUnknown": "설치됨 · 버전 확인 불가",
+    "sameVersion": "설치됨 · 등록 버전과 동일",
+    "differentVersion": "설치됨 · 다른 버전"
+  },
+  "filters": {
+    "searchLabel": "도구 검색",
+    "searchPlaceholder": "이름이나 설명 검색",
+    "kindLabel": "유형",
+    "apply": "적용",
+    "reset": "초기화"
+  },
+  "table": {
+    "tool": "도구",
+    "kind": "유형",
+    "origin": "출처",
+    "state": "내 상태",
+    "detail": "상세",
+    "publicOrigin": "공개 카탈로그",
+    "workspaceOrigin": "{owner} 공유"
+  },
+  "empty": {
+    "title": "조건에 맞는 도구가 없습니다",
+    "description": "검색어나 필터를 바꾸거나 워크스페이스에 첫 도구를 공유해보세요."
+  },
+  "detail": {
+    "back": "라이브러리로",
+    "source": "원본",
+    "sourceOpen": "원본 저장소 열기",
+    "sourceRef": "등록 ref",
+    "tagNotice": "tag는 원본 저장소에서 이동될 수 있습니다. commit SHA만 강한 불변성을 제공합니다.",
+    "clients": "지원 클라이언트",
+    "requiredEnv": "필요한 환경변수 이름",
+    "noRequiredEnv": "필수 환경변수 없음",
+    "networkHosts": "네트워크 접근 대상",
+    "noNetworkHosts": "선언된 외부 host 없음",
+    "installState": "내 기기 상태",
+    "publishedBy": "게시자",
+    "publicPublisher": "공개 카탈로그",
+    "updatedAt": "마지막 수정",
+    "installNotes": "설치 안내",
+    "uninstallNotes": "제거 안내",
+    "copyInstall": "설치 안내 복사",
+    "copyUninstall": "제거 안내 복사",
+    "copied": "안내를 복사했습니다.",
+    "noNotes": "원본 저장소의 README를 확인하세요.",
+    "verificationNotice": "원본 확인은 등록된 URL과 ref를 확인했다는 뜻이며, 제작자의 공식 보증이나 보안 감사를 의미하지 않습니다.",
+    "blockedTitle": "이 도구는 차단되었습니다",
+    "blockedDescription": "관리자가 다음 사유로 워크스페이스 노출을 차단했습니다.",
+    "blockedNoReason": "차단 사유가 기록되지 않았습니다."
+  },
+  "form": {
+    "title": "도구 공유",
+    "description": "Git 원본과 안전한 메타데이터를 공유합니다. 비밀값과 로컬 파일은 업로드하지 않습니다."
+  },
+  "errors": {
+    "load": "도구를 불러오지 못했습니다.",
+    "unauthorized": "로그인이 필요합니다.",
+    "invalid": "입력값을 확인해주세요."
+  },
+  "admin": {
+    "title": "도구 관리",
+    "description": "게시 승인 없이 노출된 항목을 사후 검증하거나 차단합니다."
+  }
+}

@@ -1,0 +1,94 @@
+{
+  "title": "Tool library",
+  "description": "Discover public and workspace-shared MCP servers, skills, and plugins.",
+  "share": "Share my tool",
+  "scope": {
+    "all": "All",
+    "public": "Public tools",
+    "workspace": "Workspace",
+    "mine": "Shared by me"
+  },
+  "kind": {
+    "all": "All types",
+    "mcp": "MCP",
+    "skill": "Skill",
+    "plugin": "Plugin"
+  },
+  "trust": {
+    "community": "Community",
+    "verified": "Verified"
+  },
+  "lifecycle": {
+    "published": "Published",
+    "deprecated": "Deprecated",
+    "blocked": "Blocked",
+    "archived": "Archived"
+  },
+  "state": {
+    "not_installed": "Not installed",
+    "unavailable": "Unavailable",
+    "installed": "Installed",
+    "versionUnknown": "Installed · version unavailable",
+    "sameVersion": "Installed · matches registered version",
+    "differentVersion": "Installed · different version"
+  },
+  "filters": {
+    "searchLabel": "Search tools",
+    "searchPlaceholder": "Search names or descriptions",
+    "kindLabel": "Type",
+    "apply": "Apply",
+    "reset": "Reset"
+  },
+  "table": {
+    "tool": "Tool",
+    "kind": "Type",
+    "origin": "Source",
+    "state": "My status",
+    "detail": "Details",
+    "publicOrigin": "Public catalog",
+    "workspaceOrigin": "Shared by {owner}"
+  },
+  "empty": {
+    "title": "No tools match these filters",
+    "description": "Change the search or filters, or share the first workspace tool."
+  },
+  "detail": {
+    "back": "Back to library",
+    "source": "Source",
+    "sourceOpen": "Open source repository",
+    "sourceRef": "Registered ref",
+    "tagNotice": "A tag can move in its source repository. Only a commit SHA provides strong immutability.",
+    "clients": "Supported clients",
+    "requiredEnv": "Required environment variable names",
+    "noRequiredEnv": "No required environment variables",
+    "networkHosts": "Network destinations",
+    "noNetworkHosts": "No external hosts declared",
+    "installState": "My device status",
+    "publishedBy": "Publisher",
+    "publicPublisher": "Public catalog",
+    "updatedAt": "Last updated",
+    "installNotes": "Installation notes",
+    "uninstallNotes": "Removal notes",
+    "copyInstall": "Copy installation notes",
+    "copyUninstall": "Copy removal notes",
+    "copied": "Instructions copied.",
+    "noNotes": "See the source repository README.",
+    "verificationNotice": "Source verification means the registered URL and ref were checked. It is not an official endorsement or security audit.",
+    "blockedTitle": "This tool has been blocked",
+    "blockedDescription": "An administrator blocked workspace access for the following reason.",
+    "blockedNoReason": "No blocking reason was recorded."
+  },
+  "form": {
+    "title": "Share a tool",
+    "description": "Share a Git source and safe metadata. Secrets and local files are never uploaded."
+  },
+  "errors": {
+    "load": "The tool could not be loaded.",
+    "unauthorized": "Sign in is required.",
+    "invalid": "Review the entered values."
+  },
+  "admin": {
+    "title": "Tool moderation",
+    "description": "Verify or block items after they have been published without an approval gate."
+  }
+}

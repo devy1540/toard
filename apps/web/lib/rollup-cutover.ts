@@ -390,7 +390,10 @@ export async function advanceRollupCutoverWith(
     }
     return;
   }
-  await advanceLayer(dependencies, timezone, now, usage.targetWatermark ?? eligibleTarget);
+  const timezoneTarget = timezone.state === "active" || timezone.activatedAt
+    ? eligibleTarget
+    : usage.targetWatermark ?? eligibleTarget;
+  await advanceLayer(dependencies, timezone, now, timezoneTarget);
 }
 
 type RollupValidationStorage = {

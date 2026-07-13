@@ -112,6 +112,14 @@ test("demo open mode can render settings with the dashboard viewer fallback", ()
   );
 });
 
+test("onboarding token actions issue once and poll within the authenticated owner", () => {
+  const actions = source("app/(dashboard)/settings/token-actions.ts");
+  assert.match(actions, /issueOnboardingTokenAction/);
+  assert.match(actions, /issueDeviceToken\(userId\)/);
+  assert.match(actions, /checkTokenConnectionAction/);
+  assert.match(actions, /getTokenConnectionStatus\(userId, tokenId\)/);
+});
+
 test("personal navigation includes insights between usage and history", () => {
   const nav = source("components/dashboard/sidebar-nav.tsx");
   assert.match(nav, /key: "myUsage"[\s\S]*key: "insights"[\s\S]*key: "history"/);

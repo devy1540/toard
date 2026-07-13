@@ -11,7 +11,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { costCoverageState, legacyCostHintCount } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
@@ -22,11 +22,7 @@ function coveredCost(
   coverage: UsageCostCoverage,
   labels: { partial: string; unpriced: string; legacy: string },
 ): string {
-  const state = costCoverageState(coverage);
-  if (state === "unpriced") return labels.unpriced;
-  if (state === "partial") return `${fmtUsd(costUsd)} · ${labels.partial}`;
-  if (state === "legacy") return `${fmtUsd(costUsd)} · ${labels.legacy}`;
-  return fmtUsd(costUsd);
+  return formatCostForCoverage(fmtUsd(costUsd), coverage, labels);
 }
 
 /** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */

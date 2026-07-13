@@ -77,3 +77,48 @@ test("library 메시지 namespace는 request loader와 타입에 등록된다", 
   assert.match(messages, /type library from "\.\.\/messages\/en\/library\.json"/);
   assert.match(messages, /library: typeof library/);
 });
+
+test("공유 action은 로그인 사용자를 owner로 강제하고 신뢰 상태를 폼에서 읽지 않는다", () => {
+  const action = source("app/(dashboard)/library/share/actions.ts");
+  const parser = source("lib/tool-catalog-form.ts");
+
+  assert.match(action, /getDashboardViewer/);
+  assert.match(action, /parseToolCatalogSubmission/);
+  assert.match(parser, /\.getAll\("supportedClients"\)/);
+  assert.match(action, /createToolCatalogItem\(viewer\.id/);
+  assert.match(action, /updateToolCatalogItem\(viewer\.id, id/);
+  assert.doesNotMatch(action, /formData\.get\("trustStatus"\)|formData\.get\("ownerUserId"\)/);
+});
+
+test("공유 action의 redirect는 DB 오류 catch 밖에서 실행된다", () => {
+  const action = source("app/(dashboard)/library/share/actions.ts");
+  const updateStart = action.indexOf("export async function updateToolCatalogAction");
+  const createBody = action.slice(0, updateStart);
+  const updateBody = action.slice(updateStart);
+
+  for (const body of [createBody, updateBody]) {
+    assert.notEqual(body.indexOf("} catch"), -1);
+    assert.equal(body.indexOf("redirect(`") > body.indexOf("} catch"), true);
+  }
+});
+
+test("공유 폼은 환경변수 이름과 host만 받고 비밀값 입력을 만들지 않는다", () => {
+  const form = source("app/(dashboard)/library/share/tool-share-form.tsx");
+
+  assert.match(form, /name="requiredEnv"/);
+  assert.match(form, /name="networkHosts"/);
+  assert.match(form, /name="supportedClients"/);
+  assert.doesNotMatch(form, /type="password"|secretValue|tokenValue|credentialValue/);
+});
+
+test("편집 페이지와 보관 action은 작성자 소유권을 다시 확인한다", () => {
+  const edit = source("app/(dashboard)/library/[slug]/edit/page.tsx");
+  const archive = source("app/(dashboard)/library/tool-actions.ts");
+  const detail = source("app/(dashboard)/library/[slug]/page.tsx");
+
+  assert.match(edit, /item\.ownerUserId !== viewer\.id/);
+  assert.match(edit, /mode="edit"/);
+  assert.match(archive, /archiveToolCatalogItem\(viewer\.id, id\)/);
+  assert.match(detail, /item\.ownerUserId === viewer\.id/);
+  assert.match(detail, /\/edit/);
+});

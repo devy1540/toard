@@ -13,6 +13,7 @@ import {
   type ToolCatalogDb,
 } from "./tool-catalog";
 import { PUBLIC_TOOL_CATALOG } from "./tool-catalog-public";
+import { submissionFromFormData } from "./tool-catalog-form";
 
 type Call = { sql: string; params?: unknown[] };
 type Response = { rows: Record<string, unknown>[]; rowCount?: number };
@@ -248,4 +249,40 @@ test("인벤토리 조회 실패는 카탈로그를 막지 않고 확인 불가 
   assert.equal(items.length, 1);
   assert.equal(items[0]?.slug, "github-mcp-server");
   assert.deepEqual(items[0]?.installState, { status: "unavailable" });
+});
+
+test("공유 FormData는 안전한 submission 필드만 구조화한다", () => {
+  const formData = new FormData();
+  formData.set("name", "GitHub PR Review");
+  formData.set("slug", "github-pr-review");
+  formData.set("description", "Reviews pull requests");
+  formData.set("kind", "skill");
+  formData.set("sourceUrl", "https://github.com/acme/github-pr-review");
+  formData.set("sourceRef", "v1.2.3");
+  formData.append("supportedClients", "codex");
+  formData.append("supportedClients", "claude_code");
+  formData.set("requiredEnv", "GITHUB_TOKEN\nSENTRY_DSN");
+  formData.set("networkHosts", "api.github.com\n github.com ");
+  formData.set("installNotes", "Install notes");
+  formData.set("uninstallNotes", "Remove notes");
+  formData.set("inventoryItemKey", "github-pr-review");
+  formData.set("inventorySourceProvider", "codex");
+  formData.set("trustStatus", "verified");
+  formData.set("ownerUserId", "attacker");
+
+  assert.deepEqual(submissionFromFormData(formData), {
+    name: "GitHub PR Review",
+    slug: "github-pr-review",
+    description: "Reviews pull requests",
+    kind: "skill",
+    sourceUrl: "https://github.com/acme/github-pr-review",
+    sourceRef: "v1.2.3",
+    supportedClients: ["codex", "claude_code"],
+    requiredEnv: ["GITHUB_TOKEN", "SENTRY_DSN"],
+    networkHosts: ["api.github.com", "github.com"],
+    installNotes: "Install notes",
+    uninstallNotes: "Remove notes",
+    inventoryItemKey: "github-pr-review",
+    inventorySourceProvider: "codex",
+  });
 });

@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getToolCatalogItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
+import { archiveToolCatalogAction } from "../tool-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -57,7 +58,15 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
           </div>
           <p className="text-muted-foreground mt-2 text-sm">{item.description}</p>
         </div>
-        <Badge variant="outline" className="self-start">{installState}</Badge>
+        <div className="flex flex-wrap items-center gap-2 self-start">
+          <Badge variant="outline">{installState}</Badge>
+          {item.ownerUserId === viewer.id ? (
+            <>
+              <Button asChild size="sm" variant="outline"><Link href={`/library/${item.slug}/edit`}>{t("form.edit")}</Link></Button>
+              {item.lifecycleStatus !== "archived" ? <form action={archiveToolCatalogAction.bind(null, item.id)}><Button type="submit" size="sm" variant="destructive">{t("form.archive")}</Button></form> : null}
+            </>
+          ) : null}
+        </div>
       </div>
 
       <div className="grid min-w-0 gap-4 lg:grid-cols-2">

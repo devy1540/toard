@@ -168,7 +168,7 @@ test("Windows installer routes serve generated no-store PowerShell", () => {
 });
 
 test("macOS and Linux one-line installer does not stop for a daemon prompt", () => {
-  const install = source("app/install.sh/route.ts");
+  const install = source("lib/shell-installer.ts");
   assert.match(install, /TOARD_INSTALL_DAEMON/);
   assert.match(install, /:-1/);
 });
@@ -186,7 +186,7 @@ test("shell installer builder stays outside the Next.js route module", () => {
 });
 
 test("installers accept an explicit release mirror for pre-release E2E", () => {
-  const install = source("app/install.sh/route.ts");
+  const install = source("lib/shell-installer.ts");
   const releaseInstall = repoSource("shim/install.sh");
   assert.match(install, /TOARD_SHIM_RELEASE_BASE/);
   assert.match(releaseInstall, /TOARD_SHIM_RELEASE_BASE/);

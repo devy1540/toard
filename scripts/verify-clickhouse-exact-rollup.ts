@@ -1089,6 +1089,11 @@ async function main(): Promise<void> {
     if (!v2WatermarkValue || v2WatermarkValue < to) {
       throw new Error(`15m v2 rollup watermark did not cover verification period: ${v2WatermarkValue?.toISOString() ?? "missing"}`);
     }
+    assertEqual(
+      await v2.validateUsage15mV2(to, to.getTime() - from.getTime()),
+      { ok: true, detail: null },
+      "15m v2 validator raw vs rollup equivalence",
+    );
 
     const period = { from, to, providerKey };
     const late = pricedEvent({
@@ -1298,6 +1303,16 @@ async function main(): Promise<void> {
       const hourCache = await readTimezoneCacheTotals(ch, "hour", timezone, hourBucket, timezoneProviderKey);
       assertEqual(hourCache, hourSource, `${timezone} hourly timezone cache vs 15m v2`);
       assertEqual(hourSource.events, 4, `${timezone} hourly 15m bucket count`);
+
+      const validationDayStart = firstInstantOfLocalDate("2026-03-09", timezone);
+      const validationHourBucket = new Date(validationDayStart.getTime() + 11 * 60 * 60 * 1_000);
+      const validationNow = new Date(validationDayStart.getTime() + 12 * 60 * 60 * 1_000 + 30 * 60 * 1_000);
+      await v2.compactTimezoneRollup("hour", timezone, validationHourBucket);
+      assertEqual(
+        await v2.validateTimezoneRollups([timezone], validationNow),
+        { ok: true, detail: null },
+        `${timezone} timezone validator canonical type equivalence`,
+      );
     }
 
     const hybridRouterTimezone = "America/Los_Angeles";

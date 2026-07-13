@@ -1,5 +1,6 @@
 import { CLICKHOUSE_RAW_RETENTION_DAYS } from "@toard/core";
 import { resolveClickHouseRollupReadFlag } from "@toard/storage-clickhouse";
+import { TIMEZONE_ROLLUP_MAX_JOBS_PER_TICK } from "./timezone-rollup";
 import {
   PgRollupWorkerRepository,
   sanitizeRollupError,
@@ -22,7 +23,7 @@ const DEFAULT_ROLLUP_FINALIZE_DELAY_MS = 30 * 60 * 1_000;
 const ADAPTIVE_MINIMUM = 1;
 const ADAPTIVE_MAXIMUM = {
   usage_15m_v2: 64,
-  timezone: 32,
+  timezone: TIMEZONE_ROLLUP_MAX_JOBS_PER_TICK,
 } as const;
 const ADAPTIVE_FAST_BATCH_MS = 2_000;
 const ADAPTIVE_SLOW_BATCH_MS = 10_000;

@@ -6,8 +6,10 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
 } from "@toard/core";
+import type { Pool } from "pg";
 import {
   MAX_ACTIVE_ROLLUP_TIMEZONES,
+  PgTimezoneRollupRepository,
   TIMEZONE_ROLLUP_DAY_PREWARM_DAYS,
   TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS,
   TIMEZONE_ROLLUP_JOBS_PER_TICK,
@@ -238,7 +240,7 @@ test("Santiago 자정 gap 날짜 prewarm은 실제 local date 첫 instant를 사
   assert.equal(starts.has("2025-09-07T03:00:00.000Z"), false);
 });
 
-test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은 pending으로 복귀한다", async () => {
+test("worker는 기본 8개를 처리하고 실패 작업은 pending 복귀 후 tick을 실패시킨다", async () => {
   const fixture = fakeTimezoneRollupRepository();
   for (let i = 0; i < 9; i++) {
     await enqueueTimezoneRollupWith(
@@ -249,17 +251,19 @@ test("worker는 최대 8개를 advisory lock으로 처리하고 실패 작업은
     );
   }
 
-  const result = await runTimezoneRollupWorkerWith(fixture.repo, {
-    async supportsTimezone() {
-      return true;
-    },
-    async compactTimezoneRollup(_resolution, _timezone, bucket) {
-      if (bucket.toISOString() === "2026-07-02T00:00:00.000Z") throw new Error("ClickHouse unavailable");
-      return 3;
-    },
-  });
+  await assert.rejects(
+    runTimezoneRollupWorkerWith(fixture.repo, {
+      async supportsTimezone() {
+        return true;
+      },
+      async compactTimezoneRollup(_resolution, _timezone, bucket) {
+        if (bucket.toISOString() === "2026-07-02T00:00:00.000Z") throw new Error("ClickHouse unavailable");
+        return 3;
+      },
+    }),
+    /ClickHouse unavailable/,
+  );
 
-  assert.deepEqual(result, { jobs: 7, rows: 21 });
   assert.equal(fixture.lockKeys.length, TIMEZONE_ROLLUP_JOBS_PER_TICK);
   assert.equal(fixture.lockKeys[0], "timezone-rollup:day:Asia/Seoul");
   assert.equal(fixture.lockKeys[1], "timezone-rollup:hour:Asia/Seoul");
@@ -289,6 +293,21 @@ test("worker는 adaptive job 한도를 queue claim에 전달한다", async () =>
 
   assert.deepEqual(result, { jobs: 3, rows: 3 });
   assert.deepEqual(fixture.claimLimits, [3]);
+});
+
+test("PostgreSQL queue claim은 adaptive 한도를 기존 기본값 8로 다시 제한하지 않는다", async () => {
+  let requestedLimit: unknown;
+  const pool = {
+    async query(_sql: string, params?: unknown[]) {
+      requestedLimit = params?.[0];
+      return { rows: [] };
+    },
+  } as unknown as Pool;
+  const repository = new PgTimezoneRollupRepository(pool);
+
+  await repository.claimJobs(20);
+
+  assert.equal(requestedLimit, 20);
 });
 
 test("ClickHouse capability가 사라진 timezone job은 한 tick에 drain되어 정상 queue를 굶기지 않는다", async () => {

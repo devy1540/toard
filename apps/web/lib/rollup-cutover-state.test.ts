@@ -30,6 +30,7 @@ test("automation migration은 고정 목표와 누적 관찰 상태를 저장한
   assert.match(migration, /target_watermark TIMESTAMPTZ/);
   assert.match(migration, /healthy_seconds INTEGER NOT NULL DEFAULT 0/);
   assert.match(migration, /adaptive_limit INTEGER NOT NULL DEFAULT 16/);
+  assert.match(migration, /ADD COLUMN validated_at TIMESTAMPTZ/);
   assert.match(migration, /UPDATE clickhouse_rollup_worker_status SET adaptive_limit = 8/);
   assert.match(migration, /-- Down Migration[\s\S]*DROP TABLE clickhouse_rollup_cutover_status/);
 });

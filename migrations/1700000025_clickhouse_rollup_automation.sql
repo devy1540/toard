@@ -19,6 +19,9 @@ INSERT INTO clickhouse_rollup_cutover_status (layer)
 VALUES ('usage_15m_v2'), ('timezone')
 ON CONFLICT (layer) DO NOTHING;
 
+ALTER TABLE clickhouse_rollup_timezones
+  ADD COLUMN validated_at TIMESTAMPTZ;
+
 ALTER TABLE clickhouse_rollup_worker_status
   ADD COLUMN adaptive_limit INTEGER NOT NULL DEFAULT 16,
   ADD COLUMN load_state TEXT NOT NULL DEFAULT 'normal'
@@ -27,6 +30,9 @@ ALTER TABLE clickhouse_rollup_worker_status
 UPDATE clickhouse_rollup_worker_status SET adaptive_limit = 8 WHERE worker = 'timezone';
 
 -- Down Migration
+
+ALTER TABLE clickhouse_rollup_timezones
+  DROP COLUMN validated_at;
 
 ALTER TABLE clickhouse_rollup_worker_status
   DROP COLUMN load_state,

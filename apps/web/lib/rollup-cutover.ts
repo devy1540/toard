@@ -28,6 +28,7 @@ export type RollupValidationResult = {
 export type RollupLayerReadiness = {
   ready: boolean;
   validationReady?: boolean;
+  forceValidation?: boolean;
   kind: Exclude<RollupFailureKind, "mismatch"> | null;
   detail: string | null;
   activeTimezones: string[];
@@ -92,7 +93,7 @@ export async function loadRollupLayerReadinessWith(
   state: RollupCutoverRecord["state"],
 ): Promise<RollupLayerReadiness> {
   const timezonesPromise = pool.query(
-    "SELECT timezone FROM clickhouse_rollup_timezones ORDER BY activated_at, timezone",
+    "SELECT timezone, validated_at FROM clickhouse_rollup_timezones ORDER BY activated_at, timezone",
   );
   if (layer === "usage_15m_v2") {
     const [watermark, dirty, timezones] = await Promise.all([
@@ -136,12 +137,16 @@ export async function loadRollupLayerReadinessWith(
   const pending = Number(jobs.rows[0]?.pending ?? 0);
   const inflight = Number(jobs.rows[0]?.inflight ?? 0);
   const outstanding = pending + inflight;
+  const hasUnvalidatedTimezone = timezones.rows.some(
+    ({ validated_at }) => parsedDate(validated_at) == null,
+  );
   const ready = state === "active"
     ? outstanding <= MAX_TIMEZONE_PENDING_JOBS
     : outstanding === 0;
   return {
     ready,
     validationReady: outstanding === 0,
+    forceValidation: state === "active" && outstanding === 0 && hasUnvalidatedTimezone,
     kind: ready ? null : "lag",
     detail: ready ? null : `timezone rollup jobs outstanding: ${outstanding}`,
     activeTimezones: timezones.rows
@@ -159,6 +164,20 @@ function elapsedHealthySeconds(record: RollupCutoverRecord, now: Date): number {
 function recurringValidationDue(record: RollupCutoverRecord, now: Date): boolean {
   return !record.lastValidationAt
     || now.getTime() - record.lastValidationAt.getTime() >= ACTIVE_VALIDATION_INTERVAL_MS;
+}
+
+export async function markValidatedTimezonesWith(
+  pool: RollupCutoverPool,
+  timezones: readonly string[],
+  validatedAt: Date,
+): Promise<void> {
+  if (timezones.length === 0) return;
+  await pool.query(
+    `UPDATE clickhouse_rollup_timezones
+     SET validated_at = $2
+     WHERE timezone = ANY($1::text[])`,
+    [[...timezones], validatedAt],
+  );
 }
 
 async function runValidation(
@@ -323,7 +342,7 @@ async function advanceLayer(
     });
   }
 
-  if (!recurringValidationDue(record, now)) {
+  if (!readiness.forceValidation && !recurringValidationDue(record, now)) {
     return saveTransition(dependencies, record, {
       ...baseUpdate(record, now),
       consecutiveFailures: 0,
@@ -425,7 +444,13 @@ export async function advanceRollupCutover(now = new Date()): Promise<void> {
           : 24 * 60 * 60 * 1_000;
         return validationResult(await storage.validateUsage15mV2(target, lookbackMs));
       }
-      return validationResult(await storage.validateTimezoneRollups(activeTimezones, target));
+      const result = validationResult(
+        await storage.validateTimezoneRollups(activeTimezones, target),
+      );
+      if (result.ok) {
+        await markValidatedTimezonesWith(pool, activeTimezones, new Date());
+      }
+      return result;
     },
     logTransition(layer, from, to, target) {
       console.log(JSON.stringify({

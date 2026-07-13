@@ -10,6 +10,7 @@ import { getOrgTimezone } from "./org-time";
 
 export const MAX_ACTIVE_ROLLUP_TIMEZONES = 64;
 export const TIMEZONE_ROLLUP_JOBS_PER_TICK = 8;
+export const TIMEZONE_ROLLUP_MAX_JOBS_PER_TICK = 32;
 export const TIMEZONE_ROLLUP_DAY_PREWARM_DAYS = 400;
 export const TIMEZONE_ROLLUP_HOUR_PREWARM_DAYS = 32;
 export const TIMEZONE_ROLLUP_PREWARM_CHUNK_BUCKETS = 16;
@@ -178,6 +179,7 @@ export async function runTimezoneRollupWorkerWith(
   const claimed = await repository.claimJobs(limit);
   let jobs = 0;
   let rows = 0;
+  let failure: unknown;
 
   for (const job of claimed) {
     try {
@@ -196,15 +198,22 @@ export async function runTimezoneRollupWorkerWith(
       await repository.markDone(job.id);
       jobs++;
       rows += result.value;
-    } catch {
-      await repository.markPending(job.id);
+    } catch (error) {
+      try {
+        await repository.markPending(job.id);
+      } catch (markPendingError) {
+        failure ??= markPendingError;
+        continue;
+      }
+      failure ??= error;
     }
   }
 
+  if (failure) throw failure;
   return { jobs, rows };
 }
 
-class PgTimezoneRollupRepository implements TimezoneRollupRepository {
+export class PgTimezoneRollupRepository implements TimezoneRollupRepository {
   constructor(private readonly pool: Pool) {}
 
   async ensureRegisteredTimezone(
@@ -293,7 +302,7 @@ class PgTimezoneRollupRepository implements TimezoneRollupRepository {
        FROM candidate
        WHERE job.id = candidate.id
        RETURNING job.id::text, job.resolution, job.timezone, job.bucket`,
-      [Math.min(TIMEZONE_ROLLUP_JOBS_PER_TICK, Math.max(0, Math.floor(limit)))],
+      [Math.min(TIMEZONE_ROLLUP_MAX_JOBS_PER_TICK, Math.max(0, Math.floor(limit)))],
     );
     return claimed.rows.map((job) => ({ ...job, status: "inflight" }));
   }

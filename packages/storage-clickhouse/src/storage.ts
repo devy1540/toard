@@ -957,7 +957,10 @@ export class ClickHouseStorage implements StorageBackend {
     const expected = this.timezoneCacheBuckets(resolution, timezone, q);
     if (expected.length === 0) return null;
     const registry = await this.pg.query(
-      "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
+      `SELECT timezone
+       FROM clickhouse_rollup_timezones
+       WHERE timezone = $1
+         AND validated_at IS NOT NULL`,
       [timezone],
     );
     if (registry.rowCount !== 1) return null;

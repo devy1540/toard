@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   advanceRollupCutoverWith,
   loadRollupLayerReadinessWith,
+  markValidatedTimezonesWith,
   rollupEligibleTargetAt,
   type RollupCutoverDependencies,
   type RollupValidationResult,
@@ -43,6 +44,7 @@ function fixture(options: {
   validation?: RollupValidationResult;
   ready?: boolean;
   validationReady?: boolean;
+  forceValidation?: boolean;
 } = {}) {
   const records = new Map<RollupCutoverLayer, RollupCutoverRecord>([
     ["usage_15m_v2", record("usage_15m_v2", options.usage)],
@@ -73,6 +75,7 @@ function fixture(options: {
         detail: options.ready === false ? "worker lag" : null,
         activeTimezones: ["Asia/Seoul"],
         validationReady: options.validationReady,
+        forceValidation: layer === "timezone" ? options.forceValidation : undefined,
       };
     },
     async validate() {
@@ -215,6 +218,54 @@ test("active 시간대 worker가 정상 backlog를 처리 중이면 recurring �
 
   assert.equal(f.records.get("timezone")!.state, "active");
   assert.equal(validations, 0);
+});
+
+test("새 시간대 백필이 끝나면 6시간 주기와 무관하게 검증을 강제한다", async () => {
+  let validations = 0;
+  const f = fixture({
+    usage: {
+      state: "active",
+      targetWatermark: T0,
+      healthySeconds: 3_600,
+      lastCheckedAt: NOW,
+      lastValidationAt: NOW,
+      activatedAt: T0,
+    },
+    timezone: {
+      state: "active",
+      targetWatermark: T0,
+      healthySeconds: 3_600,
+      lastCheckedAt: NOW,
+      lastValidationAt: NOW,
+      activatedAt: T0,
+    },
+    validationReady: true,
+    forceValidation: true,
+  });
+  const originalValidate = f.dependencies.validate;
+  f.dependencies.validate = async (...args) => {
+    validations++;
+    return originalValidate(...args);
+  };
+
+  await advanceRollupCutoverWith(f.dependencies, NOW);
+
+  assert.equal(validations, 1);
+});
+
+test("검증된 시간대 marker는 이번 검증 대상에만 기록한다", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const pool = {
+    async query(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      return { rows: [] };
+    },
+  };
+
+  await markValidatedTimezonesWith(pool, ["Asia/Seoul"], NOW);
+
+  assert.match(queries[0]!.sql, /SET validated_at = \$2/);
+  assert.deepEqual(queries[0]!.params, [["Asia/Seoul"], NOW]);
 });
 
 test("시간대별 계층은 최초 백필에는 고정 T0를 쓰고 active 이후에는 최신 완료 구간을 검사한다", async () => {

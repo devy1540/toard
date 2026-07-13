@@ -15,6 +15,7 @@ const REQUIRED_HEALTHY_SECONDS = 60 * 60;
 const ACTIVE_VALIDATION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 const MAX_TRANSIENT_FAILURES = 3;
 const MAX_OBSERVATION_INCREMENT_SECONDS = 60;
+const VALIDATION_RETRY_DELAY_MS = 60 * 1_000;
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1_000;
 const DEFAULT_FINALIZE_DELAY_MS = 30 * 60 * 1_000;
 const MAX_TIMEZONE_PENDING_JOBS = 10_000;
@@ -166,6 +167,12 @@ function recurringValidationDue(record: RollupCutoverRecord, now: Date): boolean
     || now.getTime() - record.lastValidationAt.getTime() >= ACTIVE_VALIDATION_INTERVAL_MS;
 }
 
+function validationRetryDue(record: RollupCutoverRecord, now: Date): boolean {
+  return !record.lastFailureKind
+    || !record.lastCheckedAt
+    || now.getTime() - record.lastCheckedAt.getTime() >= VALIDATION_RETRY_DELAY_MS;
+}
+
 export async function markValidatedTimezonesWith(
   pool: RollupCutoverPool,
   timezones: readonly string[],
@@ -298,6 +305,9 @@ async function reconcileLayer(
       ),
       validation: null,
     };
+  }
+  if (!validationRetryDue(record, now)) {
+    return { record, validation: null };
   }
 
   if (record.state === "backfilling" || record.state === "fallback") {

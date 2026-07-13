@@ -350,7 +350,9 @@ test("15분 기준 rollup validator는 가격 provenance를 포함한 원본과 
   assert.match(queries[1]!, /cache_read_tokens/);
   assert.match(queries[1]!, /cache_creation_tokens/);
   assert.match(queries[1]!, /groupBitXor\(cityHash64/);
-  assert.match(queries[2]!, /FROM usage_15m_rollup_v2 FINAL/);
+  assert.match(queries[1]!, /sum\(validation_source\.input_tokens\) AS input_tokens/);
+  assert.match(queries[1]!, /validation_source\.pricing_revision_id/);
+  assert.match(queries[2]!, /FROM usage_15m_rollup_v2 AS validation_source FINAL/);
   assert.deepEqual(settings[1], { max_threads: 2, max_execution_time: 30 });
   assert.deepEqual(settings[2], { max_threads: 2, max_execution_time: 30 });
 });
@@ -385,9 +387,11 @@ test("시간대별 validator는 활성 시간대의 최근 완료 hour와 local 
 
   assert.deepEqual(result, { ok: true, detail: null });
   assert.match(queries[0]!, /toStartOfInterval\(bucket_15m, INTERVAL 1 HOUR, 'Asia\/Seoul'\)/);
-  assert.match(queries[1]!, /FROM usage_hourly_timezone_rollup FINAL/);
+  assert.match(queries[1]!, /FROM usage_hourly_timezone_rollup AS validation_source FINAL/);
   assert.match(queries[2]!, /toStartOfDay\(bucket_15m, 'Asia\/Seoul'\)/);
-  assert.match(queries[3]!, /FROM usage_daily_timezone_rollup FINAL/);
+  assert.match(queries[3]!, /FROM usage_daily_timezone_rollup AS validation_source FINAL/);
+  assert.ok(queries.every((query) => /sum\(validation_source\.input_tokens\) AS input_tokens/.test(query)));
+  assert.ok(queries.every((query) => /AS validation_source/.test(query)));
   assert.ok(settings.every((value) => value?.max_threads === 2 && value.max_execution_time === 30));
 });
 

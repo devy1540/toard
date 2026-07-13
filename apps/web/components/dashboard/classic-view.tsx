@@ -11,7 +11,7 @@ import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTi
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { costCoverageState } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
@@ -22,11 +22,7 @@ function coveredCost(
   coverage: UsageCostCoverage,
   labels: { partial: string; unpriced: string; legacy: string },
 ): string {
-  const state = costCoverageState(coverage);
-  if (state === "unpriced") return labels.unpriced;
-  if (state === "partial") return `${fmtUsd(costUsd)} · ${labels.partial}`;
-  if (state === "legacy") return `${fmtUsd(costUsd)} · ${labels.legacy}`;
-  return fmtUsd(costUsd);
+  return formatCostForCoverage(fmtUsd(costUsd), coverage, labels);
 }
 
 /** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */
@@ -123,6 +119,12 @@ export async function ClassicView({
   const costDelta = overview.costCoverage.unpricedEvents === 0 && prevOverview.costCoverage.unpricedEvents === 0
     ? pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)
     : null;
+  const legacyCount = legacyCostHintCount(overview.costCoverage);
+  const costHint = legacyCount == null
+    ? costDelta
+      ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod")
+      : undefined
+    : t("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
   const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
   const tokensDelta = pctDelta(
     overview.totalInputTokens +
@@ -168,7 +170,7 @@ export async function ClassicView({
           label={t(`costLabel.${period.preset}`)}
           value={coveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
           delta={costDelta}
-          hint={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : undefined}
+          hint={costHint}
           spark={spark.cost}
           icon={<DollarSign className="size-4" />}
         />

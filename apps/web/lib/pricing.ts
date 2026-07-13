@@ -33,6 +33,11 @@ export function costCoverageState(coverage: UsageCostCoverage): CostCoverageStat
   return "complete";
 }
 
+/** 조치가 필요 없는 과거 저장 비용을 KPI 보조 문구로 표시할 때의 건수. */
+export function legacyCostHintCount(coverage: UsageCostCoverage): number | null {
+  return costCoverageState(coverage) === "legacy" ? coverage.legacyEvents : null;
+}
+
 export function formatCostForCoverage(
   cost: string,
   coverage: UsageCostCoverage,
@@ -41,7 +46,6 @@ export function formatCostForCoverage(
   const state = costCoverageState(coverage);
   if (state === "unpriced") return labels.unpriced;
   if (state === "partial") return `${cost} · ${labels.partial}`;
-  if (state === "legacy") return `${cost} · ${labels.legacy}`;
   return cost;
 }
 

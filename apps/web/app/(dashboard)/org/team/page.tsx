@@ -16,7 +16,7 @@ import { getPool } from "@/lib/db";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { cacheSharePercent, findPeakTokenBucket, sharePercent, totalUsageTokens, usagePerActiveUser } from "@/lib/org-overview";
 import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
-import { formatCostForCoverage } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -72,6 +72,7 @@ function TeamHero({
   previousTokens,
   tokenLabel,
   costLabel,
+  costSub,
   activeUsersLabel,
   sessionsLabel,
   activeUsersSub,
@@ -81,6 +82,7 @@ function TeamHero({
   previousTokens: number;
   tokenLabel: string;
   costLabel: string;
+  costSub?: string;
   activeUsersLabel: string;
   sessionsLabel: string;
   activeUsersSub: string;
@@ -108,6 +110,7 @@ function TeamHero({
           <SummaryTile
             label={costLabel}
             value={formatCostForCoverage(fmtUsd(overview.totalCostUsd), overview.costCoverage, costLabels)}
+            sub={costSub}
           />
           <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
           <SummaryTile label={sessionsLabel} value={fmtNum(overview.totalSessions)} />
@@ -439,6 +442,10 @@ async function TeamDetailOverview({
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
   };
+  const legacyCount = legacyCostHintCount(overview.costCoverage);
+  const costSub = legacyCount == null
+    ? undefined
+    : dashboardT("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
   const shownMembers = members.slice(0, 5);
   const memberPoints = await storage.getTeamMemberTimeseries({
     ...period,
@@ -494,6 +501,7 @@ async function TeamDetailOverview({
         previousTokens={previousTokens}
         tokenLabel={t("totalTokens")}
         costLabel={t("totalCost")}
+        costSub={costSub}
         activeUsersLabel={t("activeUsers")}
         sessionsLabel={t("sessions")}
         activeUsersSub={t("hero.activeUsersSub")}

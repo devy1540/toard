@@ -67,14 +67,21 @@ export type TimezoneRollupReadyPayload = {
   legacyFlagMigration: "deprecated_alias" | null;
 };
 
-export async function runObservedWorkerTick(options: {
+type ObservedWorkerOptions = {
   worker: RollupWorkerName;
   hardEnabled: boolean;
   repository: RollupWorkerRepository;
   maximumLimit?: number;
   run(limit: number): Promise<{ units: number; rows: number }>;
   now(): Date;
-}): Promise<"disabled" | "paused" | "busy" | "completed" | "failed"> {
+};
+
+export type ObservedWorkerOutcome = "disabled" | "paused" | "busy" | "completed" | "failed";
+
+/** coordinator가 전역 load slot을 보유한 상태에서 호출하는 worker adapter. */
+export async function runObservedWorkerTask(
+  options: ObservedWorkerOptions,
+): Promise<Exclude<ObservedWorkerOutcome, "busy">> {
   if (!options.hardEnabled) return "disabled";
   const record = await options.repository.get(options.worker);
   if (record.paused) return "paused";
@@ -92,17 +99,12 @@ export async function runObservedWorkerTick(options: {
       `[toard] ${options.worker} worker observation write failed — ${sanitizeRollupError(error)}`,
     );
   };
-  let startedAt: Date | null = null;
+  const startedAt = options.now();
+  await options.repository.markStarted(options.worker, startedAt).catch(warnObservationFailure);
   try {
-    const slot = await options.repository.withLoadSlot(async () => {
-      startedAt = options.now();
-      await options.repository.markStarted(options.worker, startedAt).catch(warnObservationFailure);
-      return options.run(currentLimit);
-    });
-    if (!slot.acquired) return "busy";
-    const result = slot.value;
+    const result = await options.run(currentLimit);
     const finishedAt = options.now();
-    const durationMs = Math.max(0, finishedAt.getTime() - startedAt!.getTime());
+    const durationMs = Math.max(0, finishedAt.getTime() - startedAt.getTime());
     const nextLimit = nextAdaptiveLimit({
       limit: currentLimit,
       processed: result.units,
@@ -112,7 +114,7 @@ export async function runObservedWorkerTick(options: {
       maximum: maximumLimit,
     });
     await options.repository
-      .markSucceeded(options.worker, startedAt!, finishedAt, result)
+      .markSucceeded(options.worker, startedAt, finishedAt, result)
       .catch(warnObservationFailure);
     await options.repository
       .setAdaptiveState(
@@ -124,11 +126,10 @@ export async function runObservedWorkerTick(options: {
     return "completed";
   } catch (error) {
     const finishedAt = options.now();
-    const failedStartedAt: Date = startedAt ?? finishedAt;
     const nextLimit = nextAdaptiveLimit({
       limit: currentLimit,
       processed: 0,
-      durationMs: Math.max(0, finishedAt.getTime() - failedStartedAt.getTime()),
+      durationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
       failed: true,
       minimum: ADAPTIVE_MINIMUM,
       maximum: maximumLimit,
@@ -136,7 +137,7 @@ export async function runObservedWorkerTick(options: {
     await options.repository
       .markFailed(
         options.worker,
-        failedStartedAt,
+        startedAt,
         finishedAt,
         sanitizeRollupError(error),
       )
@@ -146,6 +147,15 @@ export async function runObservedWorkerTick(options: {
       .catch(warnObservationFailure);
     return "failed";
   }
+}
+
+/** deprecated compatibility wrapper: 독립 scheduler는 이 함수로 전역 slot을 획득한다. */
+export async function runObservedWorkerTick(
+  options: ObservedWorkerOptions,
+): Promise<ObservedWorkerOutcome> {
+  if (!options.hardEnabled) return "disabled";
+  const slot = await options.repository.withLoadSlot(() => runObservedWorkerTask(options));
+  return slot.acquired ? slot.value : "busy";
 }
 
 export function nextAdaptiveLimit(input: {
@@ -334,6 +344,43 @@ export async function compactClickHouseTimezoneRollups(limit?: number): Promise<
   if (!shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")) return { jobs: 0, rows: 0 };
   const { runTimezoneRollupWorker } = await import("./timezone-rollup");
   return runTimezoneRollupWorker(limit);
+}
+
+export async function runClickHouse15mV2Task(): Promise<Exclude<ObservedWorkerOutcome, "busy">> {
+  const { getPool } = await import("./db");
+  const repository = new PgRollupWorkerRepository(getPool());
+  return runObservedWorkerTask({
+    worker: "usage_15m_v2",
+    hardEnabled: shadowWorkerEnabled(process.env, "CLICKHOUSE_15M_V2_COMPACTOR"),
+    repository,
+    maximumLimit: optionalPositiveInt(process.env, "CLICKHOUSE_ROLLUP_MAX_BUCKETS"),
+    run: async (limit) => {
+      const result = await compactClickHouse15mV2Rollup(limit);
+      if (result.buckets > 0) {
+        console.log(`[toard] ClickHouse 15m v2 rollup compacted — ${result.buckets} buckets, ${result.rows} rows, watermark ${result.watermark}`);
+      }
+      return { units: result.buckets, rows: result.rows };
+    },
+    now: () => new Date(),
+  });
+}
+
+export async function runClickHouseTimezoneTask(): Promise<Exclude<ObservedWorkerOutcome, "busy">> {
+  const { getPool } = await import("./db");
+  const repository = new PgRollupWorkerRepository(getPool());
+  return runObservedWorkerTask({
+    worker: "timezone",
+    hardEnabled: shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"),
+    repository,
+    run: async (limit) => {
+      const result = await compactClickHouseTimezoneRollups(limit);
+      if (result.jobs > 0) {
+        console.log(`[toard] ClickHouse timezone rollup compacted — ${result.jobs} jobs, ${result.rows} rows`);
+      }
+      return { units: result.jobs, rows: result.rows };
+    },
+    now: () => new Date(),
+  });
 }
 
 export async function pruneClickHouseUsageRetentionAt(

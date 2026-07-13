@@ -315,15 +315,18 @@ test("새 flag가 명시되면 legacy alias보다 우선하되 남은 legacy 값
   assert.equal(readiness.legacyFlagMigration, "deprecated_alias");
 });
 
-test("서버 instrumentation은 자동 전환 controller를 한 번 시작한다", () => {
+test("서버 instrumentation은 rollup coordinator 하나만 시작한다", () => {
   const instrumentation = readFileSync(
     new URL("../instrumentation.ts", import.meta.url),
     "utf8",
   );
   const outbox = readFileSync(new URL("./clickhouse-outbox.ts", import.meta.url), "utf8");
 
-  assert.match(instrumentation, /startClickHouseRollupCutover/);
-  assert.match(instrumentation, /startClickHouseRollupCutover\(\)/);
+  assert.match(instrumentation, /startRollupCoordinator/);
+  assert.equal(instrumentation.match(/startRollupCoordinator\(\)/g)?.length, 1);
+  assert.doesNotMatch(instrumentation, /startClickHouse15mV2Compaction\(\)/);
+  assert.doesNotMatch(instrumentation, /startClickHouseTimezoneRollupCompaction\(\)/);
+  assert.doesNotMatch(instrumentation, /startClickHouseRollupCutover\(\)/);
   assert.match(outbox, /export function startClickHouseRollupCutover/);
   assert.match(outbox, /advanceRollupCutover/);
 });

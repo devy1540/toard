@@ -238,7 +238,7 @@ git commit -m "fix(rollup): 확정된 시간대 구간만 처리"
 - Produces: coordinator-held adapters `runClickHouse15mV2Task()` and `runClickHouseTimezoneTask()`.
 - Consumes: worker/scheduler repositories and timezone eligible backlog.
 
-- [ ] **Step 1: Write starvation regression and non-overlap tests**
+- [x] **Step 1: Write starvation regression and non-overlap tests**
 
 ```ts
 test("동시에 due인 worker는 120초 안에 모두 선택된다", async () => {
@@ -259,13 +259,13 @@ test("두 replica 중 잠금을 얻은 하나만 heavy task를 실행한다", as
 });
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `pnpm --filter @toard/web test -- rollup-coordinator.test.ts clickhouse-outbox.test.ts`
 
 Expected: FAIL because coordinator and task adapters do not exist.
 
-- [ ] **Step 3: Implement pure candidate selection**
+- [x] **Step 3: Implement pure candidate selection**
 
 ```ts
 export type RollupCoordinatorCandidate = {
@@ -284,7 +284,7 @@ export function selectRollupTask(candidates: readonly RollupCoordinatorCandidate
 
 Validation ranks first, then candidates waiting 120 seconds, then oldest last start. Null last start is oldest and the final tie-break is 15m.
 
-- [ ] **Step 4: Implement one-lock tick and self-scheduling loop**
+- [x] **Step 4: Implement one-lock tick and self-scheduling loop**
 
 ```ts
 export function startRollupCoordinator(): void {
@@ -300,7 +300,7 @@ export function startRollupCoordinator(): void {
 
 The tick acquires existing `toard:rollup-load-slot`, updates eligibility, selects one task, records scheduler start/finish, executes one adapter, then releases. Normal lock loss returns `busy` without setting worker error.
 
-- [ ] **Step 5: Replace instrumentation startup**
+- [x] **Step 5: Replace instrumentation startup**
 
 ```ts
 startClickHouseOutboxFlush();
@@ -309,13 +309,13 @@ startRollupCoordinator();
 
 Remove calls that start independent 15m v2, timezone, and cutover intervals. Retain the existing scheduler exports as deprecated compatibility wrappers for current tests and external imports, but instrumentation must not call them.
 
-- [ ] **Step 6: Run focused tests and typecheck**
+- [x] **Step 6: Run focused tests and typecheck**
 
 Run: `pnpm --filter @toard/web test -- rollup-coordinator.test.ts clickhouse-outbox.test.ts ui-commonization.test.ts && pnpm --filter @toard/web typecheck`
 
 Expected: PASS and instrumentation contains exactly one rollup scheduler start.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/lib/rollup-coordinator.ts apps/web/lib/rollup-coordinator.test.ts apps/web/lib/clickhouse-outbox.ts apps/web/lib/clickhouse-outbox.test.ts apps/web/instrumentation.ts

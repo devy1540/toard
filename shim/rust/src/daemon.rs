@@ -148,19 +148,30 @@ fn install(interval: u64) -> i32 {
     let exe = exe.display().to_string();
     match std::env::consts::OS {
         "macos" => launchd_install(&exe, interval),
-        "linux" => {
-            if systemd_available() {
-                systemd_install(&exe, interval)
-            } else {
-                cron_install(&exe, interval)
-            }
-        }
+        "linux" => linux_install(&exe, interval),
         "windows" => windows_install(&exe, interval),
         other => {
             eprintln!("toard-shim: 지원하지 않는 OS: {other} (macos/linux/windows)");
             1
         }
     }
+}
+
+fn linux_install(exe: &str, interval: u64) -> i32 {
+    if !systemd_available() {
+        return cron_install(exe, interval);
+    }
+
+    let installed = systemd_install(exe, interval);
+    if installed == 0 {
+        return 0;
+    }
+
+    eprintln!("toard-shim: systemd 활성화 실패 — crontab 폴백을 시도합니다");
+    // systemd 유닛 파일이 남아 있으면 status/doctor가 비활성 systemd를 먼저 감지한다.
+    // 폴백 전에 정리해 cron 상태가 올바르게 보고되도록 한다.
+    let _ = systemd_uninstall();
+    cron_install(exe, interval)
 }
 
 fn uninstall() -> i32 {
@@ -702,10 +713,10 @@ fn cron_install(exe: &str, interval: u64) -> i32 {
     let line = cron_line(exe, interval);
     let merged = cron_merged(&cron_current(), Some(&line));
     if !cron_write(&merged) {
-        eprintln!("toard-shim: crontab 등록 실패 — systemd 도 없어 자동 등록이 불가합니다. 수동 등록: {line}");
+        eprintln!("toard-shim: crontab 등록 실패 — 자동 등록이 불가합니다. 수동 등록: {line}");
         return 1;
     }
-    println!("  ✓ 주기 수집 등록됨 — crontab (systemd 부재 폴백)");
+    println!("  ✓ 주기 수집 등록됨 — crontab (systemd 폴백)");
     println!("    항목: {line}");
     println!("    제거: toard-shim daemon uninstall");
     0

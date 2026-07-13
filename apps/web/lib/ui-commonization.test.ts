@@ -173,11 +173,27 @@ test("macOS and Linux one-line installer does not stop for a daemon prompt", () 
   assert.match(install, /:-1/);
 });
 
+test("installers accept an explicit release mirror for pre-release E2E", () => {
+  const install = source("app/install.sh/route.ts");
+  const releaseInstall = repoSource("shim/install.sh");
+  assert.match(install, /TOARD_SHIM_RELEASE_BASE/);
+  assert.match(releaseInstall, /TOARD_SHIM_RELEASE_BASE/);
+});
+
 test("shim CI parses generated PowerShell when installer routes change", () => {
   const workflow = repoSource(".github/workflows/shim-ci.yml");
   assert.match(workflow, /apps\/web\/lib\/powershell-installer\.ts/);
   assert.match(workflow, /apps\/web\/app\/install\.ps1\/\*\*/);
   assert.match(workflow, /scriptblock.*Create/s);
+});
+
+test("shim CI runs installer E2E on Windows, Linux, and macOS", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  assert.match(workflow, /windows-latest/);
+  assert.match(workflow, /ubuntu-latest/);
+  assert.match(workflow, /macos-latest/);
+  assert.match(workflow, /test-shim-installer-windows\.ps1/);
+  assert.match(workflow, /test-shim-installer-unix\.sh/);
 });
 
 test("device onboarding uses OS-aware wizard and separate management", () => {

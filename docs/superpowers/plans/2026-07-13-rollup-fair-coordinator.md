@@ -407,7 +407,7 @@ git commit -m "refactor(rollup): 전환 heartbeat와 검증을 분리"
 - Adds: `RollupAdminStatus.scheduler` heartbeat/task/outcome.
 - Consumes: scheduler repository and finalized backlog counts.
 
-- [ ] **Step 1: Write failing status and UI contract tests**
+- [x] **Step 1: Write failing status and UI contract tests**
 
 ```ts
 test("pending이 있지만 eligible이 없으면 waiting_for_base다", async () => {
@@ -422,17 +422,17 @@ test("eligible backlog와 오래된 eligibleSince가 있을 때만 stalled다", 
 });
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `pnpm --filter @toard/web test -- rollup-status.test.ts ui-commonization.test.ts`
 
 Expected: FAIL on missing state, backlog fields, scheduler block, and translations.
 
-- [ ] **Step 3: Implement status derivation and ETA rules**
+- [x] **Step 3: Implement status derivation and ETA rules**
 
 `waiting_for_base` is used only when total remaining is positive and eligible remaining is zero. `stalled` requires eligible work and `eligible_since` older than 120 seconds. Timezone eligible ETA uses only eligible jobs; total ETA is null until the 15-minute basis is complete enough to calculate it honestly.
 
-- [ ] **Step 4: Render scheduler and backlog details**
+- [x] **Step 4: Render scheduler and backlog details**
 
 ```text
 Coordinator: 정상 · 최근 작업 15분 기준 rollup · 14:32
@@ -443,17 +443,17 @@ Coordinator: 정상 · 최근 작업 15분 기준 rollup · 14:32
 
 Keep physical table names in the storage section and existing pause/resume actions. Do not add read-toggle or TTL mutation actions.
 
-- [ ] **Step 5: Update runbook and README**
+- [x] **Step 5: Update runbook and README**
 
 Document single coordinator ordering, finalized-window semantics, safe rollout, `waiting_for_base`, starvation warning, and rollback that leaves additive schema in place.
 
-- [ ] **Step 6: Run focused tests and typecheck**
+- [x] **Step 6: Run focused tests and typecheck**
 
 Run: `pnpm --filter @toard/web test -- rollup-status.test.ts ui-commonization.test.ts && pnpm --filter @toard/web typecheck && git diff --check`
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/lib/rollup-status.ts apps/web/lib/rollup-status.test.ts 'apps/web/app/(dashboard)/admin/rollup-status-panel.tsx' apps/web/messages/ko/admin.json apps/web/messages/en/admin.json apps/web/lib/ui-commonization.test.ts docs/clickhouse-exact-rollup-runbook.md README.md

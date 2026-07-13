@@ -183,6 +183,23 @@ export function RollupStatusPanel({
 
       {requestFailed ? <p className="text-destructive text-xs">{t("rollup.requestFailed")}</p> : null}
 
+      <section className="space-y-3 rounded-md border p-3" aria-label={t("rollup.coordinator.title")}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="space-y-1">
+            <h3 className="font-medium">{t("rollup.coordinator.title")}</h3>
+            <p className="text-muted-foreground text-xs">{t("rollup.coordinator.description")}</p>
+          </div>
+          <Badge variant={status.scheduler.state === "stalled" || status.scheduler.state === "unavailable" ? "destructive" : "outline"}>
+            {t(`rollup.coordinator.states.${status.scheduler.state}`)}
+          </Badge>
+        </div>
+        <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastHeartbeat")}: </dt><dd className="inline">{formatDateTime(status.scheduler.lastHeartbeatAt, locale)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastTask")}: </dt><dd className="inline">{status.scheduler.lastSelectedTask ? t(`rollup.coordinator.tasks.${status.scheduler.lastSelectedTask}`) : "—"}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastOutcome")}: </dt><dd className="inline">{status.scheduler.lastTaskOutcome ? t(`rollup.coordinator.outcomes.${status.scheduler.lastTaskOutcome}`) : "—"}</dd></div>
+        </dl>
+      </section>
+
       <section className="space-y-3" aria-label={t("rollup.cutover.title")}>
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div className="space-y-1">
@@ -299,6 +316,13 @@ export function RollupStatusPanel({
                   </dd>
                 </div>
                 <div><dt className="text-muted-foreground inline">{t("rollup.lastSuccess")}: </dt><dd className="inline">{formatDateTime(worker.lastSuccessAt, locale)}</dd></div>
+                {key === "timezone" ? (
+                  <>
+                    <div><dt className="text-muted-foreground inline">{t("rollup.eligiblePending")}: </dt><dd className="inline">{formatNumber(worker.eligiblePendingJobs ?? 0, locale)}</dd></div>
+                    <div><dt className="text-muted-foreground inline">{t("rollup.waitingForBase")}: </dt><dd className="inline">{formatNumber(worker.waitingForBaseJobs ?? 0, locale)}</dd></div>
+                    <div className="sm:col-span-2"><dt className="text-muted-foreground inline">{t("rollup.eligibleSince")}: </dt><dd className="inline">{formatDateTime(worker.eligibleSince, locale)}</dd></div>
+                  </>
+                ) : null}
                 <div>
                   <dt className="text-muted-foreground inline">{t("rollup.load.limit", { limit: worker.adaptiveLimit == null ? "—" : formatNumber(worker.adaptiveLimit, locale) })}</dt>
                 </div>

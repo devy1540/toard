@@ -11,6 +11,7 @@ export type RollupWorkerState =
   | "paused"
   | "starting"
   | "catching_up"
+  | "waiting_for_base"
   | "ready"
   | "stalled"
   | "error";

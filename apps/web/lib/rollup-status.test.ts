@@ -90,6 +90,17 @@ function dependencies(
       cutoverRecord("usage_15m_v2"),
       cutoverRecord("timezone"),
     ],
+    loadSchedulerStatus: async () => ({
+      singleton: true,
+      lastHeartbeatAt: NOW,
+      lastSelectedTask: "usage_15m_v2",
+      lastTaskStartedAt: new Date(NOW.getTime() - 1_000),
+      lastTaskFinishedAt: NOW,
+      lastTaskOutcome: "success",
+      lastError: null,
+      updatedAt: NOW,
+    }),
+    loadTimezoneBacklog: async () => ({ eligible: 0, waitingForBase: 0 }),
     loadPostgresProgress: async () => ({
       watermark: new Date("2026-07-12T11:30:00.000Z"),
       dirtyBuckets: [],
@@ -300,6 +311,7 @@ test("ETA 표본이 없으면 worker별 configured 처리량을 사용한다", a
       coverage: { hour: 10, day: 2 },
       postgresRawEvents: 3,
     }),
+    loadTimezoneBacklog: async () => ({ eligible: 7, waitingForBase: 0 }),
   }));
 
   assert.equal(status.workers.usage15mV2.etaBasis, "configured");
@@ -398,6 +410,9 @@ test("비정렬 watermark의 remaining은 ETA와 ready·catching_up·stalled 상
         workerRecord("usage_15m_v2", {
           lastSuccessAt: lastProgressAt,
           lastProgressAt,
+          eligibleSince: lastProgressAt.getTime() < NOW.getTime() - 120_000
+            ? lastProgressAt
+            : null,
         }),
         workerRecord("timezone"),
       ],
@@ -566,6 +581,51 @@ test("worker 상태는 disabled와 paused를 오류·ready보다 우선한다", 
 
   assert.equal(status.workers.usage15mV2.state, "disabled");
   assert.equal(status.workers.timezone.state, "paused");
+});
+
+test("pending이 있지만 eligible이 없으면 waiting_for_base다", async () => {
+  const status = await getRollupAdminStatusWith(dependencies({
+    loadPostgresProgress: async () => ({
+      watermark: new Date("2026-07-12T11:30:00.000Z"),
+      dirtyBuckets: [],
+      pending: 10,
+      inflight: 0,
+      activeTimezones: ["Asia/Seoul"],
+      coverage: { hour: 4, day: 2 },
+      postgresRawEvents: 0,
+    }),
+    loadTimezoneBacklog: async () => ({ eligible: 0, waitingForBase: 10 }),
+  }));
+
+  assert.equal(status.workers.timezone.state, "waiting_for_base");
+  assert.equal(status.workers.timezone.eligiblePendingJobs, 0);
+  assert.equal(status.workers.timezone.waitingForBaseJobs, 10);
+  assert.equal(status.workers.timezone.etaMinutes, null);
+});
+
+test("eligible backlog와 오래된 eligibleSince가 있을 때만 stalled다", async () => {
+  const eligibleSince = new Date(NOW.getTime() - 121_000);
+  const status = await getRollupAdminStatusWith(dependencies({
+    loadWorkerRecords: async () => [
+      workerRecord("usage_15m_v2"),
+      workerRecord("timezone", { eligibleSince }),
+    ],
+    loadPostgresProgress: async () => ({
+      watermark: new Date("2026-07-12T11:30:00.000Z"),
+      dirtyBuckets: [],
+      pending: 3,
+      inflight: 0,
+      activeTimezones: ["Asia/Seoul"],
+      coverage: { hour: 4, day: 2 },
+      postgresRawEvents: 0,
+    }),
+    loadTimezoneBacklog: async () => ({ eligible: 3, waitingForBase: 0 }),
+  }));
+
+  assert.equal(status.workers.timezone.state, "stalled");
+  assert.equal(status.workers.timezone.eligibleSince, eligibleSince.toISOString());
+  assert.equal(status.workers.timezone.eligiblePendingJobs, 3);
+  assert.equal(status.scheduler.lastSelectedTask, "usage_15m_v2");
 });
 
 test("성공한 storage snapshot만 30초 cache하고 실패는 cache하지 않는다", async () => {

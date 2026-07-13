@@ -91,7 +91,7 @@ fn main() {
     };
 
     // 백그라운드 편승 작업 — exec 경로에 네트워크 없음 (스탬프 파일 판정만)
-    update::maybe_spawn_background_check(); // 6h: 자동 업데이트
+    update::maybe_spawn_background_check(); // 2h: 자동 업데이트
     collect::maybe_spawn_background(); // 10m: 비-OTEL 로컬 로그 수집 (§5.6)
 
     env::set_var(GUARD_ENV, &pid);

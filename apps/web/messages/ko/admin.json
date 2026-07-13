@@ -142,6 +142,7 @@
       "lastTask": "최근 작업",
       "lastOutcome": "최근 결과",
       "tasks": {
+        "pricing_repair": "가격 자동 복구",
         "usage_15m_v2": "15분 기준 rollup",
         "timezone": "시간대별 rollup",
         "validation": "정합성 검증",

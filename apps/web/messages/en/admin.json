@@ -142,6 +142,7 @@
       "lastTask": "Latest task",
       "lastOutcome": "Latest outcome",
       "tasks": {
+        "pricing_repair": "Automatic price recovery",
         "usage_15m_v2": "15-minute base rollup",
         "timezone": "Timezone rollup",
         "validation": "Exactness validation",

@@ -16,6 +16,7 @@ import {
   type RollupWorkerRecord,
 } from "./rollup-worker-state";
 import { PgTimezoneRollupRepository } from "./timezone-rollup";
+import { schedulerEligible } from "./pricing-auto-sync";
 
 const COORDINATOR_TICK_MS = 10_000;
 const WORKER_MIN_CADENCE_MS = 60_000;
@@ -51,6 +52,7 @@ export type RollupCoordinatorDependencies = {
   setEligibility(worker: RollupWorkerName, eligible: boolean, at: Date): Promise<void>;
   countUsageBacklog(now: Date): Promise<number>;
   countTimezoneBacklog(): Promise<{ eligible: number; waitingForBase: number }>;
+  pricingRepairCandidate(now: Date): Promise<RollupCoordinatorCandidate | null>;
   validationCandidate(now: Date): Promise<RollupCoordinatorCandidate | null>;
   runTask(task: RollupCoordinatorTask): Promise<RollupSchedulerOutcome>;
 };
@@ -73,8 +75,9 @@ function lastStartedRank(candidate: RollupCoordinatorCandidate): number {
 
 const STABLE_TASK_ORDER: Record<RollupCoordinatorTask, number> = {
   validation: 0,
-  usage_15m_v2: 1,
-  timezone: 2,
+  pricing_repair: 1,
+  usage_15m_v2: 2,
+  timezone: 3,
 };
 
 export function selectRollupTask(
@@ -110,11 +113,12 @@ export async function runRollupCoordinatorTickWith(
   if (!Number.isFinite(now.getTime())) throw new Error("invalid rollup coordinator time");
   const slot = await dependencies.withLoadSlot(async () => {
     await dependencies.scheduler.recordHeartbeat(now);
-    const [usage, timezone, usageBacklog, timezoneBacklog, validation] = await Promise.all([
+    const [usage, timezone, usageBacklog, timezoneBacklog, pricingRepair, validation] = await Promise.all([
       dependencies.getWorker("usage_15m_v2"),
       dependencies.getWorker("timezone"),
       dependencies.countUsageBacklog(now),
       dependencies.countTimezoneBacklog(),
+      dependencies.pricingRepairCandidate(now),
       dependencies.validationCandidate(now),
     ]);
     const usageDue = !usage.paused && usageBacklog > 0;
@@ -138,6 +142,7 @@ export async function runRollupCoordinatorTickWith(
         lastStartedAt: timezone.lastStartedAt,
         nextAttemptAt: timezone.nextAttemptAt,
       },
+      ...(pricingRepair ? [pricingRepair] : []),
       ...(validation ? [validation] : []),
     ], now);
     if (!task) {
@@ -200,15 +205,23 @@ export async function runRollupCoordinatorTick(now = new Date()): Promise<Coordi
   const workers = new PgRollupWorkerRepository(pool);
   const scheduler = new PgRollupCoordinatorRepository(pool);
   const timezone = new PgTimezoneRollupRepository(pool);
+  const clickhouse = process.env.STORAGE_BACKEND === "clickhouse";
   let pendingValidation: import("./rollup-cutover").RollupValidationTask | null = null;
   return runRollupCoordinatorTickWith({
     withLoadSlot: (operation) => workers.withLoadSlot(operation),
     scheduler,
     getWorker: (worker) => workers.get(worker),
     setEligibility: (worker, eligible, at) => workers.setEligibility(worker, eligible, at),
-    countUsageBacklog,
-    countTimezoneBacklog: () => timezone.countBacklog(),
+    countUsageBacklog: clickhouse ? countUsageBacklog : async () => 0,
+    countTimezoneBacklog: clickhouse
+      ? () => timezone.countBacklog()
+      : async () => ({ eligible: 0, waitingForBase: 0 }),
+    async pricingRepairCandidate(at) {
+      const { pricingRepairCandidate } = await import("./pricing-repair");
+      return pricingRepairCandidate(at);
+    },
     async validationCandidate(at) {
+      if (!clickhouse) return null;
       const { reconcileRollupCutover } = await import("./rollup-cutover");
       pendingValidation = (await reconcileRollupCutover(at)).validation;
       return pendingValidation
@@ -222,6 +235,10 @@ export async function runRollupCoordinatorTick(now = new Date()): Promise<Coordi
         : null;
     },
     async runTask(task) {
+      if (task === "pricing_repair") {
+        const { runPricingRepairTask } = await import("./pricing-repair");
+        return runPricingRepairTask();
+      }
       if (task === "usage_15m_v2") return workerOutcome(await runClickHouse15mV2Task());
       if (task === "timezone") return workerOutcome(await runClickHouseTimezoneTask());
       if (!pendingValidation) return "superseded";
@@ -231,12 +248,16 @@ export async function runRollupCoordinatorTick(now = new Date()): Promise<Coordi
   }, now);
 }
 
+export function coordinatorEligible(env: NodeJS.ProcessEnv): boolean {
+  const clickhouseWorkers = env.STORAGE_BACKEND === "clickhouse" && (
+    shadowWorkerEnabled(env, "CLICKHOUSE_15M_V2_COMPACTOR")
+    || shadowWorkerEnabled(env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")
+  );
+  return clickhouseWorkers || schedulerEligible(env);
+}
+
 export function startRollupCoordinator(): void {
-  if (process.env.STORAGE_BACKEND !== "clickhouse") return;
-  if (
-    !shadowWorkerEnabled(process.env, "CLICKHOUSE_15M_V2_COMPACTOR")
-    && !shadowWorkerEnabled(process.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR")
-  ) return;
+  if (!coordinatorEligible(process.env)) return;
   const global = globalThis as { __toardRollupCoordinatorStarted?: true };
   if (global.__toardRollupCoordinatorStarted) return;
   global.__toardRollupCoordinatorStarted = true;

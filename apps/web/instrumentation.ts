@@ -6,14 +6,14 @@ export async function register(): Promise<void> {
   if (schedulerEligible(process.env)) startPricingAutoSync();
   const { retentionSchedulerEligible, startUsageRetentionCleanup } = await import("./lib/retention-cleanup");
   if (retentionSchedulerEligible(process.env)) startUsageRetentionCleanup();
+  const { startRollupCoordinator } = await import("./lib/rollup-coordinator");
+  startRollupCoordinator();
   if (process.env.STORAGE_BACKEND === "clickhouse") {
     const {
       startClickHouseOutboxFlush,
     } = await import("./lib/clickhouse-outbox");
-    const { startRollupCoordinator } = await import("./lib/rollup-coordinator");
     const { activatePersistedTimezoneRollupsNonBlocking } = await import("./lib/timezone-rollup");
     activatePersistedTimezoneRollupsNonBlocking();
     startClickHouseOutboxFlush();
-    startRollupCoordinator();
   }
 }

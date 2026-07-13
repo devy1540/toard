@@ -15,7 +15,7 @@ export async function GET() {
   });
 }
 
-function installScript(endpoint: string, contentDefaultOn: boolean): string {
+export function installScript(endpoint: string, contentDefaultOn: boolean): string {
   // 운영자 정책이 opt-out(CONTENT_COLLECTION_DEFAULT=on)이면 본문 수집을 기본 on 으로 주입.
   // 사용자는 `TOARD_SHIM_COLLECT_CONTENT=0` 으로 끌 수 있다(env 가 항상 우선).
   const collectDefault = contentDefaultOn ? "1" : "";
@@ -29,9 +29,10 @@ function installScript(endpoint: string, contentDefaultOn: boolean): string {
     'COLLECT="${TOARD_SHIM_COLLECT_CONTENT:-' + collectDefault + '}"',
     'COLLECT_TOOLS="${TOARD_SHIM_COLLECT_TOOLS:-1}"',
     'BIN_DIR="${TOARD_BIN_DIR:-$HOME/.toard/bin}"',
+    'RELEASE_BASE="${TOARD_SHIM_RELEASE_BASE:-https://github.com/devy1540/toard/releases/latest/download}"',
     "",
     "# 1) 바이너리 설치(다운로드 + SHA 검증)는 릴리스 install.sh 에 위임",
-    'curl -fsSL https://github.com/devy1540/toard/releases/latest/download/install.sh | TOARD_INSTALL_DAEMON="${TOARD_INSTALL_DAEMON:-1}" sh',
+    'curl -fsSL "${RELEASE_BASE%/}/install.sh" | TOARD_INSTALL_DAEMON="${TOARD_INSTALL_DAEMON:-1}" sh',
     "",
     "# 2) 자격 증명 자동 작성",
     'if [ -n "$TOKEN" ]; then',

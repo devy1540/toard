@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 import {
   buildPowerShellInstallScript,
@@ -27,6 +28,61 @@ test("installer escapes endpoint and applies content default only when absent", 
     /if \(-not \$env:TOARD_SHIM_COLLECT_CONTENT\) \{ \$env:TOARD_SHIM_COLLECT_CONTENT = '1' \}/,
   );
 });
+
+const testPowerShell =
+  process.env.TOARD_TEST_PWSH ?? (process.platform === "win32" ? "pwsh" : undefined);
+
+test(
+  "installer writes token and endpoint as separate credential lines",
+  { skip: !testPowerShell },
+  () => {
+    assert.ok(testPowerShell, "PowerShell executable must be configured");
+    const script = buildPowerShellInstallScript("https://toard.example/api", false);
+    const assignment = script.match(
+      /\$lines = @\([\s\S]*?\)(?=\r?\n  if \(\$env:TOARD_SHIM_COLLECT_CONTENT)/,
+    )?.[0];
+    assert.ok(assignment, "credential line assignment must be present");
+
+    const probe = [
+      "$token = 'tk_test'",
+      "$endpoint = 'https://toard.example/api'",
+      assignment,
+      "$lines | ConvertTo-Json -Compress",
+    ].join("\n");
+    const result = spawnSync(testPowerShell, ["-NoProfile", "-NonInteractive", "-Command", probe], {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout.trim()), [
+      "agent_key=tk_test",
+      "endpoint=https://toard.example/api",
+    ]);
+  },
+);
+
+test(
+  "installer uses an explicit release mirror when configured",
+  { skip: !testPowerShell },
+  () => {
+    assert.ok(testPowerShell, "PowerShell executable must be configured");
+    const script = buildPowerShellInstallScript("https://toard.example/api", false);
+    const assignment = script.match(/^\$release = .*$/m)?.[0];
+    assert.ok(assignment, "release assignment must be present");
+
+    const probe = [
+      "$env:TOARD_SHIM_RELEASE_BASE = 'http://127.0.0.1:43123/release'",
+      assignment,
+      "$release",
+    ].join("\n");
+    const result = spawnSync(testPowerShell, ["-NoProfile", "-NonInteractive", "-Command", probe], {
+      encoding: "utf8",
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), "http://127.0.0.1:43123/release");
+  },
+);
 
 test("installer uses USERPROFILE for the persistent Windows home", () => {
   const script = buildPowerShellInstallScript("https://toard.example/api", false);

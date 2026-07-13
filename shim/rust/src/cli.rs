@@ -268,7 +268,7 @@ fn doctor() -> i32 {
 
     // 3. PATH 가로채기 순서 + 진짜 바이너리
     let self_canon = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
-    for (tool, required) in [("claude", true), ("codex", false)] {
+    for (tool, path_required) in [("claude", true), ("codex", false)] {
         match first_in_path(tool) {
             Some(first) => {
                 let first_canon = first.canonicalize().ok();
@@ -281,15 +281,7 @@ fn doctor() -> i32 {
                     ok(&format!("PATH: '{tool}' 은 shim 이 우선 가로챕니다"));
                     match find_real_binary(tool) {
                         Some(real) => ok(&format!("진짜 {tool}: {}", real.display())),
-                        None => {
-                            if required {
-                                d.fail(&format!(
-                                    "진짜 {tool} 를 PATH 에서 찾지 못했습니다 — {tool} 설치 필요"
-                                ));
-                            } else {
-                                info(&format!("진짜 {tool} 없음 (미사용 시 무시)"));
-                            }
-                        }
+                        None => info(&format!("진짜 {tool} 없음 (Desktop/IDE 수집만 쓰면 무시)")),
                     }
                 } else {
                     d.fail(&format!(
@@ -299,7 +291,7 @@ fn doctor() -> i32 {
                 }
             }
             None => {
-                if required {
+                if path_required {
                     d.fail("PATH 에 claude 가 없습니다 — shim 디렉토리를 PATH 에 추가하세요");
                 } else {
                     info("codex: PATH 에 없음 (미사용 시 무시)");

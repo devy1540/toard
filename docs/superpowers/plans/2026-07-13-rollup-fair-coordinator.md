@@ -152,7 +152,7 @@ git commit -m "feat(rollup): coordinator 상태를 영속화"
 - Produces: `countTimezoneRollupBacklog(): { eligible: number; waitingForBase: number }`.
 - Consumes: `usage_15m_v2` watermark and dirty bucket table.
 
-- [ ] **Step 1: Write failing finalized-window and race tests**
+- [x] **Step 1: Write failing finalized-window and race tests**
 
 ```ts
 test("day sourceTo는 DST 다음 로컬 날짜 경계다", () => {
@@ -173,13 +173,13 @@ test("claim 뒤 generation이 바뀌면 coverage를 승인하지 않는다", asy
 });
 ```
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 Run: `pnpm --filter @toard/web test -- timezone-rollup.test.ts timezone-rollup-lifecycle.test.ts && pnpm --filter @toard/storage-clickhouse test -- storage.test.ts`
 
 Expected: FAIL on missing source window, eligibility query, and generation CAS.
 
-- [ ] **Step 3: Implement DST-safe windows and finalized claim**
+- [x] **Step 3: Implement DST-safe windows and finalized claim**
 
 ```ts
 export type TimezoneRollupWindow = { bucket: Date; sourceTo: Date };
@@ -197,7 +197,7 @@ export type TimezoneRollupJob = {
 
 Daily windows use `firstInstantOfLocalDate(nextDate, timezone)`; hourly windows use the next absolute hour boundary already represented by the current bucket plan. Claim SQL joins the `usage_15m_v2` watermark and excludes any dirty bucket in `[bucket, source_to)`.
 
-- [ ] **Step 4: Implement invalidation generation and compare-and-set completion**
+- [x] **Step 4: Implement invalidation generation and compare-and-set completion**
 
 ```sql
 ON CONFLICT (resolution, timezone, bucket) DO UPDATE
@@ -209,13 +209,13 @@ SET status = 'pending',
 
 `markDone` only inserts coverage when status, generation, watermark, and dirty recheck still match. If zero rows complete, return `false`; the worker records `superseded` and does not count the job as progress.
 
-- [ ] **Step 5: Run focused suites and typecheck**
+- [x] **Step 5: Run focused suites and typecheck**
 
 Run: `pnpm --filter @toard/web test -- timezone-rollup.test.ts timezone-rollup-lifecycle.test.ts && pnpm --filter @toard/storage-clickhouse test -- storage.test.ts && pnpm --filter @toard/web typecheck && pnpm --filter @toard/storage-clickhouse typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/lib/timezone-rollup.ts apps/web/lib/timezone-rollup.test.ts apps/web/lib/timezone-rollup-lifecycle.test.ts packages/storage-clickhouse/src/storage.ts packages/storage-clickhouse/src/storage.test.ts

@@ -400,14 +400,19 @@ function transactionalTimezoneRepository(
       );
       return existing.rowCount === 0 ? "created" : "existing";
     },
-    async prewarmMissingJobs(resolution, timezone, buckets) {
-      enqueuedBuckets.push(...buckets);
+    async prewarmMissingJobs(resolution, timezone, windows) {
+      enqueuedBuckets.push(...windows.map(({ bucket }) => bucket));
       const inserted = await client.query(
-        `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
-         SELECT $1, $2, bucket
-         FROM unnest($3::timestamptz[]) AS bucket
+        `INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket, source_to)
+         SELECT $1, $2, bucket, source_to
+         FROM unnest($3::timestamptz[], $4::timestamptz[]) AS requested(bucket, source_to)
          ON CONFLICT (resolution, timezone, bucket) DO NOTHING`,
-        [resolution, timezone, buckets],
+        [
+          resolution,
+          timezone,
+          windows.map(({ bucket }) => bucket),
+          windows.map(({ sourceTo }) => sourceTo),
+        ],
       );
       return inserted.rowCount ?? 0;
     },

@@ -257,12 +257,24 @@ async function recordValidationFailure(
   });
 }
 
-async function advanceLayer(
+export type RollupValidationTask = {
+  layer: RollupCutoverLayer;
+  target: Date;
+  scope: "initial" | "recurring";
+  activeTimezones: string[];
+};
+
+type ReconciledLayer = {
+  record: RollupCutoverRecord;
+  validation: RollupValidationTask | null;
+};
+
+async function reconcileLayer(
   dependencies: RollupCutoverDependencies,
   record: RollupCutoverRecord,
   now: Date,
   eligibleTarget: Date,
-): Promise<RollupCutoverRecord> {
+): Promise<ReconciledLayer> {
   const target = record.state === "observing" && record.targetWatermark
     ? record.targetWatermark
     : eligibleTarget;
@@ -270,40 +282,37 @@ async function advanceLayer(
   try {
     readiness = await dependencies.readiness(record.layer, target, record.state);
   } catch (error) {
-    return recordUnhealthy(dependencies, record, now, "unavailable", String(error));
+    return {
+      record: await recordUnhealthy(dependencies, record, now, "unavailable", String(error)),
+      validation: null,
+    };
   }
   if (!readiness.ready) {
-    return recordUnhealthy(
-      dependencies,
-      record,
-      now,
-      readiness.kind ?? "unavailable",
-      readiness.detail,
-    );
+    return {
+      record: await recordUnhealthy(
+        dependencies,
+        record,
+        now,
+        readiness.kind ?? "unavailable",
+        readiness.detail,
+      ),
+      validation: null,
+    };
   }
 
   if (record.state === "backfilling" || record.state === "fallback") {
-    const validation = await runValidation(
-      dependencies,
-      record.layer,
-      target,
-      readiness.activeTimezones,
-      "initial",
-    );
-    if (!validation.ok) {
-      return recordValidationFailure(dependencies, record, now, validation);
-    }
-    return saveTransition(dependencies, record, {
+    const saved = await saveTransition(dependencies, record, {
       ...baseUpdate(record, now),
-      state: "observing",
-      targetWatermark: target,
-      healthySeconds: 0,
-      lastValidationAt: now,
-      consecutiveFailures: 0,
-      lastFailureKind: null,
-      lastFailure: null,
-      activatedAt: null,
     });
+    return {
+      record: saved,
+      validation: {
+        layer: record.layer,
+        target,
+        scope: "initial",
+        activeTimezones: readiness.activeTimezones,
+      },
+    };
   }
 
   if (record.state === "observing") {
@@ -312,85 +321,83 @@ async function advanceLayer(
       record.healthySeconds + elapsedHealthySeconds(record, now),
     );
     if (healthySeconds < REQUIRED_HEALTHY_SECONDS) {
-      return saveTransition(dependencies, record, {
-        ...baseUpdate(record, now),
-        healthySeconds,
-        consecutiveFailures: 0,
-        lastFailureKind: null,
-        lastFailure: null,
-      });
+      return {
+        record: await saveTransition(dependencies, record, {
+          ...baseUpdate(record, now),
+          healthySeconds,
+          consecutiveFailures: 0,
+          lastFailureKind: null,
+          lastFailure: null,
+        }),
+        validation: null,
+      };
     }
-    const validation = await runValidation(
-      dependencies,
-      record.layer,
-      target,
-      readiness.activeTimezones,
-      "initial",
-    );
-    if (!validation.ok) {
-      return recordValidationFailure(dependencies, record, now, validation);
-    }
-    return saveTransition(dependencies, record, {
+    const saved = await saveTransition(dependencies, record, {
       ...baseUpdate(record, now),
-      state: "active",
       healthySeconds,
-      lastValidationAt: now,
-      consecutiveFailures: 0,
-      lastFailureKind: null,
-      lastFailure: null,
-      activatedAt: now,
     });
+    return {
+      record: saved,
+      validation: {
+        layer: record.layer,
+        target,
+        scope: "initial",
+        activeTimezones: readiness.activeTimezones,
+      },
+    };
   }
 
   if (!readiness.forceValidation && !recurringValidationDue(record, now)) {
-    return saveTransition(dependencies, record, {
-      ...baseUpdate(record, now),
-      consecutiveFailures: 0,
-      lastFailureKind: null,
-      lastFailure: null,
-    });
+    return {
+      record: await saveTransition(dependencies, record, {
+        ...baseUpdate(record, now),
+        consecutiveFailures: 0,
+        lastFailureKind: null,
+        lastFailure: null,
+      }),
+      validation: null,
+    };
   }
   if (readiness.validationReady === false) {
-    return saveTransition(dependencies, record, {
-      ...baseUpdate(record, now),
-      consecutiveFailures: 0,
-      lastFailureKind: null,
-      lastFailure: null,
-    });
+    return {
+      record: await saveTransition(dependencies, record, {
+        ...baseUpdate(record, now),
+        consecutiveFailures: 0,
+        lastFailureKind: null,
+        lastFailure: null,
+      }),
+      validation: null,
+    };
   }
-  const validation = await runValidation(
-    dependencies,
-    record.layer,
-    target,
-    readiness.activeTimezones,
-    "recurring",
-  );
-  if (!validation.ok) {
-    return recordValidationFailure(dependencies, record, now, validation);
-  }
-  return saveTransition(dependencies, record, {
+  const saved = await saveTransition(dependencies, record, {
     ...baseUpdate(record, now),
-    lastValidationAt: now,
-    consecutiveFailures: 0,
-    lastFailureKind: null,
-    lastFailure: null,
   });
+  return {
+    record: saved,
+    validation: {
+      layer: record.layer,
+      target,
+      scope: "recurring",
+      activeTimezones: readiness.activeTimezones,
+    },
+  };
 }
 
-export async function advanceRollupCutoverWith(
+export async function reconcileRollupCutoverWith(
   dependencies: RollupCutoverDependencies,
   now: Date,
-): Promise<void> {
+): Promise<{ validation: RollupValidationTask | null }> {
   if (!Number.isFinite(now.getTime())) throw new Error("invalid rollup cutover time");
   const eligibleTarget = dependencies.eligibleTarget(now);
-  const usage = await advanceLayer(
+  const usage = await reconcileLayer(
     dependencies,
     await dependencies.repository.get("usage_15m_v2"),
     now,
     eligibleTarget,
   );
+  if (usage.validation) return { validation: usage.validation };
   const timezone = await dependencies.repository.get("timezone");
-  if (usage.state !== "active") {
+  if (usage.record.state !== "active") {
     if (
       timezone.state !== "backfilling"
       || timezone.targetWatermark
@@ -407,12 +414,110 @@ export async function advanceRollupCutoverWith(
         activatedAt: null,
       });
     }
-    return;
+    return { validation: null };
   }
   const timezoneTarget = timezone.state === "active" || timezone.activatedAt
     ? eligibleTarget
-    : usage.targetWatermark ?? eligibleTarget;
-  await advanceLayer(dependencies, timezone, now, timezoneTarget);
+    : usage.record.targetWatermark ?? eligibleTarget;
+  const timezoneResult = await reconcileLayer(dependencies, timezone, now, timezoneTarget);
+  return { validation: timezoneResult.validation };
+}
+
+export async function executeRollupValidationWith(
+  task: RollupValidationTask,
+  dependencies: RollupCutoverDependencies,
+  now: Date,
+): Promise<"success" | "failed" | "superseded"> {
+  const record = await dependencies.repository.get(task.layer);
+  if (
+    (task.scope === "recurring" && record.state !== "active")
+    || (task.scope === "initial" && !["backfilling", "fallback", "observing"].includes(record.state))
+  ) return "superseded";
+
+  let readiness: RollupLayerReadiness;
+  try {
+    readiness = await dependencies.readiness(task.layer, task.target, record.state);
+  } catch (error) {
+    await recordUnhealthy(dependencies, record, now, "unavailable", String(error));
+    return "failed";
+  }
+  if (!readiness.ready) {
+    await recordUnhealthy(
+      dependencies,
+      record,
+      now,
+      readiness.kind ?? "unavailable",
+      readiness.detail,
+    );
+    return "superseded";
+  }
+  if (task.scope === "recurring" && readiness.validationReady === false) {
+    await saveTransition(dependencies, record, {
+      ...baseUpdate(record, now),
+      consecutiveFailures: 0,
+      lastFailureKind: null,
+      lastFailure: null,
+    });
+    return "superseded";
+  }
+
+  const validation = await runValidation(
+    dependencies,
+    task.layer,
+    task.target,
+    readiness.activeTimezones,
+    task.scope,
+  );
+  if (!validation.ok) {
+    await recordValidationFailure(dependencies, record, now, validation);
+    return "failed";
+  }
+
+  if (task.scope === "recurring") {
+    await saveTransition(dependencies, record, {
+      ...baseUpdate(record, now),
+      lastValidationAt: now,
+      consecutiveFailures: 0,
+      lastFailureKind: null,
+      lastFailure: null,
+    });
+    return "success";
+  }
+  if (record.state === "observing") {
+    if (record.healthySeconds < REQUIRED_HEALTHY_SECONDS) return "superseded";
+    await saveTransition(dependencies, record, {
+      ...baseUpdate(record, now),
+      state: "active",
+      lastValidationAt: now,
+      consecutiveFailures: 0,
+      lastFailureKind: null,
+      lastFailure: null,
+      activatedAt: now,
+    });
+    return "success";
+  }
+  await saveTransition(dependencies, record, {
+    ...baseUpdate(record, now),
+    state: "observing",
+    targetWatermark: task.target,
+    healthySeconds: 0,
+    lastValidationAt: now,
+    consecutiveFailures: 0,
+    lastFailureKind: null,
+    lastFailure: null,
+    activatedAt: null,
+  });
+  return "success";
+}
+
+export async function advanceRollupCutoverWith(
+  dependencies: RollupCutoverDependencies,
+  now: Date,
+): Promise<void> {
+  const result = await reconcileRollupCutoverWith(dependencies, now);
+  if (result.validation) {
+    await executeRollupValidationWith(result.validation, dependencies, now);
+  }
 }
 
 type RollupValidationStorage = {
@@ -429,11 +534,11 @@ function validationResult(result: RollupDataValidationResult): RollupValidationR
     : { ok: false, kind: "mismatch", detail: result.detail };
 }
 
-export async function advanceRollupCutover(now = new Date()): Promise<void> {
+function productionCutoverDependencies(): RollupCutoverDependencies {
   const pool = getPool();
   const repository = new PgRollupCutoverRepository(pool);
   const storage = getStorage() as unknown as RollupValidationStorage;
-  await advanceRollupCutoverWith({
+  return {
     repository,
     eligibleTarget: (at) => rollupEligibleTargetAt(at),
     readiness: (layer, target, state) => loadRollupLayerReadinessWith(pool, layer, target, state),
@@ -461,5 +566,22 @@ export async function advanceRollupCutover(now = new Date()): Promise<void> {
         targetWatermark: target?.toISOString() ?? null,
       }));
     },
-  }, now);
+  };
+}
+
+export async function reconcileRollupCutover(
+  now = new Date(),
+): Promise<{ validation: RollupValidationTask | null }> {
+  return reconcileRollupCutoverWith(productionCutoverDependencies(), now);
+}
+
+export async function executeRollupValidation(
+  task: RollupValidationTask,
+  now = new Date(),
+): Promise<"success" | "failed" | "superseded"> {
+  return executeRollupValidationWith(task, productionCutoverDependencies(), now);
+}
+
+export async function advanceRollupCutover(now = new Date()): Promise<void> {
+  await advanceRollupCutoverWith(productionCutoverDependencies(), now);
 }

@@ -336,7 +336,7 @@ git commit -m "fix(rollup): 공정 coordinator로 작업을 직렬화"
 - Consumes: coordinator validation candidate priority.
 - Preserves: default `advanceRollupCutover()` behavior for compatibility and direct tests.
 
-- [ ] **Step 1: Write failing heartbeat/validation split tests**
+- [x] **Step 1: Write failing heartbeat/validation split tests**
 
 ```ts
 test("backfill 준비 전 heartbeat는 validation을 호출하지 않는다", async () => {
@@ -353,13 +353,13 @@ test("준비된 계층은 validation 후보만 반환하고 coordinator가 선�
 });
 ```
 
-- [ ] **Step 2: Run tests and confirm failure**
+- [x] **Step 2: Run tests and confirm failure**
 
 Run: `pnpm --filter @toard/web test -- rollup-cutover.test.ts rollup-coordinator.test.ts`
 
 Expected: FAIL because reconciliation still performs validation inline.
 
-- [ ] **Step 3: Refactor cutover state transitions**
+- [x] **Step 3: Refactor cutover state transitions**
 
 ```ts
 export type RollupValidationTask = {
@@ -372,17 +372,17 @@ export type RollupValidationTask = {
 
 Reconciliation performs PostgreSQL readiness and healthy-second updates only. When validation is required it persists the non-heavy state update and returns one task. Execution rechecks readiness before validation, applies the existing mismatch/transient failure rules, and transitions to observing/active or updates recurring validation time.
 
-- [ ] **Step 4: Integrate validation into coordinator priority**
+- [x] **Step 4: Integrate validation into coordinator priority**
 
 Coordinator runs reconciliation while holding the global slot, adds returned validation as the highest candidate, and executes at most one validation or worker task. A validation task must not cascade into a second layer validation in the same tick.
 
-- [ ] **Step 5: Run tests and typecheck**
+- [x] **Step 5: Run tests and typecheck**
 
 Run: `pnpm --filter @toard/web test -- rollup-cutover.test.ts rollup-coordinator.test.ts clickhouse-outbox.test.ts && pnpm --filter @toard/web typecheck`
 
 Expected: PASS, including existing T0, 3600-second observation, mismatch, transient fallback, and new-timezone validation tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/lib/rollup-cutover.ts apps/web/lib/rollup-cutover.test.ts apps/web/lib/rollup-coordinator.ts apps/web/lib/rollup-coordinator.test.ts

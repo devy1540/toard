@@ -189,21 +189,6 @@ async function countUsageBacklog(now: Date): Promise<number> {
   return result.rows[0]?.due ? 1 : 0;
 }
 
-async function validationCandidate(now: Date): Promise<RollupCoordinatorCandidate | null> {
-  const result = await getPool().query<{ last_started_at: Date | null }>(
-    `SELECT max(last_checked_at) AS last_started_at
-     FROM clickhouse_rollup_cutover_status`,
-  );
-  const lastStartedAt = result.rows[0]?.last_started_at ?? null;
-  return {
-    task: "validation",
-    due: !lastStartedAt || now.getTime() - lastStartedAt.getTime() >= WORKER_MIN_CADENCE_MS,
-    eligibleSince: lastStartedAt,
-    lastStartedAt,
-    nextAttemptAt: null,
-  };
-}
-
 function workerOutcome(outcome: Exclude<ObservedWorkerOutcome, "busy">): RollupSchedulerOutcome {
   if (outcome === "failed") return "failed";
   if (outcome === "completed") return "success";
@@ -215,6 +200,7 @@ export async function runRollupCoordinatorTick(now = new Date()): Promise<Coordi
   const workers = new PgRollupWorkerRepository(pool);
   const scheduler = new PgRollupCoordinatorRepository(pool);
   const timezone = new PgTimezoneRollupRepository(pool);
+  let pendingValidation: import("./rollup-cutover").RollupValidationTask | null = null;
   return runRollupCoordinatorTickWith({
     withLoadSlot: (operation) => workers.withLoadSlot(operation),
     scheduler,
@@ -222,13 +208,25 @@ export async function runRollupCoordinatorTick(now = new Date()): Promise<Coordi
     setEligibility: (worker, eligible, at) => workers.setEligibility(worker, eligible, at),
     countUsageBacklog,
     countTimezoneBacklog: () => timezone.countBacklog(),
-    validationCandidate,
+    async validationCandidate(at) {
+      const { reconcileRollupCutover } = await import("./rollup-cutover");
+      pendingValidation = (await reconcileRollupCutover(at)).validation;
+      return pendingValidation
+        ? {
+            task: "validation",
+            due: true,
+            eligibleSince: at,
+            lastStartedAt: null,
+            nextAttemptAt: null,
+          }
+        : null;
+    },
     async runTask(task) {
       if (task === "usage_15m_v2") return workerOutcome(await runClickHouse15mV2Task());
       if (task === "timezone") return workerOutcome(await runClickHouseTimezoneTask());
-      const { advanceRollupCutover } = await import("./rollup-cutover");
-      await advanceRollupCutover();
-      return "success";
+      if (!pendingValidation) return "superseded";
+      const { executeRollupValidation } = await import("./rollup-cutover");
+      return executeRollupValidation(pendingValidation);
     },
   }, now);
 }

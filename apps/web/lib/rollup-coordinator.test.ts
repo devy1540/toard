@@ -143,3 +143,20 @@ test("두 replica 중 잠금을 얻은 하나만 heavy task를 실행한다", as
   assert.equal(heavyCalls, 1);
   assert.deepEqual(new Set([first.status, second.status]), new Set(["completed", "busy"]));
 });
+
+test("validation 후보가 있어도 한 tick에는 heavy task 하나만 실행한다", async () => {
+  const tasks: RollupSchedulerTask[] = [];
+  const dependencies = coordinatorDependencies(
+    async (operation) => ({ acquired: true, value: await operation() }),
+    async (task) => {
+      tasks.push(task);
+      return "success";
+    },
+  );
+  dependencies.validationCandidate = async () => candidate("validation");
+
+  const result = await runRollupCoordinatorTickWith(dependencies, START);
+
+  assert.equal(result.task, "validation");
+  assert.deepEqual(tasks, ["validation"]);
+});

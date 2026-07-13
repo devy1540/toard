@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   advanceRollupCutoverWith,
+  executeRollupValidationWith,
   loadRollupLayerReadinessWith,
   markValidatedTimezonesWith,
+  reconcileRollupCutoverWith,
   rollupEligibleTargetAt,
   type RollupCutoverDependencies,
   type RollupValidationResult,
@@ -103,6 +105,39 @@ test("observing은 신규 eligible target이 이동해도 고정 T0와 누적 �
   assert.equal(saved.targetWatermark?.toISOString(), T0.toISOString());
   assert.equal(saved.healthySeconds, 660);
   assert.equal(f.readinessTargets[0]?.target.toISOString(), T0.toISOString());
+});
+
+test("backfill 준비 전 heartbeat는 validation을 호출하지 않는다", async () => {
+  let validationCalls = 0;
+  const f = fixture({ ready: false });
+  f.dependencies.validate = async () => {
+    validationCalls++;
+    return { ok: true, kind: null, detail: null };
+  };
+
+  const result = await reconcileRollupCutoverWith(f.dependencies, NOW);
+
+  assert.equal(validationCalls, 0);
+  assert.equal(result.validation, null);
+  assert.equal(f.records.get("usage_15m_v2")?.lastFailureKind, "lag");
+});
+
+test("준비된 계층은 validation 후보만 반환하고 선택될 때 한 번 실행한다", async () => {
+  let validationCalls = 0;
+  const f = fixture();
+  f.dependencies.validate = async () => {
+    validationCalls++;
+    return { ok: true, kind: null, detail: null };
+  };
+
+  const result = await reconcileRollupCutoverWith(f.dependencies, NOW);
+
+  assert.equal(validationCalls, 0);
+  assert.equal(result.validation?.layer, "usage_15m_v2");
+  assert.ok(result.validation);
+  await executeRollupValidationWith(result.validation, f.dependencies, NOW);
+  assert.equal(validationCalls, 1);
+  assert.equal(f.records.get("usage_15m_v2")?.state, "observing");
 });
 
 test("observing 중 재계산 필요 상태는 시간을 늘리지 않고 복구 후 이어갈 수 있게 한다", async () => {

@@ -103,6 +103,31 @@ export function dashboardFixtureStart(now = new Date()): Date {
   return new Date(today.getTime() - 400 * 86_400_000 + 2 * 60 * 60 * 1_000);
 }
 
+export type TimezoneFixtureCoverage = {
+  eligible: number;
+  dayJobs: number;
+  dayCoverage: number;
+  dayWaiting: number;
+  hourJobs: number;
+  hourCoverage: number;
+  hourWaiting: number;
+};
+
+export function assertTimezoneFixtureCoverage(stats: TimezoneFixtureCoverage): void {
+  if (stats.eligible !== 0) {
+    throw new Error(`timezone benchmark still has ${stats.eligible} eligible jobs`);
+  }
+  if (stats.dayJobs !== 400 || stats.hourJobs !== 768) {
+    throw new Error(`timezone benchmark job fixture mismatch: ${JSON.stringify(stats)}`);
+  }
+  if (
+    stats.dayCoverage + stats.dayWaiting !== stats.dayJobs
+    || stats.hourCoverage + stats.hourWaiting !== stats.hourJobs
+  ) {
+    throw new Error(`timezone benchmark coverage mismatch: ${JSON.stringify(stats)}`);
+  }
+}
+
 export function parseDashboardBenchmarkOptions(_args: readonly string[]): DashboardBenchmarkOptions {
   const options: DashboardBenchmarkOptions = {
     fixture: "dashboard-http-v1",

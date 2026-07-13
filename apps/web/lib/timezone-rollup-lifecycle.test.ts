@@ -33,10 +33,10 @@ function lifecycleRepository(initialTimezones: string[] = []) {
       registered.add(timezone);
       return "created";
     },
-    async prewarmMissingJobs(resolution, timezone, buckets) {
-      chunks.push({ resolution, buckets: [...buckets] });
+    async prewarmMissingJobs(resolution, timezone, windows) {
+      chunks.push({ resolution, buckets: windows.map(({ bucket }) => bucket) });
       let inserted = 0;
-      for (const bucket of buckets) {
+      for (const { bucket, sourceTo } of windows) {
         const key = jobKey(resolution, timezone, bucket);
         if (coverage.has(key) || jobs.has(key)) continue;
         jobs.set(key, {
@@ -44,6 +44,8 @@ function lifecycleRepository(initialTimezones: string[] = []) {
           resolution,
           timezone,
           bucket,
+          sourceTo,
+          generation: 0,
           status: "pending",
         });
         inserted++;
@@ -53,18 +55,22 @@ function lifecycleRepository(initialTimezones: string[] = []) {
     async claimJobs() {
       return [];
     },
+    async countBacklog() {
+      return { eligible: 0, waitingForBase: 0 };
+    },
     async withAdvisoryLock() {
       return { acquired: false } as const;
     },
-    async markDone(id) {
+    async markDone(id, generation) {
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
-      if (!job) return;
+      if (!job || job.generation !== generation) return false;
       job.status = "done";
       coverage.add(jobKey(job.resolution, job.timezone, job.bucket));
+      return true;
     },
-    async markPending(id) {
+    async markPending(id, generation) {
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
-      if (job) job.status = "pending";
+      if (job?.generation === generation) job.status = "pending";
     },
     async disableTimezone(timezone) {
       registered.delete(timezone);

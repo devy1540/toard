@@ -192,7 +192,9 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 앱은 기동 시 `ORG_TIMEZONE`과 `users.timezone`의 고유 값을 canonicalize·ClickHouse capability-check해 비동기로 등록한다. 신규·coverage-missing bucket만 1일은 최근 400 local days, 1시간은 최근 32 local days를 16-bucket chunk로 prewarm한다. 전역 전환 뒤 새 시간대가 등록되어도 기존 시간대의 읽기를 되돌리지 않는다. 새 시간대만 백필과 대표 hour/day 검증이 끝나 `validated_at`이 기록될 때까지 15분 기준의 정확 경로를 사용한다. 정상 조회는 요청 해상도에 맞는 rollup을 우선 사용하고, coverage가 없거나 재계산이 필요한 구간은 15분 기준 rollup 또는 세밀한 원본으로 자동 대체 조회한다.
 
-관리자는 **관리자 → 시스템 → Rollup 운영 상태**(`/admin?tab=system`)에서 자동 전환 단계, 고정 T0, 60분 관찰 누적, 실제 조회 source, worker 진행률·ETA, adaptive batch 상한, 자동 감속 상태와 저장 규모를 확인한다. 화면은 보이는 동안 `GET /api/admin/rollups/status`를 10초마다 호출한다. pause/resume은 관리자 전용 `POST /api/admin/rollups/control`을 사용하며 앱 재시작 뒤에도 유지된다. worker는 최근 batch가 2초 이내이고 한도를 모두 사용하면 처리량을 늘리고, 10초 이상이거나 실패하면 절반으로 줄인다. 15분과 시간대별 집계는 replica를 포함해 shared load slot 하나만 사용하므로 동시에 무거운 집계를 실행하지 않는다.
+관리자는 **관리자 → 시스템 → Rollup 운영 상태**(`/admin?tab=system`)에서 자동 전환 단계, 고정 T0, 60분 관찰 누적, 실제 조회 source, coordinator heartbeat·최근 작업, worker 진행률·ETA, adaptive batch 상한, 자동 감속 상태와 저장 규모를 확인한다. 화면은 보이는 동안 `GET /api/admin/rollups/status`를 10초마다 호출한다. pause/resume은 관리자 전용 `POST /api/admin/rollups/control`을 사용하며 앱 재시작 뒤에도 유지된다. worker는 최근 batch가 2초 이내이고 한도를 모두 사용하면 처리량을 늘리고, 10초 이상이거나 실패하면 절반으로 줄인다.
+
+하나의 coordinator가 replica 전체에서 전역 load slot을 잡고 15분 기준 rollup, 시간대별 rollup, 정합성 검증 중 무거운 작업 하나만 실행한다. 10초마다 완료 후 다음 실행을 예약하고 각 worker는 최소 60초 간격을 지키며, 처리 가능한 상태가 120초를 넘은 worker를 우선해 서로 굶지 않게 한다. 시간대별 작업은 해당 `source_to`까지 15분 watermark가 도달하고 dirty bucket이 없을 때만 처리 가능하다. 그 전에는 오류나 정체가 아니라 `15분 기준 대기`로 표시한다. 처리 중 늦은 데이터가 들어오면 job generation이 바뀌므로 오래된 결과를 완료로 승인하지 않고 새 generation을 다시 처리한다. 반면 신규 수집 outbox는 이 load slot 밖에서 계속 전달된다.
 
 기존 `CLICKHOUSE_READ_ROLLUP=1` 설치는 schema를 먼저 배포하고 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0`으로 legacy alias를 차단한 뒤 migration과 worker 상태를 확인한다. 이후 `CLICKHOUSE_READ_ROLLUP`과 새 read override를 모두 unset하면 자동 전환 상태를 사용한다. legacy 값이 남아 있으면 process당 한 번 deprecation 경고를 남기고 `/api/ready`의 `rollups.legacyFlagMigration`이 `deprecated_alias`가 된다.
 

@@ -120,6 +120,7 @@
       "paused": "일시 중지",
       "starting": "시작 중",
       "catching_up": "백필 중",
+      "waiting_for_base": "15분 기준 대기",
       "ready": "완료",
       "stalled": "진행 정체",
       "error": "오류"
@@ -127,6 +128,31 @@
     "worker": {
       "usage15mV2": "15분 기준 rollup",
       "timezone": "시간대별 1시간·1일 rollup"
+    },
+    "coordinator": {
+      "title": "Rollup coordinator",
+      "description": "무거운 집계와 검증을 한 번에 하나씩 공정하게 실행합니다.",
+      "states": {
+        "not_applicable": "해당 없음",
+        "healthy": "정상",
+        "stalled": "heartbeat 지연",
+        "unavailable": "상태 확인 불가"
+      },
+      "lastHeartbeat": "최근 heartbeat",
+      "lastTask": "최근 작업",
+      "lastOutcome": "최근 결과",
+      "tasks": {
+        "usage_15m_v2": "15분 기준 rollup",
+        "timezone": "시간대별 rollup",
+        "validation": "정합성 검증",
+        "idle": "대기"
+      },
+      "outcomes": {
+        "success": "성공",
+        "failed": "실패",
+        "superseded": "새 데이터로 재예약",
+        "idle": "대기"
+      }
     },
     "cutover": {
       "title": "자동 읽기 전환",
@@ -174,6 +200,9 @@
     "watermark": "watermark {value}",
     "coverage": "1시간 {hour} · 1일 {day}",
     "remaining": "남은 단위",
+    "eligiblePending": "지금 처리 가능",
+    "waitingForBase": "15분 기준 대기",
+    "eligibleSince": "처리 가능 시작",
     "eta": "예상 완료",
     "etaMinutes": "약 {minutes}분",
     "etaConfigured": "설정 기준 추정",

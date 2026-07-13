@@ -17,6 +17,7 @@ import {
   assertAppCgroupLimits,
   assertBenchmarkTarget,
   assertNonProductionBenchmarkEnvironment,
+  assertTimezoneFixtureCoverage,
   benchmarkExecutionMode,
   benchmarkPercentiles,
   dashboardFixtureStart,
@@ -413,33 +414,57 @@ async function buildTimezoneCaches(pg: Pool, storage: ClickHouseStorage): Promis
   }
 
   let stalled = 0;
+  let backlog = await repository.countBacklog();
   for (let iteration = 0; iteration < 2_000; iteration++) {
-    const pending = await pg.query<{ count: number }>(
-      "SELECT count(*)::int AS count FROM clickhouse_timezone_rollup_jobs WHERE status != 'done'",
-    );
-    const remaining = pending.rows[0]?.count ?? 0;
-    if (remaining === 0) break;
+    if (backlog.eligible === 0) break;
     const result = await runTimezoneRollupWorkerWith(repository, storage);
     stalled = result.jobs === 0 ? stalled + 1 : 0;
-    if (stalled >= 5) throw new Error(`timezone worker stalled with ${remaining} jobs remaining`);
-    if (iteration % 50 === 0) console.log(`[dashboard-http] timezone worker remaining=${remaining}`);
+    if (stalled >= 5) throw new Error(`timezone worker stalled with ${backlog.eligible} eligible jobs remaining`);
+    backlog = await repository.countBacklog();
+    if (iteration % 50 === 0) {
+      console.log(`[dashboard-http] timezone worker eligible=${backlog.eligible} waiting_for_base=${backlog.waitingForBase}`);
+    }
   }
+  backlog = await repository.countBacklog();
+  console.log(`[dashboard-http] timezone worker finalized eligible=${backlog.eligible} waiting_for_base=${backlog.waitingForBase}`);
 
   for (const timezone of TIMEZONES) {
     const canonical = canonicalTimezoneId(timezone);
     if (!canonical) throw new Error(`invalid benchmark timezone: ${timezone}`);
-    const coverage = await pg.query<{ day: number; hour: number }>(
+    const coverage = await pg.query<{
+      day_jobs: number;
+      day_coverage: number;
+      day_waiting: number;
+      hour_jobs: number;
+      hour_coverage: number;
+      hour_waiting: number;
+    }>(
       `SELECT
-         count(*) FILTER (WHERE resolution = 'day')::int AS day,
-         count(*) FILTER (WHERE resolution = 'hour')::int AS hour
-       FROM clickhouse_timezone_rollup_coverage
-       WHERE timezone = $1`,
+         (SELECT count(*)::int FROM clickhouse_timezone_rollup_jobs
+          WHERE timezone = $1 AND resolution = 'day') AS day_jobs,
+         (SELECT count(*)::int FROM clickhouse_timezone_rollup_coverage
+          WHERE timezone = $1 AND resolution = 'day') AS day_coverage,
+         (SELECT count(*)::int FROM clickhouse_timezone_rollup_jobs
+          WHERE timezone = $1 AND resolution = 'day' AND status = 'pending') AS day_waiting,
+         (SELECT count(*)::int FROM clickhouse_timezone_rollup_jobs
+          WHERE timezone = $1 AND resolution = 'hour') AS hour_jobs,
+         (SELECT count(*)::int FROM clickhouse_timezone_rollup_coverage
+          WHERE timezone = $1 AND resolution = 'hour') AS hour_coverage,
+         (SELECT count(*)::int FROM clickhouse_timezone_rollup_jobs
+          WHERE timezone = $1 AND resolution = 'hour' AND status = 'pending') AS hour_waiting`,
       [canonical],
     );
     const row = coverage.rows[0];
-    if (row?.day !== 400 || row.hour < 760) {
-      throw new Error(`incomplete durable timezone coverage for ${timezone}: ${JSON.stringify(row ?? null)}`);
-    }
+    if (!row) throw new Error(`missing durable timezone coverage for ${timezone}`);
+    assertTimezoneFixtureCoverage({
+      eligible: backlog.eligible,
+      dayJobs: row.day_jobs,
+      dayCoverage: row.day_coverage,
+      dayWaiting: row.day_waiting,
+      hourJobs: row.hour_jobs,
+      hourCoverage: row.hour_coverage,
+      hourWaiting: row.hour_waiting,
+    });
   }
 }
 

@@ -19,6 +19,7 @@ import {
   resolveSupportedRollupTimezone,
   runTimezoneRollupWorkerWith,
   timezoneCoverageCutoffs,
+  timezonePrewarmWindows,
   type TimezoneRollupJob,
   type TimezoneRollupRepository,
 } from "./timezone-rollup";
@@ -46,6 +47,25 @@ test("retention coverage 경계는 prewarm local day window와 같은 상수를 
   );
 });
 
+test("day sourceTo는 DST 다음 로컬 날짜 경계다", () => {
+  const timezone = "America/Los_Angeles";
+  const spring = timezonePrewarmWindows(
+    "day",
+    timezone,
+    new Date("2026-03-10T12:00:00.000Z"),
+  ).find(({ bucket }) => bucket.toISOString() === "2026-03-08T08:00:00.000Z");
+  const fall = timezonePrewarmWindows(
+    "day",
+    timezone,
+    new Date("2026-11-03T12:00:00.000Z"),
+  ).find(({ bucket }) => bucket.toISOString() === "2026-11-01T07:00:00.000Z");
+
+  assert.ok(spring);
+  assert.ok(fall);
+  assert.equal(spring.sourceTo.getTime() - spring.bucket.getTime(), 23 * 60 * 60 * 1_000);
+  assert.equal(fall.sourceTo.getTime() - fall.bucket.getTime(), 25 * 60 * 60 * 1_000);
+});
+
 function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
   const jobs = new Map<string, TimezoneRollupJob>();
   const chunks: Date[][] = [];
@@ -66,10 +86,10 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
       activeTimezones.add(timezone);
       return "created";
     },
-    async prewarmMissingJobs(resolution, timezone, buckets) {
-      chunks.push([...buckets]);
+    async prewarmMissingJobs(resolution, timezone, windows) {
+      chunks.push(windows.map(({ bucket }) => bucket));
       let inserted = 0;
-      for (const bucket of buckets) {
+      for (const { bucket, sourceTo } of windows) {
         const jobKey = key(resolution, timezone, bucket);
         if (!jobs.has(jobKey) && !coverage.has(jobKey)) {
           jobs.set(jobKey, {
@@ -77,6 +97,8 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
             resolution,
             timezone,
             bucket,
+            sourceTo,
+            generation: 0,
             status: "pending",
           });
           inserted++;
@@ -94,6 +116,10 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
           return { ...job };
         });
     },
+    async countBacklog() {
+      const eligible = [...jobs.values()].filter((job) => job.status === "pending").length;
+      return { eligible, waitingForBase: 0 };
+    },
     async withAdvisoryLock(lockKey, operation) {
       lockKeys.push(lockKey);
       lockHeld = true;
@@ -103,17 +129,19 @@ function fakeTimezoneRollupRepository(options: { capacity?: boolean } = {}) {
         lockHeld = false;
       }
     },
-    async markDone(id) {
+    async markDone(id, generation) {
       assert.equal(lockHeld, false, "상태 갱신은 advisory lock client를 중첩 점유하지 않아야 함");
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
-      if (job) {
+      if (job && job.generation === generation) {
         job.status = "done";
         coverage.add(key(job.resolution, job.timezone, job.bucket));
+        return true;
       }
+      return false;
     },
-    async markPending(id) {
+    async markPending(id, generation) {
       const job = [...jobs.values()].find((candidate) => candidate.id === id);
-      if (job) job.status = "pending";
+      if (job?.generation === generation) job.status = "pending";
     },
     async disableTimezone(timezone) {
       activeTimezones.delete(timezone);
@@ -310,6 +338,52 @@ test("PostgreSQL queue claim은 adaptive 한도를 기존 기본값 8로 다시 
   assert.equal(requestedLimit, 20);
 });
 
+test("PostgreSQL queue는 watermark 이전이고 dirty가 없는 job만 claim한다", async () => {
+  let query = "";
+  const pool = {
+    async query(sql: string) {
+      query = sql;
+      return {
+        rows: [{
+          id: "finalized-hour",
+          resolution: "hour",
+          timezone: "Asia/Seoul",
+          bucket: new Date("2026-07-01T00:00:00.000Z"),
+          source_to: new Date("2026-07-01T01:00:00.000Z"),
+          generation: "4",
+        }],
+      };
+    },
+  } as unknown as Pool;
+
+  const claimed = await new PgTimezoneRollupRepository(pool).claimJobs(32);
+
+  assert.deepEqual(claimed.map((job) => job.id), ["finalized-hour"]);
+  assert.equal(claimed[0]?.sourceTo.toISOString(), "2026-07-01T01:00:00.000Z");
+  assert.equal(claimed[0]?.generation, 4);
+  assert.match(query, /source_to <= watermark\.watermark/);
+  assert.match(query, /NOT EXISTS[\s\S]*clickhouse_rollup_dirty_buckets/);
+  assert.match(query, /dirty\.bucket >= job\.bucket/);
+  assert.match(query, /dirty\.bucket < job\.source_to/);
+});
+
+test("claim 뒤 generation이 바뀌면 coverage를 승인하지 않는다", async () => {
+  let query = "";
+  const pool = {
+    async query(sql: string) {
+      query = sql;
+      return { rows: [{ completed: 0 }], rowCount: 1 };
+    },
+  } as unknown as Pool;
+
+  const accepted = await new PgTimezoneRollupRepository(pool).markDone("job", 4);
+
+  assert.equal(accepted, false);
+  assert.match(query, /generation = \$2/);
+  assert.match(query, /source_to <= watermark\.watermark/);
+  assert.match(query, /NOT EXISTS[\s\S]*clickhouse_rollup_dirty_buckets/);
+});
+
 test("ClickHouse capability가 사라진 timezone job은 한 tick에 drain되어 정상 queue를 굶기지 않는다", async () => {
   const fixture = fakeTimezoneRollupRepository();
   for (let index = 0; index < 8; index++) {
@@ -381,7 +455,7 @@ test("설정 저장·viewer resolver·startup은 non-blocking activation을 연�
     rollup,
     /ON CONFLICT \(resolution, timezone, bucket\) DO NOTHING/,
   );
-  assert.match(rollup, /WHERE id = \$1[\s\S]*AND status = 'inflight'/);
+  assert.match(rollup, /WHERE job\.id = \$1[\s\S]*AND job\.status = 'inflight'/);
   assert.doesNotMatch(rollup, /markPending[\s\S]*DELETE FROM clickhouse_timezone_rollup_coverage/);
   assert.match(
     rollup,

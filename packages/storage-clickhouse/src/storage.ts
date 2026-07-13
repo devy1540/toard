@@ -1689,8 +1689,19 @@ export class ClickHouseStorage implements StorageBackend {
     await client.query(
       `WITH affected(bucket) AS (
          SELECT unnest($1::timestamptz[])
-       ), requested(resolution, timezone, bucket) AS (
-         SELECT DISTINCT resolution, timezone, date_trunc(resolution, affected.bucket, timezone)
+       ), requested(resolution, timezone, bucket, source_to) AS (
+         SELECT DISTINCT
+           resolution,
+           timezone,
+           date_trunc(resolution, affected.bucket, timezone) AS bucket,
+           CASE
+             WHEN resolution = 'hour'
+               THEN date_trunc(resolution, affected.bucket, timezone) + interval '1 hour'
+             ELSE (
+               ((date_trunc(resolution, affected.bucket, timezone) AT TIME ZONE timezone)::date + 1)::timestamp
+               AT TIME ZONE timezone
+             )
+           END AS source_to
          FROM affected
          CROSS JOIN clickhouse_rollup_timezones
          CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS resolutions(resolution)
@@ -1701,11 +1712,14 @@ export class ClickHouseStorage implements StorageBackend {
            AND coverage.timezone = requested.timezone
            AND coverage.bucket = requested.bucket
        )
-       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
-       SELECT resolution, timezone, bucket
+       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket, source_to)
+       SELECT resolution, timezone, bucket, source_to
        FROM requested
        ON CONFLICT (resolution, timezone, bucket) DO UPDATE
-       SET status = 'pending', updated_at = now()`,
+       SET status = 'pending',
+           source_to = EXCLUDED.source_to,
+           generation = clickhouse_timezone_rollup_jobs.generation + 1,
+           updated_at = now()`,
       [buckets],
     );
   }

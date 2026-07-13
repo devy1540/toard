@@ -120,6 +120,7 @@
       "paused": "Paused",
       "starting": "Starting",
       "catching_up": "Backfilling",
+      "waiting_for_base": "Waiting for 15-minute base",
       "ready": "Ready",
       "stalled": "Stalled",
       "error": "Error"
@@ -127,6 +128,31 @@
     "worker": {
       "usage15mV2": "15-minute base rollup",
       "timezone": "Timezone hourly/daily rollup"
+    },
+    "coordinator": {
+      "title": "Rollup coordinator",
+      "description": "Runs one heavy aggregation or validation task at a time with fair scheduling.",
+      "states": {
+        "not_applicable": "Not applicable",
+        "healthy": "Healthy",
+        "stalled": "Heartbeat delayed",
+        "unavailable": "Status unavailable"
+      },
+      "lastHeartbeat": "Latest heartbeat",
+      "lastTask": "Latest task",
+      "lastOutcome": "Latest outcome",
+      "tasks": {
+        "usage_15m_v2": "15-minute base rollup",
+        "timezone": "Timezone rollup",
+        "validation": "Exactness validation",
+        "idle": "Idle"
+      },
+      "outcomes": {
+        "success": "Success",
+        "failed": "Failed",
+        "superseded": "Rescheduled for newer data",
+        "idle": "Idle"
+      }
     },
     "cutover": {
       "title": "Automatic read cutover",
@@ -174,6 +200,9 @@
     "watermark": "watermark {value}",
     "coverage": "hourly {hour} · daily {day}",
     "remaining": "Remaining units",
+    "eligiblePending": "Eligible now",
+    "waitingForBase": "Waiting for 15-minute base",
+    "eligibleSince": "Eligible since",
     "eta": "Estimated completion",
     "etaMinutes": "about {minutes} min",
     "etaConfigured": "configured estimate",

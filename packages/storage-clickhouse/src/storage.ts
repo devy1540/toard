@@ -128,11 +128,11 @@ export interface ClickHouseStorageOptions {
   /** ReplacingMergeTree 중복 제거를 읽기 시점에 강제할지 여부. 기본 false. */
   readFinal?: boolean;
   /** 완성된 요청 시간대별 hour/day cache를 대시보드에서 읽을지 여부. 기본 false. */
-  readRollup?: boolean;
+  readRollup?: RollupReadMode;
   /** finalized 15분 rollup + 최근 raw tail hybrid 시계열 조회를 사용할지 여부. 기본 false. */
   read15mRollup?: boolean;
   /** 가격 provenance를 보존한 v2 15분 rollup 조회를 사용할지 여부. 기본 false. */
-  read15mV2Rollup?: boolean;
+  read15mV2Rollup?: RollupReadMode;
   /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
   enforceRetentionTtl?: boolean;
 }
@@ -147,6 +147,7 @@ export const ROLLUP_STORAGE_TABLES = [
 ] as const;
 
 export type RollupStorageTable = (typeof ROLLUP_STORAGE_TABLES)[number];
+export type RollupReadMode = boolean | "auto";
 
 export type RollupDataValidationResult = {
   ok: boolean;
@@ -485,12 +486,18 @@ const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
 export class ClickHouseStorage implements StorageBackend {
   private readonly tz: string;
   private readonly usageEventsSource: string;
-  private readonly readRollup: boolean;
+  private readonly readRollup: RollupReadMode;
   private readonly read15mRollup: boolean;
-  private readonly read15mV2Rollup: boolean;
+  private readonly read15mV2Rollup: RollupReadMode;
   private readonly enforceRetentionTtl: boolean;
   private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
   private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
+  private runtimeReadStateCache:
+    | { expiresAt: number; states: Map<"usage_15m_v2" | "timezone", string> }
+    | undefined;
+  private runtimeReadStateInFlight:
+    | Promise<Map<"usage_15m_v2" | "timezone", string>>
+    | undefined;
   private schemaReady: Promise<void> | undefined;
 
   constructor(
@@ -508,6 +515,46 @@ export class ClickHouseStorage implements StorageBackend {
 
   async close(): Promise<void> {
     await this.ch.close();
+  }
+
+  private async runtimeReadStates(): Promise<Map<"usage_15m_v2" | "timezone", string>> {
+    const now = Date.now();
+    if (this.runtimeReadStateCache && now < this.runtimeReadStateCache.expiresAt) {
+      return this.runtimeReadStateCache.states;
+    }
+    if (this.runtimeReadStateInFlight) return this.runtimeReadStateInFlight;
+    let inFlight: Promise<Map<"usage_15m_v2" | "timezone", string>>;
+    inFlight = this.pg.query<{ layer: "usage_15m_v2" | "timezone"; state: string }>(
+      `SELECT layer, state
+       FROM clickhouse_rollup_cutover_status
+       WHERE layer IN ('usage_15m_v2', 'timezone')`,
+    ).then(
+      (result) => {
+        const states = new Map(result.rows.map(({ layer, state }) => [layer, state]));
+        this.runtimeReadStateCache = { expiresAt: Date.now() + 10_000, states };
+        return states;
+      },
+      (error: unknown) => {
+        this.runtimeReadStateCache = undefined;
+        throw error;
+      },
+    ).finally(() => {
+      if (this.runtimeReadStateInFlight === inFlight) this.runtimeReadStateInFlight = undefined;
+    });
+    this.runtimeReadStateInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async readLayerEnabled(
+    layer: "usage_15m_v2" | "timezone",
+    mode: RollupReadMode,
+  ): Promise<boolean> {
+    if (mode !== "auto") return mode;
+    try {
+      return (await this.runtimeReadStates()).get(layer) === "active";
+    } catch {
+      return false;
+    }
   }
 
   async getRollupStorageStats(): Promise<RollupStorageStats> {
@@ -961,7 +1008,7 @@ export class ClickHouseStorage implements StorageBackend {
     timezoneInput: string,
     q: ScopedQuery,
   ): Promise<CacheWindow | null> {
-    if (!this.readRollup) return null;
+    if (!(await this.readLayerEnabled("timezone", this.readRollup))) return null;
     const timezone = canonicalTimezoneId(timezoneInput);
     if (!timezone) return null;
     const key = [
@@ -969,7 +1016,7 @@ export class ClickHouseStorage implements StorageBackend {
       timezone,
       q.from.toISOString(),
       q.to.toISOString(),
-      this.readRollup ? "rollup" : "exact",
+      "rollup",
     ].join("|");
     let snapshot = this.cacheReadyInFlight.get(key);
     if (!snapshot) {
@@ -1141,12 +1188,13 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   private async rollup15mV2Source(q: ScopedQuery): Promise<RollupSource | null> {
-    if (!this.read15mV2Rollup) return null;
+    if (!(await this.readLayerEnabled("usage_15m_v2", this.read15mV2Rollup))) return null;
     return this.rollupSource(q, USAGE_15M_V2);
   }
 
   private async rollup15mTimeseriesSource(q: ScopedQuery): Promise<RollupSource | null> {
-    if (this.read15mV2Rollup) return this.rollup15mV2Source(q);
+    const v2 = await this.rollup15mV2Source(q);
+    if (v2) return v2;
     if (!this.read15mRollup) return null;
     return this.rollupSource(q, USAGE_15M);
   }
@@ -2323,6 +2371,19 @@ function envFlagValue(value: string | undefined, defaultValue = false): boolean 
   return normalized === "1" || normalized === "true" || normalized === "on";
 }
 
+export function resolveRollupReadMode(value: string | undefined): RollupReadMode {
+  if (value == null || value.trim() === "") return "auto";
+  return envFlagValue(value);
+}
+
+function resolveTimezoneRollupReadMode(env: RollupReadEnvironment): RollupReadMode {
+  const current = env.CLICKHOUSE_READ_TIMEZONE_ROLLUP;
+  if (current != null && current.trim() !== "") return resolveRollupReadMode(current);
+  const legacy = env.CLICKHOUSE_READ_ROLLUP;
+  if (legacy != null && legacy.trim() !== "") return resolveRollupReadMode(legacy);
+  return "auto";
+}
+
 /**
  * 예전 hourly read 플래그는 새 timezone cache read 요청의 deprecated alias다.
  * source 선택 자체는 ClickHouseStorage의 registry/coverage/dirty guard가 결정한다.
@@ -2357,12 +2418,12 @@ export function resolveClickHouseRollupReadFlag(
 
 /** 환경변수로 CH 클라이언트를 구성해 스토리지를 만든다 (메타용 PG 풀은 주입). */
 export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
-  const rollupRead = resolveClickHouseRollupReadFlag();
+  resolveClickHouseRollupReadFlag();
   return new ClickHouseStorage(createClickHouseClient(), pg, {
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
-    readRollup: rollupRead.enabled,
+    readRollup: resolveTimezoneRollupReadMode(process.env),
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
-    read15mV2Rollup: readEnvFlag("CLICKHOUSE_READ_15M_V2_ROLLUP", false),
+    read15mV2Rollup: resolveRollupReadMode(process.env.CLICKHOUSE_READ_15M_V2_ROLLUP),
     enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),
     ...opts,
   });

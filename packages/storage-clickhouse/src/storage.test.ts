@@ -194,6 +194,8 @@ function sourceRouterFixture({
   watermark,
   readRollup = true,
   read15mV2Rollup = true,
+  runtimeStates,
+  runtimeStateError = false,
 }: {
   active?: boolean;
   coverageBuckets?: Date[];
@@ -202,8 +204,10 @@ function sourceRouterFixture({
   jsonRows?: Array<Record<string, unknown>>;
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
-  readRollup?: boolean;
-  read15mV2Rollup?: boolean;
+  readRollup?: boolean | "auto";
+  read15mV2Rollup?: boolean | "auto";
+  runtimeStates?: Partial<Record<"usage_15m_v2" | "timezone", "active" | "fallback">>;
+  runtimeStateError?: boolean;
 }) {
   const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
@@ -211,6 +215,13 @@ function sourceRouterFixture({
   const pg = {
     query: async (sql: string, params: unknown[] = []) => {
       pgQueries.push({ sql, params });
+      if (sql.includes("FROM clickhouse_rollup_cutover_status")) {
+        if (runtimeStateError) throw new Error("runtime state unavailable");
+        return {
+          rows: Object.entries(runtimeStates ?? {}).map(([layer, state]) => ({ layer, state })),
+          rowCount: Object.keys(runtimeStates ?? {}).length,
+        };
+      }
       if (sql.includes("FROM clickhouse_rollup_timezones")) {
         if (registryFailures > 0) {
           registryFailures--;
@@ -693,6 +704,69 @@ test("v2 15분 조회는 dirty bucket부터 raw tail로 fallback한다", async (
   assert.match(queries[0]!.query, /FROM usage_15m_rollup_v2/);
   assert.match(queries[0]!.query, /ts >= \{rollupTo:DateTime64\(3\)\}/);
   assert.equal(queries[0]!.params.rollupTo, "2026-04-15 10:15:00.000");
+});
+
+test("auto read는 active runtime 15분 계층을 조회하고 상태를 한 번 확인한다", async () => {
+  const range = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-01T01:00:00.000Z"),
+  };
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    readRollup: "auto",
+    read15mV2Rollup: "auto",
+    runtimeStates: { usage_15m_v2: "active", timezone: "fallback" },
+  });
+
+  await storage.getDailyTimeseries({ ...range, bucket: "15m", timezone: "UTC" });
+
+  assert.match(queries[0]!.query, /usage_15m_rollup_v2/);
+  assert.equal(
+    pgQueries.filter(({ sql }) => sql.includes("clickhouse_rollup_cutover_status")).length,
+    1,
+  );
+});
+
+test("auto read는 fallback 상태나 runtime 조회 실패에서 세밀한 원본으로 fail-closed한다", async () => {
+  const range = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-01T01:00:00.000Z"),
+  };
+  for (const runtimeStateError of [false, true]) {
+    const { storage, queries } = sourceRouterFixture({
+      watermark: range.to,
+      readRollup: "auto",
+      read15mV2Rollup: "auto",
+      runtimeStates: { usage_15m_v2: "fallback", timezone: "fallback" },
+      runtimeStateError,
+    });
+
+    await storage.getDailyTimeseries({ ...range, bucket: "15m", timezone: "UTC" });
+
+    assert.match(queries[0]!.query, /FROM usage_events/);
+    assert.doesNotMatch(queries[0]!.query, /usage_15m_rollup_v2/);
+  }
+});
+
+test("명시적 read OFF는 active runtime 상태를 조회하지 않고 우선한다", async () => {
+  const range = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-01T01:00:00.000Z"),
+  };
+  const { storage, queries, pgQueries } = sourceRouterFixture({
+    watermark: range.to,
+    readRollup: false,
+    read15mV2Rollup: false,
+    runtimeStates: { usage_15m_v2: "active", timezone: "active" },
+  });
+
+  await storage.getDailyTimeseries({ ...range, bucket: "15m", timezone: "UTC" });
+
+  assert.match(queries[0]!.query, /FROM usage_events/);
+  assert.equal(
+    pgQueries.some(({ sql }) => sql.includes("clickhouse_rollup_cutover_status")),
+    false,
+  );
 });
 
 test("활성 Seoul 시간대의 12개월 일별 요청은 ready timezone-day source를 사용한다", async () => {

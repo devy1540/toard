@@ -102,6 +102,17 @@ test("공유 action의 redirect는 DB 오류 catch 밖에서 실행된다", () =
   }
 });
 
+test("library use server 모듈은 실행 시점 객체를 export하지 않는다", () => {
+  for (const path of [
+    "app/(dashboard)/library/share/actions.ts",
+    "app/(dashboard)/admin/library-actions.ts",
+  ]) {
+    const action = source(path);
+    assert.match(action, /^"use server";/);
+    assert.doesNotMatch(action, /export const INITIAL_/);
+  }
+});
+
 test("공유 폼은 환경변수 이름과 host만 받고 비밀값 입력을 만들지 않는다", () => {
   const form = source("app/(dashboard)/library/share/tool-share-form.tsx");
 
@@ -109,6 +120,28 @@ test("공유 폼은 환경변수 이름과 host만 받고 비밀값 입력을 �
   assert.match(form, /name="networkHosts"/);
   assert.match(form, /name="supportedClients"/);
   assert.doesNotMatch(form, /type="password"|secretValue|tokenValue|credentialValue/);
+});
+
+test("공유 폼의 시각적 라벨은 대응 입력 요소와 연결된다", () => {
+  const form = source("app/(dashboard)/library/share/tool-share-form.tsx");
+
+  for (const id of [
+    "name",
+    "slug",
+    "description",
+    "kind",
+    "sourceUrl",
+    "sourceRef",
+    "inventorySourceProvider",
+    "inventoryItemKey",
+    "requiredEnv",
+    "networkHosts",
+    "installNotes",
+    "uninstallNotes",
+  ]) {
+    assert.match(form, new RegExp(`htmlFor=\\"${id}\\"`));
+    assert.match(form, new RegExp(`id=\\"${id}\\"`));
+  }
 });
 
 test("편집 페이지와 보관 action은 작성자 소유권을 다시 확인한다", () => {

@@ -11,8 +11,6 @@ export type ShareToolState = {
   formError?: "unauthorized" | "duplicate" | "forbidden" | "save-failed";
 };
 
-export const INITIAL_SHARE_TOOL_STATE: ShareToolState = {};
-
 export async function createToolCatalogAction(
   _previous: ShareToolState,
   formData: FormData,

@@ -10,8 +10,6 @@ export type LibraryModerationState = {
   error?: "forbidden" | "invalid" | "reasonRequired" | "saveFailed";
 };
 
-export const INITIAL_LIBRARY_MODERATION_STATE: LibraryModerationState = {};
-
 export async function moderateToolCatalogAction(
   _previous: LibraryModerationState,
   formData: FormData,

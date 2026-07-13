@@ -8,9 +8,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
-  INITIAL_LIBRARY_MODERATION_STATE,
+  type LibraryModerationState,
   moderateToolCatalogAction,
 } from "./library-actions";
+
+const INITIAL_LIBRARY_MODERATION_STATE: LibraryModerationState = {};
 
 export type AdminToolItem = Omit<ToolCatalogItem, "createdAt" | "updatedAt"> & {
   createdAt: string;

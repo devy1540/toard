@@ -1,7 +1,7 @@
 {
   "pageTitle": "Settings",
   "tabAccount": "Account",
-  "tabInstall": "Install · Token",
+  "tabInstall": "Connect computer",
   "account": {
     "changeTitle": "Change password",
     "setTitle": "Set password",

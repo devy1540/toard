@@ -163,6 +163,8 @@ test("device onboarding uses OS-aware wizard and separate management", () => {
 test("settings catalogs keep wizard shape aligned", () => {
   const ko = JSON.parse(source("messages/ko/settings.json"));
   const en = JSON.parse(source("messages/en/settings.json"));
+  assert.equal(ko.tabInstall, "컴퓨터 연결");
+  assert.equal(en.tabInstall, "Connect computer");
   assert.equal(typeof ko.wizard, "object");
   assert.deepEqual(messageShape(ko.wizard), messageShape(en.wizard));
 });

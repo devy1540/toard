@@ -1,7 +1,7 @@
 {
   "pageTitle": "설정",
   "tabAccount": "계정",
-  "tabInstall": "설치 · 토큰",
+  "tabInstall": "컴퓨터 연결",
   "account": {
     "changeTitle": "비밀번호 변경",
     "setTitle": "비밀번호 설정",

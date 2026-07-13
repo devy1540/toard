@@ -3,6 +3,7 @@ import {
   type ClickHouseSettings,
   createClient,
 } from "@clickhouse/client";
+import { createHash } from "node:crypto";
 import type {
   BucketOptions,
   DailyPoint,
@@ -17,6 +18,9 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
+  PricingRepairBatchResult,
+  PricingRepairRequest,
+  PricingRepairResolver,
   ProviderBreakdown,
   SaveResult,
   SessionUsageEventRow,
@@ -28,6 +32,7 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UnpricedUsageModelDiagnostic,
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
@@ -261,6 +266,8 @@ interface OutboxRow {
   log_adapter: string | null;
   host: string | null;
 }
+
+type PricingRepairClickHouseRow = OutboxRow;
 
 interface RollupRow {
   bucket_hour: string;
@@ -1320,6 +1327,140 @@ export class ClickHouseStorage implements StorageBackend {
       }
     }
     return { inserted: res.inserted, deduped: res.deduped };
+  }
+
+  async getUnpricedUsageModels(from: Date, to: Date): Promise<UnpricedUsageModelDiagnostic[]> {
+    const rows = await this.queryJson<{
+      model: string | null;
+      events: string | number;
+      first_at: string | Date;
+      last_at: string | Date;
+    }>(
+      `SELECT nullIf(model, '') AS model,
+              count() AS events,
+              min(ts) AS first_at,
+              max(ts) AS last_at
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}
+         AND cost_status = 'unpriced'
+       GROUP BY model
+       ORDER BY events DESC, model`,
+      { from: chTs(from), to: chTs(to) },
+    );
+    return rows.map((row) => ({
+      model: row.model || null,
+      events: n(row.events),
+      firstAt: row.first_at instanceof Date ? row.first_at : chDate(row.first_at),
+      lastAt: row.last_at instanceof Date ? row.last_at : chDate(row.last_at),
+    }));
+  }
+
+  async repairUnpricedUsage(
+    request: PricingRepairRequest,
+    resolver: PricingRepairResolver,
+  ): Promise<PricingRepairBatchResult> {
+    if (request.models.length === 0 || request.limit <= 0) {
+      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const rows = await this.queryJson<PricingRepairClickHouseRow>(
+      `SELECT dedup_key, provider_key, user_id, team_id, session_id, model, ts,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              cost_usd, pricing_revision_id, cost_status, log_adapter, host
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}
+         AND cost_status = 'unpriced'
+         AND model IN {models:Array(String)}
+       ORDER BY ts, dedup_key
+       LIMIT {row_limit:UInt32}`,
+      {
+        from: chTs(request.from),
+        to: chTs(request.to),
+        models: request.models,
+        row_limit: limit + 1,
+      },
+    );
+    const candidates = rows.slice(0, limit);
+    const replacements: OutboxRow[] = [];
+    for (const row of candidates) {
+      const ts = row.ts instanceof Date ? row.ts : chDate(String(row.ts));
+      const resolved = resolver({
+        dedupKey: row.dedup_key,
+        providerKey: row.provider_key,
+        userId: row.user_id || null,
+        sessionId: row.session_id || null,
+        model: row.model || null,
+        ts,
+        inputTokens: n(row.input_tokens),
+        outputTokens: n(row.output_tokens),
+        cacheReadTokens: n(row.cache_read_tokens),
+        cacheCreationTokens: n(row.cache_creation_tokens),
+        costUsd: n(row.cost_usd),
+        logAdapter: row.log_adapter || null,
+        host: row.host || null,
+      });
+      if (!resolved) continue;
+      replacements.push({
+        ...row,
+        ts,
+        cost_usd: String(resolved.costUsd),
+        pricing_revision_id: resolved.pricingRevisionId,
+        cost_status: "priced",
+      });
+    }
+
+    if (replacements.length > 0) {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(client, replacements);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      const sortedKeys = replacements.map((row) => row.dedup_key).sort().join("\n");
+      const digest = createHash("sha256")
+        .update(`${request.generation}:${sortedKeys}`)
+        .digest("hex");
+      await this.ch.insert({
+        table: "usage_events",
+        values: replacements.map((row) => ({
+          dedup_key: row.dedup_key,
+          provider_key: row.provider_key,
+          user_id: row.user_id ?? "",
+          team_id: row.team_id ?? "",
+          session_id: row.session_id ?? "",
+          model: row.model ?? "",
+          ts: chTs(new Date(row.ts)),
+          input_tokens: n(row.input_tokens),
+          output_tokens: n(row.output_tokens),
+          cache_read_tokens: n(row.cache_read_tokens),
+          cache_creation_tokens: n(row.cache_creation_tokens),
+          cost_usd: row.cost_usd,
+          pricing_revision_id: row.pricing_revision_id ?? "",
+          cost_status: row.cost_status,
+          log_adapter: row.log_adapter ?? "",
+          host: row.host ?? "",
+        })),
+        format: "JSONEachRow",
+        clickhouse_settings: {
+          insert_deduplication_token: `pricing-repair:${digest}`,
+        },
+      });
+    }
+
+    return {
+      scanned: candidates.length,
+      recovered: replacements.length,
+      affectedBuckets: this.dirty15mBuckets(replacements),
+      hasMore: rows.length > limit,
+    };
   }
 
   private async enqueueUsageEvents(events: FinalizedUsageEvent[]): Promise<EnqueueResult> {

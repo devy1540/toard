@@ -7,6 +7,7 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
   type FinalizedUsageEvent,
+  type PricingRepairResolver,
 } from "@toard/core";
 import type { Pool, PoolClient } from "pg";
 import {
@@ -554,6 +555,118 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
       .map(({ params }) => params[0]),
     ["usage_15m", "usage_15m_v2"],
   );
+});
+
+test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 priced 버전을 결정적으로 삽입한다", async () => {
+  const actions: string[] = [];
+  const queries: string[] = [];
+  const inserts: Array<{
+    values: Array<Record<string, unknown>>;
+    token?: string;
+  }> = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      return {
+        json: async () => [{
+          dedup_key: "event-1",
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "team-1",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          ts: "2026-07-10 10:05:00.000",
+          input_tokens: "100",
+          output_tokens: "20",
+          cache_read_tokens: "5",
+          cache_creation_tokens: "3",
+          cost_usd: "0.00000000",
+          pricing_revision_id: "",
+          cost_status: "unpriced",
+          log_adapter: "claude",
+          host: "macbook",
+        }],
+      };
+    },
+    insert: async (args: {
+      values: Array<Record<string, unknown>>;
+      clickhouse_settings?: { insert_deduplication_token?: string };
+    }) => {
+      actions.push("insert-replacement");
+      inserts.push({
+        values: args.values,
+        token: args.clickhouse_settings?.insert_deduplication_token,
+      });
+    },
+  } as unknown as ClickHouseClient;
+  const client = {
+    async query(sql: string) {
+      if (sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets")) actions.push("mark-dirty");
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  } as unknown as PoolClient;
+  const pg = { connect: async () => client } as unknown as Pool;
+  const storage = new ClickHouseStorage(ch, pg);
+  const resolver: PricingRepairResolver = () => ({
+    costUsd: 0.0042,
+    pricingRevisionId: "revision-1",
+  });
+  const request = {
+    from: new Date("2026-04-11T00:00:00.000Z"),
+    to: new Date("2026-07-10T12:00:00.000Z"),
+    models: ["claude-sonnet-4"],
+    limit: 100,
+    generation: "2026-07-10T12:00:00.000Z",
+  };
+
+  const first = await storage.repairUnpricedUsage(request, resolver);
+  const second = await storage.repairUnpricedUsage(request, resolver);
+
+  assert.match(queries[0] ?? "", /FROM usage_events FINAL/);
+  assert.match(queries[0] ?? "", /cost_status = 'unpriced'/);
+  assert.deepEqual(actions.slice(0, 3), ["mark-dirty", "mark-dirty", "insert-replacement"]);
+  assert.equal(inserts[0]?.values[0]?.dedup_key, "event-1");
+  assert.equal(inserts[0]?.values[0]?.cost_status, "priced");
+  assert.equal(inserts[0]?.values[0]?.pricing_revision_id, "revision-1");
+  assert.match(inserts[0]?.token ?? "", /^pricing-repair:/);
+  assert.equal(inserts[1]?.token, inserts[0]?.token);
+  assert.deepEqual(first, {
+    scanned: 1,
+    recovered: 1,
+    affectedBuckets: [new Date("2026-07-10T10:00:00.000Z")],
+    hasMore: false,
+  });
+  assert.equal(second.recovered, 1);
+});
+
+test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한다", async () => {
+  let query = "";
+  let params: Record<string, unknown> = {};
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      query = args.query;
+      params = args.query_params;
+      return { json: async () => [{ model: "model-a", events: "2", first_at: "2026-07-01 00:00:00.000", last_at: "2026-07-02 00:00:00.000" }] };
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+  const from = new Date("2026-07-01T00:00:00Z");
+  const to = new Date("2026-07-03T00:00:00Z");
+
+  const result = await storage.getUnpricedUsageModels(from, to);
+
+  assert.match(query, /FROM usage_events FINAL/);
+  assert.match(query, /cost_status = 'unpriced'/);
+  assert.equal(params.from, "2026-07-01 00:00:00.000");
+  assert.deepEqual(result, [{
+    model: "model-a",
+    events: 2,
+    firstAt: new Date("2026-07-01T00:00:00.000Z"),
+    lastAt: new Date("2026-07-02T00:00:00.000Z"),
+  }]);
 });
 
 test("finalizer가 90일 초과 이벤트를 제외해 빈 배열을 넘기면 v2 dirty와 watermark를 건드리지 않는다", async () => {

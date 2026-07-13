@@ -1,0 +1,82 @@
+function psQuote(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+export function buildPowerShellInstallScript(
+  endpoint: string,
+  contentDefaultOn: boolean,
+): string {
+  const fallbackCollect = contentDefaultOn ? "1" : "0";
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    `$endpoint = if ($env:TOARD_INGEST_ENDPOINT) { $env:TOARD_INGEST_ENDPOINT } else { ${psQuote(endpoint)} }`,
+    "$token = $env:TOARD_INGEST_TOKEN",
+    `if (-not $env:TOARD_SHIM_COLLECT_CONTENT) { $env:TOARD_SHIM_COLLECT_CONTENT = '${fallbackCollect}' }`,
+    "if (-not $token) { throw 'toard token is missing. Copy the install command again.' }",
+    "$asset = 'toard-shim-x86_64-pc-windows-msvc.exe'",
+    "$release = 'https://github.com/devy1540/toard/releases/latest/download'",
+    "$temp = Join-Path ([IO.Path]::GetTempPath()) ('toard-' + [guid]::NewGuid())",
+    "$toardDir = Join-Path $HOME '.toard'",
+    "$binDir = Join-Path $toardDir 'bin'",
+    "$download = Join-Path $temp $asset",
+    "$sums = Join-Path $temp 'SHA256SUMS'",
+    "New-Item -ItemType Directory -Force -Path $temp | Out-Null",
+    "try {",
+    "  Invoke-WebRequest -UseBasicParsing -Uri \"$release/$asset\" -OutFile $download",
+    "  Invoke-WebRequest -UseBasicParsing -Uri \"$release/SHA256SUMS\" -OutFile $sums",
+    "  $sumText = [IO.File]::ReadAllText($sums)",
+    "  $match = [regex]::Match($sumText, '(?im)^([a-f0-9]{64})\\s+\\*?toard-shim-x86_64-pc-windows-msvc\\.exe\\s*$')",
+    "  if (-not $match.Success) { throw 'checksum entry missing' }",
+    "  $expected = $match.Groups[1].Value.ToLowerInvariant()",
+    "  $actual = (Get-FileHash -Algorithm SHA256 -Path $download).Hash.ToLowerInvariant()",
+    "  if ($actual -ne $expected) { throw 'checksum mismatch' }",
+    "  New-Item -ItemType Directory -Force -Path $binDir | Out-Null",
+    "  foreach ($name in @('claude.exe', 'codex.exe', 'toard-shim.exe')) {",
+    "    Copy-Item -Force $download (Join-Path $binDir $name)",
+    "  }",
+    "  $lines = @('agent_key=' + $token, 'endpoint=' + $endpoint)",
+    "  if ($env:TOARD_SHIM_COLLECT_CONTENT -match '^(1|true|on|yes)$') { $lines += 'collect_content=true' }",
+    "  $utf8 = New-Object System.Text.UTF8Encoding($false)",
+    "  [IO.File]::WriteAllLines((Join-Path $toardDir 'credentials'), $lines, $utf8)",
+    "  $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')",
+    "  $parts = @($userPath -split ';' | Where-Object { $_ })",
+    "  $hasUserPath = $parts | Where-Object { $_.TrimEnd('\\') -ieq $binDir.TrimEnd('\\') }",
+    "  if (-not $hasUserPath) {",
+    "    [Environment]::SetEnvironmentVariable('Path', ($binDir + ';' + ($parts -join ';')).TrimEnd(';'), 'User')",
+    "  }",
+    "  $hasProcessPath = ($env:Path -split ';') | Where-Object { $_.TrimEnd('\\') -ieq $binDir.TrimEnd('\\') }",
+    "  if (-not $hasProcessPath) { $env:Path = $binDir + ';' + $env:Path }",
+    "  & (Join-Path $binDir 'toard-shim.exe') 'doctor'",
+    "  Write-Host 'toard 연결 완료'",
+    "} finally {",
+    "  Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $temp",
+    "}",
+    "",
+  ].join("\r\n");
+}
+
+export function buildPowerShellUninstallScript(): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$toardDir = Join-Path $HOME '.toard'",
+    "$binDir = Join-Path $toardDir 'bin'",
+    "$shim = Join-Path $binDir 'toard-shim.exe'",
+    "if (Test-Path $shim) { & $shim 'claude-env' 'off' 2>$null }",
+    "foreach ($name in @('claude.exe', 'codex.exe', 'toard-shim.exe', 'claude.exe.old', 'codex.exe.old', 'toard-shim.exe.old')) {",
+    "  Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $binDir $name)",
+    "}",
+    "Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $toardDir 'credentials')",
+    "Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $toardDir 'state\\claude-env.json')",
+    "$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')",
+    "$userParts = @($userPath -split ';' | Where-Object { $_ -and $_.TrimEnd('\\') -ine $binDir.TrimEnd('\\') })",
+    "[Environment]::SetEnvironmentVariable('Path', ($userParts -join ';'), 'User')",
+    "$processParts = @($env:Path -split ';' | Where-Object { $_ -and $_.TrimEnd('\\') -ine $binDir.TrimEnd('\\') })",
+    "$env:Path = $processParts -join ';'",
+    "foreach ($dir in @((Join-Path $toardDir 'state'), $binDir, $toardDir)) {",
+    "  if ((Test-Path $dir) -and -not (Get-ChildItem -Force $dir | Select-Object -First 1)) { Remove-Item -Force $dir }",
+    "}",
+    "Write-Host 'toard 제거 완료'",
+    "",
+  ].join("\r\n");
+}

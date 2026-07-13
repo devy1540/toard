@@ -6,6 +6,10 @@ function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
+function repoSource(path: string): string {
+  return readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
+}
+
 function messageShape(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return typeof value;
   return Object.fromEntries(
@@ -118,6 +122,23 @@ test("onboarding token actions issue once and poll within the authenticated owne
   assert.match(actions, /issueDeviceToken\(userId\)/);
   assert.match(actions, /checkTokenConnectionAction/);
   assert.match(actions, /getTokenConnectionStatus\(userId, tokenId\)/);
+});
+
+test("Windows installer routes serve generated no-store PowerShell", () => {
+  const install = source("app/install.ps1/route.ts");
+  const uninstall = source("app/uninstall.ps1/route.ts");
+  assert.match(install, /buildPowerShellInstallScript/);
+  assert.match(install, /getIngestEndpoint/);
+  assert.match(install, /cache-control.*no-store/s);
+  assert.match(uninstall, /buildPowerShellUninstallScript/);
+  assert.match(uninstall, /cache-control.*no-store/s);
+});
+
+test("shim CI parses generated PowerShell when installer routes change", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  assert.match(workflow, /apps\/web\/lib\/powershell-installer\.ts/);
+  assert.match(workflow, /apps\/web\/app\/install\.ps1\/\*\*/);
+  assert.match(workflow, /scriptblock.*Create/s);
 });
 
 test("personal navigation includes insights between usage and history", () => {

@@ -8,6 +8,9 @@ on:
     paths:
       - "shim/**"
       - "npm/**"
+      - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.ps1/**"
       - "fixtures/usage-event.golden.json" # UsageEvent 계약 미러 테스트 (§5.6)
       - ".github/workflows/shim-ci.yml"
   push:
@@ -15,6 +18,9 @@ on:
     paths:
       - "shim/**"
       - "npm/**"
+      - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.ps1/**"
       - "fixtures/usage-event.golden.json"
       - ".github/workflows/shim-ci.yml"
 
@@ -46,11 +52,20 @@ jobs:
 
   check-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: shim/rust
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+      - name: install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: parse generated PowerShell installers
+        shell: pwsh
+        run: |
+          pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(join(process.env.RUNNER_TEMP, 'install.ps1'), buildPowerShellInstallScript('https://toard.example/api', false)); writeFileSync(join(process.env.RUNNER_TEMP, 'uninstall.ps1'), buildPowerShellUninstallScript());"
+          [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/install.ps1")) | Out-Null
+          [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/uninstall.ps1")) | Out-Null
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -58,10 +73,13 @@ jobs:
         with:
           workspaces: shim/rust
       - name: clippy
+        working-directory: shim/rust
         run: cargo clippy --all-targets -- -D warnings
       - name: test
+        working-directory: shim/rust
         run: cargo test
       - name: build (release)
+        working-directory: shim/rust
         run: cargo build --release
 
   scripts:

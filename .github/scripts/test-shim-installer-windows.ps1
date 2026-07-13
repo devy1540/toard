@@ -73,3 +73,7 @@ try {
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $work
 }
+
+# 위의 예약 작업 부재 확인과 멱등 정리는 정상적으로도 schtasks 종료코드 1을 남긴다.
+# E2E 본문이 예외 없이 끝났다면 잡 자체는 성공으로 종료한다.
+exit 0

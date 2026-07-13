@@ -28,13 +28,57 @@ test("installer escapes endpoint and applies content default only when absent", 
   );
 });
 
+test("installer uses USERPROFILE for the persistent Windows home", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+
+  assert.match(
+    script,
+    /\$userHome = if \(\$env:USERPROFILE\) \{ \$env:USERPROFILE \} else \{ \$HOME \}/,
+  );
+  assert.match(script, /\$toardDir = Join-Path \$userHome '\.toard'/);
+});
+
+test("installer doctor verifies persisted credentials and gates success", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+
+  assert.match(script, /Remove-Item Env:TOARD_INGEST_TOKEN/);
+  assert.match(script, /Remove-Item Env:TOARD_INGEST_ENDPOINT/);
+  assert.match(script, /\$doctorExit = \$LASTEXITCODE/);
+  assert.match(script, /if \(\$doctorExit -ne 0\) \{ throw/);
+  assert.ok(script.indexOf("$doctorExit -ne 0") < script.indexOf("toard 연결 완료"));
+});
+
+test("installer registers Windows periodic collection before doctor", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+
+  assert.match(script, /'daemon' 'install'/);
+  assert.match(script, /\$daemonExit = \$LASTEXITCODE/);
+  assert.match(script, /if \(\$daemonExit -ne 0\) \{ throw/);
+  assert.ok(script.indexOf("'daemon' 'install'") < script.indexOf("'doctor'"));
+  assert.ok(script.indexOf("$daemonExit -ne 0") < script.indexOf("toard 연결 완료"));
+});
+
 test("uninstaller only targets toard-owned aliases, credentials, and PATH", () => {
   const script = buildPowerShellUninstallScript();
 
+  assert.match(
+    script,
+    /\$userHome = if \(\$env:USERPROFILE\) \{ \$env:USERPROFILE \} else \{ \$HOME \}/,
+  );
+  assert.match(script, /\$toardDir = Join-Path \$userHome '\.toard'/);
   for (const name of ["claude.exe", "codex.exe", "toard-shim.exe"]) {
     assert.match(script, new RegExp(name.replace(".", "\\.")));
   }
   assert.match(script, /credentials/);
   assert.match(script, /SetEnvironmentVariable/);
   assert.doesNotMatch(script, /AppData|Program Files|npm uninstall/);
+});
+
+test("uninstaller removes the scheduled task before binaries", () => {
+  const script = buildPowerShellUninstallScript();
+
+  assert.match(script, /'daemon' 'uninstall'/);
+  assert.match(script, /\$daemonExit = \$LASTEXITCODE/);
+  assert.match(script, /if \(\$daemonExit -ne 0\) \{ throw/);
+  assert.ok(script.indexOf("'daemon' 'uninstall'") < script.indexOf("Remove-Item -Force"));
 });

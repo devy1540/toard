@@ -1,7 +1,7 @@
 // 자동 업데이트 (ADR-006 "투명 wrapping + 자동 업데이트").
 //
 // wrap 실행 경로에는 네트워크를 절대 넣지 않는다(cold start 우위가 Rust 채택
-// 근거) — 6h 스로틀 파일만 읽고, 주기가 지났으면 업데이터를 백그라운드로
+// 근거) — 2h 스로틀 파일만 읽고, 주기가 지났으면 업데이터를 백그라운드로
 // 분리(double-spawn: 중간 프로세스가 즉시 종료해 좀비 없음)한 뒤 바로 exec 한다.
 // 다운로드는 install.sh 와 동일하게 curl + SHA256SUMS 검증, 교체는 rename(원자적).
 
@@ -11,7 +11,7 @@ use std::process::Command;
 use crate::bg;
 use crate::cli::version;
 
-const CHECK_INTERVAL_SECS: u64 = 6 * 60 * 60;
+const CHECK_INTERVAL_SECS: u64 = 2 * 60 * 60;
 
 /// 내부 argv — 사용자 커맨드와 충돌하지 않도록 언더스코어 프리픽스
 pub const SPAWN_ARG: &str = "___toard-spawn-updater";
@@ -260,5 +260,10 @@ mod tests {
             Some("abc123")
         );
         assert_eq!(parse_sha_entry(sums, "toard-shim-missing"), None);
+    }
+
+    #[test]
+    fn checks_for_updates_every_two_hours() {
+        assert_eq!(CHECK_INTERVAL_SECS, 2 * 60 * 60);
     }
 }

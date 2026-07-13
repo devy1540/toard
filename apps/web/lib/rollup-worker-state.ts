@@ -33,11 +33,15 @@ export type RollupWorkerRecord = {
   throughputUnitsPerMinute: number | null;
   adaptiveLimit: number;
   loadState: "normal" | "throttled";
+  eligibleSince: Date | null;
+  nextAttemptAt: Date | null;
+  consecutiveFailures: number;
 };
 
 export interface RollupWorkerRepository {
   get(worker: RollupWorkerName): Promise<RollupWorkerRecord>;
   setPaused(worker: RollupWorkerName, paused: boolean): Promise<RollupWorkerRecord>;
+  setEligibility(worker: RollupWorkerName, eligible: boolean, at: Date): Promise<void>;
   markStarted(worker: RollupWorkerName, at: Date): Promise<void>;
   markSucceeded(
     worker: RollupWorkerName,
@@ -134,13 +138,17 @@ type RollupWorkerRow = {
   throughput_units_per_minute: string | number | null;
   adaptive_limit: string | number;
   load_state: "normal" | "throttled";
+  eligible_since: Date | null;
+  next_attempt_at: Date | null;
+  consecutive_failures: string | number;
 };
 
 const SELECT_FIELDS = `
   worker, paused, activated_at, last_started_at, last_finished_at, last_success_at,
   last_progress_at, last_error_at, last_error, last_duration_ms,
   last_processed_units, last_processed_rows, processed_units_total,
-  processed_rows_total, throughput_units_per_minute, adaptive_limit, load_state`;
+  processed_rows_total, throughput_units_per_minute, adaptive_limit, load_state,
+  eligible_since, next_attempt_at, consecutive_failures`;
 
 function nullableNumber(value: string | number | null): number | null {
   return value == null ? null : Number(value);
@@ -165,6 +173,9 @@ function mapWorkerRow(row: RollupWorkerRow): RollupWorkerRecord {
     throughputUnitsPerMinute: nullableNumber(row.throughput_units_per_minute),
     adaptiveLimit: Number(row.adaptive_limit),
     loadState: row.load_state,
+    eligibleSince: row.eligible_since,
+    nextAttemptAt: row.next_attempt_at,
+    consecutiveFailures: Number(row.consecutive_failures),
   };
 }
 
@@ -192,12 +203,27 @@ export class PgRollupWorkerRepository implements RollupWorkerRepository {
   async setPaused(worker: RollupWorkerName, paused: boolean): Promise<RollupWorkerRecord> {
     const result = await this.pool.query<RollupWorkerRow>(
       `UPDATE clickhouse_rollup_worker_status
-       SET paused = $2, updated_at = now()
+       SET paused = $2,
+           eligible_since = CASE WHEN $2 THEN NULL ELSE eligible_since END,
+           updated_at = now()
        WHERE worker = $1
        RETURNING ${SELECT_FIELDS}`,
       [worker, paused],
     );
     return requireWorkerRow(worker, result.rows[0]);
+  }
+
+  async setEligibility(worker: RollupWorkerName, eligible: boolean, at: Date): Promise<void> {
+    await this.pool.query(
+      `UPDATE clickhouse_rollup_worker_status
+       SET eligible_since = CASE
+             WHEN $2 THEN COALESCE(eligible_since, $3)
+             ELSE NULL
+           END,
+           updated_at = $3
+       WHERE worker = $1`,
+      [worker, eligible, at],
+    );
   }
 
   async markStarted(worker: RollupWorkerName, at: Date): Promise<void> {
@@ -234,6 +260,8 @@ export class PgRollupWorkerRepository implements RollupWorkerRepository {
              WHEN throughput_units_per_minute IS NULL THEN $6::double precision
              ELSE throughput_units_per_minute * 0.7 + $6::double precision * 0.3
            END,
+           consecutive_failures = 0,
+           next_attempt_at = NULL,
            updated_at = $3
        WHERE worker = $1`,
       [worker, startedAt, finishedAt, result.units, result.rows, throughputSample, durationMs],
@@ -254,6 +282,10 @@ export class PgRollupWorkerRepository implements RollupWorkerRepository {
            last_error_at = $3,
            last_error = $4,
            last_duration_ms = $5,
+           consecutive_failures = consecutive_failures + 1,
+           next_attempt_at = $3 + make_interval(
+             secs => LEAST(300, 60 * power(2, consecutive_failures)::integer)
+           ),
            updated_at = $3
        WHERE worker = $1`,
       [worker, startedAt, finishedAt, sanitizeRollupError(error), durationMs],

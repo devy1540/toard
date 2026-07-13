@@ -54,6 +54,9 @@ function workerRecord(
     throughputUnitsPerMinute: null,
     adaptiveLimit: worker === "usage_15m_v2" ? 16 : 8,
     loadState: "normal",
+    eligibleSince: null,
+    nextAttemptAt: null,
+    consecutiveFailures: 0,
     ...overrides,
   };
 }

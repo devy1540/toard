@@ -32,10 +32,14 @@ function fakeWorkerRepository(seed: { paused: boolean }): RollupWorkerRepository
     throughputUnitsPerMinute: null,
     adaptiveLimit: worker === "usage_15m_v2" ? 16 : 8,
     loadState: "normal",
+    eligibleSince: null,
+    nextAttemptAt: null,
+    consecutiveFailures: 0,
   });
   return {
     get: async (worker) => record(worker),
     setPaused: async (worker, paused) => record(worker, paused),
+    setEligibility: async () => undefined,
     markStarted: async () => undefined,
     markSucceeded: async () => undefined,
     markFailed: async () => undefined,

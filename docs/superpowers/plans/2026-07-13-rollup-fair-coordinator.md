@@ -54,7 +54,7 @@
 - Produces: `RollupWorkerRepository.setEligibility(worker, eligible, now)`.
 - Consumes later: coordinator candidate planning and admin status.
 
-- [ ] **Step 1: Write failing migration and mapping tests**
+- [x] **Step 1: Write failing migration and mapping tests**
 
 ```ts
 test("coordinator migration은 job generation과 durable scheduler 상태를 추가한다", () => {
@@ -73,13 +73,13 @@ test("worker eligibility는 최초 시각을 유지하고 backlog가 없으면 �
 });
 ```
 
-- [ ] **Step 2: Run focused tests and confirm failure**
+- [x] **Step 2: Run focused tests and confirm failure**
 
 Run: `pnpm --filter @toard/web test -- rollup-coordinator-state.test.ts rollup-worker-state.test.ts`
 
 Expected: FAIL because migration 26, coordinator repository, and scheduling fields do not exist.
 
-- [ ] **Step 3: Add the additive migration**
+- [x] **Step 3: Add the additive migration**
 
 ```sql
 ALTER TABLE clickhouse_timezone_rollup_jobs
@@ -105,7 +105,7 @@ CREATE TABLE clickhouse_rollup_scheduler_status (
 
 Backfill hour `source_to` with `bucket + interval '1 hour'`; backfill day with the next local date converted by the row's `timezone`; then make `source_to NOT NULL`. Insert the singleton scheduler row with `ON CONFLICT DO NOTHING`.
 
-- [ ] **Step 4: Implement repositories and worker scheduling fields**
+- [x] **Step 4: Implement repositories and worker scheduling fields**
 
 ```ts
 export type RollupSchedulerTask = RollupWorkerName | "validation" | "idle";
@@ -122,13 +122,13 @@ export class PgRollupCoordinatorRepository {
 
 `markSucceeded` resets `next_attempt_at` and `consecutive_failures`; `markFailed` increments failures and stores exponential 60~300 second backoff; `setPaused(true)` clears `eligible_since`.
 
-- [ ] **Step 5: Run tests and typecheck**
+- [x] **Step 5: Run tests and typecheck**
 
 Run: `pnpm --filter @toard/web test -- rollup-coordinator-state.test.ts rollup-worker-state.test.ts && pnpm --filter @toard/web typecheck`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add migrations/1700000026_clickhouse_rollup_coordinator.sql apps/web/lib/rollup-coordinator-state.ts apps/web/lib/rollup-coordinator-state.test.ts apps/web/lib/rollup-worker-state.ts apps/web/lib/rollup-worker-state.test.ts

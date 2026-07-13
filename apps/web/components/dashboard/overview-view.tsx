@@ -14,7 +14,7 @@ import { orderByTokens, tokenShare } from "@/lib/composition";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { formatCostForCoverage } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getMyHistorySessions } from "@/lib/prompt-history";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
@@ -179,6 +179,12 @@ export async function OverviewView({
   const costDelta = overview.costCoverage.unpricedEvents === 0 && prevOverview.costCoverage.unpricedEvents === 0
     ? pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)
     : null;
+  const legacyCount = legacyCostHintCount(overview.costCoverage);
+  const costHint = legacyCount == null
+    ? costDelta
+      ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod")
+      : t("summaryPrimaryHint")
+    : t("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
   const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
   const tokensDelta = pctDelta(totalTokens, prevTokens);
 
@@ -239,7 +245,7 @@ export async function OverviewView({
           <SummaryMetric
             label={t(`costLabel.${period.preset}`)}
             value={coveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
-            sub={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : t("summaryPrimaryHint")}
+            sub={costHint}
             badge={costDelta ? <DeltaBadge delta={costDelta} /> : undefined}
             icon={<DollarSign className="size-3.5" />}
           />

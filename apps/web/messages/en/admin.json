@@ -4,6 +4,7 @@
     "members": "Members",
     "teams": "Teams",
     "invites": "Invites",
+    "library": "Tools",
     "system": "System"
   },
   "members": {
@@ -65,6 +66,29 @@
     "pendingHeading": "Pending invites",
     "pendingTeam": "{team} team",
     "pendingExpires": "Expires {date}"
+  },
+  "library": {
+    "immediateNotice": "Posts are already visible without administrator approval",
+    "description": "This is not an approval queue. Add a verified badge after publication, or deprecate and block problematic items.",
+    "workspaceTitle": "Workspace tools ({count})",
+    "workspaceDescription": "Manage trust and lifecycle status for items shared by members.",
+    "publicTitle": "Built-in public tools ({count})",
+    "publicDescription": "These items ship in toard code and cannot be edited here.",
+    "empty": "No workspace tools have been shared yet.",
+    "readOnly": "Read only",
+    "verified": "Verified",
+    "lifecycle": "Visibility",
+    "reason": "Status reason",
+    "reasonPlaceholder": "Reason for blocking or deprecation",
+    "save": "Save status",
+    "saving": "Saving…",
+    "saved": "Status saved.",
+    "errors": {
+      "forbidden": "Administrator access is required.",
+      "invalid": "The target or status is invalid.",
+      "reasonRequired": "A reason is required for blocking or deprecation.",
+      "saveFailed": "The status could not be saved."
+    }
   },
   "system": {
     "pricingTitle": "Pricing sync",

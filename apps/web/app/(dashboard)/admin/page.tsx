@@ -18,6 +18,9 @@ import { getRollupAdminStatus } from "@/lib/rollup-status";
 import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
+import { listAdminWorkspaceToolCatalog } from "@/lib/tool-catalog";
+import { PUBLIC_TOOL_CATALOG } from "@/lib/tool-catalog-public";
+import type { SessionUser } from "@/lib/session-user";
 import { PricingSyncPanel } from "./pricing-panel";
 import { RoleSelect } from "./role-select";
 import { RollupStatusPanel } from "./rollup-status-panel";
@@ -25,10 +28,11 @@ import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
 import { InvitePanel } from "./invite-panel";
+import { LibraryPanel, type AdminToolItem } from "./library-panel";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "members" | "teams" | "invites" | "system";
+type Tab = "members" | "teams" | "invites" | "library" | "system";
 
 interface MemberRow {
   id: string;
@@ -76,7 +80,7 @@ function fmtDate(d: Date | null): string {
   return d ? new Date(d).toLocaleDateString() : "—";
 }
 
-/** 관리 (admin 전용) — 멤버·팀·초대 탭. 수집 상태·도구 관리는 후속 확장 자리(§9 로드맵). */
+/** 관리 (admin 전용) — 멤버·팀·초대·도구 사후 관리·시스템 탭. */
 export default async function AdminPage({
   searchParams,
 }: {
@@ -88,7 +92,7 @@ export default async function AdminPage({
 
   const raw = (await searchParams).tab;
   const tab: Tab =
-    raw === "teams" ? "teams" : raw === "invites" ? "invites" : raw === "system" ? "system" : "members";
+    raw === "teams" ? "teams" : raw === "invites" ? "invites" : raw === "library" ? "library" : raw === "system" ? "system" : "members";
 
   const t = await getTranslations("admin");
 
@@ -103,6 +107,7 @@ export default async function AdminPage({
             { value: "members", label: t("tabs.members"), href: "/admin?tab=members" },
             { value: "teams", label: t("tabs.teams"), href: "/admin?tab=teams" },
             { value: "invites", label: t("tabs.invites"), href: "/admin?tab=invites" },
+            { value: "library", label: t("tabs.library"), href: "/admin?tab=library" },
             { value: "system", label: t("tabs.system"), href: "/admin?tab=system" },
           ]}
         />
@@ -111,9 +116,19 @@ export default async function AdminPage({
       {tab === "members" ? <MembersTab /> : null}
       {tab === "teams" ? <TeamsTab /> : null}
       {tab === "invites" ? <InvitesTab /> : null}
+      {tab === "library" ? <LibraryTab viewer={user} /> : null}
       {tab === "system" ? <SystemTab /> : null}
     </div>
   );
+}
+
+function adminToolItem(item: (typeof PUBLIC_TOOL_CATALOG)[number]): AdminToolItem {
+  return { ...item, createdAt: item.createdAt.toISOString(), updatedAt: item.updatedAt.toISOString() };
+}
+
+async function LibraryTab({ viewer }: { viewer: SessionUser }) {
+  const workspaceItems = await listAdminWorkspaceToolCatalog(viewer);
+  return <LibraryPanel workspaceItems={workspaceItems.map(adminToolItem)} publicItems={PUBLIC_TOOL_CATALOG.map(adminToolItem)} />;
 }
 
 async function MembersTab() {

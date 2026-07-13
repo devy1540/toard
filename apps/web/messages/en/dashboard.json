@@ -112,8 +112,7 @@
   },
   "pricingNotice": {
     "unpricedTitle": "Cost total is incomplete because {count} usage events have no confirmed price.",
-    "unpricedAdminAction": "Run pricing sync from <link>Admin → System</link>. Daily auto-refresh requires registering the sync-pricing cron (see the scheduler section in the README).",
-    "unpricedMemberAction": "Ask an administrator to run pricing sync (sync-pricing).",
+    "unpricedAction": "Prices are checked automatically. Once a price is available, it is applied without any administrator action.",
     "legacyTitle": "{count} usage events use stored legacy costs.",
     "legacyDescription": "These costs are included in the total, but the legacy data has no pricing revision provenance."
   },

@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import { sanitizeRollupError, type RollupWorkerName } from "./rollup-worker-state";
 
-export type RollupSchedulerTask = RollupWorkerName | "validation" | "idle";
+export type RollupSchedulerTask = RollupWorkerName | "pricing_repair" | "validation" | "idle";
 export type RollupSchedulerOutcome = "success" | "failed" | "superseded" | "idle";
 
 export type RollupSchedulerRecord = {

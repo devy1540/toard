@@ -112,8 +112,7 @@
   },
   "pricingNotice": {
     "unpricedTitle": "가격 미확정 사용량 {count}건이 있어 비용 합계가 불완전합니다.",
-    "unpricedAdminAction": "<link>관리 → 시스템</link>에서 가격 동기화를 실행하세요. 일 단위 자동 갱신은 sync-pricing cron 등록이 필요합니다(README 스케줄러 절).",
-    "unpricedMemberAction": "관리자에게 가격 동기화(sync-pricing) 실행을 요청하세요.",
+    "unpricedAction": "가격표를 자동으로 확인하고 있습니다. 가격이 확인되면 별도 조작 없이 비용에 반영됩니다.",
     "legacyTitle": "기존 저장 비용을 사용하는 사용량이 {count}건 있습니다.",
     "legacyDescription": "이 비용은 합계에 포함되지만 가격 revision 근거가 없는 legacy 데이터입니다."
   },

@@ -1,6 +1,7 @@
 import { fetchLiteLLMPricing, type ModelPricing, type PricingMap } from "@toard/pricing";
+import { USAGE_EVENT_LOGICAL_RETENTION_DAYS } from "@toard/core";
 import { getPool } from "./db";
-import { orgDate } from "./org-time";
+import { dayStartUtc, getOrgTimezone, orgDate } from "./org-time";
 import { invalidatePricingCache, PRICING_SYNC_STATUS_SETTING_KEY } from "./pricing";
 
 const DEFAULT_URL =
@@ -25,6 +26,82 @@ type LatestPricingRow = {
 export type PricingSyncQueryClient = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
 };
+
+export function pricingRevisionEffectiveAt(day: string, timezone: string): Date {
+  return dayStartUtc(day, timezone);
+}
+
+/**
+ * 보존 구간 안의 과거 이벤트도 최초로 관측한 가격을 사용할 수 있도록 모델별 bootstrap을 만든다.
+ * 기존 가격 revision이 보존 시작점 이전에 있으면 별도 bootstrap은 만들지 않는다.
+ */
+export async function ensureBootstrapPricingRevisions(
+  client: PricingSyncQueryClient,
+  bootstrapAt: Date,
+): Promise<number> {
+  const result = await client.query(
+    `WITH earliest AS (
+       SELECT DISTINCT ON (model_id)
+         model_id,
+         effective_at,
+         input_price_per_mtok,
+         output_price_per_mtok,
+         cache_read_price_per_mtok,
+         cache_creation_price_per_mtok,
+         input_price_above_200k_per_mtok,
+         output_price_above_200k_per_mtok,
+         fast_multiplier
+       FROM pricing_revisions
+       ORDER BY model_id, effective_at ASC, observed_at ASC, id ASC
+     )
+     INSERT INTO pricing_revisions (
+       model_id, effective_at, input_price_per_mtok, output_price_per_mtok,
+       cache_read_price_per_mtok, cache_creation_price_per_mtok,
+       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
+       fast_multiplier, source
+     )
+     SELECT
+       earliest.model_id, $1, earliest.input_price_per_mtok, earliest.output_price_per_mtok,
+       earliest.cache_read_price_per_mtok, earliest.cache_creation_price_per_mtok,
+       earliest.input_price_above_200k_per_mtok, earliest.output_price_above_200k_per_mtok,
+       earliest.fast_multiplier, 'litellm-bootstrap'
+     FROM earliest
+     WHERE earliest.effective_at > $1
+       AND NOT EXISTS (
+         SELECT 1 FROM pricing_revisions existing
+         WHERE existing.model_id = earliest.model_id
+           AND existing.effective_at <= $1
+       )
+     ON CONFLICT (model_id, effective_at, source) DO NOTHING
+     RETURNING id`,
+    [bootstrapAt],
+  );
+  return result.rows.length;
+}
+
+export async function markPricingRepairPending(
+  client: PricingSyncQueryClient,
+  generation: Date,
+  targetTo: Date,
+): Promise<void> {
+  await client.query(
+    `UPDATE pricing_repair_status
+     SET generation = $1,
+         state = 'pending',
+         target_to = $2,
+         processed_events = 0,
+         recovered_events = 0,
+         remaining_unpriced_events = 0,
+         unresolved_models = '[]'::jsonb,
+         eligible_since = now(),
+         next_attempt_at = now(),
+         consecutive_failures = 0,
+         last_error = NULL,
+         updated_at = now()
+     WHERE singleton`,
+    [generation, targetTo],
+  );
+}
 
 function optionalNumber(value: string | number | null): number | undefined {
   return value == null ? undefined : Number(value);
@@ -63,6 +140,7 @@ export async function syncPricingRevisions(
   });
 
   const CHUNK = 500;
+  let inserted = 0;
   for (let i = 0; i < changed.length; i += CHUNK) {
     const chunk = changed.slice(i, i + CHUNK);
     const params: unknown[] = [effectiveAt];
@@ -83,17 +161,20 @@ export async function syncPricingRevisions(
         value.fastMultiplier ?? 1,
       );
     }
-    await client.query(
+    const result = await client.query(
       `INSERT INTO pricing_revisions
          (model_id, effective_at, input_price_per_mtok, output_price_per_mtok,
           cache_read_price_per_mtok, cache_creation_price_per_mtok,
           input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
           fast_multiplier, source)
-       VALUES ${rows.join(",")}`,
+       VALUES ${rows.join(",")}
+       ON CONFLICT (model_id, effective_at, source) DO NOTHING
+       RETURNING id`,
       params,
     );
+    inserted += result.rows.length;
   }
-  return changed.length;
+  return inserted;
 }
 
 /** 가격 fetch부터 성공 상태 기록까지 하나의 DB transaction으로 확정한다. */
@@ -101,6 +182,7 @@ export async function runPricingSyncTransaction(
   client: PricingSyncQueryClient,
   fetchPricing: () => Promise<PricingMap>,
   day: string,
+  timezone: string,
   /** @deprecated 호출 호환용. revision 시각은 lock 획득·fetch 성공 뒤 생성한다. */
   _requestedAt?: Date,
   invalidateCache: () => void = invalidatePricingCache,
@@ -111,14 +193,20 @@ export async function runPricingSyncTransaction(
   try {
     await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [PRICING_SYNC_LOCK_KEY]);
     const pricing = await fetchPricing();
-    const effectiveAt = now();
+    const observedAt = now();
+    const effectiveAt = pricingRevisionEffectiveAt(day, timezone);
     upserted = await syncPricingRevisions(client, pricing, effectiveAt);
+    const retentionStart = new Date(
+      observedAt.getTime() - USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
+    );
+    await ensureBootstrapPricingRevisions(client, retentionStart);
+    await markPricingRepairPending(client, observedAt, observedAt);
     await client.query(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
       [
         PRICING_SYNC_STATUS_SETTING_KEY,
-        JSON.stringify({ day, syncedAt: effectiveAt.toISOString() }),
+        JSON.stringify({ day, syncedAt: observedAt.toISOString() }),
       ],
     );
     await client.query("COMMIT");
@@ -137,6 +225,7 @@ export async function runPricingSyncTransaction(
  */
 export async function runPricingSync(): Promise<PricingSyncResult> {
   const url = process.env.LITELLM_PRICING_URL ?? DEFAULT_URL;
+  const timezone = getOrgTimezone();
   const day = orgDate(0);
   const client = await getPool().connect();
   let upserted = 0;
@@ -153,6 +242,7 @@ export async function runPricingSync(): Promise<PricingSyncResult> {
         }
       },
       day,
+      timezone,
     );
   } catch (e) {
     return { ok: false, error: String(e), kept: fetchFailed };

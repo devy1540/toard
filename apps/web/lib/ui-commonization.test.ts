@@ -25,10 +25,10 @@ test("dashboard and settings segmented choices use the shared segmented control"
   assert.match(source("app/(dashboard)/settings/appearance-form.tsx"), /@\/components\/ui\/segmented-control/);
 });
 
-test("visible boolean settings use the shared switch control", () => {
+test("남아 있는 boolean 설정은 shared switch control을 사용한다", () => {
   assert.match(source("components/ui/switch.tsx"), /function Switch/);
-  assert.match(source("app/(dashboard)/admin/pricing-panel.tsx"), /@\/components\/ui\/switch/);
   assert.match(source("app/(dashboard)/settings/onboarding-wizard.tsx"), /@\/components\/ui\/switch/);
+  assert.doesNotMatch(source("app/(dashboard)/admin/pricing-panel.tsx"), /@\/components\/ui\/switch/);
 });
 
 test("관리자 시스템 탭은 rollup 상태를 표시하되 read와 TTL을 제어하지 않는다", () => {

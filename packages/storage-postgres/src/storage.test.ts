@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { FinalizedUsageEvent } from "@toard/core";
+import type { FinalizedUsageEvent, PricingRepairResolver } from "@toard/core";
 import type { Pool, PoolClient } from "pg";
 import { PostgresStorage } from "./storage";
 
@@ -349,4 +349,94 @@ test("Postgres 세 시계열 경로는 nonzero unpriced 비용을 모두 제외�
   assert.equal(daily[0]?.costUsd, 0.5);
   assert.equal(members[0]?.costUsd, 0.5);
   assert.equal(models[0]?.costUsd, 0.5);
+});
+
+test("Postgres 가격 복구는 unpriced 행만 잠그고 revision과 mart를 같은 transaction에서 갱신한다", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const client = {
+    async query(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (sql.includes("FROM usage_events") && sql.includes("FOR UPDATE SKIP LOCKED")) {
+        return {
+          rows: [{
+            dedup_key: "event-1",
+            provider_key: "anthropic",
+            user_id: "user-1",
+            session_id: "session-1",
+            model: "claude-sonnet-4",
+            ts: new Date("2026-07-10T10:05:00.000Z"),
+            input_tokens: "100",
+            output_tokens: "20",
+            cache_read_tokens: "5",
+            cache_creation_tokens: "3",
+            cost_usd: "0",
+            log_adapter: null,
+            host: "host-a",
+            local_day: "2026-07-10",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("UPDATE usage_events")) return { rows: [], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  } as unknown as PoolClient;
+  const pool = { connect: async () => client } as unknown as Pool;
+  const storage = new PostgresStorage(pool, { timezone: "Asia/Seoul" });
+  const resolver: PricingRepairResolver = (event) => event.model === "claude-sonnet-4"
+    ? { costUsd: 0.0042, pricingRevisionId: "revision-1" }
+    : null;
+
+  const result = await storage.repairUnpricedUsage({
+    from: new Date("2026-04-11T00:00:00.000Z"),
+    to: new Date("2026-07-10T12:00:00.000Z"),
+    models: ["claude-sonnet-4"],
+    limit: 100,
+    generation: "2026-07-10T12:00:00.000Z",
+  }, resolver);
+
+  const select = queries.find(({ sql }) => sql.includes("FOR UPDATE SKIP LOCKED"));
+  const update = queries.find(({ sql }) => sql.includes("UPDATE usage_events"));
+  assert.ok(select);
+  assert.match(select.sql, /cost_status = 'unpriced'/);
+  assert.match(select.sql, /model = ANY/);
+  assert.ok(update);
+  assert.match(update.sql, /pricing_revision_id = \$3/);
+  assert.match(update.sql, /cost_status = 'priced'/);
+  assert.match(update.sql, /WHERE dedup_key = \$1 AND cost_status = 'unpriced'/);
+  assert.ok(queries.some(({ sql }) => sql.includes("DELETE FROM usage_daily_user")));
+  assert.ok(queries.some(({ sql }) => sql.includes("DELETE FROM usage_daily_team")));
+  assert.deepEqual(result, {
+    scanned: 1,
+    recovered: 1,
+    affectedBuckets: [new Date("2026-07-10T00:00:00.000Z")],
+    hasMore: false,
+  });
+});
+
+test("Postgres 미확정 모델 진단은 범위 안 unpriced만 모델별로 반환한다", async () => {
+  let capturedSql = "";
+  let capturedParams: unknown[] = [];
+  const pool = {
+    async query(sql: string, params: unknown[]) {
+      capturedSql = sql;
+      capturedParams = params;
+      return { rows: [{ model: "model-a", events: "3", first_at: new Date("2026-07-01T00:00:00Z"), last_at: new Date("2026-07-02T00:00:00Z") }] };
+    },
+  } as unknown as Pool;
+  const from = new Date("2026-07-01T00:00:00Z");
+  const to = new Date("2026-07-03T00:00:00Z");
+
+  const diagnostics = await new PostgresStorage(pool).getUnpricedUsageModels(from, to);
+
+  assert.match(capturedSql, /cost_status = 'unpriced'/);
+  assert.match(capturedSql, /ts >= \$1 AND ts < \$2/);
+  assert.deepEqual(capturedParams, [from, to]);
+  assert.deepEqual(diagnostics, [{
+    model: "model-a",
+    events: 3,
+    firstAt: new Date("2026-07-01T00:00:00Z"),
+    lastAt: new Date("2026-07-02T00:00:00Z"),
+  }]);
 });

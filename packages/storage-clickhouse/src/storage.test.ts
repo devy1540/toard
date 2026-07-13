@@ -352,6 +352,8 @@ test("15분 기준 rollup validator는 가격 provenance를 포함한 원본과 
   assert.match(queries[1]!, /groupBitXor\(cityHash64/);
   assert.match(queries[1]!, /sum\(validation_source\.input_tokens\) AS input_tokens/);
   assert.match(queries[1]!, /validation_source\.pricing_revision_id/);
+  assert.match(queries[1]!, /CAST\(validation_source\.bucket_15m AS DateTime64\(3, 'UTC'\)\)/);
+  assert.match(queries[1]!, /CAST\(validation_source\.cost_usd AS Decimal\(18, 8\)\)/);
   assert.match(queries[2]!, /FROM usage_15m_rollup_v2 AS validation_source FINAL/);
   assert.deepEqual(settings[1], { max_threads: 2, max_execution_time: 30 });
   assert.deepEqual(settings[2], { max_threads: 2, max_execution_time: 30 });
@@ -392,6 +394,8 @@ test("시간대별 validator는 활성 시간대의 최근 완료 hour와 local 
   assert.match(queries[3]!, /FROM usage_daily_timezone_rollup AS validation_source FINAL/);
   assert.ok(queries.every((query) => /sum\(validation_source\.input_tokens\) AS input_tokens/.test(query)));
   assert.ok(queries.every((query) => /AS validation_source/.test(query)));
+  assert.ok(queries.every((query) => /CAST\(validation_source\.bucket_start AS DateTime64\(3, 'UTC'\)\)/.test(query)));
+  assert.ok(queries.every((query) => /CAST\(validation_source\.cost_usd AS Decimal\(18, 8\)\)/.test(query)));
   assert.ok(settings.every((value) => value?.max_threads === 2 && value.max_execution_time === 30));
 });
 

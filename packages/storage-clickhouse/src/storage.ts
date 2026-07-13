@@ -183,11 +183,11 @@ function validationSummarySelect(bucketColumn: "bucket_15m" | "bucket_start"): s
               sum(${source}.cache_creation_tokens) AS cache_creation_tokens,
               sum(${source}.cost_usd) AS cost_usd,
               groupBitXor(cityHash64(
-                ${source}.${bucketColumn}, ${source}.provider_key, ${source}.user_id,
+                CAST(${source}.${bucketColumn} AS DateTime64(3, 'UTC')), ${source}.provider_key, ${source}.user_id,
                 ${source}.team_id, ${source}.session_id, ${source}.model, ${source}.host,
                 ${source}.pricing_revision_id, ${source}.cost_status, ${source}.event_count,
                 ${source}.input_tokens, ${source}.output_tokens, ${source}.cache_read_tokens,
-                ${source}.cache_creation_tokens, ${source}.cost_usd
+                ${source}.cache_creation_tokens, CAST(${source}.cost_usd AS Decimal(18, 8))
               )) AS fingerprint`;
 }
 

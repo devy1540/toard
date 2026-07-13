@@ -230,7 +230,28 @@ export async function getTimezoneRollupReadinessAt(
   now = new Date(),
 ): Promise<TimezoneRollupReadiness> {
   const rollupRead = resolveClickHouseRollupReadFlag(env);
-  if (!rollupRead.enabled) {
+  const explicitRead = [env.CLICKHOUSE_READ_TIMEZONE_ROLLUP, env.CLICKHOUSE_READ_ROLLUP]
+    .some((value) => value != null && value.trim() !== "");
+  let readEnabled = rollupRead.enabled;
+  if (!explicitRead) {
+    try {
+      const runtime = await pool.query(
+        `SELECT state
+         FROM clickhouse_rollup_cutover_status
+         WHERE layer = 'timezone'`,
+      );
+      readEnabled = runtime.rows[0]?.state === "active";
+    } catch {
+      return {
+        status: "fallback",
+        watermark: null,
+        lagSeconds: null,
+        pendingJobs: 0,
+        legacyFlagMigration: null,
+      };
+    }
+  }
+  if (!readEnabled) {
     return {
       status: rollupRead.legacyFlagMigration ? "fallback" : "disabled",
       watermark: null,

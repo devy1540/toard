@@ -1,4 +1,8 @@
-import { type ClickHouseClient, createClient } from "@clickhouse/client";
+import {
+  type ClickHouseClient,
+  type ClickHouseSettings,
+  createClient,
+} from "@clickhouse/client";
 import type {
   BucketOptions,
   DailyPoint,
@@ -69,6 +73,10 @@ function hourBucket(ts: Date | string): string {
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const V2_ROLLUP_RETENTION_MS = 400 * 24 * 60 * 60 * 1_000;
+const ROLLUP_VALIDATION_SETTINGS = {
+  max_threads: 2,
+  max_execution_time: 30,
+} as const satisfies ClickHouseSettings;
 
 function fifteenMinuteBucket(ts: Date | string): string {
   const d = new Date(ts);
@@ -618,6 +626,7 @@ export class ClickHouseStorage implements StorageBackend {
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}`,
       { from: chTs(requestedFrom), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
     );
     const rawFrom = rawRange[0]?.from;
     const parsedRawFrom = rawFrom instanceof Date
@@ -659,6 +668,7 @@ export class ClickHouseStorage implements StorageBackend {
                   pricing_revision_id, cost_status
        )`,
       { from: chTs(from), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
     );
     const rollup = await this.queryJson<RollupValidationSummary>(
       `${summarySelect}
@@ -666,6 +676,7 @@ export class ClickHouseStorage implements StorageBackend {
        WHERE bucket_15m >= {from:DateTime64(3)}
          AND bucket_15m < {to:DateTime64(3)}`,
       { from: chTs(from), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
     );
     const fields = [
       "rows",
@@ -769,6 +780,7 @@ export class ClickHouseStorage implements StorageBackend {
                       pricing_revision_id, cost_status
            )`,
           params,
+          ROLLUP_VALIDATION_SETTINGS,
         );
         const rollup = await this.queryJson<RollupValidationSummary>(
           `${summarySelect}
@@ -777,6 +789,7 @@ export class ClickHouseStorage implements StorageBackend {
              AND bucket_start >= {from:DateTime64(3)}
              AND bucket_start < {to:DateTime64(3)}`,
           params,
+          ROLLUP_VALIDATION_SETTINGS,
         );
         const sourceSummary = source[0] ?? {};
         const rollupSummary = rollup[0] ?? {};
@@ -1265,10 +1278,19 @@ export class ClickHouseStorage implements StorageBackend {
     return this.schemaReady;
   }
 
-  private async queryJson<T>(query: string, query_params: Params): Promise<T[]> {
+  private async queryJson<T>(
+    query: string,
+    query_params: Params,
+    clickhouse_settings?: ClickHouseSettings,
+  ): Promise<T[]> {
     return retryTransientClickHouseError(async () => {
       await this.ensureSchema();
-      const rs = await this.ch.query({ query, query_params, format: "JSONEachRow" });
+      const rs = await this.ch.query({
+        query,
+        query_params,
+        clickhouse_settings,
+        format: "JSONEachRow",
+      });
       return rs.json<T>();
     });
   }

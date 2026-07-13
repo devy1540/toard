@@ -240,9 +240,12 @@ test("운영자가 설정한 최대 batch는 저장된 adaptive 한도보다 우
   assert.equal(savedLimit, 12);
 });
 
-function readyPool(watermark: Date, pendingJobs = 0) {
+function readyPool(watermark: Date, pendingJobs = 0, runtimeState: "active" | "fallback" = "fallback") {
   return {
     query: async (sql: string) => {
+      if (sql.includes("clickhouse_rollup_cutover_status")) {
+        return { rows: [{ state: runtimeState }] };
+      }
       if (sql.includes("clickhouse_rollup_watermarks")) {
         return { rows: [{ watermark }] };
       }
@@ -280,6 +283,17 @@ test("legacy flag가 남아 있으면 ready는 HTTP 차단 대신 fallback migra
     timezonePendingJobs: 0,
     legacyFlagMigration: "deprecated_alias",
   });
+});
+
+test("readiness는 미설정 환경변수에서 active runtime 자동 전환을 반영한다", async () => {
+  const readiness = await getTimezoneRollupReadinessAt(
+    readyPool(new Date("2026-07-10T23:30:00.000Z"), 0, "active"),
+    {},
+    new Date("2026-07-11T00:00:00.000Z"),
+  );
+
+  assert.equal(readiness.status, "healthy");
+  assert.equal(readiness.watermark, "2026-07-10T23:30:00.000Z");
 });
 
 test("새 flag가 명시되면 legacy alias보다 우선하되 남은 legacy 값은 migration 상태로 보인다", async () => {

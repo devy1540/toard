@@ -2,9 +2,11 @@ use aes_gcm::{
     aead::{Aead, Payload},
     Aes256Gcm, Key, KeyInit, Nonce,
 };
+#[cfg(test)]
+use hpke::OpModeR;
 use hpke::{
     aead::AesGcm256, kdf::HkdfSha256, kem::DhP256HkdfSha256, Deserializable, Kem as KemTrait,
-    OpModeR, OpModeS, Serializable,
+    OpModeS, Serializable,
 };
 use serde::Serialize;
 use zeroize::Zeroizing;
@@ -51,8 +53,10 @@ pub struct DeviceEnvelope {
 pub enum ContentCryptoError {
     InvalidMetadata,
     InvalidKey,
+    #[cfg(test)]
     InvalidEnvelope,
     EncryptionFailed,
+    #[cfg(test)]
     AuthenticationFailed,
 }
 
@@ -61,8 +65,10 @@ impl std::fmt::Display for ContentCryptoError {
         let message = match self {
             Self::InvalidMetadata => "invalid E2EE metadata",
             Self::InvalidKey => "invalid content key",
+            #[cfg(test)]
             Self::InvalidEnvelope => "invalid device envelope",
             Self::EncryptionFailed => "content encryption failed",
+            #[cfg(test)]
             Self::AuthenticationFailed => "content authentication failed",
         };
         formatter.write_str(message)
@@ -150,6 +156,7 @@ pub fn encrypt_record_with_material(
     })
 }
 
+#[cfg(test)]
 pub fn decrypt_record(
     uck: &[u8],
     metadata: &ContentMetadata,
@@ -200,6 +207,7 @@ pub fn wrap_for_device(
     })
 }
 
+#[cfg(test)]
 pub fn open_device_envelope(
     private_key: &[u8],
     envelope: &DeviceEnvelope,
@@ -255,6 +263,7 @@ fn seal_detached(
     Ok((sealed, tag))
 }
 
+#[cfg(test)]
 fn open_detached(
     key: &[u8],
     nonce: &[u8; AES_NONCE_LEN],
@@ -368,7 +377,7 @@ mod tests {
     fn b64url(bytes: &[u8]) -> String {
         const ALPHABET: &[u8; 64] =
             b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let mut output = String::with_capacity((bytes.len() * 4 + 2) / 3);
+        let mut output = String::with_capacity((bytes.len() * 4).div_ceil(3));
         for chunk in bytes.chunks(3) {
             let first = chunk[0];
             let second = chunk.get(1).copied().unwrap_or(0);

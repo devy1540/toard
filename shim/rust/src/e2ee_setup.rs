@@ -834,14 +834,14 @@ fn b64standard(bytes: &[u8]) -> String {
         bytes,
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
     );
-    while output.len() % 4 != 0 {
+    while !output.len().is_multiple_of(4) {
         output.push('=');
     }
     output
 }
 
 fn b64_with_alphabet(bytes: &[u8], alphabet: &[u8; 64]) -> String {
-    let mut output = String::with_capacity((bytes.len() * 4 + 2) / 3);
+    let mut output = String::with_capacity((bytes.len() * 4).div_ceil(3));
     for chunk in bytes.chunks(3) {
         let first = chunk[0];
         let second = chunk.get(1).copied().unwrap_or(0);

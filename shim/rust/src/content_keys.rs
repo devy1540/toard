@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -40,14 +41,17 @@ pub trait ContentKeyStore {
         version: u16,
     ) -> Result<Zeroizing<[u8; CONTENT_KEY_LEN]>, KeyStoreError>;
     fn put_device_private_key(&self, device_id: &str, key: &[u8]) -> Result<(), KeyStoreError>;
+    #[cfg(test)]
     fn get_device_private_key(&self, device_id: &str) -> Result<Zeroizing<Vec<u8>>, KeyStoreError>;
 }
 
+#[cfg(test)]
 #[derive(Clone, Default)]
 pub struct MemoryContentKeyStore {
     secrets: Arc<Mutex<HashMap<String, Zeroizing<Vec<u8>>>>>,
 }
 
+#[cfg(test)]
 impl ContentKeyStore for MemoryContentKeyStore {
     fn put_uck(
         &self,
@@ -82,6 +86,7 @@ impl ContentKeyStore for MemoryContentKeyStore {
     }
 }
 
+#[cfg(test)]
 impl MemoryContentKeyStore {
     fn insert(&self, account: String, key: &[u8]) -> Result<(), KeyStoreError> {
         self.secrets
@@ -133,6 +138,7 @@ impl ContentKeyStore for SystemContentKeyStore {
         put_system_secret(&device_account(device_id), key)
     }
 
+    #[cfg(test)]
     fn get_device_private_key(&self, device_id: &str) -> Result<Zeroizing<Vec<u8>>, KeyStoreError> {
         get_system_secret(&device_account(device_id))
     }

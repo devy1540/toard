@@ -31,6 +31,7 @@ pub enum RecoveryError {
     InvalidKey,
     DerivationFailed,
     EncryptionFailed,
+    #[cfg(test)]
     AuthenticationFailed,
 }
 
@@ -41,6 +42,7 @@ impl std::fmt::Display for RecoveryError {
             Self::InvalidKey => "invalid recovery key",
             Self::DerivationFailed => "recovery key derivation failed",
             Self::EncryptionFailed => "recovery wrapping failed",
+            #[cfg(test)]
             Self::AuthenticationFailed => "recovery authentication failed",
         };
         formatter.write_str(message)
@@ -64,6 +66,7 @@ impl RecoveryMaterial {
         })
     }
 
+    #[cfg(test)]
     pub fn from_mnemonic(phrase: &str) -> Result<Self, RecoveryError> {
         let mnemonic = Mnemonic::parse_in(Language::English, phrase)
             .map_err(|_| RecoveryError::InvalidMnemonic)?;
@@ -82,6 +85,7 @@ impl RecoveryMaterial {
         &self.mnemonic
     }
 
+    #[cfg(test)]
     pub fn secret(&self) -> Zeroizing<[u8; KEY_LEN]> {
         Zeroizing::new(*self.entropy)
     }
@@ -135,6 +139,7 @@ impl RecoveryMaterial {
         })
     }
 
+    #[cfg(test)]
     pub fn unwrap_uck(
         &self,
         salt: &[u8],

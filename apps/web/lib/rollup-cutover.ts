@@ -131,7 +131,9 @@ export async function loadRollupLayerReadinessWith(
       `SELECT count(*) FILTER (WHERE status = 'pending')::int AS pending,
               count(*) FILTER (WHERE status = 'inflight')::int AS inflight
        FROM clickhouse_timezone_rollup_jobs
-       WHERE status IN ('pending', 'inflight')`,
+       WHERE status IN ('pending', 'inflight')
+         AND source_to <= $1`,
+      [target],
     ),
     timezonesPromise,
   ]);

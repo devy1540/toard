@@ -156,7 +156,8 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     };
                     // subagent rollout 앞부분에는 부모 세션 token_count가 재생될 수 있다.
                     // 이 세션의 turn_context(model)가 나오기 전 값은 자체 사용량이 아니다.
-                    let Some(current_model) = model.as_ref().filter(|value| !value.is_empty()) else {
+                    let Some(current_model) = model.as_ref().filter(|value| !value.is_empty())
+                    else {
                         continue;
                     };
                     if let Some(total) = info.get("total_token_usage").and_then(Value::as_object) {
@@ -628,11 +629,10 @@ mod tests {
         use std::time::Instant;
 
         let tmp = TempDir::new("codex-benchmark");
-        let mut lines =
-            vec![
-                r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string(),
-                r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#.to_string(),
-            ];
+        let mut lines = vec![
+            r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string(),
+            r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#.to_string(),
+        ];
         const RECORDS: usize = 5_000;
         for index in 1..=RECORDS {
             lines.push(

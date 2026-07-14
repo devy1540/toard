@@ -68,7 +68,7 @@ test("pre-existing server_v1 row is atomically replaced with browser E2EE", { ti
       [userId, legacy.keyVersion, legacy.wrappedDek, legacy.iv, legacy.ciphertext, legacy.authTag],
     );
     const originalId = inserted.rows[0]!.id;
-    await applyUp(client, "1700000028_e2ee_content_foundation.sql");
+    await applyUp(client, "1700000030_e2ee_content_foundation.sql");
     await client.query(
       `INSERT INTO content_accounts(user_id,content_owner_id,state,recovery_confirmed_at)
        VALUES($1,$2,'active',now())`,

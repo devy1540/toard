@@ -26,6 +26,8 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageReplayReconciliationRequest,
+  UsageReplayReconciliationResult,
   UnpricedUsageModelDiagnostic,
   UserUsage,
   UserInsightComparison,
@@ -236,7 +238,11 @@ export class PostgresStorage implements StorageBackend {
     );
   }
 
-  async getUnpricedUsageModels(from: Date, to: Date): Promise<UnpricedUsageModelDiagnostic[]> {
+  async getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds: string[] = [],
+  ): Promise<UnpricedUsageModelDiagnostic[]> {
     const result = await this.pool.query<{
       model: string | null;
       events: string | number;
@@ -246,10 +252,13 @@ export class PostgresStorage implements StorageBackend {
       `SELECT model, count(*) AS events, min(ts) AS first_at, max(ts) AS last_at
        FROM usage_events
        WHERE ts >= $1 AND ts < $2
-         AND cost_status = 'unpriced'
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id = ANY($3::uuid[])
+         )
        GROUP BY model
        ORDER BY events DESC, model NULLS LAST`,
-      [from, to],
+      [from, to, replaceRevisionIds],
     );
     return result.rows.map((row) => ({
       model: row.model,
@@ -257,6 +266,90 @@ export class PostgresStorage implements StorageBackend {
       firstAt: row.first_at,
       lastAt: row.last_at,
     }));
+  }
+
+  async reconcileCodexReplayUsage(
+    request: UsageReplayReconciliationRequest,
+  ): Promise<UsageReplayReconciliationResult> {
+    if (request.limit <= 0) {
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query<{
+        dedup_key: string;
+        ts: Date;
+        local_day: string;
+      }>(
+        `SELECT bad.dedup_key, bad.ts,
+                to_char((bad.ts AT TIME ZONE $4)::date, 'YYYY-MM-DD') AS local_day
+         FROM usage_events bad
+         WHERE bad.ts >= $1 AND bad.ts < $2
+           AND bad.provider_key = 'codex'
+           AND bad.cost_status = 'unpriced'
+           AND COALESCE(bad.model, '') = ''
+           AND COALESCE(bad.session_id, '') <> ''
+           AND COALESCE(bad.log_adapter, '') = 'codex'
+           AND EXISTS (
+             SELECT 1
+             FROM usage_events good
+             WHERE good.provider_key = 'codex'
+               AND COALESCE(good.model, '') <> ''
+               AND good.session_id = bad.session_id
+               AND good.user_id IS NOT DISTINCT FROM bad.user_id
+               AND good.host IS NOT DISTINCT FROM bad.host
+               AND good.log_adapter IS NOT DISTINCT FROM bad.log_adapter
+               AND good.input_tokens = bad.input_tokens
+               AND good.output_tokens = bad.output_tokens
+               AND good.cache_read_tokens = bad.cache_read_tokens
+               AND good.cache_creation_tokens = bad.cache_creation_tokens
+           )
+         ORDER BY bad.ts, bad.dedup_key
+         FOR UPDATE OF bad SKIP LOCKED
+         LIMIT $3`,
+        [request.from, request.to, limit + 1, this.tz],
+      );
+      const candidates = selected.rows.slice(0, limit);
+      const keys = candidates.map((row) => row.dedup_key);
+      let reconciled = 0;
+      if (keys.length > 0) {
+        const deletion = await client.query(
+          `DELETE FROM usage_events
+           WHERE dedup_key = ANY($1::text[])
+             AND provider_key = 'codex'
+             AND cost_status = 'unpriced'
+             AND COALESCE(model, '') = ''`,
+          [keys],
+        );
+        reconciled = deletion.rowCount ?? 0;
+      }
+      const days = [...new Set(candidates.map((row) => row.local_day))].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      const remainingResult = await client.query<{ remaining_unpriced: string | number }>(
+        `SELECT count(*) AS remaining_unpriced
+         FROM usage_events
+         WHERE ts >= $1 AND ts < $2
+           AND cost_status = 'unpriced'`,
+        [request.from, request.to],
+      );
+      await client.query("COMMIT");
+      return {
+        scanned: candidates.length,
+        reconciled,
+        remainingUnpriced: n(remainingResult.rows[0]?.remaining_unpriced),
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: selected.rows.length > limit,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async repairUnpricedUsage(
@@ -289,15 +382,18 @@ export class PostgresStorage implements StorageBackend {
         `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 cost_usd, log_adapter, host,
-                to_char((ts AT TIME ZONE $5)::date, 'YYYY-MM-DD') AS local_day
+                to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
          FROM usage_events
          WHERE ts >= $1 AND ts < $2
-           AND cost_status = 'unpriced'
+           AND (
+             cost_status = 'unpriced'
+             OR pricing_revision_id = ANY($4::uuid[])
+           )
            AND model = ANY($3::text[])
          ORDER BY ts, dedup_key
          FOR UPDATE SKIP LOCKED
-         LIMIT $4`,
-        [request.from, request.to, request.models, limit, this.tz],
+         LIMIT $5`,
+        [request.from, request.to, request.models, request.replaceRevisionIds, limit, this.tz],
       );
 
       let recovered = 0;
@@ -324,8 +420,12 @@ export class PostgresStorage implements StorageBackend {
            SET cost_usd = $2,
                pricing_revision_id = $3,
                cost_status = 'priced'
-           WHERE dedup_key = $1 AND cost_status = 'unpriced'`,
-          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId],
+           WHERE dedup_key = $1
+             AND (
+               cost_status = 'unpriced'
+               OR pricing_revision_id = ANY($4::uuid[])
+             )`,
+          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
         );
         if (update.rowCount === 1) {
           recovered += 1;

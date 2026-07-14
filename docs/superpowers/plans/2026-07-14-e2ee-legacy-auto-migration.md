@@ -171,7 +171,7 @@ git commit -m "feat(security): 기존 기록 브라우저 재암호화 추가"
 **Files:**
 - Create: `apps/web/lib/e2ee-legacy-migration.ts`
 - Create: `apps/web/lib/e2ee-legacy-migration.test.ts`
-- Modify: `migrations/1700000028_e2ee_content_foundation.sql`
+- Modify: `migrations/1700000030_e2ee_content_foundation.sql`
 - Modify: `scripts/e2ee-content-migration.integration.test.ts`
 
 **Interfaces:**
@@ -180,7 +180,7 @@ git commit -m "feat(security): 기존 기록 브라우저 재암호화 추가"
 
 - [ ] **Step 1: RLS UPDATE와 Down guard 통합 실패 테스트를 추가한다**
 
-통합 테스트에서 migration 28 적용 후 app role로 `server_v1` 행을 UPDATE하고, E2EE 행이 존재할 때 Down 부분이 오류를 내는지 검증한다.
+통합 테스트에서 migration 30 적용 후 app role로 `server_v1` 행을 UPDATE하고, E2EE 행이 존재할 때 Down 부분이 오류를 내는지 검증한다.
 
 ```ts
 await client.query("BEGIN");
@@ -191,7 +191,7 @@ assert.equal((await client.query(
 )).rowCount, 1);
 await client.query("ROLLBACK");
 
-await assert.rejects(applyDownMigration(client, "1700000028_e2ee_content_foundation.sql"), /E2EE rows exist/);
+await assert.rejects(applyDownMigration(client, "1700000030_e2ee_content_foundation.sql"), /E2EE rows exist/);
 ```
 
 - [ ] **Step 2: 통합 테스트가 UPDATE policy/guard 부재로 실패하는지 실행한다**
@@ -200,7 +200,7 @@ Run: `node --import tsx --test scripts/e2ee-content-migration.integration.test.t
 
 Expected: UPDATE RLS 또는 Down guard assertion에서 FAIL.
 
-- [ ] **Step 3: migration 28에 UPDATE policy와 rollback guard를 구현한다**
+- [ ] **Step 3: migration 30에 UPDATE policy와 rollback guard를 구현한다**
 
 ```sql
 CREATE POLICY prompt_owner_update ON prompt_records
@@ -212,7 +212,7 @@ CREATE POLICY prompt_owner_update ON prompt_records
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM prompt_records WHERE encryption_scheme = 'e2ee_v1') THEN
-    RAISE EXCEPTION 'migration 28 rollback blocked: E2EE rows exist';
+    RAISE EXCEPTION 'migration 30 rollback blocked: E2EE rows exist';
   END IF;
 END $$;
 DROP POLICY IF EXISTS prompt_owner_update ON prompt_records;
@@ -310,7 +310,7 @@ Expected: service unit tests와 PostgreSQL RLS/Down guard test PASS.
 - [ ] **Step 10: Task 2를 커밋한다**
 
 ```bash
-git add apps/web/lib/e2ee-legacy-migration.ts apps/web/lib/e2ee-legacy-migration.test.ts migrations/1700000028_e2ee_content_foundation.sql scripts/e2ee-content-migration.integration.test.ts
+git add apps/web/lib/e2ee-legacy-migration.ts apps/web/lib/e2ee-legacy-migration.test.ts migrations/1700000030_e2ee_content_foundation.sql scripts/e2ee-content-migration.integration.test.ts
 git commit -m "feat(security): 기존 기록 원자적 E2EE 전환 추가"
 ```
 
@@ -633,7 +633,7 @@ worker가 실행 중이면 `기존 기록 보호 중 · {count}건 남음`, 0건
 - E2EE 활성 이후 `server_v1` 409는 정상적인 구형 shim 차단이다.
 - 자동 전환은 승인 브라우저가 잠금 해제·visible·online일 때만 진행한다.
 - `TOARD_CONTENT_KEK_B64`는 전체 legacy 0건 및 백업 보존 기간 종료 전 제거하지 않는다.
-- E2EE 행 생성 이후 migration 28 Down을 실행하지 않고 forward-fix한다.
+- E2EE 행 생성 이후 migration 30 Down을 실행하지 않고 forward-fix한다.
 - 확인 SQL은 scheme별 count만 출력하고 본문이나 ciphertext를 출력하지 않는다.
 
 - [ ] **Step 6: Task 6 테스트와 타입 검사를 통과시킨다**
@@ -662,7 +662,7 @@ git commit -m "feat(settings): 기존 기록 보호 상태 표시"
 
 - [ ] **Step 1: 실제 DB 실패 통합 테스트를 작성한다**
 
-테스트는 임시 PostgreSQL 16 컨테이너를 만들고 migration 1/10까지만 적용한 후 `LEGACY_MIGRATION_CANARY_91d7` 평문으로 `server_v1` 행을 저장한다. migration 28 적용 후 실제 service와 browser writer를 호출한다.
+테스트는 임시 PostgreSQL 16 컨테이너를 만들고 migration 1/10까지만 적용한 후 `LEGACY_MIGRATION_CANARY_91d7` 평문으로 `server_v1` 행을 저장한다. migration 30 적용 후 실제 service와 browser writer를 호출한다.
 
 ```ts
 const before = await client.query("SELECT id,dedup_key FROM prompt_records WHERE dedup_key=$1", [dedup]);

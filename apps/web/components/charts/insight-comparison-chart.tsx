@@ -72,7 +72,12 @@ export function InsightComparisonChart({
   });
   const formatValue = (value: number) =>
     isCost
-      ? format.number(value, { style: "currency", currency: "USD", maximumFractionDigits: 4 })
+      ? format.number(value, {
+          style: "currency",
+          currency: "USD",
+          currencyDisplay: "narrowSymbol",
+          maximumFractionDigits: 4,
+        })
       : format.number(value, { notation: "compact", maximumFractionDigits: 1 });
   const formatDate = (date: Date) =>
     format.dateTime(date, { month: "numeric", day: "numeric", timeZone: "UTC" });

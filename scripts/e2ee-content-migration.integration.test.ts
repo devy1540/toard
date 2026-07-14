@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const MIGRATIONS = [
   "1700000001_init.sql",
   "1700000010_prompt_records.sql",
-  "1700000028_e2ee_content_foundation.sql",
+  "1700000030_e2ee_content_foundation.sql",
 ] as const;
 
 async function waitForPostgres(connectionString: string): Promise<void> {
@@ -37,7 +37,7 @@ async function applyUpMigration(client: Client, filename: string): Promise<void>
   await client.query(migration.split("-- Down Migration", 1)[0]);
 }
 
-test("migration 28 adds E2EE content ownership, wrappers, approvals, and enforced RLS", { timeout: 90_000 }, async () => {
+test("migration 30 adds E2EE content ownership, wrappers, approvals, and enforced RLS", { timeout: 90_000 }, async () => {
   const container = `toard-e2ee-migration-${randomUUID().slice(0, 8)}`;
   let client: Client | null = null;
 
@@ -151,7 +151,7 @@ test("migration 28 adds E2EE content ownership, wrappers, approvals, and enforce
       ],
     );
 
-    const migration28 = await readFile("migrations/1700000028_e2ee_content_foundation.sql", "utf8");
+    const migration28 = await readFile("migrations/1700000030_e2ee_content_foundation.sql", "utf8");
     const down = migration28.split("-- Down Migration", 2)[1];
     assert.ok(down);
     await assert.rejects(client.query(down), /rollback blocked: E2EE rows exist/);

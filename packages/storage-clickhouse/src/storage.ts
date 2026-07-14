@@ -32,6 +32,8 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageReplayReconciliationRequest,
+  UsageReplayReconciliationResult,
   UnpricedUsageModelDiagnostic,
   UserUsage,
   UserInsightComparison,
@@ -1329,7 +1331,11 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: res.inserted, deduped: res.deduped };
   }
 
-  async getUnpricedUsageModels(from: Date, to: Date): Promise<UnpricedUsageModelDiagnostic[]> {
+  async getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds: string[] = [],
+  ): Promise<UnpricedUsageModelDiagnostic[]> {
     const rows = await this.queryJson<{
       model: string | null;
       events: string | number;
@@ -1343,10 +1349,13 @@ export class ClickHouseStorage implements StorageBackend {
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
-         AND cost_status = 'unpriced'
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id IN {replace_revision_ids:Array(String)}
+         )
        GROUP BY model
        ORDER BY events DESC, model`,
-      { from: chTs(from), to: chTs(to) },
+      { from: chTs(from), to: chTs(to), replace_revision_ids: replaceRevisionIds },
     );
     return rows.map((row) => ({
       model: row.model || null,
@@ -1354,6 +1363,96 @@ export class ClickHouseStorage implements StorageBackend {
       firstAt: row.first_at instanceof Date ? row.first_at : chDate(row.first_at),
       lastAt: row.last_at instanceof Date ? row.last_at : chDate(row.last_at),
     }));
+  }
+
+  async reconcileCodexReplayUsage(
+    request: UsageReplayReconciliationRequest,
+  ): Promise<UsageReplayReconciliationResult> {
+    if (request.limit <= 0) {
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const rows = await this.queryJson<{
+      dedup_key: string;
+      ts: string | Date;
+      total_unpriced: string | number;
+    }>(
+      `SELECT bad.dedup_key, bad.ts,
+              (SELECT count()
+               FROM usage_events FINAL
+               WHERE ts >= {from:DateTime64(3)}
+                 AND ts < {to:DateTime64(3)}
+                 AND cost_status = 'unpriced') AS total_unpriced
+       FROM usage_events AS bad FINAL
+       WHERE bad.ts >= {from:DateTime64(3)}
+         AND bad.ts < {to:DateTime64(3)}
+         AND bad.provider_key = 'codex'
+         AND bad.model = ''
+         AND bad.cost_status = 'unpriced'
+         AND bad.session_id != ''
+         AND bad.log_adapter = 'codex'
+         AND tuple(
+           bad.session_id, bad.user_id, bad.host, bad.log_adapter,
+           bad.input_tokens, bad.output_tokens, bad.cache_read_tokens, bad.cache_creation_tokens
+         ) IN (
+           SELECT tuple(
+             session_id, user_id, host, log_adapter,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+           )
+           FROM usage_events FINAL
+           WHERE provider_key = 'codex'
+             AND model != ''
+             AND session_id != ''
+           GROUP BY session_id, user_id, host, log_adapter,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+         )
+       ORDER BY bad.ts, bad.dedup_key
+       LIMIT {row_limit:UInt32}`,
+      {
+        from: chTs(request.from),
+        to: chTs(request.to),
+        row_limit: limit + 1,
+      },
+    );
+    const candidates = rows.slice(0, limit).map((row) => ({
+      dedup_key: row.dedup_key,
+      ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
+    }));
+    if (candidates.length === 0) {
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
+    }
+
+    const markDirty = async (): Promise<void> => {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(client, candidates);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    // 삭제 전 raw fallback을 활성화하고, 삭제 후 다시 표시해 compactor 경합에도 stale cache가 남지 않게 한다.
+    await markDirty();
+    await this.ch.command({
+      query: `ALTER TABLE usage_events
+              DELETE WHERE dedup_key IN {dedup_keys:Array(String)}`,
+      query_params: { dedup_keys: candidates.map((row) => row.dedup_key) },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
+    await markDirty();
+
+    return {
+      scanned: candidates.length,
+      reconciled: candidates.length,
+      remainingUnpriced: Math.max(0, n(rows[0]?.total_unpriced) - candidates.length),
+      affectedBuckets: this.dirty15mBuckets(candidates),
+      hasMore: rows.length > limit,
+    };
   }
 
   async repairUnpricedUsage(
@@ -1371,7 +1470,10 @@ export class ClickHouseStorage implements StorageBackend {
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
-         AND cost_status = 'unpriced'
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id IN {replace_revision_ids:Array(String)}
+         )
          AND model IN {models:Array(String)}
        ORDER BY ts, dedup_key
        LIMIT {row_limit:UInt32}`,
@@ -1379,6 +1481,7 @@ export class ClickHouseStorage implements StorageBackend {
         from: chTs(request.from),
         to: chTs(request.to),
         models: request.models,
+        replace_revision_ids: request.replaceRevisionIds,
         row_limit: limit + 1,
       },
     );
@@ -1689,12 +1792,15 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  private dirty15mBuckets(rows: OutboxRow[]): Date[] {
+  private dirty15mBuckets(rows: ReadonlyArray<{ ts: Date | string }>): Date[] {
     const buckets = new Set(rows.map((r) => fifteenMinuteBucket(r.ts)));
     return [...buckets].map(chDate).sort((a, b) => a.getTime() - b.getTime());
   }
 
-  private async mark15mRollupDirty(client: PoolClient, rows: OutboxRow[]): Promise<void> {
+  private async mark15mRollupDirty(
+    client: PoolClient,
+    rows: ReadonlyArray<{ ts: Date | string }>,
+  ): Promise<void> {
     const buckets = this.dirty15mBuckets(rows);
     if (buckets.length === 0) return;
     for (const spec of USAGE_ROLLUPS) {
@@ -1821,6 +1927,16 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
+  private async deleteRollupBuckets(spec: RollupSpec, buckets: Date[]): Promise<void> {
+    if (buckets.length === 0) return;
+    await this.ch.command({
+      query: `ALTER TABLE ${spec.table}
+              DELETE WHERE ${spec.bucketColumn} IN {buckets:Array(DateTime64(3))}`,
+      query_params: { buckets: buckets.map(chTs) },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
+  }
+
   private async invalidateTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
     if (buckets.length === 0) return;
     await client.query(
@@ -1921,6 +2037,9 @@ export class ClickHouseStorage implements StorageBackend {
 
       const version = Date.now();
       const rollupRows = await this.aggregateRollupBuckets(spec, buckets, version);
+      // dirty 재집계는 model/cost_status 차원이 바뀌거나 완전히 사라질 수 있다.
+      // ReplacingMergeTree는 키가 바뀐 이전 행을 지우지 못하므로 해당 bucket을 먼저 비운다.
+      await this.deleteRollupBuckets(spec, dirty.rows.map(({ bucket }) => bucket));
       if (rollupRows.length > 0) {
         await this.ch.insert({
           table: spec.table,
@@ -2013,11 +2132,23 @@ export class ClickHouseStorage implements StorageBackend {
                 pricing_revision_id, cost_status`,
       { bucket: chTs(bucket), to: chTs(to) },
     );
+
+    const table = resolution === "hour"
+      ? "usage_hourly_timezone_rollup"
+      : "usage_daily_timezone_rollup";
+    // 재집계 결과가 0행이어도 이전 차원의 cache는 제거해야 한다.
+    await this.ch.command({
+      query: `ALTER TABLE ${table}
+              DELETE WHERE timezone = {timezone:String}
+                AND bucket_start = {bucket:DateTime64(3)}`,
+      query_params: { timezone: tz, bucket: chTs(bucket) },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
     if (rows.length === 0) return 0;
 
     const version = Date.now();
     await this.ch.insert({
-      table: resolution === "hour" ? "usage_hourly_timezone_rollup" : "usage_daily_timezone_rollup",
+      table,
       values: rows.map((row) => ({
         timezone: tz,
         bucket_start: chTs(bucket),

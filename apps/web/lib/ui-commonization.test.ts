@@ -288,6 +288,14 @@ test("insights와 history 비용 UI는 같은 query coverage formatter를 재사
   assert.match(detail, /costCoverageForStatus\(usage\.costStatus\)/);
 });
 
+test("insights 비용 표시는 locale 국가 접두사 없이 $ 기호만 사용한다", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+
+  assert.match(page, /currency: "USD",\s*currencyDisplay: "narrowSymbol"/);
+  assert.match(chart, /currency: "USD",\s*currencyDisplay: "narrowSymbol"/);
+});
+
 test("insights default to tokens while preserving explicit cost selection", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   assert.match(page, /const metric = sp\.metric === "cost" \? "cost" : "tokens"/);

@@ -39,7 +39,9 @@ export function PricingSyncPanel({
     };
   }, []);
 
-  const healthy = status.repair.state === "idle" && status.repair.remainingUnpricedEvents === 0;
+  const healthy = status.repair.state === "idle"
+    && status.repair.remainingUnpricedEvents === 0
+    && status.repair.lastSucceededAt != null;
   return (
     <div className="space-y-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
@@ -63,8 +65,9 @@ export function PricingSyncPanel({
             {t(`system.repairStates.${status.repair.state}`)}
           </Badge>
         </div>
-        <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
+        <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-4">
           <div><dt className="text-muted-foreground inline">{t("system.recoveredEvents")}: </dt><dd className="inline">{status.repair.recoveredEvents.toLocaleString()}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.reconciledEvents")}: </dt><dd className="inline">{status.repair.reconciledEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.remainingEvents")}: </dt><dd className="inline">{status.repair.remainingUnpricedEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.lastRepair")}: </dt><dd className="inline">{status.repair.lastSucceededAt ? new Date(status.repair.lastSucceededAt).toLocaleString() : "—"}</dd></div>
         </dl>
@@ -77,6 +80,30 @@ export function PricingSyncPanel({
                 {" · "}{t("system.unresolvedEvents", { count: item.events.toLocaleString() })}
               </p>
             ))}
+          </div>
+        ) : null}
+        {status.history.state !== "idle" && status.history.state !== "completed" ? (
+          <div className="mt-3 rounded-md border p-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t("system.historyTitle")}</span>
+              <Badge variant={status.history.state === "failed" ? "destructive" : "outline"}>
+                {t(`system.historyStates.${status.history.state}`)}
+              </Badge>
+            </div>
+            <p className="mt-1 text-muted-foreground">
+              {t("system.historyProgress", {
+                processed: status.history.processedSnapshots.toLocaleString(),
+                total: status.history.totalSnapshots.toLocaleString(),
+                models: status.history.models.toLocaleString(),
+              })}
+            </p>
+            {status.history.nextAttemptAt ? (
+              <p className="mt-1 text-muted-foreground">
+                {t("system.historyRetryAt", {
+                  time: new Date(status.history.nextAttemptAt).toLocaleString(),
+                })}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </div>

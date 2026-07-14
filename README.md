@@ -265,6 +265,7 @@ AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정
 `sync-pricing`(LiteLLM 가격 일 동기화)은 **self-host 에선 별도 등록이 필요 없다** — 앱이 기동 시
 내장 스케줄러를 등록해 일 1회(조직 타임존 기준) 자동 실행한다(compose·k8s·helm·bare 공통).
 동기화 뒤 보존 범위의 가격 미확정 사용량도 자동으로 다시 계산하며 PostgreSQL·ClickHouse rollup을 함께 갱신한다.
+최근 90일 안의 과거 로그가 늦게 들어왔는데 해당 사용 날짜의 가격 revision이 없으면, toard가 LiteLLM 공개 Git 이력을 백그라운드에서 확인한다. 전체 기간의 근거가 확인된 가격만 한 번에 승격하고 비용을 다시 계산한 뒤 15분·1시간·1일 rollup을 자동 재집계한다. GitHub 장애나 요청 제한은 수집과 조회를 막지 않으며 저장된 cursor와 backoff 시각부터 자동으로 이어진다. 특정 모델이나 월을 코드에 추가하는 방식이 아니므로 6월 등 다른 과거 월과 새 모델에도 같은 흐름이 적용된다.
 관리자 조작은 필요 없고, env `PRICING_AUTO_SYNC=off` 만 인프라 비상 킬스위치로 사용한다. 외부 스케줄러를 쓰는 경우:
 
 - **Vercel**: `vercel.json` 의 `crons` 가 자동 실행(Vercel 에선 내장 스케줄러가 자동 비활성) — `CRON_SECRET` env 설정 시 Vercel 이 `Authorization: Bearer` 를 자동 첨부.
@@ -273,6 +274,8 @@ AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정
 `CRON_SECRET` 미설정 시 `/api/cron/*` 엔드포인트가 인증 없이 열리므로 **프로덕션에선 반드시 설정**. `recompute` 는 Mart 를 서빙에 쓸 때만 등록(현재 event-direct 라 불필요 — §4.4).
 
 관리 → 시스템 탭은 모델 수·마지막 동기화·자동 복구 진행 상태를 읽기 전용으로 표시한다. 가격표에 아직 없는 모델은 다음 일 동기화에서 자동 재확인하며, 대시보드는 확정 전 비용을 부분 합계로 명시한다.
+
+격리된 임시 PostgreSQL·ClickHouse에서 과거 가격 변경, 재시작 cursor, 비용 보정, 원본 불변성과 rollup invalidation을 함께 검증하려면 `pnpm verify:historical-pricing`을 실행한다. 이 명령은 테스트 컨테이너만 생성하고 종료 시 삭제한다.
 
 ## 🚢 배포 (Docker · Kubernetes · Helm)
 

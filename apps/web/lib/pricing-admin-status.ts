@@ -5,6 +5,10 @@ import {
   type PricingUnresolvedModel,
 } from "./pricing-repair";
 import { getPool } from "./db";
+import {
+  PgPricingHistoryRepository,
+  type HistoricalPricingStatus,
+} from "./pricing-history";
 
 export type PricingAdminStatus = {
   models: number;
@@ -12,16 +16,20 @@ export type PricingAdminStatus = {
   repair: {
     state: PricingRepairState;
     recoveredEvents: number;
+    reconciledEvents: number;
     remainingUnpricedEvents: number;
     lastSucceededAt: string | null;
   };
+  history: HistoricalPricingStatus;
   unresolvedModels: PricingUnresolvedModel[];
 };
 
 export async function getPricingAdminStatus(): Promise<PricingAdminStatus> {
-  const [pricing, repair] = await Promise.all([
+  const pool = getPool();
+  const [pricing, repair, history] = await Promise.all([
     getPricingStatus(),
-    new PgPricingRepairRepository(getPool()).get(),
+    new PgPricingRepairRepository(pool).get(),
+    new PgPricingHistoryRepository(pool).getStatus(),
   ]);
   return {
     models: pricing.models,
@@ -29,9 +37,11 @@ export async function getPricingAdminStatus(): Promise<PricingAdminStatus> {
     repair: {
       state: repair.state,
       recoveredEvents: repair.recoveredEvents,
+      reconciledEvents: repair.reconciledEvents,
       remainingUnpricedEvents: repair.remainingUnpricedEvents,
       lastSucceededAt: repair.lastSucceededAt?.toISOString() ?? null,
     },
+    history,
     unresolvedModels: repair.unresolvedModels,
   };
 }

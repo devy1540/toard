@@ -71,7 +71,7 @@ FROM prompt_records
 GROUP BY encryption_scheme;
 ```
 
-전체 `server_v1`이 0건이 되더라도 DB 백업 보존 기간이 끝나기 전에는 `TOARD_CONTENT_KEK_B64`를 제거하지 않는다. E2EE 행이 한 건이라도 생성된 뒤 migration 28 Down은 복호화 메타데이터 손실을 막기 위해 실패한다. 이 시점 이후 장애는 Down이 아니라 forward-fix로 복구한다.
+전체 `server_v1`이 0건이 되더라도 DB 백업 보존 기간이 끝나기 전에는 `TOARD_CONTENT_KEK_B64`를 제거하지 않는다. E2EE 행이 한 건이라도 생성된 뒤 migration 30 Down은 복호화 메타데이터 손실을 막기 위해 실패한다. 이 시점 이후 장애는 Down이 아니라 forward-fix로 복구한다.
 
 ## 상태 점검
 

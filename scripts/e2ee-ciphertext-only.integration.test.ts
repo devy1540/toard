@@ -10,7 +10,7 @@ import { decryptE2eeRecord } from "../apps/web/lib/e2ee-browser-crypto";
 
 const execFileAsync = promisify(execFile);
 const CANARY = "TOARD_E2EE_PLAINTEXT_CANARY_7f39";
-const MIGRATIONS = ["1700000001_init.sql", "1700000010_prompt_records.sql", "1700000028_e2ee_content_foundation.sql"];
+const MIGRATIONS = ["1700000001_init.sql", "1700000010_prompt_records.sql", "1700000030_e2ee_content_foundation.sql"];
 
 test("E2EE canary exists only after approved-browser decryption", { timeout: 90_000 }, async () => {
   const container = `toard-e2ee-canary-${randomUUID().slice(0, 8)}`;

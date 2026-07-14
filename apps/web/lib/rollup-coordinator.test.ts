@@ -118,6 +118,19 @@ test("가격 복구를 포함한 세 heavy worker는 모두 120초 안에 반복
   }
 });
 
+test("가격 복구 batch만 10초 tick에 이어가고 rollup 최소 간격은 60초를 유지한다", () => {
+  const tenSecondsLater = new Date(START.getTime() + 10_000);
+  assert.equal(selectRollupTask([
+    candidate("pricing_repair", { lastStartedAt: START }),
+  ], tenSecondsLater), "pricing_repair");
+  assert.equal(selectRollupTask([
+    candidate("usage_15m_v2", { lastStartedAt: START }),
+  ], tenSecondsLater), null);
+  assert.equal(selectRollupTask([
+    candidate("timezone", { lastStartedAt: START }),
+  ], tenSecondsLater), null);
+});
+
 test("30분 가속 soak 동안 heavy 작업은 하나씩 실행되고 outbox는 독립적으로 소진된다", async () => {
   const lastStarted = new Map<RollupSchedulerTask, Date | null>([
     ["usage_15m_v2", null],

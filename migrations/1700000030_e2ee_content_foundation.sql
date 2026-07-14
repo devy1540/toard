@@ -184,7 +184,7 @@ CREATE POLICY content_approvals_owner_update ON content_device_approval_requests
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM prompt_records WHERE encryption_scheme = 'e2ee_v1') THEN
-    RAISE EXCEPTION 'migration 28 rollback blocked: E2EE rows exist';
+    RAISE EXCEPTION 'migration 30 rollback blocked: E2EE rows exist';
   END IF;
 END $$;
 DROP POLICY IF EXISTS prompt_owner_update ON prompt_records;

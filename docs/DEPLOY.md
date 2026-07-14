@@ -67,6 +67,7 @@ docker compose --profile updater up -d
 - **권한 주의**: updater 는 `/var/run/docker.sock` 과 배포 디렉터리를 마운트하므로 호스트 Docker 권한과 `.env` 수정 권한을 가진다. 공개 포트를 열지 않고 Compose 내부 네트워크에서만 앱이 shared secret 으로 호출한다.
 - **`.env` 필수**: updater 가 같은 배포 디렉터리에서 compose 를 실행하므로 `AUTH_SECRET` 같은 운영 설정은 `.env` 에 고정해 둔다. 업데이트 시 기존 값은 유지하고 `TOARD_TAG` 만 바꾼다.
 - **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패하면 updater 가 변경한 `.env` 는 되돌리지만, 이미 재시작된 컨테이너까지 자동으로 롤백하지는 않는다. 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
+- **과거 가격 revision 호환성**: `v0.15.16`부터 `[effective_at, valid_until)` 가격 구간을 읽는다. 과거 가격 자동 복구가 한 번이라도 revision을 승격한 서버는 `v0.15.15` 이하로 앱만 되돌리지 않는다. `/api/ready`의 `historicalPricingReader.minimumVersion`과 `compatible`을 먼저 확인한다. 로컬 개발 버전 `0.0.0`은 허용된다.
 
 ## 2) Kubernetes (kustomize · raw 매니페스트)
 

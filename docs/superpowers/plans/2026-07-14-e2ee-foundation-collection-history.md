@@ -28,8 +28,8 @@
 
 ## File Structure
 
-- `migrations/1700000028_e2ee_content_foundation.sql`: 콘텐츠 계정, 기기, UCK wrapper, 승인 요청, `prompt_records` E2EE 컬럼과 RLS.
-- `scripts/e2ee-content-migration.integration.test.ts`: migration 28의 제약조건, RLS, 만료·일회 소비 동작 검증.
+- `migrations/1700000030_e2ee_content_foundation.sql`: 콘텐츠 계정, 기기, UCK wrapper, 승인 요청, `prompt_records` E2EE 컬럼과 RLS.
+- `scripts/e2ee-content-migration.integration.test.ts`: migration 30의 제약조건, RLS, 만료·일회 소비 동작 검증.
 - `apps/web/lib/e2ee-contract.ts`: base64url wire 타입, AAD v1 정규화, payload 크기·알고리즘 검증.
 - `apps/web/lib/e2ee-contract.test.ts`: 서버가 평문 필드를 거부하고 AAD를 결정론적으로 만드는 단위 테스트.
 - `apps/web/lib/e2ee-test-fixtures.ts`: web 단위 테스트가 공유하는 유효 E2EE wire/device/wrapper fixture와 recording DB.
@@ -64,7 +64,7 @@
 ### Task 1: E2EE 데이터 모델과 wire 계약
 
 **Files:**
-- Create: `migrations/1700000028_e2ee_content_foundation.sql`
+- Create: `migrations/1700000030_e2ee_content_foundation.sql`
 - Create: `scripts/e2ee-content-migration.integration.test.ts`
 - Create: `apps/web/lib/e2ee-contract.ts`
 - Create: `apps/web/lib/e2ee-contract.test.ts`
@@ -285,7 +285,7 @@ Expected: all web tests PASS, migration test PASS, temporary container removed i
 - [ ] **Step 7: 변경을 커밋한다**
 
 ```bash
-git add migrations/1700000028_e2ee_content_foundation.sql scripts/e2ee-content-migration.integration.test.ts apps/web/lib/e2ee-contract.ts apps/web/lib/e2ee-contract.test.ts apps/web/lib/e2ee-test-fixtures.ts package.json
+git add migrations/1700000030_e2ee_content_foundation.sql scripts/e2ee-content-migration.integration.test.ts apps/web/lib/e2ee-contract.ts apps/web/lib/e2ee-contract.test.ts apps/web/lib/e2ee-test-fixtures.ts package.json
 git commit -m "feat(security): E2EE 콘텐츠 데이터 모델 추가"
 ```
 

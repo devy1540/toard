@@ -121,6 +121,10 @@ test("migration 28 adds E2EE content ownership, wrappers, approvals, and enforce
     await client.query("SELECT set_config('app.current_user_id', $1, true)", [userA]);
     assert.equal((await client.query("SELECT id FROM prompt_records")).rowCount, 1);
     assert.equal((await client.query("SELECT user_id FROM content_accounts")).rowCount, 1);
+    assert.equal((await client.query(
+      "UPDATE prompt_records SET received_at = received_at WHERE user_id = $1 RETURNING id",
+      [userA],
+    )).rowCount, 1);
     await client.query("ROLLBACK");
 
     await client.query("BEGIN");
@@ -146,6 +150,11 @@ test("migration 28 adds E2EE content ownership, wrappers, approvals, and enforce
         { tablename: "content_key_wrappers", policy_count: "3" },
       ],
     );
+
+    const migration28 = await readFile("migrations/1700000028_e2ee_content_foundation.sql", "utf8");
+    const down = migration28.split("-- Down Migration", 2)[1];
+    assert.ok(down);
+    await assert.rejects(client.query(down), /rollback blocked: E2EE rows exist/);
   } finally {
     await client?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);

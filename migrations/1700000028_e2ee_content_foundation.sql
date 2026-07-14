@@ -129,6 +129,11 @@ ALTER TABLE prompt_records
 CREATE INDEX idx_prompt_records_user_scheme_ts
   ON prompt_records (user_id, encryption_scheme, ts DESC);
 
+CREATE POLICY prompt_owner_update ON prompt_records
+  FOR UPDATE
+  USING (user_id = current_setting('app.current_user_id', true)::uuid)
+  WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
+
 -- 모든 E2EE 보조 테이블은 prompt_records와 같은 transaction-local user context를 사용한다.
 ALTER TABLE content_accounts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE content_accounts FORCE ROW LEVEL SECURITY;
@@ -176,6 +181,13 @@ CREATE POLICY content_approvals_owner_update ON content_device_approval_requests
   WITH CHECK (user_id = current_setting('app.current_user_id', true)::uuid);
 
 -- Down Migration
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM prompt_records WHERE encryption_scheme = 'e2ee_v1') THEN
+    RAISE EXCEPTION 'migration 28 rollback blocked: E2EE rows exist';
+  END IF;
+END $$;
+DROP POLICY IF EXISTS prompt_owner_update ON prompt_records;
 DROP INDEX IF EXISTS idx_prompt_records_user_scheme_ts;
 ALTER TABLE prompt_records
   DROP CONSTRAINT IF EXISTS prompt_records_e2ee_shape,

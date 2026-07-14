@@ -484,8 +484,16 @@ fn run_recovery_confirmation(mnemonic: &str) -> Result<(), SetupError> {
     let url = format!("http://{address}/recovery/{capability}");
     open_browser(&url)?;
 
+    serve_recovery_confirmation(&listener, address, &mut gate)
+}
+
+fn serve_recovery_confirmation(
+    listener: &TcpListener,
+    address: SocketAddr,
+    gate: &mut ConfirmationGate,
+) -> Result<(), SetupError> {
     loop {
-        if now_secs() > expires_at {
+        if now_secs() > gate.expires_at {
             return Err(SetupError::ConfirmationExpired);
         }
         match listener.accept() {
@@ -493,13 +501,15 @@ fn run_recovery_confirmation(mnemonic: &str) -> Result<(), SetupError> {
                 if !peer.ip().is_loopback() {
                     continue;
                 }
-                match handle_loopback_request(&mut stream, address, &mut gate)? {
-                    Some(ConfirmationResult::Confirmed) => return Ok(()),
-                    Some(ConfirmationResult::Locked) => return Err(SetupError::ConfirmationLocked),
-                    Some(ConfirmationResult::Expired) => {
+                match handle_loopback_request(&mut stream, address, gate) {
+                    Ok(Some(ConfirmationResult::Confirmed)) => return Ok(()),
+                    Ok(Some(ConfirmationResult::Locked)) => {
+                        return Err(SetupError::ConfirmationLocked)
+                    }
+                    Ok(Some(ConfirmationResult::Expired)) => {
                         return Err(SetupError::ConfirmationExpired)
                     }
-                    _ => {}
+                    Ok(_) | Err(_) => {}
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -889,6 +899,8 @@ fn decode_b64url(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use std::cell::RefCell;
+    use std::net::Shutdown;
+    use std::thread;
 
     fn gate() -> ConfirmationGate {
         ConfirmationGate::new(
@@ -966,5 +978,39 @@ mod tests {
         assert!(!page.contains("/confirm?"));
         assert!(PAGE_SCRIPT.contains("toard-recovery-kit.txt"));
         assert_eq!(decode_b64url(&b64url(&[7u8; 32])).unwrap(), [7u8; 32]);
+    }
+
+    #[test]
+    fn malformed_browser_connection_does_not_stop_recovery_confirmation() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let mut gate = ConfirmationGate::new(
+                "capability".into(),
+                (1..=24).map(|index| format!("word{index}")).collect(),
+                [2, 10, 21],
+                now_secs() + 60,
+            );
+            serve_recovery_confirmation(&listener, address, &mut gate)
+        });
+
+        let mut malformed = TcpStream::connect(address).unwrap();
+        malformed.write_all(&[0xff]).unwrap();
+        malformed.shutdown(Shutdown::Write).unwrap();
+        thread::sleep(Duration::from_millis(20));
+
+        let body = "saved=yes&word0=word3&word1=word11&word2=word22";
+        let request = format!(
+            "POST /recovery/capability/confirm HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len(),
+        );
+        let mut valid = TcpStream::connect(address).unwrap();
+        valid.write_all(request.as_bytes()).unwrap();
+        let mut response = String::new();
+        valid.read_to_string(&mut response).unwrap();
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert_eq!(server.join().unwrap(), Ok(()));
     }
 }

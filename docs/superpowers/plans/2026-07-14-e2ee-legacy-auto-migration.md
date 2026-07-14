@@ -680,7 +680,7 @@ assert.equal(JSON.stringify((await client.query("SELECT * FROM prompt_records"))
 
 - [ ] **Step 2: 통합 테스트가 아직 없는 service/API 결함을 드러내는지 실행한다**
 
-Run: `node --import tsx --test scripts/e2ee-legacy-migration.integration.test.ts`
+Run: `TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test scripts/e2ee-legacy-migration.integration.test.ts`
 
 Expected: 실제 경로의 누락 또는 잘못된 RLS/SQL이 있으면 FAIL; 구현이 완전하면 PASS.
 
@@ -702,7 +702,7 @@ pnpm --filter @toard/web test
 pnpm --filter @toard/web typecheck
 pnpm --filter @toard/web build
 pnpm test:migrations
-node --import tsx --test \
+TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test \
   scripts/e2ee-content-migration.integration.test.ts \
   scripts/e2ee-ciphertext-only.integration.test.ts \
   scripts/e2ee-legacy-migration.integration.test.ts

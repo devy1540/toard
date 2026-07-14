@@ -154,6 +154,38 @@ struct WrapperBody {
     wrapped_content_key: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingApprovalList {
+    requests: Vec<PendingApproval>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingApproval {
+    id: String,
+    label: String,
+    platform: String,
+    public_key: String,
+    created_at: String,
+    expires_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproveBody {
+    confirmation_code: String,
+    envelope: ApproveEnvelope,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ApproveEnvelope {
+    algorithm: &'static str,
+    encapsulated_key: String,
+    ciphertext: String,
+}
+
 pub fn run() -> i32 {
     match setup() {
         Ok(()) => {
@@ -164,6 +196,104 @@ pub fn run() -> i32 {
             eprintln!("toard-shim: {error}");
             1
         }
+    }
+}
+
+pub fn approve(request_id: Option<&str>) -> i32 {
+    match approve_inner(request_id) {
+        Ok(()) => {
+            println!("toard-shim: 새 브라우저를 승인했습니다");
+            0
+        }
+        Err(error) => {
+            eprintln!("toard-shim: {error}");
+            1
+        }
+    }
+}
+
+fn approve_inner(request_id: Option<&str>) -> Result<(), SetupError> {
+    let credentials = read_credentials();
+    let token = credentials
+        .token
+        .as_deref()
+        .ok_or(SetupError::MissingCredentials)?;
+    let endpoint = credentials
+        .endpoint
+        .as_deref()
+        .unwrap_or(crate::credentials::DEFAULT_ENDPOINT);
+    if !endpoint_is_secure(endpoint) {
+        return Err(SetupError::InvalidEndpoint);
+    }
+    let owner_id = credentials
+        .content_owner_id
+        .as_deref()
+        .ok_or(SetupError::MissingCredentials)?;
+    let key_version = credentials
+        .content_key_version
+        .ok_or(SetupError::MissingCredentials)?;
+    let pending: PendingApprovalList = remote_json(
+        endpoint,
+        token,
+        "/v1/content/approval-requests",
+        None,
+        SetupError::RemoteSetup,
+    )?;
+    let request = select_approval_request(&pending.requests, request_id)?;
+    println!(
+        "승인 요청: {} ({})\n요청 시각: {}\n만료 시각: {}\n요청 ID: {}",
+        request.label, request.platform, request.created_at, request.expires_at, request.id
+    );
+    print!("브라우저에 표시된 6자리 코드를 입력하세요: ");
+    std::io::stdout()
+        .flush()
+        .map_err(|_| SetupError::LocalListener)?;
+    let mut code = String::new();
+    std::io::stdin()
+        .read_line(&mut code)
+        .map_err(|_| SetupError::LocalListener)?;
+    let code = code.trim();
+    if code.len() != 6 || !code.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(SetupError::RemoteActivation);
+    }
+    let public_key = decode_b64url(&request.public_key).ok_or(SetupError::Crypto)?;
+    let uck = SystemContentKeyStore
+        .get_uck(owner_id, key_version)
+        .map_err(|_| SetupError::SecureStore)?;
+    let envelope = wrap_for_device(&public_key, &uck[..]).map_err(|_| SetupError::Crypto)?;
+    let body = ApproveBody {
+        confirmation_code: code.to_string(),
+        envelope: ApproveEnvelope {
+            algorithm: "hpke-p256-hkdf-sha256-aes256gcm-v1",
+            encapsulated_key: b64url(&envelope.encapsulated_key),
+            ciphertext: b64url(&envelope.ciphertext),
+        },
+    };
+    let body = serde_json::to_vec(&body).map_err(|_| SetupError::Crypto)?;
+    remote_json::<serde_json::Value>(
+        endpoint,
+        token,
+        &format!("/v1/content/approval-requests/{}/approve", request.id),
+        Some(&body),
+        SetupError::RemoteActivation,
+    )?;
+    Ok(())
+}
+
+fn select_approval_request<'a>(
+    requests: &'a [PendingApproval],
+    request_id: Option<&str>,
+) -> Result<&'a PendingApproval, SetupError> {
+    if let Some(request_id) = request_id {
+        return requests
+            .iter()
+            .find(|request| request.id == request_id)
+            .ok_or(SetupError::RemoteSetup);
+    }
+    if requests.len() == 1 {
+        Ok(&requests[0])
+    } else {
+        Err(SetupError::RemoteSetup)
     }
 }
 

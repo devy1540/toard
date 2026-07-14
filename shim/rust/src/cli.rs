@@ -58,6 +58,7 @@ fn print_usage() {
                                install --interval <초> (기본 300, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
   e2ee setup                   Recovery Kit를 저장·확인하고 E2EE 본문 수집 활성화
+  e2ee approve [--request ID]  브라우저의 6자리 코드를 로컬에서 확인해 승인
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 2h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
@@ -69,8 +70,12 @@ fn print_usage() {
 fn e2ee_cmd(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("setup") if args.len() == 1 => crate::e2ee_setup::run(),
+        Some("approve") if args.len() == 1 => crate::e2ee_setup::approve(None),
+        Some("approve") if args.len() == 3 && args[1] == "--request" => {
+            crate::e2ee_setup::approve(Some(&args[2]))
+        }
         _ => {
-            eprintln!("toard-shim: 사용법: toard-shim e2ee setup");
+            eprintln!("toard-shim: 사용법: toard-shim e2ee setup | e2ee approve [--request ID]");
             2
         }
     }

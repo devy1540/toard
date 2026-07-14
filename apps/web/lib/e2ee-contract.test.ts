@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import test from "node:test";
 import {
   canonicalContentAad,
@@ -67,6 +69,13 @@ test("AAD v1 is deterministic and binds owner and metadata", () => {
     new TextDecoder().decode(aad),
     '{"schema":"e2ee_v1","contentOwnerId":"018f47d0-4d47-7b04-950b-7d18a86e1b43","dedupKey":"abc","providerKey":"codex","turnRole":"user","ts":"2026-07-14T00:00:00.000Z"}',
   );
+});
+
+test("TypeScript AAD matches the shared Rust golden vector", () => {
+  const fixture = JSON.parse(
+    readFileSync(resolve(process.cwd(), "../../fixtures/e2ee-v1-golden.json"), "utf8"),
+  ) as { metadata: Parameters<typeof canonicalContentAad>[0]; aad: string };
+  assert.equal(Buffer.from(canonicalContentAad(fixture.metadata)).toString("base64url"), fixture.aad);
 });
 
 test("base64url parser rejects non-canonical encodings", () => {

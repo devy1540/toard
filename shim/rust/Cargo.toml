@@ -15,6 +15,13 @@ panic = "abort"
 codegen-units = 1
 
 [dependencies]
+aes-gcm = "0.11.0"
+bip39 = { version = "2.2.2", features = ["rand"] }
+hkdf = "0.12.4"
+hpke = { version = "0.14.0", default-features = false, features = ["alloc", "getrandom", "aes", "nistp"] }
+keyring = "4.1.4"
+rand = "0.10.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.10"
+sha2 = "0.10.8"
+zeroize = { version = "1.9.0", features = ["derive"] }

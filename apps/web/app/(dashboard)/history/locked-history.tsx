@@ -11,12 +11,16 @@ export function LockedHistory({
   secondsLeft,
   busy,
   onApprove,
+  onLocalUnlock,
+  canLocalUnlock,
   onRecover,
 }: {
   approval: { code: string } | null;
   secondsLeft: number;
   busy: boolean;
   onApprove: () => void;
+  onLocalUnlock: () => void;
+  canLocalUnlock: boolean;
   onRecover: (mnemonic: string) => void;
 }) {
   const t = useTranslations("dashboard.history.e2ee");
@@ -46,10 +50,15 @@ export function LockedHistory({
           </div>
         ) : (
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap">
-            <Button className="w-full sm:w-auto" disabled={busy} onClick={onApprove}>
+            {canLocalUnlock ? (
+              <Button className="w-full sm:w-auto" disabled={busy} onClick={onLocalUnlock}>
+                <Laptop />
+                {t("unlockThisBrowser")}
+              </Button>
+            ) : <Button className="w-full sm:w-auto" disabled={busy} onClick={onApprove}>
               <Laptop />
               {t("approveComputer")}
-            </Button>
+            </Button>}
             <Button
               className="w-full sm:w-auto"
               variant="outline"

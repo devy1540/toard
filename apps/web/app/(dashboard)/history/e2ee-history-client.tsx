@@ -8,6 +8,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { contentKeyVault } from "@/lib/content-key-vault";
+import { unlockApprovedBrowser } from "@/lib/content-auto-unlock";
+import { runLegacyMigrationBatch } from "@/lib/e2ee-legacy-worker";
 import {
   decryptE2eeRecord,
   exportBrowserPublicKey,
@@ -35,9 +37,15 @@ export function E2eeHistoryClient() {
   const [busy, setBusy] = useState(false);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
+  const [hasLocalDevice, setHasLocalDevice] = useState(false);
+  const [legacyRemaining, setLegacyRemaining] = useState<number | null>(null);
+  const [migrationBlocked, setMigrationBlocked] = useState(false);
   const pendingKey = useRef<CryptoKeyPair | null>(null);
+  const manuallyLocked = useRef(false);
 
-  const lock = useCallback(() => {
+  const lock = useCallback((manual = true) => {
+    manuallyLocked.current = manual;
     contentKeyVault.lock();
     pendingKey.current = null;
     setSessions([]);
@@ -51,6 +59,22 @@ export function E2eeHistoryClient() {
     dispatch({ type: "uck-unwrapped" });
   }, []);
 
+  const unlockLocal = useCallback(async () => {
+    const result = await unlockApprovedBrowser({
+      loadDevice: () => contentKeyVault.loadDevice(),
+      loadWrapper: (deviceId) => fetchJson<ContentKeyWrapperWire>(
+        `/api/content/devices/${encodeURIComponent(deviceId)}/wrapper`,
+      ),
+      openEnvelope: openDeviceEnvelope,
+    });
+    setHasLocalDevice(result !== null);
+    if (!result) return false;
+    manuallyLocked.current = false;
+    setActiveDeviceId(result.deviceId);
+    unlock(result.uck);
+    return true;
+  }, [unlock]);
+
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -61,21 +85,9 @@ export function E2eeHistoryClient() {
           dispatch({ type: "fatal", error: "E2EE_NOT_ACTIVE" });
           return;
         }
-        const device = await contentKeyVault.loadDevice();
-        if (!device) {
+        if (!await unlockLocal()) {
           dispatch({ type: "status", hasLocalKey: false, hasPasskeyWrapper: false });
-          return;
         }
-        dispatch({ type: "status", hasLocalKey: true, hasPasskeyWrapper: false });
-        const wrapper = await fetchJson<ContentKeyWrapperWire>(
-          `/api/content/devices/${encodeURIComponent(device.serverDeviceId)}/wrapper`,
-        );
-        const uck = await openDeviceEnvelope(device.keyPair, {
-          algorithm: "hpke-p256-hkdf-sha256-aes256gcm-v1",
-          encapsulatedKey: wrapper.encapsulatedKey!,
-          ciphertext: wrapper.wrappedContentKey,
-        });
-        if (!cancelled) unlock(uck);
       } catch (error) {
         if (!cancelled) {
           const hasLocalKey = await contentKeyVault.loadDevice().then(Boolean).catch(() => false);
@@ -85,7 +97,48 @@ export function E2eeHistoryClient() {
       }
     })();
     return () => { cancelled = true; };
-  }, [unlock]);
+  }, [unlockLocal]);
+
+  useEffect(() => {
+    if (state.kind !== "unlocked" || !activeDeviceId) return;
+    const controller = new AbortController();
+    let stopped = false;
+    const run = async () => {
+      while (!stopped && document.visibilityState === "visible" && navigator.onLine) {
+        try {
+          const status = await fetchJson<{
+            state: "pending" | "complete" | "blocked";
+            contentOwnerId: string;
+            contentKeyVersion: number;
+            legacyRecords: number;
+          }>("/api/content/legacy-migration/status", { signal: controller.signal });
+          setLegacyRemaining(status.legacyRecords);
+          setMigrationBlocked(status.state === "blocked");
+          if (status.state !== "pending" || status.legacyRecords === 0) return;
+          const batchUck = contentKeyVault.withUnlockedUck((uck) => uck.slice());
+          try {
+            const result = await runLegacyMigrationBatch({
+              deviceId: activeDeviceId,
+              contentOwnerId: status.contentOwnerId,
+              contentKeyVersion: status.contentKeyVersion,
+              uck: batchUck,
+              signal: controller.signal,
+              fetchJson: (url, init) => fetchJson<unknown>(url, init),
+            });
+            if (result.complete) { setLegacyRemaining(0); return; }
+          } finally {
+            batchUck.fill(0);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        } catch {
+          if (!controller.signal.aborted) setMigrationBlocked(true);
+          return;
+        }
+      }
+    };
+    void run();
+    return () => { stopped = true; controller.abort(); };
+  }, [activeDeviceId, state.kind]);
 
   useEffect(() => {
     if (state.kind !== "unlocked") return;
@@ -117,8 +170,11 @@ export function E2eeHistoryClient() {
     const onUnload = () => contentKeyVault.lock();
     let timer: ReturnType<typeof setTimeout> | null = null;
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") timer = setTimeout(lock, INACTIVITY_MS);
-      else if (timer) { clearTimeout(timer); timer = null; }
+      if (document.visibilityState === "hidden") timer = setTimeout(() => lock(false), INACTIVITY_MS);
+      else {
+        if (timer) { clearTimeout(timer); timer = null; }
+        if (!manuallyLocked.current && !contentKeyVault.isUnlocked()) void unlockLocal();
+      }
     };
     window.addEventListener("beforeunload", onUnload);
     document.addEventListener("visibilitychange", onVisibility);
@@ -127,7 +183,7 @@ export function E2eeHistoryClient() {
       document.removeEventListener("visibilitychange", onVisibility);
       if (timer) clearTimeout(timer);
     };
-  }, [lock]);
+  }, [lock, unlockLocal]);
 
   useEffect(() => {
     if (!expiresAt) return;
@@ -264,6 +320,8 @@ export function E2eeHistoryClient() {
         approval={state.approval}
         secondsLeft={secondsLeft}
         busy={busy}
+        canLocalUnlock={hasLocalDevice}
+        onLocalUnlock={() => void unlockLocal()}
         onApprove={() => void createApproval()}
         onRecover={(mnemonic) => void recover(mnemonic)}
       />
@@ -277,7 +335,7 @@ export function E2eeHistoryClient() {
           <span className="min-w-0 break-words text-muted-foreground">
             {inactive ? t("notActive") : t("error", { code: state.error ?? "UNKNOWN" })}
           </span>
-          {!inactive ? <Button className="sm:ml-auto" size="sm" variant="outline" onClick={lock}>{t("lockNow")}</Button> : null}
+          {!inactive ? <Button className="sm:ml-auto" size="sm" variant="outline" onClick={() => lock()}>{t("lockNow")}</Button> : null}
         </CardContent>
       </Card>
     );
@@ -288,7 +346,14 @@ export function E2eeHistoryClient() {
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <h2 id="e2ee-history-heading" className="text-sm font-medium">{t("title")}</h2>
         <Badge variant="secondary"><KeyRound className="mr-1 size-3" />{t("unlockedBadge")}</Badge>
-        <Button className="ml-auto" size="sm" variant="ghost" onClick={lock}>
+        {legacyRemaining !== null ? (
+          <Badge variant="outline">
+            {migrationBlocked ? t("legacyBlocked") : legacyRemaining === 0
+              ? t("legacyComplete")
+              : t("legacyProtecting", { count: legacyRemaining })}
+          </Badge>
+        ) : null}
+        <Button className="ml-auto" size="sm" variant="ghost" onClick={() => lock()}>
           <LockKeyhole />{t("lockNow")}
         </Button>
       </div>

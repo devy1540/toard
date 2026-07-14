@@ -4,12 +4,15 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
   decryptE2eeRecord,
+  encryptE2eeRecord,
   exportBrowserPublicKey,
   generateBrowserDeviceKey,
   openDeviceEnvelope,
   recoverUckFromMnemonic,
   sealUckForDevice,
 } from "./e2ee-browser-crypto";
+
+const ownerId = "018f47d0-4d47-7b04-950b-7d18a86e1b43";
 
 const vector = JSON.parse(
   readFileSync(resolve(process.cwd(), "../../fixtures/e2ee-v1-golden.json"), "utf8"),
@@ -36,6 +39,23 @@ const record = {
 test("browser decrypts the Rust e2ee_v1 golden vector", async () => {
   const plaintext = await decryptE2eeRecord(Buffer.from(vector.uck, "base64url"), record);
   assert.equal(new TextDecoder().decode(plaintext), "secret prompt");
+});
+
+test("browser encrypt writer round-trips a legacy record", async () => {
+  const uck = crypto.getRandomValues(new Uint8Array(32));
+  const source = {
+    dedupKey: "legacy-1",
+    sessionId: "session-1",
+    providerKey: "codex",
+    turnRole: "user" as const,
+    ts: "2026-07-14T00:00:00.000Z",
+    text: "legacy secret",
+  };
+  const encrypted = await encryptE2eeRecord(uck, source, ownerId, 1);
+  const plaintext = await decryptE2eeRecord(uck, encrypted);
+  assert.equal(new TextDecoder().decode(plaintext), source.text);
+  assert.equal(encrypted.dedupKey, source.dedupKey);
+  assert.equal(encrypted.contentOwnerId, ownerId);
 });
 
 test("24-word Recovery Kit unwraps UCK only in the browser", async () => {
@@ -100,8 +120,9 @@ test("browser device key is non-extractable and HPKE unwraps UCK", async () => {
   const envelope = await sealUckForDevice(publicKey, uck);
 
   assert.deepEqual(await openDeviceEnvelope(keyPair, envelope), uck);
+  const tampered = `${envelope.ciphertext[0] === "A" ? "B" : "A"}${envelope.ciphertext.slice(1)}`;
   await assert.rejects(
-    openDeviceEnvelope(keyPair, { ...envelope, ciphertext: `${envelope.ciphertext.slice(0, -1)}A` }),
+    openDeviceEnvelope(keyPair, { ...envelope, ciphertext: tampered }),
     /CONTENT_UNAVAILABLE/,
   );
 });

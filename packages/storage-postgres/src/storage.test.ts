@@ -415,6 +415,61 @@ test("Postgres 가격 복구는 unpriced 행만 잠그고 revision과 mart를 �
   });
 });
 
+test("Postgres Codex 재생 보정은 모델이 있는 원본과 완전히 일치하는 빈 모델 행만 제거한다", async () => {
+  const queries: Array<{ sql: string; params?: unknown[] }> = [];
+  const client = {
+    async query(sql: string, params?: unknown[]) {
+      queries.push({ sql, params });
+      if (sql.includes("FROM usage_events bad") && sql.includes("FOR UPDATE OF bad SKIP LOCKED")) {
+        return {
+          rows: [{
+            dedup_key: "replayed-1",
+            ts: new Date("2026-07-13T09:14:50.000Z"),
+            local_day: "2026-07-13",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("DELETE FROM usage_events")) return { rows: [], rowCount: 1 };
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  } as unknown as PoolClient;
+  const pool = { connect: async () => client } as unknown as Pool;
+  const storage = new PostgresStorage(pool, { timezone: "Asia/Seoul" });
+
+  const result = await storage.reconcileCodexReplayUsage({
+    from: new Date("2026-04-15T00:00:00.000Z"),
+    to: new Date("2026-07-14T00:00:00.000Z"),
+    limit: 100,
+  });
+
+  const select = queries.find(({ sql }) => sql.includes("FROM usage_events bad"));
+  const deletion = queries.find(({ sql }) => sql.includes("DELETE FROM usage_events"));
+  assert.ok(select);
+  assert.match(select.sql, /bad\.provider_key = 'codex'/);
+  assert.match(select.sql, /bad\.cost_status = 'unpriced'/);
+  assert.match(select.sql, /COALESCE\(bad\.model, ''\) = ''/);
+  assert.match(select.sql, /EXISTS\s*\(\s*SELECT 1\s*FROM usage_events good/);
+  assert.match(select.sql, /good\.session_id = bad\.session_id/);
+  assert.match(select.sql, /good\.input_tokens = bad\.input_tokens/);
+  assert.match(select.sql, /good\.output_tokens = bad\.output_tokens/);
+  assert.match(select.sql, /good\.cache_read_tokens = bad\.cache_read_tokens/);
+  assert.match(select.sql, /good\.cache_creation_tokens = bad\.cache_creation_tokens/);
+  assert.match(select.sql, /good\.user_id IS NOT DISTINCT FROM bad\.user_id/);
+  assert.match(select.sql, /good\.host IS NOT DISTINCT FROM bad\.host/);
+  assert.ok(deletion);
+  assert.match(deletion.sql, /dedup_key = ANY/);
+  assert.deepEqual(deletion.params?.[0], ["replayed-1"]);
+  assert.ok(queries.some(({ sql }) => sql.includes("DELETE FROM usage_daily_user")));
+  assert.deepEqual(result, {
+    scanned: 1,
+    reconciled: 1,
+    affectedBuckets: [new Date("2026-07-13T00:00:00.000Z")],
+    hasMore: false,
+  });
+});
+
 test("Postgres 미확정 모델 진단은 범위 안 unpriced만 모델별로 반환한다", async () => {
   let capturedSql = "";
   let capturedParams: unknown[] = [];

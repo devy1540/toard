@@ -265,6 +265,19 @@ export interface PricingRepairBatchResult {
   hasMore: boolean;
 }
 
+export interface UsageReplayReconciliationRequest {
+  from: Date;
+  to: Date;
+  limit: number;
+}
+
+export interface UsageReplayReconciliationResult {
+  scanned: number;
+  reconciled: number;
+  affectedBuckets: Date[];
+  hasMore: boolean;
+}
+
 export interface UserUsage {
   overview: OverviewStats;
   daily: DailyPoint[];
@@ -288,6 +301,10 @@ export interface StorageBackend {
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
   ): Promise<PricingRepairBatchResult>;
+  /** 모델 문맥 전에 재생된 Codex 사용량 중 모델이 있는 원본과 정확히 일치하는 행만 보정한다. */
+  reconcileCodexReplayUsage(
+    request: UsageReplayReconciliationRequest,
+  ): Promise<UsageReplayReconciliationResult>;
 
   // ── 읽기 (대시보드) ──
   /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */

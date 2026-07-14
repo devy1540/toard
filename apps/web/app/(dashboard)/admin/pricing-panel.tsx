@@ -39,7 +39,9 @@ export function PricingSyncPanel({
     };
   }, []);
 
-  const healthy = status.repair.state === "idle" && status.repair.remainingUnpricedEvents === 0;
+  const healthy = status.repair.state === "idle"
+    && status.repair.remainingUnpricedEvents === 0
+    && status.repair.lastSucceededAt != null;
   return (
     <div className="space-y-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
@@ -63,8 +65,9 @@ export function PricingSyncPanel({
             {t(`system.repairStates.${status.repair.state}`)}
           </Badge>
         </div>
-        <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
+        <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-4">
           <div><dt className="text-muted-foreground inline">{t("system.recoveredEvents")}: </dt><dd className="inline">{status.repair.recoveredEvents.toLocaleString()}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.reconciledEvents")}: </dt><dd className="inline">{status.repair.reconciledEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.remainingEvents")}: </dt><dd className="inline">{status.repair.remainingUnpricedEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.lastRepair")}: </dt><dd className="inline">{status.repair.lastSucceededAt ? new Date(status.repair.lastSucceededAt).toLocaleString() : "—"}</dd></div>
         </dl>

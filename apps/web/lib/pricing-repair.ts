@@ -27,6 +27,7 @@ export type PricingRepairStatusRecord = {
   targetTo: Date | null;
   processedEvents: number;
   recoveredEvents: number;
+  reconciledEvents: number;
   remainingUnpricedEvents: number;
   unresolvedModels: PricingUnresolvedModel[];
   lastStartedAt: Date | null;
@@ -46,6 +47,7 @@ type PricingRepairStatusRow = {
   target_to: Date | null;
   processed_events: string | number;
   recovered_events: string | number;
+  reconciled_events: string | number;
   remaining_unpriced_events: string | number;
   unresolved_models: PricingUnresolvedModel[] | null;
   last_started_at: Date | null;
@@ -60,7 +62,7 @@ type PricingRepairStatusRow = {
 };
 
 const SELECT_FIELDS = `
-  generation, state, target_to, processed_events, recovered_events,
+  generation, state, target_to, processed_events, recovered_events, reconciled_events,
   remaining_unpriced_events, unresolved_models, last_started_at, last_succeeded_at, last_error,
   adaptive_limit, load_state, eligible_since, next_attempt_at,
   consecutive_failures, updated_at`;
@@ -72,6 +74,7 @@ function mapStatus(row: PricingRepairStatusRow): PricingRepairStatusRecord {
     targetTo: row.target_to,
     processedEvents: Number(row.processed_events),
     recoveredEvents: Number(row.recovered_events),
+    reconciledEvents: Number(row.reconciled_events),
     remainingUnpricedEvents: Number(row.remaining_unpriced_events),
     unresolvedModels: row.unresolved_models ?? [],
     lastStartedAt: row.last_started_at,
@@ -96,6 +99,7 @@ export type PricingRepairProgress = {
   state: Exclude<PricingRepairState, "running" | "failed">;
   processed: number;
   recovered: number;
+  reconciled: number;
   remaining: number;
   unresolvedModels: PricingUnresolvedModel[];
   adaptiveLimit: number;
@@ -154,16 +158,17 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
        SET state = $2,
            processed_events = processed_events + $3,
            recovered_events = recovered_events + $4,
-           remaining_unpriced_events = $5,
-           unresolved_models = $6::jsonb,
-           last_succeeded_at = $7,
+           reconciled_events = reconciled_events + $5,
+           remaining_unpriced_events = $6,
+           unresolved_models = $7::jsonb,
+           last_succeeded_at = $8,
            last_error = NULL,
-           adaptive_limit = $8,
-           load_state = $9,
-           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $7) ELSE NULL END,
-           next_attempt_at = $10,
+           adaptive_limit = $9,
+           load_state = $10,
+           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $8) ELSE NULL END,
+           next_attempt_at = $11,
            consecutive_failures = 0,
-           updated_at = $7
+           updated_at = $8
        WHERE singleton AND generation = $1::timestamptz
        RETURNING singleton`,
       [
@@ -171,6 +176,7 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
         input.state,
         input.processed,
         input.recovered,
+        input.reconciled,
         input.remaining,
         JSON.stringify(input.unresolvedModels),
         input.at,
@@ -293,47 +299,36 @@ export async function runPricingRepairTaskWith(
   if (!claimed?.generation || !claimed.targetTo) return "superseded";
   const from = new Date(claimed.targetTo.getTime() - RETENTION_MS);
   try {
-    const [schedule, diagnostics] = await Promise.all([
-      dependencies.getSchedule(),
-      dependencies.storage.getUnpricedUsageModels(from, claimed.targetTo),
-    ]);
-    const models = supportedModels(diagnostics, schedule);
-    if (models.length === 0) {
-      const remaining = diagnostics.reduce((sum, item) => sum + item.events, 0);
-      const at = dependencies.now();
-      const state = remaining === 0 ? "idle" : "waiting_for_catalog";
-      const applied = await dependencies.repository.markProgress({
-        generation: claimed.generation,
-        state,
-        processed: 0,
-        recovered: 0,
-        remaining,
-        unresolvedModels: unresolvedModels(diagnostics),
-        adaptiveLimit: claimed.adaptiveLimit,
-        loadState: "normal",
-        nextAttemptAt: state === "waiting_for_catalog" ? new Date(at.getTime() + WAITING_RETRY_MS) : null,
-        at,
-      });
-      return applied ? "success" : "superseded";
-    }
-
-    const result = await dependencies.storage.repairUnpricedUsage({
+    const replay = await dependencies.storage.reconcileCodexReplayUsage({
       from,
       to: claimed.targetTo,
-      models,
       limit: claimed.adaptiveLimit,
-      generation: claimed.generation,
-    }, (event) => {
-      const resolved = resolveCostAt({
-        ...event,
-        occurredAt: event.ts,
-        schedule,
-        mode: "calculate",
-      });
-      return resolved.status === "priced" && resolved.pricingRevisionId
-        ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId }
-        : null;
     });
+    const schedule = await dependencies.getSchedule();
+    let result = { scanned: 0, recovered: 0, affectedBuckets: [] as Date[], hasMore: false };
+    if (!replay.hasMore) {
+      const diagnostics = await dependencies.storage.getUnpricedUsageModels(from, claimed.targetTo);
+      const models = supportedModels(diagnostics, schedule);
+      if (models.length > 0) {
+        result = await dependencies.storage.repairUnpricedUsage({
+          from,
+          to: claimed.targetTo,
+          models,
+          limit: claimed.adaptiveLimit,
+          generation: claimed.generation,
+        }, (event) => {
+          const resolved = resolveCostAt({
+            ...event,
+            occurredAt: event.ts,
+            schedule,
+            mode: "calculate",
+          });
+          return resolved.status === "priced" && resolved.pricingRevisionId
+            ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId }
+            : null;
+        });
+      }
+    }
     const after = await dependencies.storage.getUnpricedUsageModels(from, claimed.targetTo);
     const remaining = after.reduce((sum, item) => sum + item.events, 0);
     const remainingSupported = supportedModels(after, schedule).length > 0;
@@ -341,14 +336,19 @@ export async function runPricingRepairTaskWith(
     const adaptive = nextPricingRepairBatchLimit(
       claimed.adaptiveLimit,
       at.getTime() - startedAt.getTime(),
-      result.scanned >= claimed.adaptiveLimit,
+      replay.hasMore || result.scanned >= claimed.adaptiveLimit,
     );
-    const state = remaining === 0 ? "idle" : remainingSupported ? "pending" : "waiting_for_catalog";
+    const state = replay.hasMore || result.hasMore || remainingSupported
+      ? "pending"
+      : remaining === 0
+        ? "idle"
+        : "waiting_for_catalog";
     const applied = await dependencies.repository.markProgress({
       generation: claimed.generation,
       state,
-      processed: result.scanned,
+      processed: replay.scanned + result.scanned,
       recovered: result.recovered,
+      reconciled: replay.reconciled,
       remaining,
       unresolvedModels: unresolvedModels(after),
       adaptiveLimit: adaptive.limit,

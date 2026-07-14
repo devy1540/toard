@@ -154,6 +154,11 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     let Some(info) = item.get("info").and_then(Value::as_object) else {
                         continue;
                     };
+                    // subagent rollout 앞부분에는 부모 세션 token_count가 재생될 수 있다.
+                    // 이 세션의 turn_context(model)가 나오기 전 값은 자체 사용량이 아니다.
+                    let Some(current_model) = model.as_ref().filter(|value| !value.is_empty()) else {
+                        continue;
+                    };
                     if let Some(total) = info.get("total_token_usage").and_then(Value::as_object) {
                         let count = |key: &str| total.get(key).and_then(Value::as_u64).unwrap_or(0);
                         let current = (count("input_tokens"), count("output_tokens"));
@@ -170,7 +175,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     let usage = RawUsage {
                         ts_ms,
                         session_id: session_id.as_deref().map(str::to_string),
-                        model: model.clone(),
+                        model: Some(current_model.clone()),
                         message_id: None,
                         input_tokens: count("input_tokens").saturating_sub(cached),
                         output_tokens: count("output_tokens"),
@@ -328,6 +333,11 @@ fn parse_rollout_usage(path: &Path) -> Vec<RawUsage> {
         let Some(info) = p.get("info").and_then(Value::as_object) else {
             continue;
         };
+        // subagent rollout 앞부분에는 부모 세션 token_count가 재생될 수 있다.
+        // 이 세션의 turn_context(model)가 나오기 전 값은 자체 사용량이 아니다.
+        let Some(current_model) = model.as_ref().filter(|value| !value.is_empty()) else {
+            continue;
+        };
 
         // 중복 방출 dedup: total_token_usage(누적)가 직전과 같으면 같은 턴 재방출 → 스킵.
         // total 부재(구/특수 포맷)면 비교 불가라 그대로 emit(실측상 total 은 항상 존재).
@@ -360,7 +370,7 @@ fn parse_rollout_usage(path: &Path) -> Vec<RawUsage> {
                 .and_then(iso_to_epoch_ms)
                 .unwrap_or(fallback),
             session_id: session_id.clone(),
-            model: model.clone(),
+            model: Some(current_model.clone()),
             // token_count 엔 message id 가 없음 → dedup 은 session+ts+model+in+out(§4.3).
             message_id: None,
             input_tokens,
@@ -542,12 +552,44 @@ mod tests {
     }
 
     #[test]
+    fn skips_replayed_subagent_usage_before_first_turn_context() {
+        let tmp = TempDir::new("codex-subagent-replay");
+        let path = tmp.write(
+            "sessions/2026/07/13/rollout.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"session_id":"subagent-1","source":{"subagent":{"thread_spawn":true}}}}"#,
+                // Codex Desktop가 부모 기록을 재생한 구간: 아직 이 세션의 모델 문맥이 없다.
+                r#"{"timestamp":"2026-07-13T09:14:50.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+                r#"{"timestamp":"2026-07-13T09:14:56.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                // 같은 누적값이어도 turn_context 뒤의 실제 사용량은 한 번 수집해야 한다.
+                r#"{"timestamp":"2026-07-13T09:14:57.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let usage_only = Codex.parse_file(&path);
+        let parsed_all = Codex.parse_changed(&path, false, false);
+
+        for usages in [&usage_only, &parsed_all.usage] {
+            assert_eq!(usages.len(), 1, "모델 문맥 이전 재생분은 수집하지 않는다");
+            assert_eq!(usages[0].model.as_deref(), Some("gpt-5.6-sol"));
+            assert_eq!(
+                usages[0].ts_ms,
+                iso_to_epoch_ms("2026-07-13T09:14:57.000Z").unwrap(),
+            );
+        }
+    }
+
+    #[test]
     fn usage_saturates_when_cached_exceeds_input() {
         let tmp = TempDir::new("codex-usage-sat");
         // 방어: cached>input 이면 saturating_sub 로 0(음수 언더플로 없음).
         let path = tmp.write(
             "sessions/x.jsonl",
-            r#"{"timestamp":"2026-07-06T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":150,"output_tokens":5},"total_token_usage":{"input_tokens":100,"output_tokens":5}}}}"#,
+            &[
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-07-06T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":150,"output_tokens":5},"total_token_usage":{"input_tokens":100,"output_tokens":5}}}}"#,
+            ].join("\n"),
         );
         let recs = Codex.parse_file(&path);
         assert_eq!(recs.len(), 1);
@@ -587,7 +629,10 @@ mod tests {
 
         let tmp = TempDir::new("codex-benchmark");
         let mut lines =
-            vec![r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string()];
+            vec![
+                r#"{"type":"session_meta","payload":{"session_id":"bench"}}"#.to_string(),
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#.to_string(),
+            ];
         const RECORDS: usize = 5_000;
         for index in 1..=RECORDS {
             lines.push(

@@ -23,6 +23,7 @@ test("관리자 가격 상태 API는 자동 복구 DTO만 반환한다", async (
     repair: {
       state: "running",
       recoveredEvents: 120,
+      reconciledEvents: 12533,
       remainingUnpricedEvents: 8,
       lastSucceededAt: "2026-07-14T00:10:00.000Z",
     },

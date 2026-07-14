@@ -2,6 +2,11 @@
 // UsageEvent(wire.ts)와 형제 계약이지만 본문(text)을 실어 나른다.
 // userId 는 본문에 없음 — 서버가 토큰으로 확정(§10.1). 암호화는 서버 몫이라 여기선 평문 text.
 // (shim 이 실제로 붙으면 core 로 승격 + golden fixture 로 드리프트 검증 예정)
+import {
+  E2eeContractError,
+  parseE2eePromptRecordsBody,
+  type E2eePromptRecordWire,
+} from "./e2ee-contract";
 
 export class PromptWireError extends Error {
   constructor(
@@ -70,4 +75,36 @@ export function parsePromptRecordsBody(body: unknown): PromptRecordWire[] {
       throw e;
     }
   });
+}
+
+export type ParsedPromptBatch =
+  | { schema: "server_v1"; records: PromptRecordWire[] }
+  | { schema: "e2ee_v1"; records: E2eePromptRecordWire[] };
+
+/** 첫 레코드 schema로 배치를 고정하고 평문/E2EE 혼합을 fail-closed 한다. */
+export function parsePromptBatch(body: unknown): ParsedPromptBatch {
+  if (!Array.isArray(body)) throw new PromptWireError("본문은 PromptRecord 배열이어야 합니다");
+  if (body.length === 0) return { schema: "server_v1", records: [] };
+  const schemas = new Set(
+    body.map((item) =>
+      typeof item === "object" && item !== null && !Array.isArray(item)
+        ? (item as Record<string, unknown>).schema
+        : undefined,
+    ),
+  );
+  if (schemas.has("e2ee_v1") && (schemas.size !== 1 || !schemas.has("e2ee_v1"))) {
+    throw new PromptWireError("server_v1과 e2ee_v1 레코드를 혼합할 수 없습니다");
+  }
+  if (schemas.size === 1 && schemas.has("e2ee_v1")) {
+    try {
+      return { schema: "e2ee_v1", records: parseE2eePromptRecordsBody(body) };
+    } catch (error) {
+      if (error instanceof E2eeContractError) throw new PromptWireError(error.message);
+      throw error;
+    }
+  }
+  if ([...schemas].some((schema) => schema !== undefined)) {
+    throw new PromptWireError("지원하지 않는 prompt schema입니다");
+  }
+  return { schema: "server_v1", records: parsePromptRecordsBody(body) };
 }

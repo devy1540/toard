@@ -51,8 +51,8 @@ fn print_usage() {
   collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
           [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
           [--quiet]            무변경 시 무출력 (데몬 주기 실행용 — 전송·오류는 출력)
-                               본문 수집은 opt-in(기본 off): TOARD_SHIM_COLLECT_CONTENT=1
-                               — 프롬프트/응답 텍스트를 /v1/prompts 로 전송(서버가 암호화)
+                               본문 수집은 opt-in(기본 off). e2ee setup 후 로컬 암호화하여
+                               /v1/prompts 로 전송. 기존 true 설정은 server_v1 호환 모드
   daemon install|uninstall|status
                                주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
                                install --interval <초> (기본 300, 하한 60)

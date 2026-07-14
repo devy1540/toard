@@ -76,7 +76,9 @@ export const VALID_ACTIVATION_INPUT = {
   wrappers: [VALID_RECOVERY_WRAPPER, VALID_DEVICE_WRAPPER],
 };
 
-export function createRecordingDb(options: { ownerUserId?: string } = {}) {
+export function createRecordingDb(
+  options: { ownerUserId?: string; contentState?: "pending" | "active" } = {},
+) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   return {
     calls,
@@ -90,7 +92,7 @@ export function createRecordingDb(options: { ownerUserId?: string } = {}) {
               content_owner_id: VALID_E2EE_RECORD.contentOwnerId,
               recovery_salt: Buffer.from(VALID_RECOVERY_WRAPPER.publicSaltOrInput!, "base64url"),
               active_key_version: 1,
-              state: "pending",
+              state: options.contentState ?? "pending",
             },
           ],
           rowCount: 1,

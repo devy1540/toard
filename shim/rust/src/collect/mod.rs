@@ -73,7 +73,7 @@ pub struct RawUsage {
 }
 
 /// 어댑터가 로그에서 뽑는 원시 본문 레코드 (프롬프트/응답 텍스트).
-/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집되며, 암호화는 서버 몫(shim 은 평문 전송).
+/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집된다. e2ee_v1에서는 전송 전 로컬 암호화한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawContent {
     pub ts_ms: i64,
@@ -265,9 +265,11 @@ pub fn content_enabled() -> bool {
 
 pub fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
     use crate::credentials::ContentCollectionMode;
+    let stored = read_credentials().collect_content;
     match std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref() {
+        Some("1" | "true" | "on" | "yes") if stored == ContentCollectionMode::E2eeV1 => stored,
         Some(value) => ContentCollectionMode::parse(value),
-        _ => read_credentials().collect_content,
+        _ => stored,
     }
 }
 
@@ -342,6 +344,68 @@ fn to_prompts_body(adapter: &str, records: &[RawContent]) -> String {
         })
         .collect();
     serde_json::Value::Array(arr).to_string()
+}
+
+fn to_e2ee_prompts_body(
+    adapter: &str,
+    owner_id: &str,
+    key_version: u16,
+    uck: &[u8; 32],
+    records: &[RawContent],
+) -> Result<String, crate::content_crypto::ContentCryptoError> {
+    use crate::content_crypto::{encrypt_record, ContentMetadata};
+    let rows = records
+        .iter()
+        .map(|record| {
+            let metadata = ContentMetadata {
+                schema: "e2ee_v1".into(),
+                content_owner_id: owner_id.into(),
+                dedup_key: content_dedup_key(adapter, record),
+                provider_key: adapter.into(),
+                turn_role: record.role.into(),
+                ts: iso::epoch_ms_to_iso(record.ts_ms),
+            };
+            let encrypted = encrypt_record(uck, &metadata, record.text.as_bytes())?;
+            Ok(serde_json::json!({
+                "schema": "e2ee_v1",
+                "algorithm": "AES-256-GCM",
+                "aadVersion": 1,
+                "contentOwnerId": metadata.content_owner_id,
+                "contentKeyVersion": key_version,
+                "dedupKey": metadata.dedup_key,
+                "sessionId": record.session_id,
+                "providerKey": metadata.provider_key,
+                "turnRole": metadata.turn_role,
+                "ts": metadata.ts,
+                "wrappedDek": b64url(&encrypted.wrapped_dek),
+                "dekWrapIv": b64url(&encrypted.dek_wrap_iv),
+                "dekWrapAuthTag": b64url(&encrypted.dek_wrap_auth_tag),
+                "iv": b64url(&encrypted.iv),
+                "ciphertext": b64url(&encrypted.ciphertext),
+                "authTag": b64url(&encrypted.auth_tag),
+            }))
+        })
+        .collect::<Result<Vec<serde_json::Value>, crate::content_crypto::ContentCryptoError>>()?;
+    Ok(serde_json::Value::Array(rows).to_string())
+}
+
+fn b64url(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut output = String::with_capacity((bytes.len() * 4 + 2) / 3);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[(((first & 3) << 4) | (second >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(ALPHABET[(((second & 15) << 2) | (third >> 6)) as usize] as char);
+        }
+        if chunk.len() > 2 {
+            output.push(ALPHABET[(third & 63) as usize] as char);
+        }
+    }
+    output
 }
 
 const CHUNK: usize = 1000;
@@ -656,6 +720,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 adapter.as_ref(),
                 &endpoint,
                 token.as_deref(),
+                &creds,
                 dry_run,
                 quiet,
                 since_ms,
@@ -727,6 +792,7 @@ fn collect_content_for(
     adapter: &dyn LogAdapter,
     endpoint: &str,
     token: Option<&str>,
+    credentials: &crate::credentials::Credentials,
     dry_run: bool,
     quiet: bool,
     since_ms: i64,
@@ -787,8 +853,13 @@ fn collect_content_for(
     }
 
     if dry_run {
+        let scheme = match credentials.collect_content {
+            crate::credentials::ContentCollectionMode::E2eeV1 => "e2ee_v1",
+            crate::credentials::ContentCollectionMode::ServerV1 => "server_v1",
+            crate::credentials::ContentCollectionMode::Off => "off",
+        };
         println!(
-            "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 (since {}) [dry-run]",
+            "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 · {scheme} (since {}) [dry-run]",
             files.len(),
             records.len(),
             if since_ms <= 0 {
@@ -810,10 +881,47 @@ fn collect_content_for(
             println!("{key} 본문: 새 레코드 없음 (변경 {changed}개)");
         }
     } else {
+        use crate::content_keys::{ContentKeyStore, SystemContentKeyStore};
+        let e2ee_material = match credentials.collect_content {
+            crate::credentials::ContentCollectionMode::E2eeV1 => {
+                let Some(owner_id) = credentials.content_owner_id.as_deref() else {
+                    eprintln!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 소유자 설정이 없습니다");
+                    return true;
+                };
+                let Some(key_version) = credentials.content_key_version else {
+                    eprintln!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 키 버전 설정이 없습니다");
+                    return true;
+                };
+                let uck = match SystemContentKeyStore.get_uck(owner_id, key_version) {
+                    Ok(uck) => uck,
+                    Err(_) => {
+                        eprintln!("toard-shim: {key} E2EE 수집 실패 — 운영체제 보안 저장소에서 콘텐츠 키를 불러올 수 없습니다");
+                        return true;
+                    }
+                };
+                Some((owner_id, key_version, uck))
+            }
+            crate::credentials::ContentCollectionMode::ServerV1 => None,
+            crate::credentials::ContentCollectionMode::Off => return false,
+        };
         let token = token.expect("dry_run 아니면 토큰 존재");
         let (mut inserted, mut deduped) = (0u64, 0u64);
         for chunk in records.chunks(CHUNK) {
-            match post::post_prompts(endpoint, token, &to_prompts_body(key, chunk)) {
+            let body = match &e2ee_material {
+                Some((owner_id, key_version, uck)) => {
+                    match to_e2ee_prompts_body(key, owner_id, *key_version, uck, chunk) {
+                        Ok(body) => body,
+                        Err(_) => {
+                            eprintln!(
+                                "toard-shim: {key} E2EE 수집 실패 — 로컬 암호화에 실패했습니다"
+                            );
+                            return true;
+                        }
+                    }
+                }
+                None => to_prompts_body(key, chunk),
+            };
+            match post::post_prompts(endpoint, token, &body) {
                 Ok(Some(r)) => {
                     inserted += r.inserted;
                     deduped += r.deduped;
@@ -1029,6 +1137,28 @@ mod tests {
             Some(64),
             "sha256 hex"
         );
+    }
+
+    #[test]
+    fn to_e2ee_prompts_body_contains_ciphertext_only() {
+        let mut record = sample_content();
+        record.text = "secret prompt".into();
+        let body = to_e2ee_prompts_body(
+            "codex",
+            "018f47d0-4d47-7b04-950b-7d18a86e1b43",
+            1,
+            &[7u8; 32],
+            &[record],
+        )
+        .unwrap();
+        assert!(!body.contains("secret prompt"));
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value[0]["schema"], "e2ee_v1");
+        assert_eq!(value[0]["algorithm"], "AES-256-GCM");
+        assert!(value[0].get("text").is_none());
+        assert!(value[0]["ciphertext"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty()));
     }
 
     #[test]

@@ -59,11 +59,6 @@
   "moreDevices": "+{n} more devices",
   "rhythmTitle": "Hourly rhythm",
   "rhythmDescription": "Token density by weekday and hour",
-  "recentSessionsTitle": "Recent sessions",
-  "recentSessionsDescription": "Sessions with history enabled",
-  "recentSessionsUnavailable": "Content history is disabled, so recent session previews are not shown.",
-  "noRecentSessions": "No saved sessions in the selected period.",
-  "viewHistory": "History",
   "toolActivity": {
     "title": "AI tool activity",
     "description": "MCP, skill, and plugin activity confirmed in the selected period",

@@ -274,6 +274,8 @@ export interface UsageReplayReconciliationRequest {
 export interface UsageReplayReconciliationResult {
   scanned: number;
   reconciled: number;
+  /** 이번 삭제가 반영된 뒤 보존 범위에 남은 전체 unpriced 이벤트 수. */
+  remainingUnpriced: number;
   affectedBuckets: Date[];
   hasMore: boolean;
 }

@@ -42,7 +42,7 @@ export type PricingRepairStatusRecord = {
 };
 
 type PricingRepairStatusRow = {
-  generation: Date | string | null;
+  generation: string | null;
   state: PricingRepairState;
   target_to: Date | null;
   processed_events: string | number;
@@ -61,15 +61,16 @@ type PricingRepairStatusRow = {
   updated_at: Date;
 };
 
+// pg의 기본 TIMESTAMPTZ parser는 마이크로초를 Date의 밀리초로 잘라 generation exact match를 깨뜨린다.
 const SELECT_FIELDS = `
-  generation, state, target_to, processed_events, recovered_events, reconciled_events,
+  generation::text AS generation, state, target_to, processed_events, recovered_events, reconciled_events,
   remaining_unpriced_events, unresolved_models, last_started_at, last_succeeded_at, last_error,
   adaptive_limit, load_state, eligible_since, next_attempt_at,
   consecutive_failures, updated_at`;
 
 function mapStatus(row: PricingRepairStatusRow): PricingRepairStatusRecord {
   return {
-    generation: row.generation instanceof Date ? row.generation.toISOString() : row.generation,
+    generation: row.generation,
     state: row.state,
     targetTo: row.target_to,
     processedEvents: Number(row.processed_events),

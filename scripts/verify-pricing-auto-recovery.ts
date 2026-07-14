@@ -404,7 +404,7 @@ function assertAfter(before: Summary, after: Summary, label: string): void {
 async function resetRepairStatus(pool: Pool, fixture: Fixture): Promise<void> {
   await pool.query(
     `UPDATE pricing_repair_status
-     SET generation = $1,
+     SET generation = $1::timestamptz + INTERVAL '911 microseconds',
          state = 'pending',
          target_to = $2,
          processed_events = 0,

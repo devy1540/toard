@@ -268,3 +268,72 @@ test("가격 복구 실패 backoff는 최대 5분으로 제한한다", async () 
   ), true);
   assert.match(query, /LEAST\(300,/);
 });
+
+test("가격 복구 repository는 PostgreSQL generation 마이크로초를 성공·실패 저장까지 보존한다", async () => {
+  const exactGeneration = "2026-07-14 01:56:45.690911+00";
+  const pool = {
+    async query(sql: string, params: unknown[] = []) {
+      if (sql.includes("SET state = 'running'")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            generation: sql.includes("generation::text AS generation")
+              ? exactGeneration
+              : new Date(exactGeneration),
+            state: "running",
+            target_to: NOW,
+            processed_events: 0,
+            recovered_events: 0,
+            reconciled_events: 0,
+            remaining_unpriced_events: 100,
+            unresolved_models: [],
+            last_started_at: NOW,
+            last_succeeded_at: null,
+            last_error: null,
+            adaptive_limit: 100,
+            load_state: "normal",
+            eligible_since: NOW,
+            next_attempt_at: NOW,
+            consecutive_failures: 0,
+            updated_at: NOW,
+          }],
+        };
+      }
+      if (sql.includes("SET state = $2")) {
+        return {
+          rowCount: params[0] === exactGeneration ? 1 : 0,
+          rows: params[0] === exactGeneration ? [{ singleton: true }] : [],
+        };
+      }
+      if (sql.includes("SET state = 'failed'")) {
+        return {
+          rowCount: params[0] === exactGeneration ? 1 : 0,
+          rows: params[0] === exactGeneration ? [{ singleton: true }] : [],
+        };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const repository = new PgPricingRepairRepository(pool);
+  const claimed = await repository.claim(NOW);
+
+  assert.equal(claimed?.generation, exactGeneration);
+  assert.equal(await repository.markProgress({
+    generation: claimed!.generation!,
+    state: "pending",
+    processed: 100,
+    recovered: 0,
+    reconciled: 100,
+    remaining: 9_833,
+    unresolvedModels: [],
+    adaptiveLimit: 125,
+    loadState: "normal",
+    nextAttemptAt: NOW,
+    at: NOW,
+  }), true);
+  assert.equal(await repository.markFailed(
+    claimed!.generation!,
+    NOW,
+    "temporary failure",
+  ), true);
+});

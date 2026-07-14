@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
-import { Client } from "pg";
+import { Client, type Pool } from "pg";
+import { PgPricingRepairRepository } from "../apps/web/lib/pricing-repair";
 
 const execFileAsync = promisify(execFile);
 const PREREQUISITE_MIGRATIONS = [
@@ -90,6 +91,50 @@ test("migration 28은 기존 설치의 가격 자동 복구를 즉시 pending으
     assert.ok(initialized.rows[0]?.eligible_since);
     assert.ok(initialized.rows[0]?.next_attempt_at);
     assert.equal(Number(initialized.rows[0]?.reconciled_events), 0);
+
+    const exactGeneration = "2026-07-14 01:56:45.690911+00";
+    await client.query(
+      `UPDATE pricing_repair_status
+       SET generation = $1::timestamptz,
+           state = 'pending',
+           target_to = $2,
+           eligible_since = $2,
+           next_attempt_at = $2,
+           updated_at = $2
+       WHERE singleton`,
+      [exactGeneration, new Date("2026-07-14T02:00:00.000Z")],
+    );
+    const repository = new PgPricingRepairRepository(client as unknown as Pool);
+    const claimed = await repository.claim(new Date("2026-07-14T02:00:01.000Z"));
+    assert.equal(claimed?.generation, exactGeneration);
+    assert.equal(await repository.markProgress({
+      generation: claimed!.generation!,
+      state: "pending",
+      processed: 100,
+      recovered: 0,
+      reconciled: 100,
+      remaining: 9_833,
+      unresolvedModels: [],
+      adaptiveLimit: 125,
+      loadState: "normal",
+      nextAttemptAt: new Date("2026-07-14T02:00:02.000Z"),
+      at: new Date("2026-07-14T02:00:02.000Z"),
+    }), true);
+    const progressed = await client.query<{
+      state: string;
+      processed_events: string;
+      reconciled_events: string;
+      remaining_unpriced_events: string;
+    }>(
+      `SELECT state, processed_events, reconciled_events, remaining_unpriced_events
+       FROM pricing_repair_status WHERE singleton`,
+    );
+    assert.deepEqual(progressed.rows[0], {
+      state: "pending",
+      processed_events: "100",
+      reconciled_events: "100",
+      remaining_unpriced_events: "9833",
+    });
 
     const constraint = await client.query<{ definition: string }>(`
       SELECT pg_get_constraintdef(oid) AS definition

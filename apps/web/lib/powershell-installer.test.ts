@@ -29,6 +29,14 @@ test("installer escapes endpoint and applies content default only when absent", 
   );
 });
 
+test("E2EE installer remains off until local setup completes", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+  assert.match(script, /-eq 'e2ee_v1'/);
+  assert.match(script, /collect_content=off/);
+  assert.match(script, /e2ee_setup_requested=true/);
+  assert.doesNotMatch(script, /mnemonic|recovery_secret|content_owner_id=/i);
+});
+
 const testPowerShell =
   process.env.TOARD_TEST_PWSH ?? (process.platform === "win32" ? "pwsh" : undefined);
 

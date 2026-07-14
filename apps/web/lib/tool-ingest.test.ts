@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ToolActivityEvent, ToolInventorySnapshot } from "@toard/core";
 import { ToolWireParseError } from "@toard/core";
-import { finalizeToolActivity, finalizeToolInventory, toolIngestClientError } from "./tool-ingest";
+import { finalizeToolActivity, finalizeToolInventory, readBoundedJson, toolIngestClientError } from "./tool-ingest";
 
 const event: ToolActivityEvent = {
   dedupKey: "a".repeat(64),
@@ -55,4 +55,34 @@ test("수집 API는 클라이언트 오류만 4xx로 변환한다", () => {
   assert.equal(toolIngestClientError(new SyntaxError("bad json"))?.status, 400);
   assert.equal(toolIngestClientError(new ToolWireParseError("bad field"))?.status, 400);
   assert.equal(toolIngestClientError(new Error("database unavailable")), null);
+});
+
+test("bounded JSON reader는 Content-Length 초과를 body 읽기 전에 거부한다", async () => {
+  const request = new Request("http://localhost", {
+    method: "POST",
+    headers: { "Content-Length": "4097" },
+    body: "{}",
+  });
+  await assert.rejects(readBoundedJson(request, 4096), RangeError);
+});
+
+test("bounded JSON reader는 stream이 상한을 넘는 즉시 취소한다", async () => {
+  let cancelled = false;
+  let pulls = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls += 1;
+      controller.enqueue(new Uint8Array(1024));
+      if (pulls === 10) controller.close();
+    },
+    cancel() { cancelled = true; },
+  });
+  const request = new Request("http://localhost", {
+    method: "POST",
+    body,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  await assert.rejects(readBoundedJson(request, 1500), RangeError);
+  assert.equal(cancelled, true);
+  assert.ok(pulls < 10);
 });

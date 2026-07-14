@@ -21,6 +21,7 @@ pub fn run(args: &[String]) -> ! {
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
+        Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
@@ -50,18 +51,36 @@ fn print_usage() {
   collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
           [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
           [--quiet]            무변경 시 무출력 (데몬 주기 실행용 — 전송·오류는 출력)
-                               본문 수집은 opt-in(기본 off): TOARD_SHIM_COLLECT_CONTENT=1
-                               — 프롬프트/응답 텍스트를 /v1/prompts 로 전송(서버가 암호화)
+                               본문 수집은 opt-in(기본 off). e2ee setup 후 로컬 암호화하여
+                               /v1/prompts 로 전송. 기존 true 설정은 server_v1 호환 모드
   daemon install|uninstall|status
                                주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
                                install --interval <초> (기본 300, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
+  e2ee setup                   Recovery Kit를 저장·확인하고 E2EE 본문 수집 활성화
+  e2ee status                  로컬 E2EE 모드와 보안 저장소 키 상태 확인
+  e2ee approve [--request ID]  브라우저의 6자리 코드를 로컬에서 확인해 승인
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 2h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()
     );
+}
+
+fn e2ee_cmd(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("setup") if args.len() == 1 => crate::e2ee_setup::run(),
+        Some("status") if args.len() == 1 => crate::e2ee_setup::status(),
+        Some("approve") if args.len() == 1 => crate::e2ee_setup::approve(None),
+        Some("approve") if args.len() == 3 && args[1] == "--request" => {
+            crate::e2ee_setup::approve(Some(&args[2]))
+        }
+        _ => {
+            eprintln!("toard-shim: 사용법: toard-shim e2ee setup | e2ee status | e2ee approve [--request ID]");
+            2
+        }
+    }
 }
 
 // ── collect — 로컬 로그 pull 수집 ──

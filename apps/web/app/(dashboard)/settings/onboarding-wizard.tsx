@@ -82,6 +82,29 @@ export function OnboardingWizard({
     };
   }, [state.step, state.tokenId]);
 
+  useEffect(() => {
+    if (state.step !== "recovery") return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      try {
+        const response = await fetch("/api/content/status", { cache: "no-store" });
+        const status = response.ok ? await response.json() as { state?: string } : null;
+        if (active && status?.state === "active") {
+          dispatch({ type: "recovery-confirmed" });
+          return;
+        }
+      } catch {
+        // setup CLI가 끝날 때까지 같은 화면에서 다시 확인한다.
+      }
+      if (active) timer = setTimeout(poll, POLL_MS);
+    };
+    void poll();
+    return () => { active = false; if (timer) clearTimeout(timer); };
+  }, [state.step]);
+
+  const totalSteps = collectContent ? 4 : 3;
+
   const installCommand = useMemo(() => {
     if (!state.platform || !state.token) return "";
     return buildInstallCommand({
@@ -142,7 +165,10 @@ export function OnboardingWizard({
             {t("wizard.introPrivacyMetadata")}
           </p>
         )}
-        <Button className="w-full sm:w-auto" onClick={() => dispatch({ type: "start" })}>
+        <Button className="w-full sm:w-auto" onClick={() => {
+          dispatch({ type: "set-e2ee", enabled: collectContent });
+          dispatch({ type: "start" });
+        }}>
           {t("wizard.start")}
         </Button>
       </div>
@@ -151,7 +177,7 @@ export function OnboardingWizard({
 
   if (state.step === "platform") {
     return (
-      <WizardStep current={1} label={t("wizard.progress", { current: 1, total: 3 })}>
+      <WizardStep current={1} total={totalSteps} label={t("wizard.progress", { current: 1, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t("wizard.platformTitle")}</h2>
         <p className="text-muted-foreground text-sm">{t("wizard.platformDescription")}</p>
         <div className="grid gap-2 sm:grid-cols-3">
@@ -181,7 +207,7 @@ export function OnboardingWizard({
 
   if (state.step === "install" && state.platform) {
     return (
-      <WizardStep current={2} label={t("wizard.progress", { current: 2, total: 3 })}>
+      <WizardStep current={2} total={totalSteps} label={t("wizard.progress", { current: 2, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t(`wizard.installTitle.${state.platform}`)}</h2>
         <ol className="space-y-3 text-sm">
           <li><b>1.</b> {t(`wizard.openTerminal.${state.platform}`)}</li>
@@ -203,7 +229,7 @@ export function OnboardingWizard({
 
   if (state.step === "verifying") {
     return (
-      <WizardStep current={3} label={t("wizard.progress", { current: 3, total: 3 })}>
+      <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t("wizard.verifyTitle")}</h2>
         <p className="text-muted-foreground text-sm">{t("wizard.verifyDescription")}</p>
         <div className="bg-muted/50 rounded-lg p-5 text-center text-sm" role="status">
@@ -213,9 +239,25 @@ export function OnboardingWizard({
     );
   }
 
+  if (state.step === "recovery") {
+    return (
+      <WizardStep current={4} total={4} label={t("wizard.progress", { current: 4, total: 4 })}>
+        <h2 className="text-lg font-semibold">{t("wizard.recoveryTitle")}</h2>
+        <p className="text-muted-foreground text-sm">{t("wizard.recoveryDescription")}</p>
+        <pre className="bg-muted max-w-full overflow-x-auto rounded-lg p-3 text-left text-xs">
+          <code>toard-shim e2ee setup</code>
+        </pre>
+        <p className="text-muted-foreground text-xs">{t("wizard.recoveryPrivacy")}</p>
+        <div className="bg-muted/50 rounded-lg p-5 text-center text-sm" role="status">
+          {t("wizard.recoveryWaiting")}
+        </div>
+      </WizardStep>
+    );
+  }
+
   if (state.step === "success" && state.platform) {
     return (
-      <WizardStep current={3} label={t("wizard.progress", { current: 3, total: 3 })}>
+      <WizardStep current={totalSteps} total={totalSteps} label={t("wizard.progress", { current: totalSteps, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t("wizard.connectedTitle")}</h2>
         <p className="text-muted-foreground text-sm">
           {t("wizard.connectedDescription", {
@@ -236,7 +278,7 @@ export function OnboardingWizard({
     ? '& "$HOME\\.toard\\bin\\toard-shim.exe" doctor'
     : "toard-shim doctor";
   return (
-    <WizardStep current={3} label={t("wizard.progress", { current: 3, total: 3 })}>
+    <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
       <h2 className="text-lg font-semibold">{t("wizard.stalledTitle")}</h2>
       <p className="text-muted-foreground text-sm">{t("wizard.stalledDescription")}</p>
       <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -262,22 +304,24 @@ export function OnboardingWizard({
 
 function WizardStep({
   current,
+  total,
   label,
   children,
 }: {
   current: number;
+  total: number;
   label: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="mx-auto max-w-xl space-y-5 py-2">
-      <div className="space-y-2" role="progressbar" aria-valuemin={1} aria-valuemax={3} aria-valuenow={current} aria-label={label}>
+      <div className="space-y-2" role="progressbar" aria-valuemin={1} aria-valuemax={total} aria-valuenow={current} aria-label={label}>
         <div className="flex gap-1.5" aria-hidden="true">
-          {[1, 2, 3].map((step) => (
+          {Array.from({ length: total }, (_, index) => index + 1).map((step) => (
             <span key={step} className={`h-1.5 flex-1 rounded-full ${step <= current ? "bg-primary" : "bg-muted"}`} />
           ))}
         </div>
-        <p className="text-muted-foreground text-xs">{current}/3</p>
+        <p className="text-muted-foreground text-xs">{current}/{total}</p>
       </div>
       {children}
     </div>

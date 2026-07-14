@@ -236,6 +236,14 @@ test("settings catalogs keep wizard shape aligned", () => {
   assert.deepEqual(messageShape(ko.wizard), messageShape(en.wizard));
 });
 
+test("web test script includes lib and app tests", () => {
+  const pkg = JSON.parse(source("package.json")) as { scripts?: { test?: string } };
+  const rootPkg = JSON.parse(repoSource("package.json")) as { scripts?: { "test:migrations"?: string } };
+  assert.match(pkg.scripts?.test ?? "", /lib\/\*\.test\.ts/);
+  assert.match(pkg.scripts?.test ?? "", /app\/\*\*\/\*\.test\.ts/);
+  assert.match(rootPkg.scripts?.["test:migrations"] ?? "", /e2ee-content-migration\.integration\.test\.ts/);
+});
+
 test("personal navigation includes insights between usage and history", () => {
   const nav = source("components/dashboard/sidebar-nav.tsx");
   assert.match(nav, /key: "myUsage"[\s\S]*key: "insights"[\s\S]*key: "history"/);
@@ -530,4 +538,23 @@ test("organization page uses anonymous tool summary without drilldown", () => {
   const org = source("app/(dashboard)/org/page.tsx");
   assert.match(org, /getOrgToolSummary/);
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
+});
+
+test("history security exposes legacy migration counts and bilingual copy", () => {
+  const panel = source("app/(dashboard)/settings/history-security-panel.tsx");
+  const ko = JSON.parse(source("messages/ko/settings.json"));
+  const en = JSON.parse(source("messages/en/settings.json"));
+  assert.match(panel, /encryption_scheme/);
+  assert.match(panel, /legacy_records/);
+  assert.match(panel, /octet_length\(ciphertext\)/);
+  for (const messages of [ko, en]) {
+    assert.equal(typeof messages.historySecurity.legacyProtecting, "string");
+    assert.equal(typeof messages.historySecurity.legacyComplete, "string");
+    assert.equal(typeof messages.historySecurity.legacyBlocked, "string");
+  }
+});
+
+test("empty legacy page rechecks authoritative status instead of declaring completion", () => {
+  const history = source("app/(dashboard)/history/e2ee-history-client.tsx");
+  assert.doesNotMatch(history, /if \(result\.complete\) \{ setLegacyRemaining\(0\); return; \}/);
 });

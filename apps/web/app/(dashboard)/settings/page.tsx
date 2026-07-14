@@ -27,6 +27,7 @@ import { OnboardingWizard } from "./onboarding-wizard";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
+import { HistorySecurityPanel } from "./history-security-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -75,7 +76,7 @@ export default async function SettingsPage({
       </div>
 
       {tab === "account" ? (
-        <AccountTab hasPassword={hasPassword} linkedProviders={linkedProviders} timezone={timezone} />
+        <AccountTab userId={userId} hasPassword={hasPassword} linkedProviders={linkedProviders} timezone={timezone} />
       ) : (
         <InstallTab userId={userId} />
       )}
@@ -84,10 +85,12 @@ export default async function SettingsPage({
 }
 
 async function AccountTab({
+  userId,
   hasPassword,
   linkedProviders,
   timezone,
 }: {
+  userId: string;
   hasPassword: boolean;
   linkedProviders: string[];
   timezone: string | null;
@@ -97,6 +100,7 @@ async function AccountTab({
   const googleLinked = linkedProviders.includes("google");
   return (
     <div className="min-w-0 space-y-4">
+      {(process.env.AUTH_MODE ?? "oauth") !== "open" ? <HistorySecurityPanel userId={userId} /> : null}
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("appearance.title")}</CardTitle>

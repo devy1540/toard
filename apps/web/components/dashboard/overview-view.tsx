@@ -9,6 +9,7 @@ import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { ToolActivityCard } from "@/components/dashboard/tool-activity-card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { orderByTokens, tokenShare } from "@/lib/composition";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
@@ -404,7 +405,10 @@ export async function OverviewView({
         <section className="min-w-0 rounded-lg border p-4">
           <div className="mb-3 flex items-center justify-between gap-2">
             <div>
-              <h2 className="text-sm font-medium">{t("recentSessionsTitle")}</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm font-medium">{t("recentSessionsTitle")}</h2>
+                <Badge variant="outline" className="font-mono text-[10px]">server_v1</Badge>
+              </div>
               <p className="text-muted-foreground mt-0.5 text-xs">{t("recentSessionsDescription")}</p>
             </div>
             <Button asChild variant="ghost" size="sm">

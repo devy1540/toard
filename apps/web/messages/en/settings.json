@@ -147,7 +147,27 @@
     "progress": "Connection step {current}/{total}",
     "contentLabel": "Also record prompts and responses",
     "contentMetadataOnly": "Only usage metadata is recorded; prompts and code are not sent.",
-    "contentWithPrompts": "Prompts and responses are encrypted and recorded in My history."
+    "contentWithPrompts": "Content is encrypted on this computer before upload. Server-side keys cannot decrypt stored content.",
+    "recoveryTitle": "Save and verify your Recovery Kit",
+    "recoveryDescription": "Run the command below in the same terminal to open the local 24-word Recovery Kit flow.",
+    "recoveryPrivacy": "The 24 words and encryption key never reach the server. E2EE content collection starts only after verification.",
+    "recoveryWaiting": "Waiting for local Recovery Kit verification…"
+  },
+  "historySecurity": {
+    "title": "History security",
+    "description": "Read-only status for your E2EE key and approved devices.",
+    "active": "Active",
+    "pending": "Setting up",
+    "off": "Off",
+    "keyVersion": "Content key version",
+    "recoveryConfirmed": "Recovery Kit confirmed",
+    "approvedDevices": "Approved devices",
+    "neverUsed": "Never used",
+    "noDevices": "No approved devices.",
+    "legacyProtecting": "Protecting existing history with E2EE. {count} records remaining.",
+    "legacyBlocked": "Automatic protection stopped because {count} existing records exceed 1MB. No data was deleted.",
+    "legacyComplete": "All existing history is protected with E2EE.",
+    "noDestructiveActions": "Device revocation, key rotation, and Recovery Kit reissue will appear after safe rotation APIs are available."
   },
   "management": {
     "title": "Manage connected computers",

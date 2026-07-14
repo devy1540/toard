@@ -24,6 +24,7 @@ import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { SessionDetail } from "./session-detail";
+import { E2eeHistoryClient } from "./e2ee-history-client";
 
 export const dynamic = "force-dynamic";
 
@@ -108,6 +109,7 @@ export default async function HistoryPage({
   }
 
   const sp = await searchParams;
+  const e2eeAllowed = (process.env.AUTH_MODE ?? "oauth") !== "open";
   const providers = await getEnabledProviders();
   const providerLabel = (key: string): string => providers.find((p) => p.key === key)?.label ?? key;
 
@@ -116,6 +118,7 @@ export default async function HistoryPage({
     return (
       <div className="space-y-6">
         <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
+        <Badge variant="outline">{t("history.legacyPrivacyNote")}</Badge>
         <SessionDetail
           userId={userId}
           sessionKey={sp.session}
@@ -149,6 +152,7 @@ export default async function HistoryPage({
     return (
       <div className="space-y-6">
         <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
+        {e2eeAllowed ? <E2eeHistoryClient /> : null}
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -177,6 +181,7 @@ export default async function HistoryPage({
 
   return (
     <div className="space-y-6">
+      {e2eeAllowed ? <E2eeHistoryClient /> : null}
       <DashboardFilters
         providers={providers}
         defaultPeriod="all"
@@ -188,7 +193,7 @@ export default async function HistoryPage({
         trailing={
           <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
             <Lock className="size-3.5" />
-            {t("history.privacyNote")}
+            {t("history.legacyPrivacyNote")}
           </span>
         }
       />

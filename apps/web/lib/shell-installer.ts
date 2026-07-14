@@ -22,6 +22,7 @@ export function installScript(endpoint: string, contentDefaultOn: boolean): stri
     '  mkdir -p "$HOME/.toard"; chmod 700 "$HOME/.toard"',
     "  printf 'agent_key=%s\\nendpoint=%s\\n' \"$TOKEN\" \"$ENDPOINT\" > \"$HOME/.toard/credentials\"",
     "  case \"$COLLECT\" in",
+    "    e2ee_v1) printf 'collect_content=off\\ne2ee_setup_requested=true\\n' >> \"$HOME/.toard/credentials\"; echo 'E2EE 설정 요청됨 — toard-shim e2ee setup 을 완료해야 본문 수집이 시작됩니다.' ;;",
     "    1|true|on|yes) printf 'collect_content=true\\n' >> \"$HOME/.toard/credentials\"; echo '본문 수집 켜짐 (프롬프트·응답을 암호화해 내 계정에만 저장). 끄려면 재설치 시 TOARD_SHIM_COLLECT_CONTENT=0. 과거 백필 없이 지금부터만 수집됩니다(collect_content_since=날짜 로 과거 지정 가능).' ;;",
     "  esac",
     "  case \"$COLLECT_TOOLS\" in",

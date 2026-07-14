@@ -7,10 +7,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "node --import tsx --test lib/*.test.ts",
+    "test": "node --import tsx --test 'lib/*.test.ts' 'app/**/*.test.ts'",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hpke/core": "1.9.0",
+    "@scure/bip39": "2.2.0",
     "@auth/pg-adapter": "^1.7.4",
     "@radix-ui/react-select": "^2.1.4",
     "@radix-ui/react-slot": "^1.1.1",

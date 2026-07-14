@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ORG_LEADERBOARD_METRIC,
   cacheSharePercent,
   findPeakTokenBucket,
   getOrgChartMetric,
+  tokenLeaderboardMetrics,
   sharePercent,
   totalUsageTokens,
   usagePerActiveUser,
@@ -14,6 +16,18 @@ test("organization overview defaults its chart to tokens and keeps an explicit c
   assert.equal(getOrgChartMetric("tokens"), "tokens");
   assert.equal(getOrgChartMetric("cost"), "cost");
   assert.equal(getOrgChartMetric("unknown"), "tokens");
+});
+
+test("organization overview ranks users and calculates leaderboard bars by tokens", () => {
+  assert.equal(ORG_LEADERBOARD_METRIC, "tokens");
+  assert.deepEqual(
+    tokenLeaderboardMetrics({ tokens: 400, totalTokens: 1_000, maxTokens: 800 }),
+    { width: 50, share: 40 },
+  );
+  assert.deepEqual(
+    tokenLeaderboardMetrics({ tokens: 0, totalTokens: 0, maxTokens: 0 }),
+    { width: 0, share: null },
+  );
 });
 
 test("organization overview totals every token category", () => {

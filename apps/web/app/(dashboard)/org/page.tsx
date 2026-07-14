@@ -15,10 +15,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import {
+  ORG_LEADERBOARD_METRIC,
   cacheSharePercent,
   findPeakTokenBucket,
   getOrgChartMetric,
   sharePercent,
+  tokenLeaderboardMetrics,
   totalUsageTokens,
   usagePerActiveUser,
 } from "@/lib/org-overview";
@@ -58,20 +60,38 @@ function usageTitleKey(bucket: OrgPeriod["bucket"]): "dailyUsage" | "hourlyUsage
 function RankRow({
   row,
   rank,
-  totalCost,
-  maxCost,
+  metric,
+  total,
+  max,
   costLabels,
 }: {
   row: LeaderRow;
   rank: number;
-  totalCost: number;
-  maxCost: number;
+  metric: ChartMetric;
+  total: number;
+  max: number;
   costLabels: { partial: string; unpriced: string; legacy: string };
 }) {
-  const width = maxCost > 0 ? Math.max(3, Math.round((row.costUsd / maxCost) * 100)) : 0;
-  const share = row.costCoverage.unpricedEvents === 0 && totalCost > 0
-    ? Math.round((row.costUsd / totalCost) * 100)
-    : null;
+  let width: number;
+  let share: number | null;
+  let value: string;
+
+  if (metric === "tokens") {
+    const tokenMetrics = tokenLeaderboardMetrics({
+      tokens: row.totalTokens,
+      totalTokens: total,
+      maxTokens: max,
+    });
+    width = tokenMetrics.width;
+    share = tokenMetrics.share;
+    value = fmtCompact(row.totalTokens);
+  } else {
+    width = max > 0 ? Math.max(3, Math.round((row.costUsd / max) * 100)) : 0;
+    share = row.costCoverage.unpricedEvents === 0 && total > 0
+      ? Math.round((row.costUsd / total) * 100)
+      : null;
+    value = formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels);
+  }
 
   return (
     <div className="space-y-1.5">
@@ -81,7 +101,7 @@ function RankRow({
           {row.label}
         </span>
         <span className="ml-auto shrink-0 font-medium tabular-nums">
-          {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+          {value}
         </span>
       </div>
       <div className="ml-7 flex items-center gap-2">
@@ -101,7 +121,8 @@ function LeaderboardPreview({
   description,
   emptyTitle,
   rows,
-  totalCost,
+  metric,
+  total,
   icon,
   trailing,
   costLabels,
@@ -110,13 +131,14 @@ function LeaderboardPreview({
   description: string;
   emptyTitle: string;
   rows: LeaderRow[];
-  totalCost: number;
+  metric: ChartMetric;
+  total: number;
   icon: ReactNode;
   trailing?: ReactNode;
   costLabels: { partial: string; unpriced: string; legacy: string };
 }) {
   const shown = rows.slice(0, 5);
-  const maxCost = shown[0]?.costUsd ?? 0;
+  const max = metric === "tokens" ? shown[0]?.totalTokens ?? 0 : shown[0]?.costUsd ?? 0;
 
   return (
     <Card className="min-w-0 gap-4">
@@ -134,7 +156,7 @@ function LeaderboardPreview({
         {shown.length > 0 ? (
           <div className="space-y-4">
             {shown.map((row, i) => (
-              <RankRow key={row.key} row={row} rank={i + 1} totalCost={totalCost} maxCost={maxCost} costLabels={costLabels} />
+              <RankRow key={row.key} row={row} rank={i + 1} metric={metric} total={total} max={max} costLabels={costLabels} />
             ))}
           </div>
         ) : (
@@ -438,7 +460,7 @@ async function OverviewTab({
     storage.getOverview(period),
     storage.getOverview(previousPeriod(period)),
     storage.getDailyTimeseries(period),
-    storage.getLeaderboard({ ...period, scope: "user" }),
+    storage.getLeaderboard({ ...period, scope: "user", orderBy: ORG_LEADERBOARD_METRIC }),
     canSeeTeamRanking ? storage.getLeaderboard({ ...period, scope: "team" }) : Promise.resolve([]),
     storage.getProviderBreakdown(period),
     getOrgToolSummary(period),
@@ -491,10 +513,8 @@ async function OverviewTab({
           })
         : t("hero.noComparison")
   );
-  const topThreeCost = topUsers.slice(0, 3).reduce((sum, row) => sum + row.costUsd, 0);
-  const topThreeShare = overview.costCoverage.unpricedEvents > 0
-    ? null
-    : sharePercent(topThreeCost, overview.totalCostUsd);
+  const topThreeTokens = topUsers.slice(0, 3).reduce((sum, row) => sum + row.totalTokens, 0);
+  const topThreeShare = sharePercent(topThreeTokens, tokens);
   const peakUsage = findPeakTokenBucket(
     series.map((point) => ({
       day: point.day,
@@ -509,9 +529,9 @@ async function OverviewTab({
     : null;
   const workspaceSignals = [
     {
-      label: t("signal.topThreeCostShare"),
+      label: t("signal.topThreeTokenShare"),
       value: topThreeShare == null ? "—" : `${topThreeShare}%`,
-      sub: t("signal.topThreeCostShareSub"),
+      sub: t("signal.topThreeWorkspaceTokenShareSub"),
     },
     {
       label: t("signal.peakTokenBucket"),
@@ -608,7 +628,8 @@ async function OverviewTab({
           description={t("topUsersDescription")}
           emptyTitle={t("noUsersTitle")}
           rows={topUsers}
-          totalCost={overview.totalCostUsd}
+          metric={ORG_LEADERBOARD_METRIC}
+          total={tokens}
           icon={<Users className="text-muted-foreground size-4" />}
           costLabels={costLabels}
         />
@@ -621,7 +642,8 @@ async function OverviewTab({
             description={t("topTeamsDescription")}
             emptyTitle={t("noTeamsTitle")}
             rows={topTeams}
-            totalCost={overview.totalCostUsd}
+            metric="cost"
+            total={overview.totalCostUsd}
             icon={<Building2 className="text-muted-foreground size-4" />}
             costLabels={costLabels}
             trailing={

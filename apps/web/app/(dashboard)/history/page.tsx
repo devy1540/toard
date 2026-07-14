@@ -12,6 +12,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
+import { getE2eeContentStatus } from "@/lib/e2ee-history";
 import { fmtUsd } from "@/lib/format";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { formatCostForCoverage } from "@/lib/pricing";
@@ -101,6 +102,21 @@ export default async function HistoryPage({
   const e2eeAllowed = (process.env.AUTH_MODE ?? "oauth") !== "open";
   const providers = await getEnabledProviders();
   const providerLabel = (key: string): string => providers.find((p) => p.key === key)?.label ?? key;
+  const locale = await getLocale();
+  const timezone = await getViewerTimezone();
+
+  if (e2eeAllowed) {
+    const contentStatus = await getE2eeContentStatus(userId);
+    if (contentStatus.state !== "off") {
+      return (
+        <E2eeHistoryClient
+          providers={providers}
+          timezone={timezone}
+          previewBadgeLabel={navT("badge.preview")}
+        />
+      );
+    }
+  }
 
   // ── 상세 뷰 ──
   if (sp.session) {
@@ -119,9 +135,6 @@ export default async function HistoryPage({
   }
 
   // ── 목록 뷰 ──
-  const locale = await getLocale();
-  const timezone = await getViewerTimezone();
-
   const filter = parseFilters(sp, timezone, "all");
   const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
   const { enabled, sessions, totalSessions } = await getMyHistorySessions(
@@ -135,7 +148,6 @@ export default async function HistoryPage({
     return (
       <div className="space-y-6">
         <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
-        {e2eeAllowed ? <E2eeHistoryClient /> : null}
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -184,7 +196,6 @@ export default async function HistoryPage({
 
   return (
     <div className="space-y-6">
-      {e2eeAllowed ? <E2eeHistoryClient /> : null}
       <DashboardFilters
         providers={providers}
         defaultPeriod="all"

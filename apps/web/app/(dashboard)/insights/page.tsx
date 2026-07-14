@@ -268,6 +268,7 @@ export default async function InsightsPage({
                 format.number(comparison.current.costUsd, {
                   style: "currency",
                   currency: "USD",
+                  currencyDisplay: "narrowSymbol",
                   minimumFractionDigits: 2,
                   maximumFractionDigits: 4,
                 }),

@@ -1,12 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { ArrowLeft, KeyRound, LockKeyhole, MessageSquareText } from "lucide-react";
-import { useTranslations } from "next-intl";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import Link from "next/link";
+import { ArrowLeft, Inbox, KeyRound, LockKeyhole } from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
+import type { SessionUsageSummary } from "@toard/core";
+import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { contentKeyVault } from "@/lib/content-key-vault";
 import { unlockApprovedBrowser } from "@/lib/content-auto-unlock";
 import {
@@ -24,8 +35,13 @@ import {
 } from "@/lib/e2ee-browser-crypto";
 import type { E2eeHistoryDetail, E2eeHistoryPage } from "@/lib/e2ee-history";
 import type { ContentKeyWrapperWire, E2eePromptRecordWire } from "@/lib/e2ee-contract";
+import { formatCostForCoverage } from "@/lib/cost-coverage";
+import { fmtUsd } from "@/lib/format";
 import { toHistoryPreview } from "@/lib/history-preview";
+import type { ProviderOption } from "@/lib/providers";
 import { initialE2eeHistoryState, reduceE2eeHistory } from "./e2ee-history-state";
+import { HistorySessionList } from "./history-session-list";
+import { historyPagination, type HistoryListItem } from "./history-list-view";
 import { LockedHistory } from "./locked-history";
 
 type DecryptedSession = E2eeHistoryPage["sessions"][number] & { preview: string };
@@ -33,10 +49,32 @@ type DecryptedTurn = E2eePromptRecordWire & { text: string | null };
 
 const INACTIVITY_MS = 15 * 60 * 1000;
 
-export function E2eeHistoryClient() {
+export function E2eeHistoryClient({
+  providers,
+  timezone,
+  previewBadgeLabel,
+}: {
+  providers: ProviderOption[];
+  timezone: string;
+  previewBadgeLabel: string;
+}) {
   const t = useTranslations("dashboard.history.e2ee");
+  const dashboardT = useTranslations("dashboard");
+  const locale = useLocale();
+  const searchParams = useSearchParams();
+  const queryString = searchParams.toString();
+  const sessionKey = searchParams.get("session");
+  const pageNumber = Math.max(1, Number.parseInt(searchParams.get("page") ?? "1", 10) || 1);
+  const filterQuery = useMemo(() => {
+    const params = new URLSearchParams(queryString);
+    params.delete("session");
+    return params.toString();
+  }, [queryString]);
   const [state, dispatch] = useReducer(reduceE2eeHistory, initialE2eeHistoryState);
-  const [sessions, setSessions] = useState<DecryptedSession[]>([]);
+  const [historyPage, setHistoryPage] = useState<{ sessions: DecryptedSession[]; totalSessions: number }>({
+    sessions: [],
+    totalSessions: 0,
+  });
   const [detail, setDetail] = useState<{ key: string; turns: DecryptedTurn[]; truncated: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
@@ -52,7 +90,7 @@ export function E2eeHistoryClient() {
     manuallyLocked.current = manual;
     contentKeyVault.lock();
     pendingKey.current = null;
-    setSessions([]);
+    setHistoryPage({ sessions: [], totalSessions: 0 });
     setDetail(null);
     dispatch({ type: "lock" });
   }, []);
@@ -161,7 +199,9 @@ export function E2eeHistoryClient() {
     let cancelled = false;
     void (async () => {
       try {
-        const page = await fetchJson<E2eeHistoryPage>("/api/content/history/sessions?limit=50");
+        const page = await fetchJson<E2eeHistoryPage>(
+          `/api/content/history/sessions${filterQuery ? `?${filterQuery}` : ""}`,
+        );
         const decrypted = await Promise.all(page.sessions.map(async (session) => {
           if (!session.previewRecord) return { ...session, preview: "" };
           try {
@@ -174,13 +214,13 @@ export function E2eeHistoryClient() {
             return { ...session, preview: t("contentUnavailable") };
           }
         }));
-        if (!cancelled) setSessions(decrypted);
+        if (!cancelled) setHistoryPage({ sessions: decrypted, totalSessions: page.totalSessions });
       } catch {
         if (!cancelled) dispatch({ type: "fatal", error: "CONTENT_HISTORY_FAILED" });
       }
     })();
     return () => { cancelled = true; };
-  }, [state.kind, t]);
+  }, [filterQuery, state.kind, t]);
 
   useEffect(() => {
     const onUnload = () => contentKeyVault.lock();
@@ -308,7 +348,7 @@ export function E2eeHistoryClient() {
     }
   };
 
-  const openSession = async (key: string) => {
+  const openSession = useCallback(async (key: string) => {
     setBusy(true);
     try {
       const encrypted = await fetchJson<E2eeHistoryDetail>(
@@ -324,10 +364,59 @@ export function E2eeHistoryClient() {
         }
       }));
       setDetail({ key, turns, truncated: encrypted.truncated });
+    } catch (error) {
+      dispatch({
+        type: "fatal",
+        error: error instanceof Error ? error.message : "CONTENT_HISTORY_FAILED",
+      });
     } finally {
       setBusy(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    if (state.kind !== "unlocked") return;
+    if (!sessionKey) {
+      setDetail(null);
+      return;
+    }
+    if (detail?.key !== sessionKey) void openSession(sessionKey);
+  }, [detail?.key, openSession, sessionKey, state.kind]);
+
+  const providerLabel = useCallback((key: string): string =>
+    providers.find((provider) => provider.key === key)?.label ?? key, [providers]);
+  const listItems = useMemo<HistoryListItem[]>(() => historyPage.sessions.map((session) => {
+    const usage = session.usage;
+    return {
+      key: session.key,
+      href: historyClientHref(queryString, { session: session.key }),
+      providerKey: session.providerKey,
+      providerLabel: providerLabel(session.providerKey),
+      models: usage?.models ?? [],
+      preview: session.preview || dashboardT("history.previewUnavailable"),
+      turnLabel: dashboardT("history.turns", { count: session.turnCount }),
+      totalTokens: usage ? totalUsageTokens(usage) : null,
+      tokenUnit: dashboardT("tokens"),
+      hosts: usage?.hosts ?? [],
+      costLabel: usage ? formatCostForCoverage(fmtUsd(usage.costUsd), usage.costCoverage, {
+        partial: dashboardT("costCoverage.partial"),
+        unpriced: dashboardT("costCoverage.unpriced"),
+        legacy: dashboardT("costCoverage.legacy"),
+      }) : null,
+      noUsageLabel: dashboardT("history.noUsage"),
+      latestTs: session.latestTs,
+    };
+  }), [dashboardT, historyPage.sessions, providerLabel, queryString]);
+  const pagination = historyPagination(pageNumber, historyPage.totalSessions);
+  const prevHref = pagination.hasPrev
+    ? historyClientHref(queryString, { session: null, page: pageNumber === 2 ? null : String(pageNumber - 1) })
+    : null;
+  const nextHref = pagination.hasNext
+    ? historyClientHref(queryString, { session: null, page: String(pageNumber + 1) })
+    : null;
+  const noFilter = (!searchParams.get("period") || searchParams.get("period") === "all")
+    && (!searchParams.get("provider") || searchParams.get("provider") === "all");
+  const backHref = historyClientHref(queryString, { session: null });
 
   if (state.kind === "loading") return <p className="text-muted-foreground text-sm">{t("loading")}</p>;
   if (state.kind === "locked" || state.kind === "approvalPending") {
@@ -358,24 +447,38 @@ export function E2eeHistoryClient() {
   }
 
   return (
-    <section className="min-w-0 space-y-3" aria-labelledby="e2ee-history-heading">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <h2 id="e2ee-history-heading" className="text-sm font-medium">{t("title")}</h2>
-        <Badge variant="secondary"><KeyRound className="mr-1 size-3" />{t("unlockedBadge")}</Badge>
-        {legacyRemaining !== null ? (
-          <Badge variant="outline">
-            {migrationBlocked ? t("legacyBlocked") : legacyRemaining === 0
-              ? t("legacyComplete")
-              : t("legacyProtecting", { count: legacyRemaining })}
-          </Badge>
-        ) : null}
-        <Button className="ml-auto" size="sm" variant="ghost" onClick={() => lock()}>
-          <LockKeyhole />{t("lockNow")}
-        </Button>
-      </div>
+    <section className="min-w-0 space-y-6" aria-label={dashboardT("history.title")}>
+      <DashboardFilters
+        providers={providers}
+        defaultPeriod="all"
+        showAllPreset
+        resetKeys={["page", "session"]}
+        timezone={timezone}
+        title={dashboardT("history.title")}
+        statusBadge={{ status: "preview", label: previewBadgeLabel }}
+        trailing={(
+          <>
+            <Badge variant="secondary" className="whitespace-nowrap">
+              <KeyRound className="mr-1 size-3" />{t("unlockedBadge")}
+            </Badge>
+            {legacyRemaining !== null ? (
+              <Badge variant="outline" className="whitespace-nowrap">
+                {migrationBlocked ? t("legacyBlocked") : legacyRemaining === 0
+                  ? t("legacyComplete")
+                  : t("legacyProtecting", { count: legacyRemaining })}
+              </Badge>
+            ) : null}
+            <Button size="sm" variant="ghost" onClick={() => lock()}>
+              <LockKeyhole />{t("lockNow")}
+            </Button>
+          </>
+        )}
+      />
       {detail ? (
         <div className="space-y-3">
-          <Button size="sm" variant="ghost" onClick={() => setDetail(null)}><ArrowLeft />{t("back")}</Button>
+          <Button asChild size="sm" variant="ghost">
+            <Link href={backHref}><ArrowLeft />{t("back")}</Link>
+          </Button>
           {detail.truncated ? <p className="text-muted-foreground text-xs">{t("truncated")}</p> : null}
           <Card className="min-w-0">
             <CardContent className="space-y-4 p-4 sm:p-6">
@@ -394,33 +497,60 @@ export function E2eeHistoryClient() {
             </CardContent>
           </Card>
         </div>
-      ) : sessions.length === 0 ? (
-        <Card><CardContent className="p-5 text-sm text-muted-foreground">{t("empty")}</CardContent></Card>
+      ) : historyPage.sessions.length === 0 ? (
+        <Empty>
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><Inbox /></EmptyMedia>
+            <EmptyTitle>
+              {noFilter ? dashboardT("history.emptyTitle") : dashboardT("history.noMatchTitle")}
+            </EmptyTitle>
+            <EmptyDescription>
+              {noFilter ? dashboardT("history.emptyDescription") : dashboardT("history.noMatchDescription")}
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
       ) : (
-        <Card className="min-w-0 overflow-hidden py-0">
-          <CardContent className="divide-y p-0">
-            {sessions.map((session) => (
-              <button
-                key={session.key}
-                type="button"
-                disabled={busy}
-                className="hover:bg-muted/40 flex w-full min-w-0 items-start gap-3 px-4 py-3 text-left"
-                onClick={() => void openSession(session.key)}
-              >
-                <MessageSquareText className="text-muted-foreground mt-0.5 size-4 shrink-0" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{session.preview || t("previewUnavailable")}</span>
-                  <span className="text-muted-foreground mt-1 block text-xs">
-                    {session.providerKey} · {t("turns", { count: session.turnCount })}
-                  </span>
-                </span>
-              </button>
-            ))}
-          </CardContent>
-        </Card>
+        <HistorySessionList
+          items={listItems}
+          totalSessions={historyPage.totalSessions}
+          page={pageNumber}
+          prevHref={prevHref}
+          nextHref={nextHref}
+          locale={locale}
+          timezone={timezone}
+          labels={{
+            total: dashboardT("history.listTotal", { count: historyPage.totalSessions }),
+            prev: dashboardT("history.prev"),
+            next: dashboardT("history.next"),
+            pageInfo: dashboardT("history.pageInfo", {
+              page: pagination.page,
+              totalPages: pagination.totalPages,
+            }),
+          }}
+        />
       )}
     </section>
   );
+}
+
+function historyClientHref(
+  queryString: string,
+  overrides: Record<string, string | null>,
+): string {
+  const params = new URLSearchParams(queryString);
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === null) params.delete(key);
+    else params.set(key, value);
+  }
+  const query = params.toString();
+  return query ? `/history?${query}` : "/history";
+}
+
+function totalUsageTokens(usage: SessionUsageSummary): number {
+  return usage.inputTokens
+    + usage.outputTokens
+    + usage.cacheReadTokens
+    + usage.cacheCreationTokens;
 }
 
 async function fetchJson<T = unknown>(

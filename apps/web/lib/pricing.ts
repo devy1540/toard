@@ -1,7 +1,13 @@
-import type { UsageCostCoverage, UsageCostStatus } from "@toard/core";
 import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "@toard/pricing";
 import { getAppSetting } from "./app-settings";
 import { getPool } from "./db";
+export {
+  costCoverageForStatus,
+  costCoverageState,
+  formatCostForCoverage,
+  legacyCostHintCount,
+  type CostCoverageState,
+} from "./cost-coverage";
 
 type PricingRevisionRow = {
   id: string;
@@ -27,42 +33,6 @@ export const PRICING_CACHE_VERSION_SETTING_KEY = "pricing_cache_version";
 export type PricingCacheVersion = {
   updatedAt: string;
 };
-
-export type CostCoverageState = "complete" | "partial" | "unpriced" | "legacy";
-
-/** 비용 숫자를 그대로 완전 합계로 표시해도 되는지 결정하는 순수 표시 상태. */
-export function costCoverageState(coverage: UsageCostCoverage): CostCoverageState {
-  if (coverage.unpricedEvents > 0) {
-    return coverage.pricedEvents + coverage.legacyEvents > 0 ? "partial" : "unpriced";
-  }
-  if (coverage.legacyEvents > 0) return "legacy";
-  return "complete";
-}
-
-/** 조치가 필요 없는 과거 저장 비용을 KPI 보조 문구로 표시할 때의 건수. */
-export function legacyCostHintCount(coverage: UsageCostCoverage): number | null {
-  return costCoverageState(coverage) === "legacy" ? coverage.legacyEvents : null;
-}
-
-export function formatCostForCoverage(
-  cost: string,
-  coverage: UsageCostCoverage,
-  labels: { partial: string; unpriced: string; legacy: string },
-): string {
-  const state = costCoverageState(coverage);
-  if (state === "unpriced") return labels.unpriced;
-  if (state === "partial") return `${cost} · ${labels.partial}`;
-  return cost;
-}
-
-/** 단일 usage event의 가격 상태를 공통 집계 표시 형식으로 변환한다. */
-export function costCoverageForStatus(status: UsageCostStatus): UsageCostCoverage {
-  return {
-    pricedEvents: status === "priced" ? 1 : 0,
-    unpricedEvents: status === "unpriced" ? 1 : 0,
-    legacyEvents: status === "legacy" ? 1 : 0,
-  };
-}
 
 export type PricingSyncStatus = {
   day: string;

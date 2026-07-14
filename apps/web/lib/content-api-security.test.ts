@@ -23,12 +23,9 @@ test("open mode blocks E2EE content endpoints with no-store", async () => {
   }
 });
 
-test("history CSP uses per-request nonce and blocks active embedding", () => {
+test("history middleware delegates nonce CSP and disables response transforms", () => {
   const source = readFileSync(new URL("../middleware.ts", import.meta.url), "utf8");
-  assert.match(source, /script-src 'self' 'nonce-\$\{nonce\}'/);
-  assert.match(source, /object-src 'none'/);
-  assert.match(source, /base-uri 'none'/);
-  assert.match(source, /frame-ancestors 'none'/);
-  assert.match(source, /require-trusted-types-for 'script'/);
-  assert.doesNotMatch(source, /script-src[^\n]*unsafe-inline/);
+  assert.match(source, /createHistoryCsp\(nonce\)/);
+  assert.match(source, /HISTORY_CACHE_CONTROL/);
+  assert.doesNotMatch(source, /require-trusted-types-for/);
 });

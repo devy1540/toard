@@ -15,6 +15,7 @@ import { getPricingAdminStatus } from "@/lib/pricing-admin-status";
 import { schedulerEligible } from "@/lib/pricing-auto-sync";
 import { getPublicBaseUrl } from "@/lib/public-url";
 import { getRollupAdminStatus } from "@/lib/rollup-status";
+import { getLegacyRetirementStatus } from "@/lib/e2ee-legacy-retirement";
 import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
@@ -25,6 +26,7 @@ import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
 import { InvitePanel } from "./invite-panel";
+import { LegacyRetirementPanel } from "./legacy-retirement-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -225,13 +227,16 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const [pricing, serverUpdate, rollupStatus, t] = await Promise.all([
+  const [pricing, serverUpdate, rollupStatus, legacyRetirement, t] = await Promise.all([
     getPricingAdminStatus(),
     getServerUpdateStatus(),
     getRollupAdminStatus().catch(() => null),
+    getLegacyRetirementStatus().catch(() => null),
     getTranslations("admin"),
   ]);
   const contentEnabled = contentCollectionEnabled();
+  const legacyKeyRemoved = legacyRetirement?.state === "retired"
+    || legacyRetirement?.state === "key_removed_unconfirmed";
   const serverVersion = getServerVersion();
 
   return (
@@ -246,6 +251,14 @@ async function SystemTab() {
             initialStatus={pricing}
             builtinScheduler={schedulerEligible(process.env)}
           />
+        </SettingsRow>
+
+        <SettingsRow
+          wide
+          label={t("system.legacyRetirementTitle")}
+          description={t("system.legacyRetirementDescription")}
+        >
+          <LegacyRetirementPanel initialStatus={legacyRetirement} />
         </SettingsRow>
 
         <SettingsRow
@@ -275,6 +288,8 @@ async function SystemTab() {
               <p className="text-muted-foreground">
                 {t.rich("system.contentEnabledBody", { code: (chunks) => <code>{chunks}</code> })}
               </p>
+            ) : legacyKeyRemoved ? (
+              <p className="text-muted-foreground">{t("system.contentRetiredBody")}</p>
             ) : (
               <>
                 <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>

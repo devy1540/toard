@@ -1,5 +1,7 @@
-import { getE2eeHistorySessions } from "@/lib/e2ee-history";
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { loadE2eeHistoryPage } from "@/lib/e2ee-history-page";
+import { getStorage } from "@/lib/storage";
+import { getViewerTimezone } from "@/lib/viewer-time";
 
 export async function GET(request: Request): Promise<Response> {
   if (isContentAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
@@ -7,20 +9,18 @@ export async function GET(request: Request): Promise<Response> {
   if (!userId) return problem(401, "UNAUTHORIZED");
 
   const url = new URL(request.url);
-  const limit = parseInteger(url.searchParams.get("limit"));
-  const offset = parseInteger(url.searchParams.get("offset"));
   try {
-    const page = await getE2eeHistorySessions(userId, { limit, offset });
+    const page = await loadE2eeHistoryPage({
+      userId,
+      searchParams: url.searchParams,
+      timezone: await getViewerTimezone(),
+      loadUsage: (ownerId, sessionIds) =>
+        getStorage().getSessionUsageSummaries(ownerId, sessionIds),
+    });
     return noStore(Response.json(page));
   } catch {
     return problem(500, "CONTENT_HISTORY_FAILED");
   }
-}
-
-function parseInteger(value: string | null): number | undefined {
-  if (value === null || !/^\d+$/.test(value)) return undefined;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function problem(status: number, code: string): Response {

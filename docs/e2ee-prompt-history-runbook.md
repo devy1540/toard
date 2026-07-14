@@ -73,6 +73,18 @@ GROUP BY encryption_scheme;
 
 전체 `server_v1`이 0건이 되더라도 DB 백업 보존 기간이 끝나기 전에는 `TOARD_CONTENT_KEK_B64`를 제거하지 않는다. E2EE 행이 한 건이라도 생성된 뒤 migration 30 Down은 복호화 메타데이터 손실을 막기 위해 실패한다. 이 시점 이후 장애는 Down이 아니라 forward-fix로 복구한다.
 
+## 서버 KEK 안전 폐기
+
+1. 실제 PostgreSQL 자동 백업 보존기간과 같은 값으로 `TOARD_LEGACY_BACKUP_RETENTION_DAYS`를 설정하고 앱을 재시작한다. 백업을 생성하지 않는 설치에서만 `0`을 사용한다.
+2. **관리 → 시스템 → 레거시 본문 키 폐기**에서 전체 `server_v1`이 0건인지 확인한다.
+3. 표시된 가장 이른 키 폐기 시각까지 기다린다.
+4. 자동 백업, WAL 보관본, 복제본, 수동 스냅샷에 복구 가능한 `server_v1` 데이터가 남지 않았는지 운영 인프라에서 확인한다.
+5. 관리자 화면의 **백업 폐기 확인 기록**을 누른다. 이 동작은 백업을 삭제하지 않고 확인자·시각·당시 잔여 건수만 기록한다.
+6. 상태가 **서버 키 폐기 가능**이면 외부 Secret Store에서 `TOARD_CONTENT_KEK_B64`를 제거하고 앱을 재시작한다.
+7. 관리자 화면이 **Legacy 키 폐기 완료**이고 `/api/ready`가 200인지 확인한다.
+
+`TOARD_CONTENT_KEK_B64`가 없는데 `server_v1`이 한 건이라도 남아 있으면 `/api/ready`는 503을 반환한다. 이 경우 새 키를 만들지 말고 기존 KEK를 Secret Store에서 복구해야 한다. 새 키는 기존 `server_v1` DEK를 복호화할 수 없다.
+
 ## 상태 점검
 
 ```bash

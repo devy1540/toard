@@ -7,12 +7,18 @@ import {
   type E2eeHistoryDb,
 } from "./e2ee-history";
 
-function fakeDb(rowsByCall: Record<string, unknown>[][]): E2eeHistoryDb & { sql: string[] } {
+function fakeDb(rowsByCall: Record<string, unknown>[][]): E2eeHistoryDb & {
+  sql: string[];
+  params: (unknown[] | undefined)[];
+} {
   const sql: string[] = [];
+  const params: (unknown[] | undefined)[] = [];
   return {
     sql,
-    async query(statement) {
+    params,
+    async query(statement, values) {
       sql.push(statement);
+      params.push(values);
       return { rows: rowsByCall.shift() ?? [] };
     },
   };
@@ -43,6 +49,7 @@ test("E2EE history list returns ciphertext only and excludes server_v1", async (
       first_ts: new Date("2026-07-14T00:00:00.000Z"),
       latest_ts: new Date("2026-07-14T00:01:00.000Z"),
       total_groups: "1",
+      is_session: true,
       ...encryptedRow,
     },
   ]]);
@@ -53,6 +60,34 @@ test("E2EE history list returns ciphertext only and excludes server_v1", async (
   assert.match(db.sql[0]!, /encryption_scheme = 'e2ee_v1'/);
   assert.doesNotMatch(db.sql[0]!, /decrypt/i);
   assert.equal(JSON.stringify(page).includes("secret prompt"), false);
+});
+
+test("E2EE history list filters metadata before pagination and marks real sessions", async () => {
+  const db = fakeDb([[
+    {
+      gkey: "session-1",
+      turn_count: "2",
+      first_ts: new Date("2026-07-14T00:00:00.000Z"),
+      latest_ts: new Date("2026-07-14T00:01:00.000Z"),
+      total_groups: "1",
+      is_session: true,
+      ...encryptedRow,
+    },
+  ]]);
+  const from = new Date("2026-07-01T00:00:00.000Z");
+  const to = new Date("2026-08-01T00:00:00.000Z");
+
+  const page = await getE2eeHistorySessions("user-1", {
+    limit: 20,
+    offset: 20,
+    filter: { from, to, providerKey: "codex" },
+  }, db);
+
+  assert.equal(page.sessions[0]?.isSession, true);
+  assert.match(db.sql[0]!, /ts >= \$2/);
+  assert.match(db.sql[0]!, /ts < \$3/);
+  assert.match(db.sql[0]!, /provider_key = \$4/);
+  assert.deepEqual(db.params[0], ["user-1", from, to, "codex", 20, 20]);
 });
 
 test("E2EE history detail is bounded to 500 turns", async () => {

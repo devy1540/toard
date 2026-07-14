@@ -20,6 +20,7 @@ import { schedulerEligible } from "./pricing-auto-sync";
 
 const COORDINATOR_TICK_MS = 10_000;
 const WORKER_MIN_CADENCE_MS = 60_000;
+const PRICING_REPAIR_MIN_CADENCE_MS = COORDINATOR_TICK_MS;
 const STARVATION_LIMIT_MS = 120_000;
 const ROLLUP_BUCKET_MS = 15 * 60 * 1_000;
 const DEFAULT_FINALIZE_DELAY_MS = 30 * 60 * 1_000;
@@ -60,8 +61,11 @@ export type RollupCoordinatorDependencies = {
 function isRunnable(candidate: RollupCoordinatorCandidate, now: Date): boolean {
   if (!candidate.due) return false;
   if (candidate.nextAttemptAt && candidate.nextAttemptAt > now) return false;
+  const minimumCadence = candidate.task === "pricing_repair"
+    ? PRICING_REPAIR_MIN_CADENCE_MS
+    : WORKER_MIN_CADENCE_MS;
   return !candidate.lastStartedAt
-    || now.getTime() - candidate.lastStartedAt.getTime() >= WORKER_MIN_CADENCE_MS;
+    || now.getTime() - candidate.lastStartedAt.getTime() >= minimumCadence;
 }
 
 function waitedTooLong(candidate: RollupCoordinatorCandidate, now: Date): boolean {

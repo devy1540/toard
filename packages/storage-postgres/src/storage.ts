@@ -265,7 +265,7 @@ export class PostgresStorage implements StorageBackend {
     request: UsageReplayReconciliationRequest,
   ): Promise<UsageReplayReconciliationResult> {
     if (request.limit <= 0) {
-      return { scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false };
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
     const client = await this.pool.connect();
@@ -322,10 +322,18 @@ export class PostgresStorage implements StorageBackend {
       for (const day of days) {
         await this.recomputeDailyWithClient(client, day);
       }
+      const remainingResult = await client.query<{ remaining_unpriced: string | number }>(
+        `SELECT count(*) AS remaining_unpriced
+         FROM usage_events
+         WHERE ts >= $1 AND ts < $2
+           AND cost_status = 'unpriced'`,
+        [request.from, request.to],
+      );
       await client.query("COMMIT");
       return {
         scanned: candidates.length,
         reconciled,
+        remainingUnpriced: n(remainingResult.rows[0]?.remaining_unpriced),
         affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
         hasMore: selected.rows.length > limit,
       };

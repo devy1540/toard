@@ -662,6 +662,7 @@ test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 m
         json: async () => [{
           dedup_key: "replayed-1",
           ts: "2026-07-13 09:14:50.000",
+          total_unpriced: "41",
         }],
       };
     },
@@ -693,6 +694,7 @@ test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 m
   assert.match(selectedSql, /bad\.cost_status = 'unpriced'/);
   assert.match(selectedSql, /tuple\(\s*bad\.session_id, bad\.user_id, bad\.host, bad\.log_adapter/);
   assert.match(selectedSql, /IN\s*\(\s*SELECT tuple\(\s*session_id, user_id, host, log_adapter/);
+  assert.match(selectedSql, /count\(\)\s+FROM usage_events FINAL[\s\S]*cost_status = 'unpriced'/);
   assert.equal(selectedParams.row_limit, 101);
   assert.deepEqual(actions.slice(0, 3), ["mark-dirty", "mark-dirty", "delete-replay"]);
   const deleteArgs = deleteCommands[0];
@@ -703,6 +705,7 @@ test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 m
   assert.deepEqual(result, {
     scanned: 1,
     reconciled: 1,
+    remainingUnpriced: 40,
     affectedBuckets: [new Date("2026-07-13T09:00:00.000Z")],
     hasMore: false,
   });

@@ -1362,11 +1362,20 @@ export class ClickHouseStorage implements StorageBackend {
     request: UsageReplayReconciliationRequest,
   ): Promise<UsageReplayReconciliationResult> {
     if (request.limit <= 0) {
-      return { scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false };
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
-    const rows = await this.queryJson<{ dedup_key: string; ts: string | Date }>(
-      `SELECT bad.dedup_key, bad.ts
+    const rows = await this.queryJson<{
+      dedup_key: string;
+      ts: string | Date;
+      total_unpriced: string | number;
+    }>(
+      `SELECT bad.dedup_key, bad.ts,
+              (SELECT count()
+               FROM usage_events FINAL
+               WHERE ts >= {from:DateTime64(3)}
+                 AND ts < {to:DateTime64(3)}
+                 AND cost_status = 'unpriced') AS total_unpriced
        FROM usage_events AS bad FINAL
        WHERE bad.ts >= {from:DateTime64(3)}
          AND bad.ts < {to:DateTime64(3)}
@@ -1403,7 +1412,7 @@ export class ClickHouseStorage implements StorageBackend {
       ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
     }));
     if (candidates.length === 0) {
-      return { scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false };
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
     }
 
     const markDirty = async (): Promise<void> => {
@@ -1433,6 +1442,7 @@ export class ClickHouseStorage implements StorageBackend {
     return {
       scanned: candidates.length,
       reconciled: candidates.length,
+      remainingUnpriced: Math.max(0, n(rows[0]?.total_unpriced) - candidates.length),
       affectedBuckets: this.dirty15mBuckets(candidates),
       hasMore: rows.length > limit,
     };

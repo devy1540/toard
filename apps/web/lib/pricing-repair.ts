@@ -304,41 +304,68 @@ export async function runPricingRepairTaskWith(
       to: claimed.targetTo,
       limit: claimed.adaptiveLimit,
     });
-    const schedule = await dependencies.getSchedule();
-    let result = { scanned: 0, recovered: 0, affectedBuckets: [] as Date[], hasMore: false };
-    if (!replay.hasMore) {
-      const diagnostics = await dependencies.storage.getUnpricedUsageModels(from, claimed.targetTo);
-      const models = supportedModels(diagnostics, schedule);
-      if (models.length > 0) {
-        result = await dependencies.storage.repairUnpricedUsage({
-          from,
-          to: claimed.targetTo,
-          models,
-          limit: claimed.adaptiveLimit,
-          generation: claimed.generation,
-        }, (event) => {
-          const resolved = resolveCostAt({
-            ...event,
-            occurredAt: event.ts,
-            schedule,
-            mode: "calculate",
-          });
-          return resolved.status === "priced" && resolved.pricingRevisionId
-            ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId }
-            : null;
-        });
-      }
+    if (replay.scanned > 0) {
+      const at = dependencies.now();
+      const adaptive = nextPricingRepairBatchLimit(
+        claimed.adaptiveLimit,
+        at.getTime() - startedAt.getTime(),
+        replay.hasMore || replay.scanned >= claimed.adaptiveLimit,
+      );
+      const applied = await dependencies.repository.markProgress({
+        generation: claimed.generation,
+        state: "pending",
+        processed: replay.scanned,
+        recovered: 0,
+        reconciled: replay.reconciled,
+        remaining: replay.remainingUnpriced,
+        unresolvedModels: claimed.unresolvedModels,
+        adaptiveLimit: adaptive.limit,
+        loadState: adaptive.loadState,
+        nextAttemptAt: at,
+        at,
+      });
+      return applied ? "success" : "superseded";
     }
-    const after = await dependencies.storage.getUnpricedUsageModels(from, claimed.targetTo);
-    const remaining = after.reduce((sum, item) => sum + item.events, 0);
-    const remainingSupported = supportedModels(after, schedule).length > 0;
+
+    const schedule = await dependencies.getSchedule();
+    const diagnostics = await dependencies.storage.getUnpricedUsageModels(from, claimed.targetTo);
+    const models = supportedModels(diagnostics, schedule);
+    let result = { scanned: 0, recovered: 0, affectedBuckets: [] as Date[], hasMore: false };
+    if (models.length > 0) {
+      result = await dependencies.storage.repairUnpricedUsage({
+        from,
+        to: claimed.targetTo,
+        models,
+        limit: claimed.adaptiveLimit,
+        generation: claimed.generation,
+      }, (event) => {
+        const resolved = resolveCostAt({
+          ...event,
+          occurredAt: event.ts,
+          schedule,
+          mode: "calculate",
+        });
+        return resolved.status === "priced" && resolved.pricingRevisionId
+          ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId }
+          : null;
+      });
+    }
+    const remaining = Math.max(
+      0,
+      diagnostics.reduce((sum, item) => sum + item.events, 0) - result.recovered,
+    );
+    const remainingSupported = result.hasMore || result.scanned > result.recovered;
+    const resolvedModelSet = new Set(models);
+    const remainingDiagnostics = !result.hasMore && result.scanned === result.recovered
+      ? diagnostics.filter((item) => !item.model || !resolvedModelSet.has(item.model))
+      : diagnostics;
     const at = dependencies.now();
     const adaptive = nextPricingRepairBatchLimit(
       claimed.adaptiveLimit,
       at.getTime() - startedAt.getTime(),
-      replay.hasMore || result.scanned >= claimed.adaptiveLimit,
+      result.scanned >= claimed.adaptiveLimit,
     );
-    const state = replay.hasMore || result.hasMore || remainingSupported
+    const state = result.hasMore || remainingSupported
       ? "pending"
       : remaining === 0
         ? "idle"
@@ -350,7 +377,7 @@ export async function runPricingRepairTaskWith(
       recovered: result.recovered,
       reconciled: replay.reconciled,
       remaining,
-      unresolvedModels: unresolvedModels(after),
+      unresolvedModels: unresolvedModels(remainingDiagnostics),
       adaptiveLimit: adaptive.limit,
       loadState: adaptive.loadState,
       nextAttemptAt: state === "waiting_for_catalog"

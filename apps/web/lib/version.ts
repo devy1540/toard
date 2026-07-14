@@ -1,6 +1,6 @@
 import { compareSemver, isSemver, normalizeVersion } from "@toard/core";
 
-export const HISTORICAL_PRICING_MIN_READER_VERSION = "0.15.15";
+export const HISTORICAL_PRICING_MIN_READER_VERSION = "0.15.16";
 
 // 서버 자기 버전 — 빌드 시 이미지에 임베드(Dockerfile ARG TOARD_VERSION → ENV APP_VERSION).
 // 로컬 dev·직접 빌드처럼 미주입이면 0.0.0(dev) 으로 취급해 구버전 비교에서 빠진다.

@@ -521,7 +521,7 @@ Run: `pnpm --filter @toard/web test -- pricing.test.ts pricing-history.test.ts`
 
 Expected: PASS and query capture has no `litellm-bootstrap` insert.
 
-promotion worker는 migration 실행 중인 구버전 프로세스에는 존재하지 않으므로 canonical historical revision은 신버전 app이 시작된 뒤에만 생성된다. 첫 historical promotion 이후에는 `valid_until`을 이해하지 못하는 v0.15.14 이하로 자동 rollback하지 않도록 updater release note와 readiness에 최소 reader version `0.15.15`를 기록한다. 로컬 `0.0.0(dev)`는 test·개발 실행을 위해 허용한다.
+promotion worker는 migration 실행 중인 구버전 프로세스에는 존재하지 않으므로 canonical historical revision은 신버전 app이 시작된 뒤에만 생성된다. 첫 historical promotion 이후에는 `valid_until`을 이해하지 못하는 v0.15.15 이하로 자동 rollback하지 않도록 updater release note와 readiness에 최소 reader version `0.15.16`을 기록한다. 로컬 `0.0.0(dev)`는 test·개발 실행을 위해 허용한다.
 
 - [ ] **Step 5: Commit**
 

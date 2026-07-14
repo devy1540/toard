@@ -27,6 +27,16 @@ test("관리자 가격 상태 API는 자동 복구 DTO만 반환한다", async (
       remainingUnpricedEvents: 8,
       lastSucceededAt: "2026-07-14T00:10:00.000Z",
     },
+    history: {
+      state: "fetching",
+      rangeFrom: "2026-07-07T00:00:00.000Z",
+      rangeTo: "2026-07-08T00:00:00.000Z",
+      models: 1,
+      processedSnapshots: 2,
+      totalSnapshots: 5,
+      nextAttemptAt: null,
+      lastError: null,
+    },
     unresolvedModels: [{
       model: "unknown-model",
       events: 8,
@@ -65,6 +75,8 @@ test("관리자 가격 화면은 수동 action과 DB 토글 없이 읽기 전용
   const notice = readFileSync(new URL("components/dashboard/pricing-notice.tsx", root), "utf8");
   const ko = JSON.parse(readFileSync(new URL("messages/ko/dashboard.json", root), "utf8"));
   const en = JSON.parse(readFileSync(new URL("messages/en/dashboard.json", root), "utf8"));
+  const koAdmin = JSON.parse(readFileSync(new URL("messages/ko/admin.json", root), "utf8"));
+  const enAdmin = JSON.parse(readFileSync(new URL("messages/en/admin.json", root), "utf8"));
 
   assert.equal(existsSync(new URL("app/(dashboard)/admin/pricing-actions.ts", root)), false);
   assert.doesNotMatch(panel, /syncPricingAction|setPricingAutoSyncAction|useActionState|<Switch|syncNow/);
@@ -73,4 +85,13 @@ test("관리자 가격 화면은 수동 action과 DB 토글 없이 읽기 전용
   assert.doesNotMatch(notice, /getSessionUser|href="\/admin|<Link/);
   assert.match(ko.pricingNotice.unpricedAction, /자동|별도 조작 없이/);
   assert.match(en.pricingNotice.unpricedAction, /automatic|without.*action/i);
+  assert.match(panel, /status\.history\.state/);
+  assert.equal(
+    koAdmin.system.unresolvedModels,
+    "해당 사용 날짜의 가격 이력이 확인되지 않은 모델",
+  );
+  assert.equal(
+    enAdmin.system.unresolvedModels,
+    "Models without confirmed pricing history for the usage date",
+  );
 });

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { PricingMap } from "@toard/pricing";
 import {
+  historicalPricingStatusFromJob,
   runHistoricalPricingStepWith,
   type HistoricalPricingJob,
   type HistoricalPricingRepository,
@@ -264,4 +265,22 @@ test("429는 durable reset 시각을 저장하고 다음 tick으로 넘긴다", 
   assert.deepEqual(result, { state: "waiting_source", nextAttemptAt: resetAt });
   assert.equal(repository.active?.rateLimitResetAt?.toISOString(), resetAt.toISOString());
   assert.equal(repository.active?.lastError, "pricing source rate limited");
+});
+
+test("관리자 상태는 snapshot 진행률과 재시도 시각만 안전하게 노출한다", () => {
+  assert.deepEqual(historicalPricingStatusFromJob(job({
+    state: "fetching",
+    nextCommitIndex: 2,
+    nextAttemptAt: new Date("2026-07-14T00:01:00.000Z"),
+    lastError: "pricing history source unavailable",
+  })), {
+    state: "fetching",
+    rangeFrom: "2026-06-01T00:00:00.000Z",
+    rangeTo: "2026-07-01T00:00:00.000Z",
+    models: 1,
+    processedSnapshots: 2,
+    totalSnapshots: 6,
+    nextAttemptAt: "2026-07-14T00:01:00.000Z",
+    lastError: "pricing history source unavailable",
+  });
 });

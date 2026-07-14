@@ -82,6 +82,30 @@ export function PricingSyncPanel({
             ))}
           </div>
         ) : null}
+        {status.history.state !== "idle" && status.history.state !== "completed" ? (
+          <div className="mt-3 rounded-md border p-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span>{t("system.historyTitle")}</span>
+              <Badge variant={status.history.state === "failed" ? "destructive" : "outline"}>
+                {t(`system.historyStates.${status.history.state}`)}
+              </Badge>
+            </div>
+            <p className="mt-1 text-muted-foreground">
+              {t("system.historyProgress", {
+                processed: status.history.processedSnapshots.toLocaleString(),
+                total: status.history.totalSnapshots.toLocaleString(),
+                models: status.history.models.toLocaleString(),
+              })}
+            </p>
+            {status.history.nextAttemptAt ? (
+              <p className="mt-1 text-muted-foreground">
+                {t("system.historyRetryAt", {
+                  time: new Date(status.history.nextAttemptAt).toLocaleString(),
+                })}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {requestFailed ? <p className="text-destructive text-xs">{t("system.pricingStatusFailed")}</p> : null}
     </div>

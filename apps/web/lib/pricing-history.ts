@@ -103,6 +103,44 @@ export type HistoricalPricingStepResult =
   | { state: "promoted"; insertedRevisions: number }
   | { state: "no_evidence"; nextAttemptAt: Date };
 
+export type HistoricalPricingStatus = {
+  state: HistoricalPricingJobState | "idle";
+  rangeFrom: string | null;
+  rangeTo: string | null;
+  models: number;
+  processedSnapshots: number;
+  totalSnapshots: number;
+  nextAttemptAt: string | null;
+  lastError: string | null;
+};
+
+export function historicalPricingStatusFromJob(
+  job: HistoricalPricingJob | null,
+): HistoricalPricingStatus {
+  if (!job) {
+    return {
+      state: "idle",
+      rangeFrom: null,
+      rangeTo: null,
+      models: 0,
+      processedSnapshots: 0,
+      totalSnapshots: 0,
+      nextAttemptAt: null,
+      lastError: null,
+    };
+  }
+  return {
+    state: job.state,
+    rangeFrom: job.rangeFrom.toISOString(),
+    rangeTo: job.rangeTo.toISOString(),
+    models: job.models.length,
+    processedSnapshots: job.nextCommitIndex,
+    totalSnapshots: job.commitRefs.length,
+    nextAttemptAt: job.nextAttemptAt?.toISOString() ?? null,
+    lastError: job.lastError,
+  };
+}
+
 type HistoricalPricingJobRow = {
   id: string;
   state: HistoricalPricingJobState;
@@ -388,6 +426,15 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
        LIMIT 1`,
     );
     return result.rows[0] ? mapJob(result.rows[0]) : null;
+  }
+
+  async getStatus(): Promise<HistoricalPricingStatus> {
+    const result = await this.pool.query<HistoricalPricingJobRow>(
+      `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
+       ORDER BY CASE WHEN state = 'completed' THEN 1 ELSE 0 END, created_at DESC
+       LIMIT 1`,
+    );
+    return historicalPricingStatusFromJob(result.rows[0] ? mapJob(result.rows[0]) : null);
   }
 
   async create(input: { rangeFrom: Date; rangeTo: Date; models: string[]; at: Date }): Promise<HistoricalPricingJob> {

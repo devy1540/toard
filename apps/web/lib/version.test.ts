@@ -6,10 +6,10 @@ import {
   supportsHistoricalPricingReader,
 } from "./version";
 
-test("과거 가격 revision reader는 v0.15.15부터 호환되고 로컬 dev는 허용한다", () => {
-  assert.equal(HISTORICAL_PRICING_MIN_READER_VERSION, "0.15.15");
-  assert.equal(supportsHistoricalPricingReader("0.15.14"), false);
-  assert.equal(supportsHistoricalPricingReader("v0.15.15"), true);
+test("과거 가격 revision reader는 v0.15.16부터 호환되고 로컬 dev는 허용한다", () => {
+  assert.equal(HISTORICAL_PRICING_MIN_READER_VERSION, "0.15.16");
+  assert.equal(supportsHistoricalPricingReader("0.15.15"), false);
+  assert.equal(supportsHistoricalPricingReader("v0.15.16"), true);
   assert.equal(supportsHistoricalPricingReader("0.16.0"), true);
   assert.equal(supportsHistoricalPricingReader("0.0.0"), true);
 });

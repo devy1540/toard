@@ -35,9 +35,9 @@ import {
 } from "@/lib/e2ee-browser-crypto";
 import type { E2eeHistoryDetail, E2eeHistoryPage } from "@/lib/e2ee-history";
 import type { ContentKeyWrapperWire, E2eePromptRecordWire } from "@/lib/e2ee-contract";
+import { formatCostForCoverage } from "@/lib/cost-coverage";
 import { fmtUsd } from "@/lib/format";
 import { toHistoryPreview } from "@/lib/history-preview";
-import { formatCostForCoverage } from "@/lib/pricing";
 import type { ProviderOption } from "@/lib/providers";
 import { initialE2eeHistoryState, reduceE2eeHistory } from "./e2ee-history-state";
 import { HistorySessionList } from "./history-session-list";

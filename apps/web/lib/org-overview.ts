@@ -1,5 +1,7 @@
 export type OrgChartMetric = "tokens" | "cost";
 
+export const ORG_LEADERBOARD_METRIC = "tokens" as const;
+
 type TokenUsage = {
   input: number;
   output: number;
@@ -23,6 +25,21 @@ export function cacheSharePercent(cacheTokens: number, totalTokens: number): num
 
 export function sharePercent(part: number, total: number): number | null {
   return total > 0 ? Math.round((part / total) * 100) : null;
+}
+
+export function tokenLeaderboardMetrics({
+  tokens,
+  totalTokens,
+  maxTokens,
+}: {
+  tokens: number;
+  totalTokens: number;
+  maxTokens: number;
+}): { width: number; share: number | null } {
+  return {
+    width: maxTokens > 0 ? Math.max(3, Math.round((tokens / maxTokens) * 100)) : 0,
+    share: sharePercent(tokens, totalTokens),
+  };
 }
 
 export function usagePerActiveUser(totalTokens: number, activeUsers: number): number | null {

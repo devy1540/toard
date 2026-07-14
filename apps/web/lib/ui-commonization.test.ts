@@ -236,6 +236,14 @@ test("settings catalogs keep wizard shape aligned", () => {
   assert.deepEqual(messageShape(ko.wizard), messageShape(en.wizard));
 });
 
+test("web test script includes lib and app tests", () => {
+  const pkg = JSON.parse(source("package.json")) as { scripts?: { test?: string } };
+  const rootPkg = JSON.parse(repoSource("package.json")) as { scripts?: { "test:migrations"?: string } };
+  assert.match(pkg.scripts?.test ?? "", /lib\/\*\.test\.ts/);
+  assert.match(pkg.scripts?.test ?? "", /app\/\*\*\/\*\.test\.ts/);
+  assert.match(rootPkg.scripts?.["test:migrations"] ?? "", /e2ee-content-migration\.integration\.test\.ts/);
+});
+
 test("personal navigation includes insights between usage and history", () => {
   const nav = source("components/dashboard/sidebar-nav.tsx");
   assert.match(nav, /key: "myUsage"[\s\S]*key: "insights"[\s\S]*key: "history"/);

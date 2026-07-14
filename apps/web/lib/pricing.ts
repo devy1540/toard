@@ -7,6 +7,7 @@ type PricingRevisionRow = {
   id: string;
   model_id: string;
   effective_at: Date | string;
+  valid_until: Date | string | null;
   input_price_per_mtok: string | number;
   output_price_per_mtok: string | number;
   cache_read_price_per_mtok: string | number | null;
@@ -21,6 +22,11 @@ type PricingRevisionQuery = (sql: string) => Promise<{ rows: PricingRevisionRow[
 const TTL_MS = 60 * 60 * 1000;
 
 export const PRICING_SYNC_STATUS_SETTING_KEY = "pricing_sync_status";
+export const PRICING_CACHE_VERSION_SETTING_KEY = "pricing_cache_version";
+
+export type PricingCacheVersion = {
+  updatedAt: string;
+};
 
 export type CostCoverageState = "complete" | "partial" | "unpriced" | "legacy";
 
@@ -95,12 +101,13 @@ export function createPricingScheduleCache({
 
 export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<PricingSchedule> {
   const res = await query(
-    `SELECT id, model_id, effective_at,
+    `SELECT id, model_id, effective_at, valid_until,
        input_price_per_mtok, output_price_per_mtok,
        cache_read_price_per_mtok, cache_creation_price_per_mtok,
        input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier
      FROM pricing_revisions
-     ORDER BY model_id, effective_at ASC`,
+     WHERE authoritative
+     ORDER BY model_id, effective_at ASC, observed_at ASC, id ASC`,
   );
 
   const schedule: PricingSchedule = new Map();
@@ -121,6 +128,7 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
       effectiveAt: new Date(r.effective_at),
       pricing,
     };
+    if (r.valid_until != null) revision.validUntil = new Date(r.valid_until);
     const revisions = schedule.get(r.model_id);
     if (revisions) {
       schedule.set(r.model_id, [...revisions, revision]);
@@ -134,6 +142,8 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
 const pricingScheduleCache = createPricingScheduleCache({
   loadSchedule: () => loadPricingSchedule((sql) => getPool().query<PricingRevisionRow>(sql)),
   readVersion: async () => {
+    const cacheVersion = await getAppSetting<PricingCacheVersion>(PRICING_CACHE_VERSION_SETTING_KEY);
+    if (cacheVersion?.updatedAt) return cacheVersion.updatedAt;
     const status = await getAppSetting<PricingSyncStatus>(PRICING_SYNC_STATUS_SETTING_KEY);
     return status?.syncedAt ?? null;
   },

@@ -1,13 +1,9 @@
 import { getLocale, getTranslations } from "next-intl/server";
-import Link from "next/link";
-import { ChevronLeft, ChevronRight, Inbox, Lock, MessageSquareText } from "lucide-react";
+import { Inbox, Lock } from "lucide-react";
 import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
-import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
 import {
   Empty,
   EmptyDescription,
@@ -16,7 +12,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
-import { fmtCompact, fmtUsd } from "@/lib/format";
+import { fmtUsd } from "@/lib/format";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { formatCostForCoverage } from "@/lib/pricing";
 import { getMyHistorySessions } from "@/lib/prompt-history";
@@ -25,14 +21,12 @@ import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { SessionDetail } from "./session-detail";
 import { E2eeHistoryClient } from "./e2ee-history-client";
+import { HistorySessionList } from "./history-session-list";
+import type { HistoryListItem } from "./history-list-view";
 
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 20;
-/** 목록 배지로 노출할 모델 수 상한 — 넘치면 "+N" 로 접는다 */
-const MODEL_BADGE_MAX = 2;
-const HOST_BADGE_MAX = 1;
-
 function PageTitle({
   title,
   badgeLabel,
@@ -72,11 +66,6 @@ function historyHref(sp: HistorySearchParams, overrides: Record<string, string |
 
 function totalUsageTokens(usage: SessionUsageSummary): number {
   return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
-}
-
-function compactList(items: string[], max: number): string {
-  if (items.length <= max) return items.join(", ");
-  return `${items.slice(0, max).join(", ")} +${items.length - max}`;
 }
 
 /** 내 히스토리 — 본인 프롬프트·응답만. 관리자·타 사용자는 조회 불가(RLS + at-rest 암호화).
@@ -132,12 +121,6 @@ export default async function HistoryPage({
   // ── 목록 뷰 ──
   const locale = await getLocale();
   const timezone = await getViewerTimezone();
-  const fmtTs = (ts: Date): string =>
-    new Intl.DateTimeFormat(locale, { timeZone: timezone, dateStyle: "medium", timeStyle: "short" }).format(ts);
-  const fmtDay = (ts: Date): string =>
-    new Intl.DateTimeFormat(locale, { timeZone: timezone, dateStyle: "medium" }).format(ts);
-  const fmtTime = (ts: Date): string =>
-    new Intl.DateTimeFormat(locale, { timeZone: timezone, timeStyle: "short" }).format(ts);
 
   const filter = parseFilters(sp, timezone, "all");
   const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
@@ -178,6 +161,26 @@ export default async function HistoryPage({
   const nextHref = historyHref(sp, { page: String(page + 2) });
   // 기본 필터(전체 기간·전체 도구) 그대로인데 0건 = 수집 자체가 없는 것
   const noFilter = (!sp.period || sp.period === "all") && (!sp.provider || sp.provider === "all");
+  const listItems: HistoryListItem[] = sessions.map((session) => {
+    const usage = usageByKey.get(session.key);
+    return {
+      key: session.key,
+      href: historyHref(sp, { session: session.key }),
+      providerKey: session.providerKey,
+      providerLabel: providerLabel(session.providerKey),
+      models: usage?.models ?? [],
+      preview: session.preview || t("history.previewUnavailable"),
+      turnLabel: t("history.turns", { count: session.turnCount }),
+      totalTokens: usage ? totalUsageTokens(usage) : null,
+      tokenUnit: t("tokens"),
+      hosts: usage?.hosts ?? [],
+      costLabel: usage
+        ? formatCostForCoverage(fmtUsd(usage.costUsd), usage.costCoverage, costLabels)
+        : null,
+      noUsageLabel: t("history.noUsage"),
+      latestTs: session.latestTs.toISOString(),
+    };
+  });
 
   return (
     <div className="space-y-6">
@@ -212,133 +215,21 @@ export default async function HistoryPage({
         </Empty>
       ) : (
         <>
-          <Card className="min-w-0 overflow-hidden py-0">
-            <CardContent className="p-0">
-              <div className="divide-y">
-                {sessions.map((s, index) => {
-                  const usage = usageByKey.get(s.key);
-                  const models = usage?.models ?? [];
-                  const day = fmtDay(s.latestTs);
-                  const previous = index > 0 ? sessions[index - 1] : undefined;
-                  const showDay = previous === undefined || fmtDay(previous.latestTs) !== day;
-                  return (
-                    <div key={s.key}>
-                      {showDay ? (
-                        <div className="bg-muted/30 px-4 py-2 text-xs font-medium text-muted-foreground">
-                          {day}
-                        </div>
-                      ) : null}
-                      <Link
-                        href={historyHref(sp, { session: s.key })}
-                        className="group grid min-w-0 gap-3 px-4 py-3.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
-                      >
-                        <div className="flex min-w-0 gap-3">
-                          <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
-                            <ProviderIcon
-                              providerKey={s.providerKey}
-                              className="size-4"
-                              fallback={<MessageSquareText className="size-4" />}
-                            />
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                              <Badge variant="secondary" className="text-[11px]">
-                                {providerLabel(s.providerKey)}
-                              </Badge>
-                              {models.slice(0, MODEL_BADGE_MAX).map((m) => (
-                                <Badge
-                                  key={m}
-                                  variant="outline"
-                                  className="max-w-52 truncate font-mono text-[11px]"
-                                  title={m}
-                                >
-                                  {m}
-                                </Badge>
-                              ))}
-                              {models.length > MODEL_BADGE_MAX ? (
-                                <span className="text-muted-foreground text-xs" title={models.join(", ")}>
-                                  +{models.length - MODEL_BADGE_MAX}
-                                </span>
-                              ) : null}
-                            </div>
-                            <p className="mt-1 line-clamp-2 min-w-0 break-words text-sm font-medium leading-5 group-hover:text-primary">
-                              {s.preview || t("history.previewUnavailable")}
-                            </p>
-                            <div className="text-muted-foreground mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                              <span>{t("history.turns", { count: s.turnCount })}</span>
-                              {usage ? (
-                                <span>
-                                  {fmtCompact(totalUsageTokens(usage))} {t("tokens")}
-                                </span>
-                              ) : (
-                                <span>{t("history.noUsage")}</span>
-                              )}
-                              {usage && usage.hosts.length > 0 ? (
-                                <span className="max-w-full truncate" title={usage.hosts.join(", ")}>
-                                  {compactList(usage.hosts, HOST_BADGE_MAX)}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between gap-4 pl-11 sm:min-w-36 sm:flex-col sm:items-end sm:justify-center sm:gap-1 sm:pl-0">
-                          {usage ? (
-                            <span className="text-sm font-semibold tabular-nums">
-                              {formatCostForCoverage(fmtUsd(usage.costUsd), usage.costCoverage, costLabels)}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground text-xs">{t("history.noUsage")}</span>
-                          )}
-                          <span className="text-muted-foreground text-xs tabular-nums" title={fmtTs(s.latestTs)}>
-                            {fmtTime(s.latestTs)}
-                          </span>
-                        </div>
-                      </Link>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
-
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-muted-foreground text-sm">
-              {t("history.listTotal", { count: totalSessions })}
-            </span>
-            {totalPages > 1 ? (
-              <div className="flex items-center gap-2">
-                {page > 0 ? (
-                  <Button asChild variant="outline" size="sm">
-                    <Link href={prevHref}>
-                      <ChevronLeft className="size-4" />
-                      {t("history.prev")}
-                    </Link>
-                  </Button>
-                ) : (
-                  <Button variant="outline" size="sm" disabled>
-                    <ChevronLeft className="size-4" />
-                    {t("history.prev")}
-                  </Button>
-                )}
-                <span className="text-muted-foreground text-sm tabular-nums">
-                  {t("history.pageInfo", { page: page + 1, totalPages })}
-                </span>
-                {page + 1 < totalPages ? (
-                  <Button asChild variant="outline" size="sm">
-                    <Link href={nextHref}>
-                      {t("history.next")}
-                      <ChevronRight className="size-4" />
-                    </Link>
-                  </Button>
-                ) : (
-                  <Button variant="outline" size="sm" disabled>
-                    {t("history.next")}
-                    <ChevronRight className="size-4" />
-                  </Button>
-                )}
-              </div>
-            ) : null}
-          </div>
+          <HistorySessionList
+            items={listItems}
+            totalSessions={totalSessions}
+            page={page + 1}
+            prevHref={page > 0 ? prevHref : null}
+            nextHref={page + 1 < totalPages ? nextHref : null}
+            locale={locale}
+            timezone={timezone}
+            labels={{
+              total: t("history.listTotal", { count: totalSessions }),
+              prev: t("history.prev"),
+              next: t("history.next"),
+              pageInfo: t("history.pageInfo", { page: page + 1, totalPages }),
+            }}
+          />
         </>
       )}
     </div>

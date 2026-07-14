@@ -639,6 +639,7 @@ async function verifyClickHouse(
     from: fixture.from,
     to: fixture.to,
     models: [fixture.knownModel],
+    replaceRevisionIds: [],
     limit: 100,
     generation: fixture.generation.toISOString(),
   };

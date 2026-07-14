@@ -155,6 +155,54 @@ test("저장 revision으로 처리할 수 없는 과거 모델은 가격 이력 
   assert.equal(status.nextAttemptAt?.toISOString(), "2026-07-14T00:01:00.000Z");
 });
 
+test("같은 모델의 오늘 데이터가 섞여도 완료된 과거 날짜만 가격 이력 복구에 넘긴다", async () => {
+  let status = pendingStatus({ remainingUnpricedEvents: 3 });
+  const repository: PricingRepairRepository = {
+    get: async () => status,
+    claim: async () => ({ ...status, state: "running", lastStartedAt: NOW }),
+    async markProgress(input) {
+      status = {
+        ...status,
+        state: input.state,
+        remainingUnpricedEvents: input.remaining,
+        unresolvedModels: input.unresolvedModels,
+        nextAttemptAt: input.nextAttemptAt,
+      };
+      return true;
+    },
+    async markFailed() {
+      throw new Error("unexpected failure");
+    },
+  };
+  const storage = {
+    reconcileCodexReplayUsage: async () => ({ scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false }),
+    getUnpricedUsageModels: async () => [{
+      model: "mixed-date-model",
+      events: 3,
+      firstAt: new Date("2026-06-10T12:00:00.000Z"),
+      lastAt: new Date("2026-07-14T00:00:00.000Z"),
+    }],
+  } as unknown as StorageBackend;
+  let historical: Array<{ firstAt: string; lastAt: string }> = [];
+
+  assert.equal(await runPricingRepairTaskWith({
+    repository,
+    storage,
+    getSchedule: async () => new Map(),
+    now: () => NOW,
+    runHistoricalPricingStep: async (diagnostics) => {
+      historical = diagnostics;
+      return { state: "fetching", nextAttemptAt: NOW };
+    },
+  }), "success");
+  assert.deepEqual(historical, [{
+    model: "mixed-date-model",
+    events: 3,
+    firstAt: "2026-06-10T12:00:00.000Z",
+    lastAt: "2026-07-13T23:59:59.999Z",
+  }]);
+});
+
 test("Codex 재생 중복이 남아 있으면 가격표 대상이 없어도 다음 보정 batch를 즉시 이어간다", async () => {
   let status = pendingStatus({ remainingUnpricedEvents: 100 });
   const repository: PricingRepairRepository = {

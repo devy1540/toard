@@ -64,6 +64,23 @@ test("migration 29는 과거 가격 후보를 canonical revision과 분리한다
         observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         UNIQUE (model_id, effective_at, source)
       );
+      CREATE TABLE pricing_repair_status (
+        singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+        generation TIMESTAMPTZ,
+        state TEXT NOT NULL DEFAULT 'idle',
+        target_to TIMESTAMPTZ,
+        processed_events BIGINT NOT NULL DEFAULT 0,
+        recovered_events BIGINT NOT NULL DEFAULT 0,
+        reconciled_events BIGINT NOT NULL DEFAULT 0,
+        remaining_unpriced_events BIGINT NOT NULL DEFAULT 0,
+        unresolved_models JSONB NOT NULL DEFAULT '[]'::jsonb,
+        eligible_since TIMESTAMPTZ,
+        next_attempt_at TIMESTAMPTZ,
+        consecutive_failures INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      INSERT INTO pricing_repair_status (singleton) VALUES (TRUE);
       INSERT INTO pricing_revisions (
         model_id, effective_at, input_price_per_mtok, output_price_per_mtok, source
       ) VALUES
@@ -97,6 +114,21 @@ test("migration 29는 과거 가격 후보를 canonical revision과 분리한다
       { model_id: "bootstrap-model", authoritative: false },
       { model_id: "observed-model", authoritative: true },
     ]);
+
+    const repair = await client.query<{
+      state: string;
+      generation: Date;
+      target_to: Date;
+      next_attempt_at: Date;
+    }>(`
+      SELECT state, generation, target_to, next_attempt_at
+      FROM pricing_repair_status
+      WHERE singleton
+    `);
+    assert.equal(repair.rows[0]?.state, "pending");
+    assert.ok(repair.rows[0]?.generation instanceof Date);
+    assert.equal(repair.rows[0]?.target_to.toISOString(), repair.rows[0]?.generation.toISOString());
+    assert.equal(repair.rows[0]?.next_attempt_at.toISOString(), repair.rows[0]?.generation.toISOString());
 
     const activeIndex = await client.query<{ indexdef: string }>(`
       SELECT indexdef FROM pg_indexes

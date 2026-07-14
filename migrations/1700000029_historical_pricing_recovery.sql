@@ -13,6 +13,23 @@ UPDATE pricing_revisions
 SET authoritative = FALSE
 WHERE source = 'litellm-bootstrap';
 
+-- 배포 직후 기존 unpriced와 비권위 bootstrap 비용을 자동으로 다시 확인한다.
+UPDATE pricing_repair_status
+SET generation = now(),
+    state = 'pending',
+    target_to = now(),
+    processed_events = 0,
+    recovered_events = 0,
+    reconciled_events = 0,
+    remaining_unpriced_events = 0,
+    unresolved_models = '[]'::jsonb,
+    eligible_since = now(),
+    next_attempt_at = now(),
+    consecutive_failures = 0,
+    last_error = NULL,
+    updated_at = now()
+WHERE singleton;
+
 CREATE TABLE pricing_history_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   state TEXT NOT NULL CHECK (state IN (

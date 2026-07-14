@@ -318,6 +318,22 @@ function unresolvedModels(
   }));
 }
 
+function completedHistoricalDiagnostics(
+  diagnostics: Awaited<ReturnType<StorageBackend["getUnpricedUsageModels"]>>,
+  todayStart: Date,
+): HistoricalPricingDiagnostic[] {
+  const historicalEnd = new Date(todayStart.getTime() - 1);
+  return diagnostics.flatMap((item) => {
+    if (item.firstAt >= todayStart) return [];
+    return [{
+      model: item.model,
+      events: item.events,
+      firstAt: item.firstAt.toISOString(),
+      lastAt: (item.lastAt < todayStart ? item.lastAt : historicalEnd).toISOString(),
+    }];
+  });
+}
+
 export async function runPricingRepairTaskWith(
   dependencies: PricingRepairTaskDependencies,
 ): Promise<RollupSchedulerOutcome> {
@@ -410,10 +426,10 @@ export async function runPricingRepairTaskWith(
         : null;
     const timezone = getOrgTimezone();
     const todayStart = dayStartUtc(localDate(at, timezone), timezone);
-    const historicalDiagnostics = remainingDiagnostics.filter((item) => item.lastAt < todayStart);
+    const historicalDiagnostics = completedHistoricalDiagnostics(remainingDiagnostics, todayStart);
     if (!result.hasMore && !remainingSupported && remaining > 0 && historicalDiagnostics.length > 0 &&
       dependencies.runHistoricalPricingStep) {
-      const history = await dependencies.runHistoricalPricingStep(unresolvedModels(historicalDiagnostics));
+      const history = await dependencies.runHistoricalPricingStep(historicalDiagnostics);
       if (history.state === "promoted") {
         state = "pending";
         nextAttemptAt = at;

@@ -72,7 +72,8 @@ test("가격 복구 worker는 지원 모델의 unpriced를 확정하고 idle로 
         ? [{ model: "model-a", events: remaining, firstAt: NOW, lastAt: NOW }]
         : [];
     },
-    async repairUnpricedUsage(_request: unknown, resolver: PricingRepairResolver) {
+    async repairUnpricedUsage(request: { replaceRevisionIds: string[] }, resolver: PricingRepairResolver) {
+      assert.deepEqual(request.replaceRevisionIds, []);
       const resolved = resolver({
         dedupKey: "event-1", providerKey: "openai", userId: "user-1", sessionId: "session-1",
         model: "model-a", ts: NOW, inputTokens: 100, outputTokens: 20,
@@ -104,7 +105,7 @@ test("가격 복구 worker는 지원 모델의 unpriced를 확정하고 idle로 
   assert.equal(status.nextAttemptAt, null);
 });
 
-test("가격표가 없는 모델은 실패가 아니라 자동 재확인 대기 상태가 된다", async () => {
+test("저장 revision으로 처리할 수 없는 과거 모델은 가격 이력 복구를 이어간다", async () => {
   let status = pendingStatus({ remainingUnpricedEvents: 2 });
   const repository: PricingRepairRepository = {
     get: async () => status,
@@ -115,6 +116,7 @@ test("가격표가 없는 모델은 실패가 아니라 자동 재확인 대기 
         state: input.state,
         remainingUnpricedEvents: input.remaining,
         unresolvedModels: input.unresolvedModels,
+        nextAttemptAt: input.nextAttemptAt,
       };
       return true;
     },
@@ -124,17 +126,33 @@ test("가격표가 없는 모델은 실패가 아니라 자동 재확인 대기 
   };
   const storage = {
     reconcileCodexReplayUsage: async () => ({ scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false }),
-    getUnpricedUsageModels: async () => [{ model: "unknown-model", events: 2, firstAt: NOW, lastAt: NOW }],
+    getUnpricedUsageModels: async (_from: Date, _to: Date, replaceRevisionIds: string[]) => {
+      assert.deepEqual(replaceRevisionIds, ["bootstrap-revision"]);
+      return [{
+        model: "unknown-model",
+        events: 2,
+        firstAt: new Date("2026-07-07T00:00:00.000Z"),
+        lastAt: new Date("2026-07-07T23:59:00.000Z"),
+      }];
+    },
   } as unknown as StorageBackend;
+  const historyCalls: unknown[][] = [];
 
   assert.equal(await runPricingRepairTaskWith({
     repository,
     storage,
     getSchedule: async () => new Map(),
     now: () => NOW,
+    getNonAuthoritativeRevisionIds: async () => ["bootstrap-revision"],
+    runHistoricalPricingStep: async (diagnostics) => {
+      historyCalls.push(diagnostics);
+      return { state: "fetching", nextAttemptAt: new Date("2026-07-14T00:01:00.000Z") };
+    },
   }), "success");
-  assert.equal(status.state, "waiting_for_catalog");
+  assert.equal(status.state, "pending");
   assert.equal(status.remainingUnpricedEvents, 2);
+  assert.equal(historyCalls.length, 1);
+  assert.equal(status.nextAttemptAt?.toISOString(), "2026-07-14T00:01:00.000Z");
 });
 
 test("Codex 재생 중복이 남아 있으면 가격표 대상이 없어도 다음 보정 batch를 즉시 이어간다", async () => {

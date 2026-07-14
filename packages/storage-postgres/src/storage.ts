@@ -238,7 +238,11 @@ export class PostgresStorage implements StorageBackend {
     );
   }
 
-  async getUnpricedUsageModels(from: Date, to: Date): Promise<UnpricedUsageModelDiagnostic[]> {
+  async getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds: string[] = [],
+  ): Promise<UnpricedUsageModelDiagnostic[]> {
     const result = await this.pool.query<{
       model: string | null;
       events: string | number;
@@ -248,10 +252,13 @@ export class PostgresStorage implements StorageBackend {
       `SELECT model, count(*) AS events, min(ts) AS first_at, max(ts) AS last_at
        FROM usage_events
        WHERE ts >= $1 AND ts < $2
-         AND cost_status = 'unpriced'
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id = ANY($3::uuid[])
+         )
        GROUP BY model
        ORDER BY events DESC, model NULLS LAST`,
-      [from, to],
+      [from, to, replaceRevisionIds],
     );
     return result.rows.map((row) => ({
       model: row.model,
@@ -375,15 +382,18 @@ export class PostgresStorage implements StorageBackend {
         `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 cost_usd, log_adapter, host,
-                to_char((ts AT TIME ZONE $5)::date, 'YYYY-MM-DD') AS local_day
+                to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
          FROM usage_events
          WHERE ts >= $1 AND ts < $2
-           AND cost_status = 'unpriced'
+           AND (
+             cost_status = 'unpriced'
+             OR pricing_revision_id = ANY($4::uuid[])
+           )
            AND model = ANY($3::text[])
          ORDER BY ts, dedup_key
          FOR UPDATE SKIP LOCKED
-         LIMIT $4`,
-        [request.from, request.to, request.models, limit, this.tz],
+         LIMIT $5`,
+        [request.from, request.to, request.models, request.replaceRevisionIds, limit, this.tz],
       );
 
       let recovered = 0;
@@ -410,8 +420,12 @@ export class PostgresStorage implements StorageBackend {
            SET cost_usd = $2,
                pricing_revision_id = $3,
                cost_status = 'priced'
-           WHERE dedup_key = $1 AND cost_status = 'unpriced'`,
-          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId],
+           WHERE dedup_key = $1
+             AND (
+               cost_status = 'unpriced'
+               OR pricing_revision_id = ANY($4::uuid[])
+             )`,
+          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
         );
         if (update.rowCount === 1) {
           recovered += 1;

@@ -254,6 +254,8 @@ export interface PricingRepairRequest {
   from: Date;
   to: Date;
   models: string[];
+  /** 근거 없는 과거 revision으로 계산되어 authoritative revision으로 교체할 대상. */
+  replaceRevisionIds: string[];
   limit: number;
   generation: string;
 }
@@ -297,7 +299,11 @@ export interface StorageBackend {
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
   /** 보존 범위 안에서 아직 가격이 확정되지 않은 모델별 진단. */
-  getUnpricedUsageModels(from: Date, to: Date): Promise<UnpricedUsageModelDiagnostic[]>;
+  getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds?: string[],
+  ): Promise<UnpricedUsageModelDiagnostic[]>;
   /** 가격표로 확정 가능한 unpriced 이벤트만 제한된 batch로 복구한다. */
   repairUnpricedUsage(
     request: PricingRepairRequest,

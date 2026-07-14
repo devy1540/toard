@@ -1331,7 +1331,11 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: res.inserted, deduped: res.deduped };
   }
 
-  async getUnpricedUsageModels(from: Date, to: Date): Promise<UnpricedUsageModelDiagnostic[]> {
+  async getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds: string[] = [],
+  ): Promise<UnpricedUsageModelDiagnostic[]> {
     const rows = await this.queryJson<{
       model: string | null;
       events: string | number;
@@ -1345,10 +1349,13 @@ export class ClickHouseStorage implements StorageBackend {
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
-         AND cost_status = 'unpriced'
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id IN {replace_revision_ids:Array(String)}
+         )
        GROUP BY model
        ORDER BY events DESC, model`,
-      { from: chTs(from), to: chTs(to) },
+      { from: chTs(from), to: chTs(to), replace_revision_ids: replaceRevisionIds },
     );
     return rows.map((row) => ({
       model: row.model || null,
@@ -1463,7 +1470,10 @@ export class ClickHouseStorage implements StorageBackend {
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
-         AND cost_status = 'unpriced'
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id IN {replace_revision_ids:Array(String)}
+         )
          AND model IN {models:Array(String)}
        ORDER BY ts, dedup_key
        LIMIT {row_limit:UInt32}`,
@@ -1471,6 +1481,7 @@ export class ClickHouseStorage implements StorageBackend {
         from: chTs(request.from),
         to: chTs(request.to),
         models: request.models,
+        replace_revision_ids: request.replaceRevisionIds,
         row_limit: limit + 1,
       },
     );

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { resolvePricingEntry } from "./aliases";
 import { resolveCost, resolveCostAt } from "./cost";
 import type { PricingMap, PricingSchedule } from "./types";
 
@@ -131,4 +132,47 @@ test("resolveCostAt은 auto 모드에서도 제공 비용 대신 revision 가격
     schedule,
     mode: "auto",
   }), { costUsd: 1, pricingRevisionId: "rev-1", status: "priced" });
+});
+
+test("resolveCostAt은 historical revision의 반열린 유효 구간만 사용한다", () => {
+  const schedule: PricingSchedule = new Map([["model-a", [{
+    id: "history-1",
+    modelId: "model-a",
+    effectiveAt: new Date("2026-06-01T00:00:00Z"),
+    validUntil: new Date("2026-06-11T00:00:00Z"),
+    pricing: { inputPerM: 5, outputPerM: 25 },
+  }]]]);
+  const resolveAt = (occurredAt: string) => resolveCostAt({
+    model: "model-a",
+    occurredAt: new Date(occurredAt),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule,
+    mode: "calculate",
+  });
+
+  assert.deepEqual(resolveAt("2026-06-10T23:59:59.999Z"), {
+    costUsd: 5,
+    pricingRevisionId: "history-1",
+    status: "priced",
+  });
+  assert.deepEqual(resolveAt("2026-06-11T00:00:00Z"), {
+    costUsd: 0,
+    pricingRevisionId: null,
+    status: "unpriced",
+  });
+});
+
+test("가격 alias resolver는 실제로 매칭한 LiteLLM source key를 반환한다", () => {
+  const pricingMap: PricingMap = new Map([
+    ["claude-opus-4-8", { inputPerM: 5, outputPerM: 25 }],
+  ]);
+
+  assert.deepEqual(resolvePricingEntry("anthropic.claude-opus-4-8", pricingMap), {
+    modelId: "claude-opus-4-8",
+    pricing: { inputPerM: 5, outputPerM: 25 },
+  });
+  assert.equal(resolvePricingEntry("missing", pricingMap), undefined);
 });

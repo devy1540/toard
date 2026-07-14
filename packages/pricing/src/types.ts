@@ -18,6 +18,8 @@ export interface PricingRevision {
   id: string;
   modelId: string;
   effectiveAt: Date;
+  /** historical revision의 exclusive 종료 시각. 없으면 다음 revision 전까지 유효하다. */
+  validUntil?: Date;
   pricing: ModelPricing;
 }
 

@@ -75,8 +75,10 @@ export function resolveCostAt(
   const revisions = resolvePricingRevisions(args.model, args.schedule);
   let selected: PricingRevision | undefined;
   for (const revision of revisions ?? []) {
+    const withinValidity = revision.validUntil == null || args.occurredAt < revision.validUntil;
     if (
       revision.effectiveAt <= args.occurredAt &&
+      withinValidity &&
       (!selected || revision.effectiveAt >= selected.effectiveAt)
     ) {
       selected = revision;

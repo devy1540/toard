@@ -13,7 +13,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test && pnpm test:migrations",
-    "test:migrations": "node --import tsx --test scripts/pricing-revisions-migration.integration.test.ts scripts/pricing-auto-recovery-migration.integration.test.ts scripts/rollup-coordinator-migration.integration.test.ts",
+    "test:migrations": "node --import tsx --test scripts/pricing-revisions-migration.integration.test.ts scripts/pricing-auto-recovery-migration.integration.test.ts scripts/historical-pricing-migration.integration.test.ts scripts/rollup-coordinator-migration.integration.test.ts",
     "lint": "pnpm -r lint",
     "db:up": "docker compose -f docker-compose.dev.yml up -d",
     "db:down": "docker compose -f docker-compose.dev.yml down",
@@ -28,6 +28,7 @@
     "benchmark:dashboard-http:diagnostic": "tsx scripts/benchmark-dashboard-http.ts",
     "benchmark:rollup:micro": "tsx scripts/benchmark-timezone-rollup.ts",
     "verify:pricing-auto-recovery": "tsx scripts/verify-pricing-auto-recovery.ts",
+    "verify:historical-pricing": "tsx scripts/verify-historical-pricing-recovery.ts",
     "test:benchmark-dashboard-http": "node --import tsx --test scripts/benchmark-dashboard-http.test.ts scripts/benchmark-dashboard-release.test.ts",
     "test:benchmark-dashboard-signal": "RUN_DOCKER_SIGNAL_INTEGRATION=1 node --import tsx --test scripts/benchmark-dashboard-release-signal.integration.test.ts"
   },

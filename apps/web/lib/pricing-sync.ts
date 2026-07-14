@@ -1,8 +1,11 @@
 import { fetchLiteLLMPricing, type ModelPricing, type PricingMap } from "@toard/pricing";
-import { USAGE_EVENT_LOGICAL_RETENTION_DAYS } from "@toard/core";
 import { getPool } from "./db";
 import { dayStartUtc, getOrgTimezone, orgDate } from "./org-time";
-import { invalidatePricingCache, PRICING_SYNC_STATUS_SETTING_KEY } from "./pricing";
+import {
+  invalidatePricingCache,
+  PRICING_CACHE_VERSION_SETTING_KEY,
+  PRICING_SYNC_STATUS_SETTING_KEY,
+} from "./pricing";
 
 const DEFAULT_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -29,54 +32,6 @@ export type PricingSyncQueryClient = {
 
 export function pricingRevisionEffectiveAt(day: string, timezone: string): Date {
   return dayStartUtc(day, timezone);
-}
-
-/**
- * 보존 구간 안의 과거 이벤트도 최초로 관측한 가격을 사용할 수 있도록 모델별 bootstrap을 만든다.
- * 기존 가격 revision이 보존 시작점 이전에 있으면 별도 bootstrap은 만들지 않는다.
- */
-export async function ensureBootstrapPricingRevisions(
-  client: PricingSyncQueryClient,
-  bootstrapAt: Date,
-): Promise<number> {
-  const result = await client.query(
-    `WITH earliest AS (
-       SELECT DISTINCT ON (model_id)
-         model_id,
-         effective_at,
-         input_price_per_mtok,
-         output_price_per_mtok,
-         cache_read_price_per_mtok,
-         cache_creation_price_per_mtok,
-         input_price_above_200k_per_mtok,
-         output_price_above_200k_per_mtok,
-         fast_multiplier
-       FROM pricing_revisions
-       ORDER BY model_id, effective_at ASC, observed_at ASC, id ASC
-     )
-     INSERT INTO pricing_revisions (
-       model_id, effective_at, input_price_per_mtok, output_price_per_mtok,
-       cache_read_price_per_mtok, cache_creation_price_per_mtok,
-       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
-       fast_multiplier, source
-     )
-     SELECT
-       earliest.model_id, $1, earliest.input_price_per_mtok, earliest.output_price_per_mtok,
-       earliest.cache_read_price_per_mtok, earliest.cache_creation_price_per_mtok,
-       earliest.input_price_above_200k_per_mtok, earliest.output_price_above_200k_per_mtok,
-       earliest.fast_multiplier, 'litellm-bootstrap'
-     FROM earliest
-     WHERE earliest.effective_at > $1
-       AND NOT EXISTS (
-         SELECT 1 FROM pricing_revisions existing
-         WHERE existing.model_id = earliest.model_id
-           AND existing.effective_at <= $1
-       )
-     ON CONFLICT (model_id, effective_at, source) DO NOTHING
-     RETURNING id`,
-    [bootstrapAt],
-  );
-  return result.rows.length;
 }
 
 export async function markPricingRepairPending(
@@ -197,10 +152,6 @@ export async function runPricingSyncTransaction(
     const observedAt = now();
     const effectiveAt = pricingRevisionEffectiveAt(day, timezone);
     upserted = await syncPricingRevisions(client, pricing, effectiveAt);
-    const retentionStart = new Date(
-      observedAt.getTime() - USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
-    );
-    await ensureBootstrapPricingRevisions(client, retentionStart);
     await markPricingRepairPending(client, observedAt, observedAt);
     await client.query(
       `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
@@ -208,6 +159,14 @@ export async function runPricingSyncTransaction(
       [
         PRICING_SYNC_STATUS_SETTING_KEY,
         JSON.stringify({ day, syncedAt: observedAt.toISOString() }),
+      ],
+    );
+    await client.query(
+      `INSERT INTO app_settings (key, value, updated_at) VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [
+        PRICING_CACHE_VERSION_SETTING_KEY,
+        JSON.stringify({ updatedAt: observedAt.toISOString() }),
       ],
     );
     await client.query("COMMIT");

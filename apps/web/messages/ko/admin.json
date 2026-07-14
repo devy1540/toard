@@ -105,6 +105,7 @@
     "contentBadgeOff": "비활성",
     "contentDescription": "프롬프트·응답 본문 저장 여부. 서버 암호화 키(KEK)가 있어야 켜지며, 켜지면 사용자가 설치 시 본문 수집을 opt-in 할 수 있습니다.",
     "contentEnabledBody": "본문은 서버에서 봉투 암호화되어 저장되고, 각 사용자는 <code>/history</code> 에서 본인 것만 조회합니다.",
+    "contentRetiredBody": "레거시 서버 키가 제거되었습니다. E2EE 본문 수집과 브라우저 복호화는 계속 동작하며 새 KEK를 만들 필요가 없습니다.",
     "contentSetupHint": "서버 env 에 아래를 설정하고 재시작하면 켜집니다.",
     "contentSetupNote": "RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고. 키를 잃으면 기존 본문은 복호화 불가.",
     "legacyRetirementTitle": "레거시 본문 키 폐기",

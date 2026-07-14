@@ -97,8 +97,9 @@ export async function confirmLegacyBackupPurge(
   options: RetirementOptions = {},
 ): Promise<LegacyRetirementStatus> {
   if (!adminUserId) throw new LegacyRetirementError("INVALID_ADMIN_USER");
+  const runtimeState = runtime(options);
   return withTransaction(options.db ?? (getPool() as Pool), async (client) => {
-    const current = await reconcileStatus(client, runtime(options));
+    const current = await reconcileStatus(client, runtimeState);
     if (current.state !== "backup_confirmation_required" && current.state !== "key_removed_unconfirmed") {
       throw new LegacyRetirementError("BACKUP_CONFIRMATION_NOT_READY");
     }
@@ -106,10 +107,10 @@ export async function confirmLegacyBackupPurge(
       `UPDATE content_legacy_retirement
           SET backup_confirmed_at=$1, backup_confirmed_by=$2, updated_at=$1
         WHERE singleton=TRUE`,
-      [runtime(options).now, adminUserId],
+      [runtimeState.now, adminUserId],
     );
-    await insertEvent(client, "backup_confirmed", adminUserId, 0, runtime(options).now);
-    return reconcileStatus(client, runtime(options));
+    await insertEvent(client, "backup_confirmed", adminUserId, 0, runtimeState.now);
+    return reconcileStatus(client, runtimeState);
   });
 }
 
@@ -126,16 +127,12 @@ async function reconcileStatus(
   runtimeState: { now: Date; retentionDays: number | null; kekConfigured: boolean },
 ): Promise<LegacyRetirementStatus> {
   const stateResult = await client.query(
-    `SELECT zero_observed_at, backup_confirmed_at, key_retired_observed_at
+    `SELECT legacy_records, zero_observed_at, backup_confirmed_at, key_retired_observed_at
        FROM content_legacy_retirement WHERE singleton=TRUE FOR UPDATE`,
-  );
-  const countResult = await client.query(
-    `SELECT COUNT(*)::text AS legacy_records
-       FROM prompt_records WHERE encryption_scheme='server_v1'`,
   );
   const row = stateResult.rows[0];
   if (!row) throw new LegacyRetirementError("RETIREMENT_STATE_MISSING");
-  const legacyRecords = asCount(countResult.rows[0]?.legacy_records);
+  const legacyRecords = asCount(row.legacy_records);
   let zeroObservedAt = asDateOrNull(row.zero_observed_at);
   let backupConfirmedAt = asDateOrNull(row.backup_confirmed_at);
   let keyRetiredObservedAt = asDateOrNull(row.key_retired_observed_at);

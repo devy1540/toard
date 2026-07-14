@@ -61,7 +61,10 @@ test("관리자 시스템 화면은 폐기 상태 패널과 한영 문구를 제
   const ko = JSON.parse(readFileSync(new URL("../messages/ko/admin.json", import.meta.url), "utf8"));
   const en = JSON.parse(readFileSync(new URL("../messages/en/admin.json", import.meta.url), "utf8"));
   assert.match(page, /LegacyRetirementPanel/);
+  assert.match(page, /contentRetiredBody/);
   assert.equal(typeof ko.system.legacyRetirementTitle, "string");
   assert.equal(typeof en.system.legacyRetirementTitle, "string");
+  assert.equal(typeof ko.system.contentRetiredBody, "string");
+  assert.equal(typeof en.system.contentRetiredBody, "string");
   assert.deepEqual(Object.keys(ko.system.legacyRetirementStates), Object.keys(en.system.legacyRetirementStates));
 });

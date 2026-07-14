@@ -86,6 +86,7 @@ services:
       CLICKHOUSE_ROLLUP_MAX_BUCKETS: ${CLICKHOUSE_ROLLUP_MAX_BUCKETS:-} # compactor tick 당 최대 bucket 수, 기본 16
       ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}
       TOARD_CONTENT_KEK_B64: ${TOARD_CONTENT_KEK_B64:-}   # 설정 시 본문 수집 활성(암호화 KEK, base64 32B)
+      TOARD_LEGACY_BACKUP_RETENTION_DAYS: ${TOARD_LEGACY_BACKUP_RETENTION_DAYS:-}   # legacy 0건 뒤 백업 보존일
       CONTENT_COLLECTION_DEFAULT: ${CONTENT_COLLECTION_DEFAULT:-}   # on 이면 설치 기본 opt-out(자동 켜짐), 기본 opt-in
       TOARD_UPDATER_URL: ${TOARD_UPDATER_URL:-}       # 선택: Compose updater agent 내부 URL (예: http://updater:3201)
       TOARD_UPDATER_SECRET: ${TOARD_UPDATER_SECRET:-} # 선택: app ↔ updater 공유 secret

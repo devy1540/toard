@@ -89,6 +89,8 @@ pnpm dev                      # http://localhost:3000
 대시보드 레이아웃을 실제 데이터로 확인하려면 로컬 DB에 합성 사용량을 추가한다. `localhost`/`127.0.0.1`
 DB에서만 기본 실행된다. 새 본문 히스토리는 shim에서 암호화하는 `e2ee_v1`을 권장한다. `TOARD_CONTENT_KEK_B64`는 기존 `server_v1` 호환 본문에만 필요하며 E2EE 본문을 복호화할 수 없다. 활성화·복구·기기 승인 절차는 [E2EE 운영 런북](docs/e2ee-prompt-history-runbook.md)을 따른다:
 
+전체 `server_v1` 전환 뒤 서버 KEK를 폐기하려면 실제 백업 정책과 같은 `TOARD_LEGACY_BACKUP_RETENTION_DAYS`를 설정한다. 관리 → 시스템은 전체 0건 확인, 백업 보존 만료, 관리자 확인, KEK 제거 상태를 순서대로 표시한다. legacy 행이 남아 있는데 KEK가 없으면 `/api/ready`가 503으로 배포를 차단한다.
+
 ```bash
 pnpm seed:dashboard-demo --dry-run
 pnpm seed:dashboard-demo

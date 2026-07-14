@@ -235,6 +235,8 @@ async function SystemTab() {
     getTranslations("admin"),
   ]);
   const contentEnabled = contentCollectionEnabled();
+  const legacyKeyRemoved = legacyRetirement?.state === "retired"
+    || legacyRetirement?.state === "key_removed_unconfirmed";
   const serverVersion = getServerVersion();
 
   return (
@@ -286,6 +288,8 @@ async function SystemTab() {
               <p className="text-muted-foreground">
                 {t.rich("system.contentEnabledBody", { code: (chunks) => <code>{chunks}</code> })}
               </p>
+            ) : legacyKeyRemoved ? (
+              <p className="text-muted-foreground">{t("system.contentRetiredBody")}</p>
             ) : (
               <>
                 <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>

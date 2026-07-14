@@ -91,6 +91,7 @@ export async function markPricingRepairPending(
          target_to = $2,
          processed_events = 0,
          recovered_events = 0,
+         reconciled_events = 0,
          remaining_unpriced_events = 0,
          unresolved_models = '[]'::jsonb,
          eligible_since = now(),

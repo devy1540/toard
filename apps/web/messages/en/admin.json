@@ -82,6 +82,7 @@
       "failed": "Temporary error · retrying automatically"
     },
     "recoveredEvents": "Recovered",
+    "reconciledEvents": "Duplicates reconciled",
     "remainingEvents": "Unconfirmed remaining",
     "lastRepair": "Last automatic run",
     "unresolvedModels": "Models not yet found in the price catalog",

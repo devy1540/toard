@@ -22,6 +22,7 @@ function pendingStatus(overrides: Partial<PricingRepairStatusRecord> = {}): Pric
     targetTo: NOW,
     processedEvents: 0,
     recoveredEvents: 0,
+    reconciledEvents: 0,
     remainingUnpricedEvents: 3,
     unresolvedModels: [],
     lastStartedAt: null,
@@ -49,6 +50,7 @@ test("가격 복구 worker는 지원 모델의 unpriced를 확정하고 idle로 
         state: input.state,
         processedEvents: status.processedEvents + input.processed,
         recoveredEvents: status.recoveredEvents + input.recovered,
+        reconciledEvents: status.reconciledEvents + input.reconciled,
         remainingUnpricedEvents: input.remaining,
         unresolvedModels: input.unresolvedModels,
         adaptiveLimit: input.adaptiveLimit,
@@ -62,6 +64,9 @@ test("가격 복구 worker는 지원 모델의 unpriced를 확정하고 idle로 
     },
   };
   const storage = {
+    async reconcileCodexReplayUsage() {
+      return { scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false };
+    },
     async getUnpricedUsageModels() {
       return remaining > 0
         ? [{ model: "model-a", events: remaining, firstAt: NOW, lastAt: NOW }]
@@ -118,6 +123,7 @@ test("가격표가 없는 모델은 실패가 아니라 자동 재확인 대기 
     },
   };
   const storage = {
+    reconcileCodexReplayUsage: async () => ({ scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false }),
     getUnpricedUsageModels: async () => [{ model: "unknown-model", events: 2, firstAt: NOW, lastAt: NOW }],
   } as unknown as StorageBackend;
 
@@ -129,6 +135,48 @@ test("가격표가 없는 모델은 실패가 아니라 자동 재확인 대기 
   }), "success");
   assert.equal(status.state, "waiting_for_catalog");
   assert.equal(status.remainingUnpricedEvents, 2);
+});
+
+test("Codex 재생 중복이 남아 있으면 가격표 대상이 없어도 다음 보정 batch를 즉시 이어간다", async () => {
+  let status = pendingStatus({ remainingUnpricedEvents: 100 });
+  const repository: PricingRepairRepository = {
+    get: async () => status,
+    claim: async () => ({ ...status, state: "running", lastStartedAt: NOW }),
+    async markProgress(input) {
+      status = {
+        ...status,
+        state: input.state,
+        processedEvents: status.processedEvents + input.processed,
+        reconciledEvents: status.reconciledEvents + input.reconciled,
+        remainingUnpricedEvents: input.remaining,
+        nextAttemptAt: input.nextAttemptAt,
+      };
+      return true;
+    },
+    async markFailed() {
+      throw new Error("unexpected failure");
+    },
+  };
+  let reconcileCalls = 0;
+  const storage = {
+    async reconcileCodexReplayUsage() {
+      reconcileCalls += 1;
+      return { scanned: 100, reconciled: 100, affectedBuckets: [], hasMore: true };
+    },
+    getUnpricedUsageModels: async () => [],
+  } as unknown as StorageBackend;
+
+  assert.equal(await runPricingRepairTaskWith({
+    repository,
+    storage,
+    getSchedule: async () => new Map(),
+    now: () => NOW,
+  }), "success");
+  assert.equal(reconcileCalls, 1);
+  assert.equal(status.state, "pending");
+  assert.equal(status.processedEvents, 100);
+  assert.equal(status.reconciledEvents, 100);
+  assert.equal(status.nextAttemptAt?.toISOString(), NOW.toISOString());
 });
 
 test("pending과 오래 멈춘 running만 coordinator 후보가 된다", () => {

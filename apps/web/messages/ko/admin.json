@@ -82,6 +82,7 @@
       "failed": "일시 오류 · 자동 재시도"
     },
     "recoveredEvents": "복구 완료",
+    "reconciledEvents": "중복 보정",
     "remainingEvents": "남은 미확정",
     "lastRepair": "마지막 자동 처리",
     "unresolvedModels": "가격표에서 아직 확인되지 않은 모델",

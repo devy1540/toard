@@ -105,6 +105,7 @@ function storageWithInsertedRows(
 function v2CompactorFixture(options: {
   watermark?: Date;
   failAggregate?: boolean;
+  dirty?: boolean;
 } = {}): {
   storage: ClickHouseStorage;
   aggregateQueries: string[];
@@ -112,12 +113,14 @@ function v2CompactorFixture(options: {
   inserts: InsertedRows[];
   pgQueries: string[];
   pgCalls: Array<{ sql: string; params: unknown[] }>;
+  commands: Array<Record<string, unknown>>;
 } {
   const aggregateQueries: string[] = [];
   const aggregateParams: Array<Record<string, unknown>> = [];
   const inserts: InsertedRows[] = [];
   const pgQueries: string[] = [];
   const pgCalls: Array<{ sql: string; params: unknown[] }> = [];
+  const commands: Array<Record<string, unknown>> = [];
   const bucket = new Date(Math.floor((Date.now() - 2 * 60 * 60 * 1000) / (15 * 60 * 1000)) * (15 * 60 * 1000));
   let watermark = options.watermark ?? bucket;
   const client = {
@@ -129,7 +132,9 @@ function v2CompactorFixture(options: {
         return { rows: [{ watermark }], rowCount: 1 };
       }
       if (normalized.startsWith("SELECT bucket")) {
-        return { rows: [], rowCount: 0 };
+        return options.dirty
+          ? { rows: [{ bucket }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
       }
       if (normalized.startsWith("UPDATE clickhouse_rollup_watermarks")) {
         watermark = params[1] as Date;
@@ -142,7 +147,9 @@ function v2CompactorFixture(options: {
     connect: async () => client,
   } as unknown as Pool;
   const ch = {
-    command: async () => undefined,
+    command: async (args: Record<string, unknown>) => {
+      commands.push(args);
+    },
     query: async ({ query, query_params }: { query: string; query_params: Record<string, unknown> }) => {
       aggregateQueries.push(query);
       aggregateParams.push(query_params);
@@ -180,6 +187,7 @@ function v2CompactorFixture(options: {
     inserts,
     pgQueries,
     pgCalls,
+    commands,
   };
 }
 
@@ -641,6 +649,65 @@ test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 p
   assert.equal(second.recovered, 1);
 });
 
+test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 mutation으로 제거한다", async () => {
+  const actions: string[] = [];
+  let selectedSql = "";
+  let selectedParams: Record<string, unknown> = {};
+  const deleteCommands: Array<Record<string, unknown>> = [];
+  const ch = {
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      selectedSql = args.query;
+      selectedParams = args.query_params;
+      return {
+        json: async () => [{
+          dedup_key: "replayed-1",
+          ts: "2026-07-13 09:14:50.000",
+        }],
+      };
+    },
+    command: async (args: Record<string, unknown>) => {
+      if (/ALTER TABLE usage_events\s+DELETE WHERE dedup_key IN/.test(String(args.query ?? ""))) {
+        actions.push("delete-replay");
+        deleteCommands.push(args);
+      }
+    },
+  } as unknown as ClickHouseClient;
+  const client = {
+    async query(sql: string) {
+      if (sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets")) actions.push("mark-dirty");
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  } as unknown as PoolClient;
+  const storage = new ClickHouseStorage(ch, { connect: async () => client } as unknown as Pool);
+
+  const result = await storage.reconcileCodexReplayUsage({
+    from: new Date("2026-04-15T00:00:00.000Z"),
+    to: new Date("2026-07-14T00:00:00.000Z"),
+    limit: 100,
+  });
+
+  assert.match(selectedSql, /FROM usage_events AS bad FINAL/);
+  assert.match(selectedSql, /bad\.provider_key = 'codex'/);
+  assert.match(selectedSql, /bad\.model = ''/);
+  assert.match(selectedSql, /bad\.cost_status = 'unpriced'/);
+  assert.match(selectedSql, /tuple\(\s*bad\.session_id, bad\.user_id, bad\.host, bad\.log_adapter/);
+  assert.match(selectedSql, /IN\s*\(\s*SELECT tuple\(\s*session_id, user_id, host, log_adapter/);
+  assert.equal(selectedParams.row_limit, 101);
+  assert.deepEqual(actions.slice(0, 3), ["mark-dirty", "mark-dirty", "delete-replay"]);
+  const deleteArgs = deleteCommands[0];
+  assert.ok(deleteArgs);
+  assert.match(String(deleteArgs?.query ?? ""), /ALTER TABLE usage_events\s+DELETE WHERE dedup_key IN/);
+  assert.deepEqual((deleteArgs?.query_params as { dedup_keys: string[] }).dedup_keys, ["replayed-1"]);
+  assert.equal((deleteArgs?.clickhouse_settings as { mutations_sync: string }).mutations_sync, "1");
+  assert.deepEqual(result, {
+    scanned: 1,
+    reconciled: 1,
+    affectedBuckets: [new Date("2026-07-13T09:00:00.000Z")],
+    hasMore: false,
+  });
+});
+
 test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한다", async () => {
   let query = "";
   let params: Record<string, unknown> = {};
@@ -784,6 +851,18 @@ test("v2 compactor는 가격 차원을 보존하고 unpriced 비용을 제외한
   const dirtyQuery = pgQueries.find((query) => query.includes("FROM clickhouse_rollup_dirty_buckets"));
   assert.ok(dirtyQuery);
   assert.match(dirtyQuery, /bucket >= \$2 AND bucket < \$3/);
+});
+
+test("v2 dirty 재집계는 사라지거나 차원이 바뀐 이전 행을 동기 삭제한 뒤 새 집계를 쓴다", async () => {
+  const { storage, commands, inserts } = v2CompactorFixture({ dirty: true });
+
+  await storage.compactUsage15mV2(1);
+
+  const deletion = commands.find((command) =>
+    /ALTER TABLE usage_15m_rollup_v2\s+DELETE WHERE bucket_15m IN/.test(String(command.query ?? "")));
+  assert.ok(deletion);
+  assert.equal((deletion.clickhouse_settings as { mutations_sync: string }).mutations_sync, "1");
+  assert.ok(inserts.some(({ table }) => table === "usage_15m_rollup_v2"));
 });
 
 test("v1 compactor는 기존 dashboard raw source 정책을 보존한다", async () => {
@@ -1730,6 +1809,26 @@ test("시간대 cache compactor는 v2 15분 canonical source만 소비한다", a
   assert.equal(aggregate.params.to, "2026-03-09 07:00:00.000");
   assert.equal(inserts[0]?.table, "usage_daily_timezone_rollup");
   assert.equal(inserts[0]?.values[0]?.bucket_start, "2026-03-08 08:00:00.000");
+});
+
+test("시간대 rollup 재집계는 결과가 0행이어도 기존 bucket을 먼저 동기 삭제한다", async () => {
+  const commands: Array<Record<string, unknown>> = [];
+  const ch = {
+    command: async (args: Record<string, unknown>) => {
+      commands.push(args);
+    },
+    query: async () => ({ json: async () => [] }),
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {} as Pool);
+  const bucket = new Date("2026-03-08T08:00:00.000Z");
+
+  assert.equal(await storage.compactTimezoneRollup("day", "America/Los_Angeles", bucket), 0);
+  const deletion = commands.find((command) =>
+    /ALTER TABLE usage_daily_timezone_rollup\s+DELETE WHERE timezone/.test(String(command.query ?? "")));
+  assert.match(String(deletion?.query ?? ""), /ALTER TABLE usage_daily_timezone_rollup\s+DELETE WHERE timezone/);
+  assert.equal((deletion?.query_params as { timezone: string }).timezone, "America/Los_Angeles");
+  assert.equal((deletion?.query_params as { bucket: string }).bucket, "2026-03-08 08:00:00.000");
+  assert.equal((deletion?.clickhouse_settings as { mutations_sync: string }).mutations_sync, "1");
 });
 
 test("비정수 offset 시간대의 시간 cache도 timezone 식으로 v2를 집계한다", async () => {

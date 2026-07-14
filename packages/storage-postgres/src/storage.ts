@@ -26,6 +26,8 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageReplayReconciliationRequest,
+  UsageReplayReconciliationResult,
   UnpricedUsageModelDiagnostic,
   UserUsage,
   UserInsightComparison,
@@ -257,6 +259,82 @@ export class PostgresStorage implements StorageBackend {
       firstAt: row.first_at,
       lastAt: row.last_at,
     }));
+  }
+
+  async reconcileCodexReplayUsage(
+    request: UsageReplayReconciliationRequest,
+  ): Promise<UsageReplayReconciliationResult> {
+    if (request.limit <= 0) {
+      return { scanned: 0, reconciled: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query<{
+        dedup_key: string;
+        ts: Date;
+        local_day: string;
+      }>(
+        `SELECT bad.dedup_key, bad.ts,
+                to_char((bad.ts AT TIME ZONE $4)::date, 'YYYY-MM-DD') AS local_day
+         FROM usage_events bad
+         WHERE bad.ts >= $1 AND bad.ts < $2
+           AND bad.provider_key = 'codex'
+           AND bad.cost_status = 'unpriced'
+           AND COALESCE(bad.model, '') = ''
+           AND COALESCE(bad.session_id, '') <> ''
+           AND COALESCE(bad.log_adapter, '') = 'codex'
+           AND EXISTS (
+             SELECT 1
+             FROM usage_events good
+             WHERE good.provider_key = 'codex'
+               AND COALESCE(good.model, '') <> ''
+               AND good.session_id = bad.session_id
+               AND good.user_id IS NOT DISTINCT FROM bad.user_id
+               AND good.host IS NOT DISTINCT FROM bad.host
+               AND good.log_adapter IS NOT DISTINCT FROM bad.log_adapter
+               AND good.input_tokens = bad.input_tokens
+               AND good.output_tokens = bad.output_tokens
+               AND good.cache_read_tokens = bad.cache_read_tokens
+               AND good.cache_creation_tokens = bad.cache_creation_tokens
+           )
+         ORDER BY bad.ts, bad.dedup_key
+         FOR UPDATE OF bad SKIP LOCKED
+         LIMIT $3`,
+        [request.from, request.to, limit + 1, this.tz],
+      );
+      const candidates = selected.rows.slice(0, limit);
+      const keys = candidates.map((row) => row.dedup_key);
+      let reconciled = 0;
+      if (keys.length > 0) {
+        const deletion = await client.query(
+          `DELETE FROM usage_events
+           WHERE dedup_key = ANY($1::text[])
+             AND provider_key = 'codex'
+             AND cost_status = 'unpriced'
+             AND COALESCE(model, '') = ''`,
+          [keys],
+        );
+        reconciled = deletion.rowCount ?? 0;
+      }
+      const days = [...new Set(candidates.map((row) => row.local_day))].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        scanned: candidates.length,
+        reconciled,
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: selected.rows.length > limit,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async repairUnpricedUsage(

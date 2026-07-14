@@ -66,13 +66,15 @@
 ```json
 {
   "state": "pending",
+  "contentOwnerId": "018f47d0-4d47-7b04-950b-7d18a86e1b43",
+  "contentKeyVersion": 1,
   "legacyRecords": 120,
   "e2eeRecords": 80,
   "totalRecords": 200
 }
 ```
 
-서버의 `state`는 `pending`, `complete`, `blocked` 중 하나다. DB에는 상태를 저장하지 않고 남은 행 수와 KEK 가용성으로 계산한다. 브라우저는 worker가 실행 중일 때 `pending`을 화면의 `running` 상태로 바꾼다. 완료는 `legacyRecords === 0`으로만 판정한다.
+서버의 `state`는 `pending`, `complete`, `blocked` 중 하나다. DB에는 상태를 저장하지 않고 남은 행 수와 KEK 가용성으로 계산한다. `contentOwnerId`와 `contentKeyVersion`은 브라우저가 새 E2EE AAD와 DEK wrapper를 만들 때 사용한다. 브라우저는 worker가 실행 중일 때 `pending`을 화면의 `running` 상태로 바꾼다. 완료는 `legacyRecords === 0`으로만 판정한다.
 
 ### 6.2 페이지 조회
 

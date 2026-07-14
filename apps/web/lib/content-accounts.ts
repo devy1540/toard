@@ -57,6 +57,18 @@ export type PendingApprovalRequest = Omit<ApprovalRequest, "code"> & {
   publicKey: string;
 };
 
+export async function isE2eeContentActive(
+  userId: string,
+  db?: ContentAccountDb,
+): Promise<boolean> {
+  validateUserId(userId);
+  const result = await runInContentContext(userId, db, (tx) => tx.query(
+    `SELECT true AS active FROM content_accounts WHERE user_id=$1 AND state='active'`,
+    [userId],
+  ));
+  return result.rows[0]?.active === true;
+}
+
 export function parseActivationInput(value: unknown): ContentActivationInput {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new E2eeContractError("활성화 입력은 객체여야 합니다");

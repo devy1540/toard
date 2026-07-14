@@ -2,6 +2,7 @@ import { loadKek } from "@/lib/content-crypto";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { parsePromptBatch, PromptWireError } from "@/lib/prompt-wire";
 import { E2eePromptSaveError, saveE2eePromptRecords, savePromptRecords } from "@/lib/prompt-records";
+import { isE2eeContentActive } from "@/lib/content-accounts";
 
 // 프롬프트/응답 본문 수신 — shim 본문 수집 경로 (opt-in, /events 와 분리).
 // 본문은 서버에서 봉투 암호화 후 prompt_records(RLS 소유자전용)에 저장한다.
@@ -14,6 +15,7 @@ type PromptsPostDeps = {
   loadKek: typeof loadKek;
   savePromptRecords: typeof savePromptRecords;
   saveE2eePromptRecords: typeof saveE2eePromptRecords;
+  isE2eeContentActive: typeof isE2eeContentActive;
 };
 
 const defaultPromptsPostDeps: PromptsPostDeps = {
@@ -22,6 +24,7 @@ const defaultPromptsPostDeps: PromptsPostDeps = {
   loadKek,
   savePromptRecords,
   saveE2eePromptRecords,
+  isE2eeContentActive,
 };
 
 function createPromptsPost(overrides: Partial<PromptsPostDeps> = {}) {
@@ -67,6 +70,10 @@ async function postPrompts(req: Request, deps: PromptsPostDeps): Promise<Respons
       }
       return Response.json({ code: "E2EE_PROMPT_SAVE_FAILED" }, { status: 500 });
     }
+  }
+
+  if (await deps.isE2eeContentActive(auth.userId)) {
+    return Response.json({ code: "E2EE_REQUIRED" }, { status: 409 });
   }
 
   let kek: Buffer;

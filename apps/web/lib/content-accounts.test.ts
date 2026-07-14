@@ -5,6 +5,7 @@ import {
   approveRequest,
   consumeApprovedEnvelope,
   createApprovalRequest,
+  isE2eeContentActive,
   parseActivationInput,
   prepareContentAccount,
   registerRecoveredBrowser,
@@ -19,6 +20,13 @@ import {
 } from "./e2ee-test-fixtures";
 
 const NOW = new Date("2026-07-14T00:00:00.000Z");
+
+test("content account active state gates legacy writes", async () => {
+  const active = { query: async () => ({ rows: [{ active: true }] }) };
+  const off = { query: async () => ({ rows: [] }) };
+  assert.equal(await isE2eeContentActive("user-1", active), true);
+  assert.equal(await isE2eeContentActive("user-1", off), false);
+});
 
 test("activation requires recovery confirmation and both wrapper types", async () => {
   await assert.rejects(

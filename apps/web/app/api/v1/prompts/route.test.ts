@@ -64,3 +64,31 @@ test("prompt route rejects mixed plaintext and e2ee batches", async () => {
   assert.equal(response.status, 400);
   assert.equal((await response.text()).includes("secret prompt"), false);
 });
+
+test("active E2EE account rejects new server_v1 prompt writes", async () => {
+  let saved = 0;
+  const handler = POST.withDependencies({
+    authenticateIngestToken: auth,
+    loadProviders: providers,
+    isE2eeContentActive: async () => true,
+    savePromptRecords: async () => {
+      saved += 1;
+      return { inserted: 1, deduped: 0 };
+    },
+  });
+  const response = await handler(new Request("http://localhost/api/v1/prompts", {
+    method: "POST",
+    headers: { authorization: "Bearer token" },
+    body: JSON.stringify([{
+      dedupKey: "legacy",
+      sessionId: null,
+      providerKey: "codex",
+      turnRole: "user",
+      ts: "2026-07-14T00:00:00.000Z",
+      text: "secret prompt",
+    }]),
+  }));
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { code: "E2EE_REQUIRED" });
+  assert.equal(saved, 0);
+});

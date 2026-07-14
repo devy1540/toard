@@ -428,3 +428,40 @@ test("active 시간대의 정상 backlog는 읽기를 유지하되 검증만 미
   assert.equal(active.validationReady, false);
   assert.equal(observing.ready, false);
 });
+
+test("최초 시간대 전환은 고정 목표 이후의 미래 prewarm 작업을 제외한다", async () => {
+  const jobsQueries: Array<{ sql: string; params?: unknown[] }> = [];
+  const pool = {
+    async query(sql: string, params?: unknown[]) {
+      if (sql.includes("clickhouse_timezone_rollup_jobs")) {
+        jobsQueries.push({ sql, params });
+        const filtersToTarget = sql.includes("source_to <= $1")
+          && params?.[0] === T0;
+        return {
+          rows: [{
+            pending: filtersToTarget ? 0 : 5,
+            inflight: 0,
+          }],
+        };
+      }
+      if (sql.includes("clickhouse_rollup_timezones")) {
+        return { rows: [{ timezone: "Asia/Seoul", validated_at: null }] };
+      }
+      return { rows: [] };
+    },
+  };
+
+  const readiness = await loadRollupLayerReadinessWith(
+    pool,
+    "timezone",
+    T0,
+    "backfilling",
+  );
+
+  assert.equal(readiness.ready, true);
+  assert.equal(readiness.validationReady, true);
+  const jobsQuery = jobsQueries[0];
+  assert.ok(jobsQuery);
+  assert.match(jobsQuery.sql, /source_to <= \$1/);
+  assert.deepEqual(jobsQuery.params, [T0]);
+});

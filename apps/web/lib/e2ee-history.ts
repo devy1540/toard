@@ -1,4 +1,5 @@
 import type { PoolClient } from "pg";
+import type { SessionUsageSummary } from "@toard/core";
 import { withUserContext } from "./rls";
 import type { E2eePromptRecordWire } from "./e2ee-contract";
 
@@ -11,11 +12,13 @@ export type E2eeHistoryDb = {
 
 export type E2eeHistorySessionSummary = {
   key: string;
+  isSession: boolean;
   providerKey: string;
   turnCount: number;
   firstTs: string;
   latestTs: string;
   previewRecord: E2eePromptRecordWire | null;
+  usage: SessionUsageSummary | null;
 };
 
 export type E2eeHistoryPage = {
@@ -36,7 +39,15 @@ export type E2eeContentStatus = {
   recoveryConfirmedAt: string | null;
 };
 
-type HistoryOptions = { limit?: number; offset?: number };
+type HistoryOptions = {
+  limit?: number;
+  offset?: number;
+  filter?: {
+    from: Date;
+    to: Date;
+    providerKey?: string;
+  };
+};
 
 export async function getE2eeHistorySessions(
   userId: string,
@@ -45,6 +56,19 @@ export async function getE2eeHistorySessions(
 ): Promise<E2eeHistoryPage> {
   const limit = clampInteger(options.limit, 1, 100, 20);
   const offset = clampInteger(options.offset, 0, 100_000, 0);
+  const params: unknown[] = [userId];
+  const conditions = ["user_id = $1", "encryption_scheme = 'e2ee_v1'"];
+  if (options.filter) {
+    params.push(options.filter.from, options.filter.to);
+    conditions.push(`ts >= $${params.length - 1}`, `ts < $${params.length}`);
+    if (options.filter.providerKey) {
+      params.push(options.filter.providerKey);
+      conditions.push(`provider_key = $${params.length}`);
+    }
+  }
+  params.push(limit, offset);
+  const limitParam = params.length - 1;
+  const offsetParam = params.length;
   const result = await runInContext(userId, db, (tx) =>
     tx.query(
       `WITH scoped AS (
@@ -54,9 +78,10 @@ export async function getE2eeHistorySessions(
                   ORDER BY (turn_role = 'user') DESC, ts ASC
                 ) AS preview_rank
          FROM prompt_records
-         WHERE user_id = $1 AND encryption_scheme = 'e2ee_v1'
+         WHERE ${conditions.join(" AND ")}
        ), grouped AS (
-         SELECT gkey, MIN(provider_key) AS provider_key, COUNT(*) AS turn_count,
+         SELECT gkey, BOOL_OR(session_id IS NOT NULL) AS is_session,
+                MIN(provider_key) AS provider_key, COUNT(*) AS turn_count,
                 MIN(ts) AS first_ts, MAX(ts) AS latest_ts
          FROM scoped
          GROUP BY gkey
@@ -64,7 +89,7 @@ export async function getE2eeHistorySessions(
          SELECT *, COUNT(*) OVER () AS total_groups
          FROM grouped
          ORDER BY latest_ts DESC
-         LIMIT $2 OFFSET $3
+         LIMIT $${limitParam} OFFSET $${offsetParam}
        )
        SELECT page.*, scoped.dedup_key, scoped.session_id, scoped.turn_role, scoped.ts,
               scoped.content_owner_id, scoped.content_key_version, scoped.wrapped_dek,
@@ -73,7 +98,7 @@ export async function getE2eeHistorySessions(
        FROM page
        LEFT JOIN scoped ON scoped.gkey = page.gkey AND scoped.preview_rank = 1
        ORDER BY page.latest_ts DESC`,
-      [userId, limit, offset],
+      params,
     ),
   );
 
@@ -81,11 +106,13 @@ export async function getE2eeHistorySessions(
     totalSessions: result.rows.length > 0 ? asNumber(result.rows[0]!.total_groups) : 0,
     sessions: result.rows.map((row) => ({
       key: asString(row.gkey),
+      isSession: asBoolean(row.is_session),
       providerKey: asString(row.provider_key),
       turnCount: asNumber(row.turn_count),
       firstTs: asDate(row.first_ts).toISOString(),
       latestTs: asDate(row.latest_ts).toISOString(),
       previewRecord: row.dedup_key == null ? null : toWireRecord(row),
+      usage: null,
     })),
   };
 }
@@ -199,6 +226,11 @@ function asNumber(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 0) throw new Error("INVALID_CONTENT_ROW");
   return parsed;
+}
+
+function asBoolean(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new Error("INVALID_CONTENT_ROW");
+  return value;
 }
 
 function asDate(value: unknown): Date {

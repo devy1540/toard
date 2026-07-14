@@ -226,7 +226,10 @@ pub fn status() -> i32 {
         eprintln!("toard-shim: E2EE 설정 메타데이터가 불완전합니다");
         return 1;
     };
-    if SystemContentKeyStore.get_uck(owner_id, key_version).is_err() {
+    if SystemContentKeyStore
+        .get_uck(owner_id, key_version)
+        .is_err()
+    {
         eprintln!("toard-shim: E2EE 키를 운영체제 보안 저장소에서 찾을 수 없습니다");
         return 1;
     }

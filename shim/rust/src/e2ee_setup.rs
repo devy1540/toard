@@ -13,7 +13,7 @@ use zeroize::Zeroizing;
 const SETUP_TIMEOUT_SECS: u64 = 600;
 const MAX_HTTP_REQUEST_BYTES: usize = 16 * 1024;
 const PAGE_TEMPLATE: &str = include_str!("e2ee_setup_page.html");
-const PAGE_SCRIPT: &str = "document.getElementById('save-kit').addEventListener('click',()=>{const words=document.getElementById('recovery-words').textContent.trim();const body='TOARD RECOVERY KIT\\n\\n'+words+'\\n';const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([body],{type:'text/plain'}));link.download='toard-recovery-kit.txt';link.click();URL.revokeObjectURL(link.href);document.getElementById('saved').value='yes';document.getElementById('confirm').hidden=false;});";
+const PAGE_SCRIPT: &str = "document.getElementById('save-kit').addEventListener('click',()=>{const words=Array.from(document.querySelectorAll('[data-recovery-word]')).map((node,index)=>String(index+1).padStart(2,'0')+'. '+node.dataset.recoveryWord).join('\\n');const body='TOARD RECOVERY KIT\\n\\n'+words+'\\n';const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([body],{type:'text/plain'}));link.download='toard-recovery-kit.txt';link.click();URL.revokeObjectURL(link.href);document.getElementById('saved').value='yes';document.getElementById('confirm').hidden=false;});";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ConfirmationResult {
@@ -588,26 +588,33 @@ fn handle_loopback_request(
 }
 
 fn render_page(address: SocketAddr, gate: &ConfirmationGate) -> String {
-    let words = gate
+    let word_items = gate
         .words
         .iter()
-        .map(|word| escape_html(word))
+        .enumerate()
+        .map(|(index, word)| {
+            let word = escape_html(word);
+            format!(
+                "<li class=\"word\"><span class=\"word-index\">{:02}</span><span class=\"word-value\" data-recovery-word=\"{word}\">{word}</span></li>",
+                index + 1
+            )
+        })
         .collect::<Vec<_>>()
-        .join(" ");
+        .join("");
     let inputs = gate
         .positions
         .iter()
         .enumerate()
         .map(|(index, position)| {
             format!(
-                "<label>{}번째 단어<input name=\"word{index}\" autocomplete=\"off\" required></label>",
+                "<label>{:02}번 단어<input name=\"word{index}\" autocomplete=\"off\" required></label>",
                 position + 1
             )
         })
         .collect::<Vec<_>>()
         .join("");
     PAGE_TEMPLATE
-        .replace("{{WORDS}}", &words)
+        .replace("{{WORD_ITEMS}}", &word_items)
         .replace("{{INPUTS}}", &inputs)
         .replace(
             "{{ACTION}}",
@@ -974,9 +981,19 @@ mod tests {
     fn local_page_has_no_store_csp_and_does_not_put_words_in_action() {
         let gate = gate();
         let page = render_page("127.0.0.1:1234".parse().unwrap(), &gate);
-        assert!(page.contains("word1 word2 word3"));
+        assert_eq!(page.matches("data-recovery-word=\"").count(), 24);
+        assert!(page.contains("<span class=\"word-index\">01</span>"));
+        assert!(page.contains("<span class=\"word-index\">24</span>"));
+        assert!(page.contains("03번 단어"));
+        assert!(page.contains("11번 단어"));
+        assert!(page.contains("22번 단어"));
         assert!(!page.contains("/confirm?"));
+        assert!(page.contains("grid-template-columns:repeat(4,minmax(0,1fr))"));
+        assert!(page.contains("grid-template-columns:repeat(2,minmax(0,1fr))"));
         assert!(PAGE_SCRIPT.contains("toard-recovery-kit.txt"));
+        assert!(PAGE_SCRIPT.contains("padStart(2,'0')"));
+        assert!(PAGE_SCRIPT.contains("+'. '+node.dataset.recoveryWord"));
+        assert!(PAGE_SCRIPT.contains("join('\\n')"));
         assert_eq!(decode_b64url(&b64url(&[7u8; 32])).unwrap(), [7u8; 32]);
     }
 

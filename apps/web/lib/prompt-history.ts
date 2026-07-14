@@ -97,7 +97,11 @@ function tryDecryptRow(r: CipherRow, kek: Buffer): string | null {
 
 function filterConds(f: HistoryFilter, params: unknown[]): string[] {
   params.push(f.from, f.to);
-  const conds = [`ts >= $${params.length - 1}`, `ts < $${params.length}`];
+  const conds = [
+    "encryption_scheme = 'server_v1'",
+    `ts >= $${params.length - 1}`,
+    `ts < $${params.length}`,
+  ];
   if (f.providerKey) {
     params.push(f.providerKey);
     conds.push(`provider_key = $${params.length}`);
@@ -217,6 +221,7 @@ export async function getMyHistorySession(
       `SELECT dedup_key, session_id, provider_key, turn_role, ts, ${CIPHER_COLS}
        FROM prompt_records
        WHERE user_id = $1
+         AND encryption_scheme = 'server_v1'
          AND (session_id = $2 OR (session_id IS NULL AND dedup_key = $2))
        ORDER BY ts ASC
        LIMIT $3`,

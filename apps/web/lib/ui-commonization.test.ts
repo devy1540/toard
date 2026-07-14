@@ -275,14 +275,12 @@ test("insight KPI deltas use the shared dashboard badge and calculation", () => 
 
 test("insights와 history 비용 UI는 같은 query coverage formatter를 재사용한다", () => {
   const insights = source("app/(dashboard)/insights/page.tsx");
-  const overview = source("components/dashboard/overview-view.tsx");
   const history = source("app/(dashboard)/history/page.tsx");
   const detail = source("app/(dashboard)/history/session-detail.tsx");
 
   assert.match(insights, /<PricingNotice coverage=\{comparisonCoverage\}/);
   assert.match(insights, /formatCostForCoverage/);
   assert.match(insights, /costComplete[\s\S]*costDelta/);
-  assert.match(overview, /formatCostForCoverage\(fmtUsd\(u\.costUsd\), u\.costCoverage/);
   assert.match(history, /formatCostForCoverage\(fmtUsd\(usage\.costUsd\), usage\.costCoverage/);
   assert.match(detail, /formatCostForCoverage\(fmtUsd\(summary\.costUsd\), summary\.costCoverage/);
   assert.match(detail, /costCoverageForStatus\(usage\.costStatus\)/);

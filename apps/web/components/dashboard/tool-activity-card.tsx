@@ -7,8 +7,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { fmtNum } from "@/lib/format";
 import type { DashboardPeriod } from "@/lib/period";
 import { getMyToolActivity } from "@/lib/tool-metadata";
+import { cn } from "@/lib/utils";
 
-export async function ToolActivityCard({ userId, period }: { userId: string; period: DashboardPeriod }) {
+export async function ToolActivityCard({
+  userId,
+  period,
+  className,
+}: {
+  userId: string;
+  period: DashboardPeriod;
+  className?: string;
+}) {
   const t = await getTranslations("dashboard.toolActivity");
   const navT = await getTranslations("nav");
   const { summary, rows } = await getMyToolActivity(userId, period);
@@ -18,7 +27,7 @@ export async function ToolActivityCard({ userId, period }: { userId: string; per
   const top = rows.slice(0, 3);
 
   return (
-    <Card className="min-w-0">
+    <Card className={cn("min-w-0", className)}>
       <CardHeader className="flex flex-row items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">

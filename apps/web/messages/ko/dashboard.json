@@ -59,11 +59,6 @@
   "moreDevices": "외 {n}개 기기",
   "rhythmTitle": "시간대 리듬",
   "rhythmDescription": "요일과 시간대별 토큰 사용 밀도",
-  "recentSessionsTitle": "최근 세션",
-  "recentSessionsDescription": "본문 히스토리가 켜진 세션",
-  "recentSessionsUnavailable": "본문 히스토리가 비활성화되어 최근 세션 미리보기를 표시하지 않습니다.",
-  "noRecentSessions": "선택한 기간에 저장된 세션이 없습니다.",
-  "viewHistory": "히스토리",
   "toolActivity": {
     "title": "AI 도구 활동",
     "description": "선택한 기간에 확인된 MCP·스킬·플러그인 활동",

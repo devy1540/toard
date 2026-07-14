@@ -55,6 +55,22 @@ toard-shim e2ee approve --request <request-uuid>
 
 Recovery Kit까지 잃으면 운영자도 본문을 복구할 수 없다. 계정 로그인 복구와 E2EE 본문 복구는 별개다. 현재 슬라이스에는 안전한 키 회전·Recovery Kit 재발급이 없으므로 관련 버튼을 제공하지 않는다.
 
+## 기존 기록 자동 전환
+
+승인된 브라우저가 잠금 해제되고 visible·online 상태가 되면 기존 `server_v1` 기록을 25건씩 자동으로 `e2ee_v1`으로 교체한다. 사용자가 시작 버튼을 누를 필요는 없고, 브라우저를 닫으면 남은 `server_v1` 행부터 다음 접속 때 재개한다.
+
+E2EE 계정이 활성화된 뒤 구형 shim의 `server_v1` 수집은 `409 E2EE_REQUIRED`로 차단된다. shim을 현재 버전으로 갱신하고 `toard-shim e2ee status`를 확인한다.
+
+운영자는 본문이나 ciphertext를 출력하지 않고 잔여 건수만 확인한다.
+
+```sql
+SELECT encryption_scheme, COUNT(*)
+FROM prompt_records
+GROUP BY encryption_scheme;
+```
+
+전체 `server_v1`이 0건이 되더라도 DB 백업 보존 기간이 끝나기 전에는 `TOARD_CONTENT_KEK_B64`를 제거하지 않는다. E2EE 행이 한 건이라도 생성된 뒤 migration 28 Down은 복호화 메타데이터 손실을 막기 위해 실패한다. 이 시점 이후 장애는 Down이 아니라 forward-fix로 복구한다.
+
 ## 상태 점검
 
 ```bash

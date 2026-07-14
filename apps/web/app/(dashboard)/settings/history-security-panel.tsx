@@ -18,7 +18,7 @@ type SecurityRow = {
 
 export async function HistorySecurityPanel({ userId }: { userId: string }) {
   const t = await getTranslations("settings.historySecurity");
-  const rows = await withUserContext(userId, async (tx) => {
+  const { rows, legacyRecords } = await withUserContext(userId, async (tx) => {
     const result = await tx.query<SecurityRow>(
       `SELECT account.state, account.active_key_version, account.recovery_confirmed_at,
               device.id AS device_id, device.kind, device.label, device.platform, device.last_used_at
@@ -29,7 +29,12 @@ export async function HistorySecurityPanel({ userId }: { userId: string }) {
        ORDER BY device.created_at ASC`,
       [userId],
     );
-    return result.rows;
+    const counts = await tx.query<{ legacy_records: string }>(
+      `SELECT COUNT(*) FILTER (WHERE encryption_scheme='server_v1')::text AS legacy_records
+         FROM prompt_records WHERE user_id=$1`,
+      [userId],
+    );
+    return { rows: result.rows, legacyRecords: Number(counts.rows[0]?.legacy_records ?? 0) };
   });
   const account = rows[0];
   const locale = await getLocale();
@@ -61,6 +66,13 @@ export async function HistorySecurityPanel({ userId }: { userId: string }) {
             </dd>
           </div>
         </dl>
+        {account?.state === "active" ? (
+          <p className="rounded-lg border p-3 text-sm">
+            {legacyRecords > 0
+              ? t("legacyProtecting", { count: legacyRecords })
+              : t("legacyComplete")}
+          </p>
+        ) : null}
         <div className="min-w-0">
           <h3 className="text-sm font-medium">{t("approvedDevices")}</h3>
           {rows.some((row) => row.device_id) ? (

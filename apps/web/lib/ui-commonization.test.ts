@@ -531,3 +531,15 @@ test("organization page uses anonymous tool summary without drilldown", () => {
   assert.match(org, /getOrgToolSummary/);
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
 });
+
+test("history security exposes legacy migration counts and bilingual copy", () => {
+  const panel = source("app/(dashboard)/settings/history-security-panel.tsx");
+  const ko = JSON.parse(source("messages/ko/settings.json"));
+  const en = JSON.parse(source("messages/en/settings.json"));
+  assert.match(panel, /encryption_scheme/);
+  assert.match(panel, /legacy_records/);
+  for (const messages of [ko, en]) {
+    assert.equal(typeof messages.historySecurity.legacyProtecting, "string");
+    assert.equal(typeof messages.historySecurity.legacyComplete, "string");
+  }
+});

@@ -164,6 +164,8 @@
     "approvedDevices": "Approved devices",
     "neverUsed": "Never used",
     "noDevices": "No approved devices.",
+    "legacyProtecting": "Protecting existing history with E2EE. {count} records remaining.",
+    "legacyComplete": "All existing history is protected with E2EE.",
     "noDestructiveActions": "Device revocation, key rotation, and Recovery Kit reissue will appear after safe rotation APIs are available."
   },
   "management": {

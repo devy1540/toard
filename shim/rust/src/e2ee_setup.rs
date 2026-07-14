@@ -212,6 +212,31 @@ pub fn approve(request_id: Option<&str>) -> i32 {
     }
 }
 
+pub fn status() -> i32 {
+    let credentials = read_credentials();
+    if credentials.collect_content != ContentCollectionMode::E2eeV1 {
+        println!("toard-shim: E2EE 비활성 (본문 수집 off)");
+        return 1;
+    }
+    let (Some(owner_id), Some(key_version), Some(device_id)) = (
+        credentials.content_owner_id.as_deref(),
+        credentials.content_key_version,
+        credentials.content_device_id.as_deref(),
+    ) else {
+        eprintln!("toard-shim: E2EE 설정 메타데이터가 불완전합니다");
+        return 1;
+    };
+    if SystemContentKeyStore.get_uck(owner_id, key_version).is_err() {
+        eprintln!("toard-shim: E2EE 키를 운영체제 보안 저장소에서 찾을 수 없습니다");
+        return 1;
+    }
+    println!(
+        "toard-shim: E2EE 활성 · 키 버전 {} · 기기 {}",
+        key_version, device_id
+    );
+    0
+}
+
 fn approve_inner(request_id: Option<&str>) -> Result<(), SetupError> {
     let credentials = read_credentials();
     let token = credentials

@@ -3,6 +3,7 @@
 // userId 는 본문에 없음 — 서버가 토큰으로 확정(§10.1). 암호화는 서버 몫이라 여기선 평문 text.
 // (shim 이 실제로 붙으면 core 로 승격 + golden fixture 로 드리프트 검증 예정)
 import {
+  E2EE_MAX_CIPHERTEXT_BYTES,
   E2eeContractError,
   parseE2eePromptRecordsBody,
   type E2eePromptRecordWire,
@@ -59,6 +60,9 @@ export function parsePromptRecordWire(v: unknown): PromptRecordWire {
   const ts = new Date(tsRaw);
   if (Number.isNaN(ts.getTime())) throw new PromptWireError(`ts 가 유효한 ISO 8601 이 아닙니다: ${tsRaw}`);
   const text = nonEmptyString(v.text, "text");
+  if (new TextEncoder().encode(text).byteLength > E2EE_MAX_CIPHERTEXT_BYTES) {
+    throw new PromptWireError(`text는 ${E2EE_MAX_CIPHERTEXT_BYTES} byte 이하여야 합니다`);
+  }
   return { dedupKey, providerKey, sessionId, turnRole, ts, text };
 }
 

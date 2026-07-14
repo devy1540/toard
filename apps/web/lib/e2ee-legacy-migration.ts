@@ -1,8 +1,14 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
 import { decryptContent, type EncryptedContent } from "./content-crypto";
-import { fromBase64Url } from "./e2ee-contract";
-import { parseLegacyMigrationCommit, type LegacyMigrationCommitItem, type LegacyMigrationSource } from "./e2ee-legacy-contract";
+import { E2EE_MAX_CIPHERTEXT_BYTES, fromBase64Url } from "./e2ee-contract";
+import {
+  LEGACY_MIGRATION_MAX_BATCH_SIZE,
+  boundLegacyMigrationPage,
+  parseLegacyMigrationCommit,
+  type LegacyMigrationCommitItem,
+  type LegacyMigrationSource,
+} from "./e2ee-legacy-contract";
 import { withUserContext } from "./rls";
 
 type QueryResultLike = { rows: Record<string, unknown>[]; rowCount?: number | null };
@@ -25,22 +31,34 @@ export async function getLegacyMigrationStatus(
   const result = await runInContext(userId, db, (tx) => tx.query(
     `SELECT account.content_owner_id, account.active_key_version,
             COUNT(record.id) FILTER (WHERE record.encryption_scheme='server_v1') AS legacy_records,
+            COUNT(record.id) FILTER (
+              WHERE record.encryption_scheme='server_v1'
+                AND octet_length(record.ciphertext) <= $2
+            ) AS migratable_records,
             COUNT(record.id) FILTER (WHERE record.encryption_scheme='e2ee_v1') AS e2ee_records
        FROM content_accounts account
        LEFT JOIN prompt_records record ON record.user_id=account.user_id
       WHERE account.user_id=$1 AND account.state='active'
       GROUP BY account.content_owner_id, account.active_key_version`,
-    [userId],
+    [userId, E2EE_MAX_CIPHERTEXT_BYTES],
   ));
   const row = result.rows[0];
   if (!row) throw new LegacyMigrationError("E2EE_ACCOUNT_NOT_ACTIVE");
   const legacyRecords = asCount(row.legacy_records);
+  const migratableRecords = asCount(row.migratable_records);
+  const blockedRecords = legacyRecords - migratableRecords;
   const e2eeRecords = asCount(row.e2ee_records);
   return {
-    state: legacyRecords === 0 ? "complete" as const : kekAvailable ? "pending" as const : "blocked" as const,
+    state: legacyRecords === 0
+      ? "complete" as const
+      : kekAvailable && migratableRecords > 0
+        ? "pending" as const
+        : "blocked" as const,
     contentOwnerId: asString(row.content_owner_id),
     contentKeyVersion: asPositiveInt(row.active_key_version),
     legacyRecords,
+    migratableRecords,
+    blockedRecords,
     e2eeRecords,
     totalRecords: legacyRecords + e2eeRecords,
   };
@@ -53,7 +71,7 @@ export async function getLegacyMigrationPage(
   limit = 25,
   db?: LegacyMigrationDb,
 ): Promise<{ records: LegacyMigrationSource[] }> {
-  const bounded = Number.isSafeInteger(limit) ? Math.min(25, Math.max(1, limit)) : 25;
+  const bounded = Number.isSafeInteger(limit) ? Math.min(LEGACY_MIGRATION_MAX_BATCH_SIZE, Math.max(1, limit)) : 25;
   return runInContext(userId, db, async (tx) => {
     await assertApprovedBrowser(tx, userId, deviceId);
     const result = await tx.query(
@@ -61,11 +79,12 @@ export async function getLegacyMigrationPage(
               key_version, wrapped_dek, iv, ciphertext, auth_tag
          FROM prompt_records
         WHERE user_id=$1 AND encryption_scheme='server_v1'
+          AND octet_length(ciphertext) <= $3
         ORDER BY id ASC
         LIMIT $2`,
-      [userId, bounded],
+      [userId, bounded, E2EE_MAX_CIPHERTEXT_BYTES],
     );
-    return { records: result.rows.map((row) => legacySource(row, kek)) };
+    return { records: boundLegacyMigrationPage(result.rows.map((row) => legacySource(row, kek))) };
   });
 }
 

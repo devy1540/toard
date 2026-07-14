@@ -165,6 +165,7 @@
     "neverUsed": "사용 기록 없음",
     "noDevices": "승인된 기기가 없습니다.",
     "legacyProtecting": "기존 기록을 E2EE로 보호하고 있습니다. {count}건 남았습니다.",
+    "legacyBlocked": "기존 기록 {count}건이 1MB를 넘어 자동 보호가 중단됐습니다. 데이터는 삭제되지 않았습니다.",
     "legacyComplete": "모든 기존 기록이 E2EE로 보호됩니다.",
     "noDestructiveActions": "기기 폐기, 키 회전, Recovery Kit 재발급은 안전한 회전 API가 준비된 뒤 제공됩니다."
   },

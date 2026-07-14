@@ -538,8 +538,15 @@ test("history security exposes legacy migration counts and bilingual copy", () =
   const en = JSON.parse(source("messages/en/settings.json"));
   assert.match(panel, /encryption_scheme/);
   assert.match(panel, /legacy_records/);
+  assert.match(panel, /octet_length\(ciphertext\)/);
   for (const messages of [ko, en]) {
     assert.equal(typeof messages.historySecurity.legacyProtecting, "string");
     assert.equal(typeof messages.historySecurity.legacyComplete, "string");
+    assert.equal(typeof messages.historySecurity.legacyBlocked, "string");
   }
+});
+
+test("empty legacy page rechecks authoritative status instead of declaring completion", () => {
+  const history = source("app/(dashboard)/history/e2ee-history-client.tsx");
+  assert.doesNotMatch(history, /if \(result\.complete\) \{ setLegacyRemaining\(0\); return; \}/);
 });

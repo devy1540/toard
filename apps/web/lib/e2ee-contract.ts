@@ -1,5 +1,6 @@
 export type ContentRole = "user" | "assistant";
 export type E2eeAlgorithm = "AES-256-GCM";
+export const E2EE_MAX_CIPHERTEXT_BYTES = 1_048_576;
 
 export interface ContentAadInput {
   schema: "e2ee_v1";
@@ -171,7 +172,7 @@ export function parseE2eePromptRecord(value: unknown): E2eePromptRecordWire {
     dekWrapIv: bytes(input.dekWrapIv, "dekWrapIv", 12),
     dekWrapAuthTag: bytes(input.dekWrapAuthTag, "dekWrapAuthTag", 16),
     iv: bytes(input.iv, "iv", 12),
-    ciphertext: rangedBytes(input.ciphertext, "ciphertext", 1, 1_048_576),
+    ciphertext: rangedBytes(input.ciphertext, "ciphertext", 1, E2EE_MAX_CIPHERTEXT_BYTES),
     authTag: bytes(input.authTag, "authTag", 16),
   };
 }

@@ -1,5 +1,9 @@
 import { E2eeContractError, parseE2eePromptRecord, type E2eePromptRecordWire } from "./e2ee-contract";
 
+export const LEGACY_MIGRATION_MIN_BATCH_SIZE = 1;
+export const LEGACY_MIGRATION_MAX_BATCH_SIZE = 100;
+export const LEGACY_MIGRATION_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+
 export type LegacyMigrationSource = {
   id: string;
   dedupKey: string;
@@ -19,8 +23,12 @@ export type LegacyMigrationCommitItem = {
 
 export function parseLegacyMigrationCommit(value: unknown): LegacyMigrationCommitItem[] {
   const input = exactObject(value, ["items"]);
-  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > 25) {
-    throw new E2eeContractError("legacy migration 배치는 1~25건이어야 합니다");
+  if (
+    !Array.isArray(input.items)
+    || input.items.length < LEGACY_MIGRATION_MIN_BATCH_SIZE
+    || input.items.length > LEGACY_MIGRATION_MAX_BATCH_SIZE
+  ) {
+    throw new E2eeContractError("legacy migration 배치는 1~100건이어야 합니다");
   }
   return input.items.map((raw) => {
     const item = exactObject(raw, ["id", "sourceDigest", "record"]);
@@ -30,6 +38,41 @@ export function parseLegacyMigrationCommit(value: unknown): LegacyMigrationCommi
       record: parseE2eePromptRecord(item.record),
     };
   });
+}
+
+export function parseLegacyMigrationLimit(value: string): number {
+  if (!/^\d+$/.test(value)) throw new E2eeContractError("legacy migration limit이 유효하지 않습니다");
+  const limit = Number(value);
+  if (
+    !Number.isSafeInteger(limit)
+    || limit < LEGACY_MIGRATION_MIN_BATCH_SIZE
+    || limit > LEGACY_MIGRATION_MAX_BATCH_SIZE
+  ) throw new E2eeContractError("legacy migration limit은 1~100이어야 합니다");
+  return limit;
+}
+
+export function boundLegacyMigrationPage(
+  records: readonly LegacyMigrationSource[],
+  maxBytes = LEGACY_MIGRATION_MAX_PAYLOAD_BYTES,
+): LegacyMigrationSource[] {
+  const encoder = new TextEncoder();
+  const prefixBytes = encoder.encode('{"records":[').byteLength;
+  const suffixBytes = encoder.encode("]}").byteLength;
+  let totalBytes = prefixBytes + suffixBytes;
+  const bounded: LegacyMigrationSource[] = [];
+  for (const record of records) {
+    const recordBytes = encoder.encode(JSON.stringify(record)).byteLength;
+    const separatorBytes = bounded.length === 0 ? 0 : 1;
+    if (totalBytes + separatorBytes + recordBytes > maxBytes) {
+      if (bounded.length === 0) {
+        throw new E2eeContractError("legacy migration record exceeds response budget");
+      }
+      break;
+    }
+    bounded.push(record);
+    totalBytes += separatorBytes + recordBytes;
+  }
+  return bounded;
 }
 
 function exactObject(value: unknown, allowed: readonly string[]): Record<string, unknown> {

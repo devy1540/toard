@@ -1,8 +1,9 @@
 import { loadKek } from "@/lib/content-crypto";
 import { commitLegacyMigrationBatch, LegacyMigrationError } from "@/lib/e2ee-legacy-migration";
-import { parseLegacyMigrationCommit } from "@/lib/e2ee-legacy-contract";
+import { LEGACY_MIGRATION_MAX_PAYLOAD_BYTES, parseLegacyMigrationCommit } from "@/lib/e2ee-legacy-contract";
 import { E2eeContractError } from "@/lib/e2ee-contract";
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { readBoundedJson } from "@/lib/tool-ingest";
 
 export async function POST(request: Request): Promise<Response> {
   if (isContentAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
@@ -11,9 +12,13 @@ export async function POST(request: Request): Promise<Response> {
   const deviceId = request.headers.get("x-toard-content-device-id");
   if (!deviceId) return problem(400, "CONTENT_DEVICE_REQUIRED");
   let items;
-  try { items = parseLegacyMigrationCommit(await request.json()); }
+  try { items = parseLegacyMigrationCommit(await readBoundedJson(request, LEGACY_MIGRATION_MAX_PAYLOAD_BYTES)); }
   catch (error) {
-    return problem(400, error instanceof E2eeContractError ? "INVALID_LEGACY_MIGRATION_BATCH" : "INVALID_JSON");
+    if (error instanceof RangeError) return problem(413, "LEGACY_MIGRATION_PAYLOAD_TOO_LARGE");
+    return problem(
+      400,
+      error instanceof E2eeContractError ? "INVALID_LEGACY_MIGRATION_BATCH" : "INVALID_JSON",
+    );
   }
   let kek: Buffer;
   try { kek = loadKek(); } catch { return problem(503, "LEGACY_KEK_UNAVAILABLE"); }

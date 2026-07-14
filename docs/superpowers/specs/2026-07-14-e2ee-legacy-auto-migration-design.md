@@ -69,18 +69,20 @@
   "contentOwnerId": "018f47d0-4d47-7b04-950b-7d18a86e1b43",
   "contentKeyVersion": 1,
   "legacyRecords": 120,
+  "migratableRecords": 119,
+  "blockedRecords": 1,
   "e2eeRecords": 80,
   "totalRecords": 200
 }
 ```
 
-서버의 `state`는 `pending`, `complete`, `blocked` 중 하나다. DB에는 상태를 저장하지 않고 남은 행 수와 KEK 가용성으로 계산한다. `contentOwnerId`와 `contentKeyVersion`은 브라우저가 새 E2EE AAD와 DEK wrapper를 만들 때 사용한다. 브라우저는 worker가 실행 중일 때 `pending`을 화면의 `running` 상태로 바꾼다. 완료는 `legacyRecords === 0`으로만 판정한다.
+서버의 `state`는 `pending`, `complete`, `blocked` 중 하나다. DB에는 상태를 저장하지 않고 남은 행 수, E2EE의 1MB ciphertext 계약으로 이전 가능한 행 수, KEK 가용성으로 계산한다. `contentOwnerId`와 `contentKeyVersion`은 브라우저가 새 E2EE AAD와 DEK wrapper를 만들 때 사용한다. 브라우저는 worker가 실행 중일 때 `pending`을 화면의 `running` 상태로 바꾼다. 완료는 `legacyRecords === 0`으로만 판정한다. 과거 1MB 초과 행만 남으면 `blocked`이며, 행을 삭제하거나 전체 queue를 막지 않고 `server_v1`으로 보존한다.
 
 ### 6.2 페이지 조회
 
-`GET /api/content/legacy-migration/page?limit=25`
+`GET /api/content/legacy-migration/page?limit={25|50|100}`
 
-요청 헤더 `X-Toard-Content-Device-Id`의 브라우저가 현재 사용자 소유이며 승인됐고 폐기되지 않았는지 확인한다. 최대 25개의 `server_v1` 행을 `id ASC`로 읽고 서버 KEK로 복호화한다.
+요청 헤더 `X-Toard-Content-Device-Id`의 브라우저가 현재 사용자 소유이며 승인됐고 폐기되지 않았는지 확인한다. E2EE의 1MB ciphertext 계약으로 이전 가능한 `server_v1` 행을 최대 100개까지 `id ASC`로 읽고 서버 KEK로 복호화하되, JSON 응답은 4MB를 넘기지 않는다.
 
 각 항목은 다음 필드만 반환한다.
 
@@ -103,7 +105,7 @@ type LegacyMigrationSource = {
 
 `POST /api/content/legacy-migration/commit`
 
-요청은 최대 25개의 `{ id, sourceDigest, record }`를 받는다. `record`는 기존 `E2eePromptRecordWire` 계약을 사용한다.
+요청은 최대 100개의 `{ id, sourceDigest, record }`를 받되 전체 JSON은 4MB를 넘길 수 없다. `Content-Length`를 먼저 검사하고, 길이가 없거나 거짓인 요청도 stream을 읽는 도중 4MB에서 즉시 중단한다. `record`는 기존 `E2eePromptRecordWire` 계약을 사용한다.
 
 서버는 한 트랜잭션에서 각 행을 `FOR UPDATE`로 잠그고 다음을 검증한다.
 
@@ -131,11 +133,12 @@ type LegacyMigrationSource = {
 
 1. 상태 API에서 남은 건수를 읽는다.
 2. 남은 건수가 0이면 완료 상태를 표시하고 종료한다.
-3. 25건을 조회한다.
+3. 25건으로 시작해 직전 배치의 처리시간과 payload 크기에 따라 50건, 최대 100건을 조회한다.
 4. 각 원문을 기존 Rust/WebCrypto golden 계약과 동일한 `e2ee_v1` 형식으로 암호화한다.
 5. 즉시 로컬 복호화해 원문과 동일한지 확인한다.
 6. 배치를 commit한다.
-7. 250ms 양보 후 다음 배치를 처리한다.
+7. 300ms 미만이면서 1MB 미만이면 다음 batch를 두 배로 늘리고, 1초 초과 또는 3MB 초과면 절반으로 줄인다.
+8. 50ms 양보 후 다음 배치를 처리한다.
 
 탭이 숨겨지거나 offline이 되면 현재 네트워크 요청까지만 마치고 중단한다. 다시 visible·online 상태가 되거나 다음 접속에서 남은 `server_v1` 행부터 재개한다. 별도 cursor가 없어 오래된 cursor 복구 문제가 생기지 않는다.
 

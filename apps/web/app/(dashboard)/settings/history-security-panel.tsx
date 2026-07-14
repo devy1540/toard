@@ -2,6 +2,7 @@ import { getLocale, getTranslations } from "next-intl/server";
 import { KeyRound, MonitorSmartphone, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { E2EE_MAX_CIPHERTEXT_BYTES } from "@/lib/e2ee-contract";
 import { withUserContext } from "@/lib/rls";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -18,7 +19,7 @@ type SecurityRow = {
 
 export async function HistorySecurityPanel({ userId }: { userId: string }) {
   const t = await getTranslations("settings.historySecurity");
-  const { rows, legacyRecords } = await withUserContext(userId, async (tx) => {
+  const { rows, legacyRecords, blockedRecords } = await withUserContext(userId, async (tx) => {
     const result = await tx.query<SecurityRow>(
       `SELECT account.state, account.active_key_version, account.recovery_confirmed_at,
               device.id AS device_id, device.kind, device.label, device.platform, device.last_used_at
@@ -29,12 +30,19 @@ export async function HistorySecurityPanel({ userId }: { userId: string }) {
        ORDER BY device.created_at ASC`,
       [userId],
     );
-    const counts = await tx.query<{ legacy_records: string }>(
-      `SELECT COUNT(*) FILTER (WHERE encryption_scheme='server_v1')::text AS legacy_records
+    const counts = await tx.query<{ legacy_records: string; blocked_records: string }>(
+      `SELECT COUNT(*) FILTER (WHERE encryption_scheme='server_v1')::text AS legacy_records,
+              COUNT(*) FILTER (
+                WHERE encryption_scheme='server_v1' AND octet_length(ciphertext) > $2
+              )::text AS blocked_records
          FROM prompt_records WHERE user_id=$1`,
-      [userId],
+      [userId, E2EE_MAX_CIPHERTEXT_BYTES],
     );
-    return { rows: result.rows, legacyRecords: Number(counts.rows[0]?.legacy_records ?? 0) };
+    return {
+      rows: result.rows,
+      legacyRecords: Number(counts.rows[0]?.legacy_records ?? 0),
+      blockedRecords: Number(counts.rows[0]?.blocked_records ?? 0),
+    };
   });
   const account = rows[0];
   const locale = await getLocale();
@@ -68,7 +76,9 @@ export async function HistorySecurityPanel({ userId }: { userId: string }) {
         </dl>
         {account?.state === "active" ? (
           <p className="rounded-lg border p-3 text-sm">
-            {legacyRecords > 0
+            {legacyRecords > 0 && blockedRecords === legacyRecords
+              ? t("legacyBlocked", { count: blockedRecords })
+              : legacyRecords > 0
               ? t("legacyProtecting", { count: legacyRecords })
               : t("legacyComplete")}
           </p>

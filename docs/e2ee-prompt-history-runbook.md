@@ -57,7 +57,9 @@ Recovery Kit까지 잃으면 운영자도 본문을 복구할 수 없다. 계정
 
 ## 기존 기록 자동 전환
 
-승인된 브라우저가 잠금 해제되고 visible·online 상태가 되면 기존 `server_v1` 기록을 25건씩 자동으로 `e2ee_v1`으로 교체한다. 사용자가 시작 버튼을 누를 필요는 없고, 브라우저를 닫으면 남은 `server_v1` 행부터 다음 접속 때 재개한다.
+승인된 브라우저가 잠금 해제되고 visible·online 상태가 되면 기존 `server_v1` 기록을 자동으로 `e2ee_v1`으로 교체한다. 배치는 25건으로 시작하고 처리시간과 commit payload 크기에 따라 50건, 최대 100건까지 자동 조절한다. 페이지 응답과 commit 요청은 각각 4MB 이하로 제한하며, 배치 사이에는 50ms 동안 UI에 실행권을 양보한다. 사용자가 시작 버튼을 누를 필요는 없고, 브라우저를 닫으면 남은 `server_v1` 행부터 다음 접속 때 재개한다.
+
+새 `server_v1` 기록도 E2EE ciphertext와 동일하게 본문 한 건당 UTF-8 1MB 이하만 받는다. 이 제한이 적용되기 전에 저장된 1MB 초과 기록은 정상 크기 기록의 이전을 막지 않도록 자동 이전 대상에서 격리하고 상태를 `blocked`로 표시한다. 해당 행은 삭제하거나 평문으로 노출하지 않고 `server_v1`으로 보존하므로, 별도 chunked migration을 제공하기 전까지 `TOARD_CONTENT_KEK_B64`를 유지해야 한다.
 
 E2EE 계정이 활성화된 뒤 구형 shim의 `server_v1` 수집은 `409 E2EE_REQUIRED`로 차단된다. shim을 현재 버전으로 갱신하고 `toard-shim e2ee status`를 확인한다.
 

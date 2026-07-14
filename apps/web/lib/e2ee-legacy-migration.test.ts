@@ -38,7 +38,13 @@ function fakeDb() {
     async query(sql: string, params: unknown[] = []) {
       calls.push({ sql, params });
       if (sql.includes("COUNT(record.id)")) {
-        return { rows: [{ content_owner_id: VALID_E2EE_RECORD.contentOwnerId, active_key_version: 1, legacy_records: "1", e2ee_records: "2" }] };
+        return { rows: [{
+          content_owner_id: VALID_E2EE_RECORD.contentOwnerId,
+          active_key_version: 1,
+          legacy_records: "1",
+          migratable_records: "1",
+          e2ee_records: "2",
+        }] };
       }
       if (sql.includes("FROM content_devices")) {
         return { rows: [{ content_owner_id: VALID_E2EE_RECORD.contentOwnerId, active_key_version: 1 }] };
@@ -58,9 +64,33 @@ test("legacy migration status returns active owner and scheme counts", async () 
     contentOwnerId: VALID_E2EE_RECORD.contentOwnerId,
     contentKeyVersion: 1,
     legacyRecords: 1,
+    migratableRecords: 1,
+    blockedRecords: 0,
     e2eeRecords: 2,
     totalRecords: 3,
   });
+});
+
+test("oversized legacy records are isolated after migratable records finish", async () => {
+  const db = {
+    async query(sql: string) {
+      if (sql.includes("COUNT(record.id)")) {
+        return { rows: [{
+          content_owner_id: VALID_E2EE_RECORD.contentOwnerId,
+          active_key_version: 1,
+          legacy_records: "1",
+          migratable_records: "0",
+          e2ee_records: "2",
+        }] };
+      }
+      return { rows: [] };
+    },
+  };
+  const status = await getLegacyMigrationStatus(userId, true, db);
+  assert.equal(status.state, "blocked");
+  assert.equal(status.legacyRecords, 1);
+  assert.equal(status.migratableRecords, 0);
+  assert.equal(status.blockedRecords, 1);
 });
 
 test("legacy page requires an approved browser and returns a plaintext digest", async () => {
@@ -72,6 +102,7 @@ test("legacy page requires an approved browser and returns a plaintext digest", 
     createHash("sha256").update("legacy secret", "utf8").digest("base64url"),
   );
   assert.ok(db.calls.some((call) => call.sql.includes("approved_at IS NOT NULL")));
+  assert.ok(db.calls.some((call) => call.sql.includes("octet_length(ciphertext)")));
 });
 
 test("legacy commit updates the same row after digest and metadata validation", async () => {

@@ -9,7 +9,11 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { contentKeyVault } from "@/lib/content-key-vault";
 import { unlockApprovedBrowser } from "@/lib/content-auto-unlock";
-import { runLegacyMigrationBatch } from "@/lib/e2ee-legacy-worker";
+import {
+  LEGACY_MIGRATION_INITIAL_BATCH_SIZE,
+  nextLegacyMigrationBatchLimit,
+  runLegacyMigrationBatch,
+} from "@/lib/e2ee-legacy-worker";
 import {
   decryptE2eeRecord,
   exportBrowserPublicKey,
@@ -103,6 +107,7 @@ export function E2eeHistoryClient() {
     if (state.kind !== "unlocked" || !activeDeviceId) return;
     const controller = new AbortController();
     let stopped = false;
+    let batchLimit = LEGACY_MIGRATION_INITIAL_BATCH_SIZE;
     const run = async () => {
       while (!stopped && document.visibilityState === "visible" && navigator.onLine) {
         try {
@@ -111,25 +116,36 @@ export function E2eeHistoryClient() {
             contentOwnerId: string;
             contentKeyVersion: number;
             legacyRecords: number;
+            migratableRecords: number;
+            blockedRecords: number;
           }>("/api/content/legacy-migration/status", { signal: controller.signal });
           setLegacyRemaining(status.legacyRecords);
           setMigrationBlocked(status.state === "blocked");
           if (status.state !== "pending" || status.legacyRecords === 0) return;
           const batchUck = contentKeyVault.withUnlockedUck((uck) => uck.slice());
           try {
+            const startedAt = performance.now();
             const result = await runLegacyMigrationBatch({
               deviceId: activeDeviceId,
               contentOwnerId: status.contentOwnerId,
               contentKeyVersion: status.contentKeyVersion,
+              batchLimit,
               uck: batchUck,
               signal: controller.signal,
               fetchJson: (url, init) => fetchJson<unknown>(url, init),
             });
-            if (result.complete) { setLegacyRemaining(0); return; }
+            if (result.complete) batchLimit = LEGACY_MIGRATION_INITIAL_BATCH_SIZE;
+            else {
+              batchLimit = nextLegacyMigrationBatchLimit(
+                batchLimit,
+                performance.now() - startedAt,
+                result.payloadBytes,
+              );
+            }
           } finally {
             batchUck.fill(0);
           }
-          await new Promise((resolve) => setTimeout(resolve, 250));
+          await new Promise((resolve) => setTimeout(resolve, 50));
         } catch {
           if (!controller.signal.aborted) setMigrationBlocked(true);
           return;

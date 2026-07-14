@@ -165,6 +165,7 @@
     "neverUsed": "Never used",
     "noDevices": "No approved devices.",
     "legacyProtecting": "Protecting existing history with E2EE. {count} records remaining.",
+    "legacyBlocked": "Automatic protection stopped because {count} existing records exceed 1MB. No data was deleted.",
     "legacyComplete": "All existing history is protected with E2EE.",
     "noDestructiveActions": "Device revocation, key rotation, and Recovery Kit reissue will appear after safe rotation APIs are available."
   },

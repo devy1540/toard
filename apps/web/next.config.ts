@@ -10,6 +10,18 @@ import createNextIntlPlugin from "next-intl/plugin";
 loadRootEnv({ path: path.join(import.meta.dirname, "../../.env") });
 
 const config: NextConfig = {
+  async headers() {
+    return [
+      {
+        source: "/history/:path*",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+      {
+        source: "/api/content/:path*",
+        headers: [{ key: "Cache-Control", value: "no-store" }],
+      },
+    ];
+  },
   // 워크스페이스 패키지를 TS 소스 그대로 트랜스파일 (빌드 단계 불필요)
   transpilePackages: [
     "@toard/core",
@@ -25,7 +37,12 @@ const config: NextConfig = {
   // edge 번들에서만 서버 전용 DB 클라이언트를 빈 모듈로 alias 한다.
   webpack: (config, { nextRuntime }) => {
     if (nextRuntime === "edge") {
-      config.resolve.alias = { ...config.resolve.alias, pg: false, "@clickhouse/client": false };
+      config.resolve.alias = {
+        ...config.resolve.alias,
+        pg: false,
+        "@clickhouse/client": false,
+        "@toard/storage-clickhouse": false,
+      };
     }
     return config;
   },

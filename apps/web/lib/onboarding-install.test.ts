@@ -19,9 +19,10 @@ test("Windows command contains PowerShell only and escapes apostrophes", () => {
 
   assert.equal(
     command,
-    "$env:TOARD_INGEST_TOKEN='tk_a''b'; $env:TOARD_SHIM_COLLECT_CONTENT='1'; irm 'https://toard.example/install.ps1' | iex",
+    "$env:TOARD_INGEST_TOKEN='tk_a''b'; $env:TOARD_SHIM_COLLECT_CONTENT='e2ee_v1'; irm 'https://toard.example/install.ps1' | iex",
   );
   assert.doesNotMatch(command, /\bsh\b|install\.sh/);
+  assert.doesNotMatch(command, /recovery|mnemonic|uck/i);
 });
 
 test("macOS and Linux commands use safely quoted POSIX shell", () => {

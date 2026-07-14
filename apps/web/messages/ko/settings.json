@@ -147,7 +147,24 @@
     "progress": "연결 단계 {current}/{total}",
     "contentLabel": "프롬프트와 응답도 기록",
     "contentMetadataOnly": "사용량 정보만 기록하고 프롬프트와 코드는 보내지 않습니다.",
-    "contentWithPrompts": "프롬프트와 응답을 암호화해 내 히스토리에 함께 기록합니다."
+    "contentWithPrompts": "이 컴퓨터에서 암호화한 뒤 전송합니다. 서버에 저장된 본문은 서버 키로 복호화할 수 없습니다.",
+    "recoveryTitle": "Recovery Kit를 저장하고 확인하세요",
+    "recoveryDescription": "같은 터미널에서 아래 명령을 실행하면 24단어 Recovery Kit 저장 화면이 이 컴퓨터에서 열립니다.",
+    "recoveryPrivacy": "24단어와 암호화 키는 서버로 전송되지 않습니다. 단어 확인이 끝나야 E2EE 본문 수집이 시작됩니다.",
+    "recoveryWaiting": "로컬 Recovery Kit 확인 완료를 기다리는 중…"
+  },
+  "historySecurity": {
+    "title": "히스토리 보안",
+    "description": "E2EE 키 상태와 승인된 기기를 읽기 전용으로 확인합니다.",
+    "active": "활성",
+    "pending": "설정 중",
+    "off": "꺼짐",
+    "keyVersion": "콘텐츠 키 버전",
+    "recoveryConfirmed": "Recovery Kit 확인",
+    "approvedDevices": "승인된 기기",
+    "neverUsed": "사용 기록 없음",
+    "noDevices": "승인된 기기가 없습니다.",
+    "noDestructiveActions": "기기 폐기, 키 회전, Recovery Kit 재발급은 안전한 회전 API가 준비된 뒤 제공됩니다."
   },
   "management": {
     "title": "연결된 컴퓨터 관리",

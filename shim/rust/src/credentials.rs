@@ -138,8 +138,9 @@ pub fn with_e2ee_activation(
     {
         return Err("invalid E2EE credential metadata");
     }
-    const MANAGED: [&str; 4] = [
+    const MANAGED: [&str; 5] = [
         "collect_content",
+        "e2ee_setup_requested",
         "content_owner_id",
         "content_key_version",
         "content_device_id",
@@ -226,7 +227,7 @@ mod tests {
     #[test]
     fn e2ee_activation_updates_only_managed_credentials() {
         let updated = with_e2ee_activation(
-            "# keep\nagent_key=tk_test\nendpoint=https://example.test/api\ncollect_content=false\ncustom=value\n",
+            "# keep\nagent_key=tk_test\nendpoint=https://example.test/api\ncollect_content=off\ne2ee_setup_requested=true\ncustom=value\n",
             "owner-1",
             2,
             "device-1",
@@ -238,6 +239,7 @@ mod tests {
         assert!(updated.contains("content_owner_id=owner-1\n"));
         assert!(updated.contains("content_key_version=2\n"));
         assert!(updated.contains("content_device_id=device-1\n"));
+        assert!(!updated.contains("e2ee_setup_requested"));
     }
 
     #[test]

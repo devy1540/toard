@@ -260,9 +260,13 @@ fn to_usage_event(adapter: &str, r: &RawUsage, host: Option<&str>) -> UsageEvent
 /// `~/.toard/credentials` 의 `collect_content` 플래그(install.sh 가 기록)를 따른다.
 /// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
 pub fn content_enabled() -> bool {
+    content_collection_mode().is_enabled()
+}
+
+pub fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
+    use crate::credentials::ContentCollectionMode;
     match std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref() {
-        Some("1" | "true" | "on") => true,
-        Some("0" | "false" | "off") => false,
+        Some(value) => ContentCollectionMode::parse(value),
         _ => read_credentials().collect_content,
     }
 }

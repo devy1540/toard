@@ -69,6 +69,9 @@ CREATE TABLE content_key_wrappers (
 CREATE UNIQUE INDEX uq_content_key_wrappers_active
   ON content_key_wrappers (user_id, content_key_version, wrapper_type, wrapper_ref)
   WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX uq_content_key_wrappers_active_recovery
+  ON content_key_wrappers (user_id, content_key_version)
+  WHERE wrapper_type = 'recovery' AND revoked_at IS NULL;
 CREATE INDEX idx_content_key_wrappers_user_version
   ON content_key_wrappers (user_id, content_key_version) WHERE revoked_at IS NULL;
 

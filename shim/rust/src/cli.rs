@@ -21,6 +21,7 @@ pub fn run(args: &[String]) -> ! {
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
+        Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
@@ -56,12 +57,23 @@ fn print_usage() {
                                주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
                                install --interval <초> (기본 300, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
+  e2ee setup                   Recovery Kit를 저장·확인하고 E2EE 본문 수집 활성화
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 2h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()
     );
+}
+
+fn e2ee_cmd(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("setup") if args.len() == 1 => crate::e2ee_setup::run(),
+        _ => {
+            eprintln!("toard-shim: 사용법: toard-shim e2ee setup");
+            2
+        }
+    }
 }
 
 // ── collect — 로컬 로그 pull 수집 ──

@@ -82,8 +82,19 @@ export function createRecordingDb(options: { ownerUserId?: string } = {}) {
     calls,
     async query(sql: string, params: unknown[] = []) {
       calls.push({ sql, params });
-      if (/SELECT[\s\S]+content_accounts/i.test(sql)) {
-        return { rows: [{ user_id: options.ownerUserId ?? "user-1" }], rowCount: 1 };
+      if (/content_accounts/i.test(sql) && /RETURNING|SELECT/i.test(sql)) {
+        return {
+          rows: [
+            {
+              user_id: options.ownerUserId ?? "user-1",
+              content_owner_id: VALID_E2EE_RECORD.contentOwnerId,
+              recovery_salt: Buffer.from(VALID_RECOVERY_WRAPPER.publicSaltOrInput!, "base64url"),
+              active_key_version: 1,
+              state: "pending",
+            },
+          ],
+          rowCount: 1,
+        };
       }
       return { rows: [], rowCount: 1 };
     },

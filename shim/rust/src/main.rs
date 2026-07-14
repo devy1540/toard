@@ -15,6 +15,7 @@ mod content_crypto;
 mod content_keys;
 mod credentials;
 mod daemon;
+mod e2ee_setup;
 mod fsx;
 mod host;
 mod iso;

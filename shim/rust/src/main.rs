@@ -54,6 +54,8 @@ fn main() {
         Some(update::RUN_ARG) => std::process::exit(update::run_self_update(true)),
         Some(collect::SPAWN_ARG) => collect::spawn_detached_collector(),
         Some(collect::RUN_ARG) => std::process::exit(collect::run(None, false, false)),
+        Some(tool_deployment::SPAWN_ARG) => tool_deployment::spawn_detached_reconciler(),
+        Some(tool_deployment::RUN_ARG) => std::process::exit(tool_deployment::run_once()),
         _ => {}
     }
 
@@ -97,6 +99,7 @@ fn main() {
     // 백그라운드 편승 작업 — exec 경로에 네트워크 없음 (스탬프 파일 판정만)
     update::maybe_spawn_background_check(); // 2h: 자동 업데이트
     collect::maybe_spawn_background(); // 10m: 비-OTEL 로컬 로그 수집 (§5.6)
+    tool_deployment::maybe_spawn_background(); // 60s: 원하는 도구 상태 reconcile
 
     let args: Vec<OsString> = env::args_os().skip(1).collect();
     run_real(&real, &args);

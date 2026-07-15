@@ -26,6 +26,7 @@ export type DeviceManifestV1 = {
     catalogItemId: string;
     versionId: string;
     origin: "personal" | "team";
+    rolloutId: string | null;
     manifest: ToolDeploymentManifestV1;
   }>;
 };

@@ -59,6 +59,7 @@ export type ToolPreference = {
 export type TeamToolPolicy = {
   catalogItemId: string;
   versionId: string;
+  rolloutId: string;
   rolloutSeed: string;
   rolloutPercent: number;
 };
@@ -74,6 +75,7 @@ export type DesiredTool = {
   catalogItemId: string;
   versionId: string;
   origin: ToolDeploymentOrigin;
+  rolloutId: string | null;
 };
 
 export type ToolPermissionDiff = {
@@ -125,7 +127,7 @@ export function resolveDesiredTools(input: ResolveDesiredInput): DesiredTool[] {
     if (excluded.has(catalogItemId)) return [];
     const preference = personal.get(catalogItemId);
     if (preference?.versionId) {
-      return [{ catalogItemId, versionId: preference.versionId, origin: "personal" }];
+      return [{ catalogItemId, versionId: preference.versionId, origin: "personal", rolloutId: null }];
     }
     const policy = policies.get(catalogItemId);
     if (
@@ -134,7 +136,7 @@ export function resolveDesiredTools(input: ResolveDesiredInput): DesiredTool[] {
     ) {
       return [];
     }
-    return [{ catalogItemId, versionId: policy.versionId, origin: "team" }];
+    return [{ catalogItemId, versionId: policy.versionId, origin: "team", rolloutId: policy.rolloutId }];
   });
 }
 

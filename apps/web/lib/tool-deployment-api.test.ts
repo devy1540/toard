@@ -33,7 +33,7 @@ function dependencies(): ToolDeploymentApiDependencies & { reports: unknown[] } 
         schemaVersion: 1,
         generatedAt: new Date("2026-07-15T00:00:00Z"),
         reconcileAfterSeconds: 60,
-        items: [{ catalogItemId: "catalog-1", versionId: "version-1", origin: "personal", manifest }],
+        items: [{ catalogItemId: "catalog-1", versionId: "version-1", origin: "personal", rolloutId: null, manifest }],
       };
     },
     async deviceBelongsToToken(_owner, value) {

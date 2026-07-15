@@ -36,7 +36,7 @@ function repository(overrides: Partial<DeploymentServiceRepository> = {}): Deplo
         deviceFingerprint: "a".repeat(64),
         preferences: [],
         teamPolicies: [
-          { catalogItemId: "catalog-1", versionId: "version-1", rolloutSeed: "seed", rolloutPercent: 100 },
+          { catalogItemId: "catalog-1", versionId: "version-1", rolloutId: "rollout-1", rolloutSeed: "seed", rolloutPercent: 100 },
         ],
       };
     },
@@ -62,6 +62,7 @@ test("기기 manifest는 인증 token 소유 context로 원하는 버전을 조�
   assert.equal(result.schemaVersion, 1);
   assert.equal(result.reconcileAfterSeconds, 60);
   assert.equal(result.items[0]?.origin, "team");
+  assert.equal(result.items[0]?.rolloutId, "rollout-1");
   assert.equal(result.items[0]?.manifest.versionId, "version-1");
 });
 

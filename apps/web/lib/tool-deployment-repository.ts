@@ -132,10 +132,12 @@ export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploy
         ? await db.query<{
             catalog_item_id: string;
             target_version_id: string;
+            rollout_id: string;
             rollout_seed: string;
             rollout_percent: number;
           }>(
-            `SELECT catalog_item_id, target_version_id, rollout_seed::text, rollout_percent
+            `SELECT catalog_item_id, target_version_id, id::text AS rollout_id,
+                    rollout_seed::text, rollout_percent
              FROM team_tool_policies
              WHERE team_id = $1 AND enabled = true
                AND rollout_phase IN ('canary', 'expand', 'active', 'rollback')`,
@@ -155,6 +157,7 @@ export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploy
         teamPolicies: policies.rows.map((policy) => ({
           catalogItemId: policy.catalog_item_id,
           versionId: policy.target_version_id,
+          rolloutId: policy.rollout_id,
           rolloutSeed: policy.rollout_seed,
           rolloutPercent: policy.rollout_percent,
         })),

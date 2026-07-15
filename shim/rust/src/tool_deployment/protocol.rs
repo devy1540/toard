@@ -15,6 +15,7 @@ pub(crate) struct DesiredItem {
     pub catalog_item_id: String,
     pub version_id: String,
     pub origin: DeploymentOrigin,
+    pub rollout_id: Option<String>,
     pub manifest: ToolManifestV1,
 }
 
@@ -86,6 +87,7 @@ pub(crate) enum InstallPayload {
     },
 }
 
+#[cfg(test)]
 impl InstallPayload {
     pub(crate) fn payload_type(&self) -> &'static str {
         match self {
@@ -104,6 +106,7 @@ pub(crate) struct PluginComponent {
     pub key: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DeploymentStatus {
@@ -116,4 +119,17 @@ pub(crate) enum DeploymentStatus {
     RolledBack,
     Excluded,
     Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeploymentReport {
+    pub device_fingerprint: String,
+    pub catalog_item_id: String,
+    pub desired_version_id: Option<String>,
+    pub applied_version_id: Option<String>,
+    pub status: DeploymentStatus,
+    pub error_code: Option<String>,
+    pub attempt: u32,
+    pub rollout_id: Option<String>,
 }

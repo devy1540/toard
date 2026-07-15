@@ -22,6 +22,7 @@ pub fn run(args: &[String]) -> ! {
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
         Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
+        Some("tool") => std::process::exit(tool_cmd(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
@@ -60,12 +61,27 @@ fn print_usage() {
   e2ee setup                   Recovery Kit를 저장·확인하고 E2EE 본문 수집 활성화
   e2ee status                  로컬 E2EE 모드와 보안 저장소 키 상태 확인
   e2ee approve [--request ID]  브라우저의 6자리 코드를 로컬에서 확인해 승인
+  tool reconcile               도구 원하는 상태를 즉시 조회·적용
+  tool configure <slug>        MCP 비밀값을 로컬 보안 저장소에 입력
+  tool run-mcp <slug>          로컬 비밀값을 주입해 관리 MCP 실행
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 2h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()
     );
+}
+
+fn tool_cmd(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("reconcile") if args.len() == 1 => crate::tool_deployment::run_once(),
+        Some("configure") if args.len() == 2 => crate::tool_deployment::secrets::configure(&args[1]),
+        Some("run-mcp") if args.len() == 2 => crate::tool_deployment::secrets::run_mcp(&args[1]),
+        _ => {
+            eprintln!("toard-shim: 사용법: toard-shim tool reconcile | tool configure <slug> | tool run-mcp <slug>");
+            2
+        }
+    }
 }
 
 fn e2ee_cmd(args: &[String]) -> i32 {

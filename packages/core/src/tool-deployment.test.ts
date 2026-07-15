@@ -52,7 +52,7 @@ test("exclude가 개인 설치와 팀 기본보다 우선한다", () => {
       },
     ],
     teamPolicies: [
-      { catalogItemId: "excluded", versionId: "team-v1", rolloutSeed: "seed", rolloutPercent: 100 },
+      { catalogItemId: "excluded", versionId: "team-v1", rolloutId: "rollout-excluded", rolloutSeed: "seed", rolloutPercent: 100 },
     ],
   });
 
@@ -73,14 +73,14 @@ test("선택 기기의 개인 설치가 팀 기본 버전보다 우선한다", (
       },
     ],
     teamPolicies: [
-      { catalogItemId: "personal", versionId: "team-v1", rolloutSeed: "seed", rolloutPercent: 100 },
-      { catalogItemId: "team", versionId: "team-v1", rolloutSeed: "seed", rolloutPercent: 100 },
+      { catalogItemId: "personal", versionId: "team-v1", rolloutId: "rollout-personal", rolloutSeed: "seed", rolloutPercent: 100 },
+      { catalogItemId: "team", versionId: "team-v1", rolloutId: "rollout-team", rolloutSeed: "seed", rolloutPercent: 100 },
     ],
   });
 
   assert.deepEqual(desired, [
-    { catalogItemId: "personal", versionId: "personal-v2", origin: "personal" },
-    { catalogItemId: "team", versionId: "team-v1", origin: "team" },
+    { catalogItemId: "personal", versionId: "personal-v2", origin: "personal", rolloutId: null },
+    { catalogItemId: "team", versionId: "team-v1", origin: "team", rolloutId: "rollout-team" },
   ]);
 });
 
@@ -98,11 +98,11 @@ test("선택되지 않은 기기는 개인 선택 대신 팀 기본을 상속한
       },
     ],
     teamPolicies: [
-      { catalogItemId: "review", versionId: "team-v1", rolloutSeed: "seed", rolloutPercent: 100 },
+      { catalogItemId: "review", versionId: "team-v1", rolloutId: "rollout-review", rolloutSeed: "seed", rolloutPercent: 100 },
     ],
   });
 
-  assert.deepEqual(desired, [{ catalogItemId: "review", versionId: "team-v1", origin: "team" }]);
+  assert.deepEqual(desired, [{ catalogItemId: "review", versionId: "team-v1", origin: "team", rolloutId: "rollout-review" }]);
 });
 
 test("새 환경변수와 source identity 변경은 승인을 요구한다", () => {

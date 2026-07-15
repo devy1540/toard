@@ -5,6 +5,7 @@ export * from "./timeseries";
 export * from "./timezone";
 export * from "./tool-metadata";
 export * from "./tool-catalog";
+export * from "./tool-deployment";
 export * from "./tool-wire";
 export * from "./wire";
 export * from "./version";

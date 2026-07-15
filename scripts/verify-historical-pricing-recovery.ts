@@ -296,7 +296,7 @@ async function verifyDurableHistoryPromotion(pool: Pool): Promise<Record<string,
   };
 }
 
-async function verifyMalformedSnapshotGap(pool: Pool): Promise<Record<string, unknown>> {
+async function verifyMalformedSnapshotContinuity(pool: Pool): Promise<Record<string, unknown>> {
   const rangeFrom = new Date("2025-09-15T00:00:00.000Z");
   const rangeTo = new Date("2025-12-01T00:00:00.000Z");
   const inserted = await pool.query<{ id: string }>(
@@ -350,17 +350,17 @@ async function verifyMalformedSnapshotGap(pool: Pool): Promise<Record<string, un
     state: "fetching",
     last_error: "invalid pricing snapshot skipped",
   });
-  const beforeGap = await pool.query<{ effective_at: Date; valid_until: Date }>(
+  const beforeGap = await pool.query<{ effective_at: Date; valid_until: Date | null }>(
     `SELECT effective_at, valid_until
      FROM pricing_history_candidates WHERE job_id = $1 ORDER BY effective_at`,
     [jobId],
   );
   assert.deepEqual(beforeGap.rows.map((row) => ({
     effectiveAt: row.effective_at.toISOString(),
-    validUntil: row.valid_until.toISOString(),
+    validUntil: row.valid_until?.toISOString() ?? null,
   })), [{
     effectiveAt: rangeFrom.toISOString(),
-    validUntil: GAP_BROKEN.committedAt,
+    validUntil: null,
   }]);
 
   assert.deepEqual(await runStep(), { state: "fetching", nextAttemptAt: NOW });
@@ -382,7 +382,7 @@ async function verifyMalformedSnapshotGap(pool: Pool): Promise<Record<string, un
     input: Number(row.input_price_per_mtok),
   })), [{
     effectiveAt: rangeFrom.toISOString(),
-    validUntil: GAP_BROKEN.committedAt,
+    validUntil: GAP_AFTER.committedAt,
     input: 1,
   }, {
     effectiveAt: GAP_AFTER.committedAt,
@@ -392,7 +392,7 @@ async function verifyMalformedSnapshotGap(pool: Pool): Promise<Record<string, un
 
   return {
     skippedCommit: GAP_BROKEN.sha,
-    preservedGap: `${GAP_BROKEN.committedAt}/${GAP_AFTER.committedAt}`,
+    continuousPricing: `${rangeFrom.toISOString()}/${rangeTo.toISOString()}`,
     revisions: revisions.rows.length,
   };
 }
@@ -431,7 +431,7 @@ async function main(): Promise<void> {
     }
     pool = new Pool({ connectionString, max: 4 });
     const history = await verifyDurableHistoryPromotion(pool);
-    const malformedSnapshot = await verifyMalformedSnapshotGap(pool);
+    const malformedSnapshot = await verifyMalformedSnapshotContinuity(pool);
     await pool.end();
     pool = null;
     await execFileAsync("docker", ["rm", "-f", container]);

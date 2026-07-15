@@ -16,6 +16,49 @@ type GitHubCommitResponse = {
   commit?: { committer?: { date?: unknown } };
 };
 
+const TOP_LEVEL_MODEL_START = /^ {4}"(?:[^"\\]|\\.)+"\s*:\s*\{\s*(?:\r?\n)?$/;
+
+function repairMissingModelBoundaries(raw: string): string | null {
+  const lines = raw.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let repairs = 0;
+  let repaired = "";
+
+  for (const line of lines) {
+    if (!inString && depth === 2 && TOP_LEVEL_MODEL_START.test(line)) {
+      repaired += "    },\n";
+      depth -= 1;
+      repairs += 1;
+    }
+    repaired += line;
+    for (const character of line) {
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") depth -= 1;
+    }
+  }
+
+  return repairs > 0 ? repaired : null;
+}
+
+function parseSnapshot(raw: string): Parameters<typeof fromLiteLLM>[0] {
+  try {
+    return JSON.parse(raw) as Parameters<typeof fromLiteLLM>[0];
+  } catch (originalError) {
+    const repaired = repairMissingModelBoundaries(raw);
+    if (repaired == null) throw originalError;
+    return JSON.parse(repaired) as Parameters<typeof fromLiteLLM>[0];
+  }
+}
+
 export type PricingHistoryCommitRef = {
   sha: string;
   committedAt: string;
@@ -117,7 +160,7 @@ export class GitHubPricingHistorySource {
     });
     if (!response.ok) throw new Error(`pricing snapshot fetch failed: ${response.status}`);
     try {
-      const raw = await response.json() as Parameters<typeof fromLiteLLM>[0];
+      const raw = parseSnapshot(await response.text());
       const pricing = fromLiteLLM(raw);
       if (pricing.size === 0) throw new Error("pricing snapshot parsed 0 models");
       return pricing;

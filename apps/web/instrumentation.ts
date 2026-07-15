@@ -8,6 +8,8 @@ export async function register(): Promise<void> {
   if (retentionSchedulerEligible(process.env)) startUsageRetentionCleanup();
   const { startRollupCoordinator } = await import("./lib/rollup-coordinator");
   startRollupCoordinator();
+  const { startToolRolloutCoordinator } = await import("./lib/tool-rollout-coordinator");
+  startToolRolloutCoordinator();
   if (process.env.STORAGE_BACKEND === "clickhouse") {
     const {
       startClickHouseOutboxFlush,

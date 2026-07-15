@@ -152,6 +152,22 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
 
+### 도구 설치와 팀 기본 배포
+
+라이브러리 상세에서 개인은 모든 기기 또는 선택한 기기에 immutable manifest 버전을 설치할 수 있다. 팀 리더는 같은 버전을 팀 기본으로 지정할 수 있고 구성원은 계정별로 제외할 수 있다. 온라인 shim은 60초 간격으로 desired manifest를 확인하며 ETag가 같으면 본문을 다시 받지 않는다. MCP가 요구하는 값은 서버 폼이 아니라 각 기기에서 다음 명령으로 입력한다.
+
+```bash
+toard-shim tool configure <slug>
+```
+
+| 보관 위치 | 저장하는 정보 | 저장하지 않는 정보 |
+|---|---|---|
+| Git 저장소 | Skill/MCP/Plugin 원본과 tag/commit | 사용자 비밀값 |
+| toard 서버 | immutable manifest, tree digest, 개인·팀 desired state, 상태 report | 원본 파일 영구 복사, MCP 비밀값, GitHub installation token |
+| 사용자 기기 | 설치 파일, managed client config, local secret, last-known-good | 다른 사용자의 정책·비밀값 |
+
+팀 업데이트는 사전 확인 뒤 최소 1대·10% 카나리 30분, 50% 확대 60분, 100% 순으로 진행한다. 새 버전 실패가 2대 이상이거나 시도 기기의 20% 이상이면 확대를 멈추고 last-known-good로 자동 복구한다. 환경변수 이름, 외부 host, 실행 명령, 구성 요소, 원본 저장소 identity가 늘거나 바뀌면 팀 리더 확인 전까지 배포를 멈춘다. 비상 시 `TOARD_TOOL_ROLLOUT_COORDINATOR=0`으로 서버의 자동 확대만 중단할 수 있으며 이미 설치된 로컬 도구를 삭제하지 않는다.
+
 **한 줄 설치(권장)** — 로그인 후 **설정 → 컴퓨터 연결**에서 운영체제를 확인하고 안내된 명령을 복사한다. 이 컴퓨터용 토큰은 자동 발급되며, 설치 후 첫 인증 요청까지 화면이 자동으로 확인한다. 사용량은 로컬 세션 파일 pull로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필).
 
 ```bash

@@ -11,7 +11,10 @@ import {
   runHistoricalPricingStepWith,
   type HistoricalPricingStepResult,
 } from "../apps/web/lib/pricing-history";
-import type { PricingHistoryCommitRef } from "../apps/web/lib/pricing-history-source";
+import {
+  PricingSnapshotInvalidError,
+  type PricingHistoryCommitRef,
+} from "../apps/web/lib/pricing-history-source";
 import { loadPricingSchedule } from "../apps/web/lib/pricing";
 import { PostgresStorage } from "../packages/storage-postgres/src/storage";
 import { Client, Pool } from "pg";
@@ -27,6 +30,19 @@ const BASELINE: PricingHistoryCommitRef = {
 const CHANGE: PricingHistoryCommitRef = {
   sha: "b".repeat(40),
   committedAt: "2026-06-15T00:00:00.000Z",
+};
+const GAP_MODEL = "fixture-history-gap-model";
+const GAP_BASELINE: PricingHistoryCommitRef = {
+  sha: "c".repeat(40),
+  committedAt: "2025-09-14T23:00:00.000Z",
+};
+const GAP_BROKEN: PricingHistoryCommitRef = {
+  sha: "d".repeat(40),
+  committedAt: "2025-10-01T00:00:00.000Z",
+};
+const GAP_AFTER: PricingHistoryCommitRef = {
+  sha: "e".repeat(40),
+  committedAt: "2025-11-01T00:00:00.000Z",
 };
 
 function sleep(ms: number): Promise<void> {
@@ -280,6 +296,107 @@ async function verifyDurableHistoryPromotion(pool: Pool): Promise<Record<string,
   };
 }
 
+async function verifyMalformedSnapshotGap(pool: Pool): Promise<Record<string, unknown>> {
+  const rangeFrom = new Date("2025-09-15T00:00:00.000Z");
+  const rangeTo = new Date("2025-12-01T00:00:00.000Z");
+  const inserted = await pool.query<{ id: string }>(
+    `INSERT INTO pricing_history_jobs (
+       state, range_from, range_to, models, commit_refs,
+       list_page, next_commit_index, consecutive_failures, last_started_at, updated_at
+     ) VALUES ('fetching', $1, $2, $3::jsonb, $4::jsonb, 0, 0, 2, $5, $5)
+     RETURNING id`,
+    [rangeFrom, rangeTo, JSON.stringify([GAP_MODEL]), JSON.stringify([
+      GAP_BASELINE,
+      GAP_BROKEN,
+      GAP_AFTER,
+    ]), NOW],
+  );
+  const jobId = inserted.rows[0]?.id;
+  assert.ok(jobId);
+  const source = {
+    async listBaseline(): Promise<PricingHistoryCommitRef[]> {
+      throw new Error("unexpected baseline listing");
+    },
+    async listChanges(): Promise<PricingHistoryCommitRef[]> {
+      throw new Error("unexpected changes listing");
+    },
+    async fetchSnapshot(sha: string): Promise<PricingMap> {
+      if (sha === GAP_BASELINE.sha) return new Map([[GAP_MODEL, { inputPerM: 1, outputPerM: 2 }]]);
+      if (sha === GAP_BROKEN.sha) throw new PricingSnapshotInvalidError(sha);
+      if (sha === GAP_AFTER.sha) return new Map([[GAP_MODEL, { inputPerM: 3, outputPerM: 4 }]]);
+      throw new Error("unexpected gap fixture commit");
+    },
+  };
+  const runStep = () => runHistoricalPricingStepWith({
+    repository: new PgPricingHistoryRepository(pool),
+    source,
+    now: () => NOW,
+    timezone: "UTC",
+    invalidateCache: () => undefined,
+  }, []);
+
+  assert.deepEqual(await runStep(), { state: "fetching", nextAttemptAt: NOW });
+  const skipped = await pool.query<{
+    next_commit_index: number;
+    state: string;
+    last_error: string | null;
+  }>(
+    `SELECT next_commit_index, state, last_error
+     FROM pricing_history_jobs WHERE id = $1`,
+    [jobId],
+  );
+  assert.deepEqual(skipped.rows[0], {
+    next_commit_index: 2,
+    state: "fetching",
+    last_error: "invalid pricing snapshot skipped",
+  });
+  const beforeGap = await pool.query<{ effective_at: Date; valid_until: Date }>(
+    `SELECT effective_at, valid_until
+     FROM pricing_history_candidates WHERE job_id = $1 ORDER BY effective_at`,
+    [jobId],
+  );
+  assert.deepEqual(beforeGap.rows.map((row) => ({
+    effectiveAt: row.effective_at.toISOString(),
+    validUntil: row.valid_until.toISOString(),
+  })), [{
+    effectiveAt: rangeFrom.toISOString(),
+    validUntil: GAP_BROKEN.committedAt,
+  }]);
+
+  assert.deepEqual(await runStep(), { state: "fetching", nextAttemptAt: NOW });
+  assert.deepEqual(await runStep(), { state: "promoted", insertedRevisions: 2 });
+  const revisions = await pool.query<{
+    effective_at: Date;
+    valid_until: Date;
+    input_price_per_mtok: string;
+  }>(
+    `SELECT effective_at, valid_until, input_price_per_mtok
+     FROM pricing_revisions
+     WHERE model_id = $1 AND source = 'litellm-git-history'
+     ORDER BY effective_at`,
+    [GAP_MODEL],
+  );
+  assert.deepEqual(revisions.rows.map((row) => ({
+    effectiveAt: row.effective_at.toISOString(),
+    validUntil: row.valid_until.toISOString(),
+    input: Number(row.input_price_per_mtok),
+  })), [{
+    effectiveAt: rangeFrom.toISOString(),
+    validUntil: GAP_BROKEN.committedAt,
+    input: 1,
+  }, {
+    effectiveAt: GAP_AFTER.committedAt,
+    validUntil: rangeTo.toISOString(),
+    input: 3,
+  }]);
+
+  return {
+    skippedCommit: GAP_BROKEN.sha,
+    preservedGap: `${GAP_BROKEN.committedAt}/${GAP_AFTER.committedAt}`,
+    revisions: revisions.rows.length,
+  };
+}
+
 async function verifyExistingRepairAndRollups(): Promise<void> {
   const result = await execFileAsync("pnpm", ["verify:pricing-auto-recovery"], {
     cwd: ROOT,
@@ -314,12 +431,13 @@ async function main(): Promise<void> {
     }
     pool = new Pool({ connectionString, max: 4 });
     const history = await verifyDurableHistoryPromotion(pool);
+    const malformedSnapshot = await verifyMalformedSnapshotGap(pool);
     await pool.end();
     pool = null;
     await execFileAsync("docker", ["rm", "-f", container]);
 
     await verifyExistingRepairAndRollups();
-    process.stdout.write(`${JSON.stringify({ history, rollups: "verified" }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ history, malformedSnapshot, rollups: "verified" }, null, 2)}\n`);
     process.stdout.write("HISTORICAL_PRICING_RECOVERY_PASS\n");
   } finally {
     await pool?.end().catch(() => undefined);

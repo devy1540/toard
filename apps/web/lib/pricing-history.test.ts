@@ -8,6 +8,7 @@ import {
   type HistoricalPricingRepository,
 } from "./pricing-history";
 import {
+  PricingSnapshotInvalidError,
   PricingSourceRateLimitError,
   type PricingHistoryCommitRef,
 } from "./pricing-history-source";
@@ -106,6 +107,23 @@ class FakeRepository implements HistoricalPricingRepository {
     assert.equal(id, "job-1");
     this.events.push(`save-snapshots:${snapshots.length}`);
     const nextCommitIndex = this.active!.nextCommitIndex + snapshots.length;
+    this.active = {
+      ...this.active!,
+      state: nextCommitIndex === this.active!.commitRefs.length ? "promoting" : "fetching",
+      nextCommitIndex,
+    };
+    return this.active;
+  }
+
+  async skipSnapshot(
+    id: string,
+    ref: PricingHistoryCommitRef,
+    at: Date,
+  ): Promise<HistoricalPricingJob> {
+    assert.equal(id, "job-1");
+    assert.equal(this.active?.commitRefs[this.active.nextCommitIndex]?.sha, ref.sha);
+    this.events.push(`skip-snapshot:${ref.sha}`);
+    const nextCommitIndex = this.active!.nextCommitIndex + 1;
     this.active = {
       ...this.active!,
       state: nextCommitIndex === this.active!.commitRefs.length ? "promoting" : "fetching",
@@ -268,6 +286,52 @@ test("중단 후에는 저장된 cursor부터 최대 4개 snapshot만 재개한�
   assert.deepEqual(fixture.sourceCalls, [commit(3).sha, commit(4).sha, commit(5).sha]);
   assert.equal(repository.active?.state, "promoting");
   assert.equal(repository.active?.nextCommitIndex, 6);
+});
+
+test("손상된 immutable snapshot은 근거 공백으로 남기고 다음 cursor로 진행한다", async () => {
+  const repository = new FakeRepository(job({ consecutiveFailures: 2 }));
+  const broken = commit(2);
+  const fixture = dependencies(repository, {
+    fetchSnapshot: async (sha) => {
+      if (sha === broken.sha) throw new PricingSnapshotInvalidError(sha);
+      return pricing();
+    },
+  });
+
+  const result = await runHistoricalPricingStepWith(fixture.value, []);
+
+  assert.deepEqual(result, {
+    state: "fetching",
+    nextAttemptAt: new Date("2026-07-14T00:00:00.000Z"),
+  });
+  assert.equal(repository.active?.state, "fetching");
+  assert.equal(repository.active?.nextCommitIndex, 3);
+  assert.deepEqual(repository.events, [
+    "save-snapshots:1",
+    `skip-snapshot:${broken.sha}`,
+  ]);
+  assert.deepEqual(fixture.sourceCalls, [commit(1).sha, broken.sha]);
+});
+
+test("첫 snapshot 파싱 실패는 일시적인 응답 손상을 고려해 재시도한다", async () => {
+  const repository = new FakeRepository(job());
+  const broken = commit(1);
+  const fixture = dependencies(repository, {
+    fetchSnapshot: async (sha) => {
+      throw new PricingSnapshotInvalidError(sha);
+    },
+  });
+
+  const result = await runHistoricalPricingStepWith(fixture.value, []);
+
+  assert.deepEqual(result, {
+    state: "waiting_source",
+    nextAttemptAt: new Date("2026-07-14T00:01:00.000Z"),
+  });
+  assert.equal(repository.active?.nextCommitIndex, 1);
+  assert.equal(repository.active?.consecutiveFailures, 1);
+  assert.deepEqual(repository.events, ["wait-source"]);
+  assert.deepEqual(fixture.sourceCalls, [broken.sha]);
 });
 
 test("429는 durable reset 시각을 저장하고 다음 tick으로 넘긴다", async () => {

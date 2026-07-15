@@ -36,7 +36,7 @@ const readCached = unstable_cache(
     calculatedAt: new Date().toISOString(),
   }),
   ["user-insights-v2"],
-  { revalidate: 600 },
+  { revalidate: 600, tags: ["user-insights"] },
 );
 
 export function getCachedUserInsights(userId: string, pair: InsightPeriodPair, providerKey?: string) {

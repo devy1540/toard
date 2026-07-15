@@ -1,4 +1,3 @@
-import { USAGE_EVENT_LOGICAL_RETENTION_DAYS } from "@toard/core";
 import { resolvePricingEntry, type ModelPricing, type PricingMap } from "@toard/pricing";
 import type { Pool, PoolClient } from "pg";
 import { getPool } from "./db";
@@ -220,7 +219,6 @@ function nextDate(date: string): string {
 
 function jobInput(
   diagnostics: HistoricalPricingDiagnostic[],
-  now: Date,
   timezone: string,
 ): { rangeFrom: Date; rangeTo: Date; models: string[] } | null {
   const usable = diagnostics
@@ -234,11 +232,8 @@ function jobInput(
   const selected = usable.filter((item) => models.includes(item.model));
   const firstAt = new Date(Math.min(...selected.map((item) => new Date(item.firstAt).getTime())));
   const lastAt = new Date(Math.max(...selected.map((item) => new Date(item.lastAt).getTime())));
-  const retentionAt = new Date(
-    now.getTime() - USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
-  );
   const rangeFrom = dayStartUtc(
-    localDate(firstAt < retentionAt ? retentionAt : firstAt, timezone),
+    localDate(firstAt, timezone),
     timezone,
   );
   const rangeTo = dayStartUtc(nextDate(localDate(lastAt, timezone)), timezone);
@@ -292,7 +287,7 @@ export async function runHistoricalPricingStepWith(
   const now = dependencies.now();
   let job = await dependencies.repository.getActive();
   if (!job) {
-    const input = jobInput(diagnostics, now, dependencies.timezone);
+    const input = jobInput(diagnostics, dependencies.timezone);
     if (!input) return { state: "no_evidence", nextAttemptAt: new Date(now.getTime() + SOURCE_RETRY_MAX_MS) };
     await dependencies.repository.create({ ...input, at: now });
     return { state: "listing", nextAttemptAt: now };
@@ -684,7 +679,9 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
           `UPDATE pricing_repair_status
            SET generation = $1, state = 'pending', target_to = $2,
                processed_events = 0, recovered_events = 0, reconciled_events = 0,
-               remaining_unpriced_events = 0, unresolved_models = '[]'::jsonb,
+               repriced_legacy_events = 0,
+               remaining_unpriced_events = 0, remaining_legacy_events = 0,
+               unresolved_models = '[]'::jsonb,
                eligible_since = $1, next_attempt_at = $1,
                consecutive_failures = 0, last_error = NULL, updated_at = $1
            WHERE singleton`,

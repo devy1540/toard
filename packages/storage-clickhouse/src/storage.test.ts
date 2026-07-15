@@ -565,7 +565,7 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
   );
 });
 
-test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 priced 버전을 결정적으로 삽입한다", async () => {
+test("ClickHouse 가격 복구는 unpriced와 legacy를 dirty 먼저 기록하고 priced 버전을 결정적으로 삽입한다", async () => {
   const actions: string[] = [];
   const queries: string[] = [];
   const inserts: Array<{
@@ -592,6 +592,23 @@ test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 p
           cost_usd: "0.00000000",
           pricing_revision_id: "",
           cost_status: "unpriced",
+          log_adapter: "claude",
+          host: "macbook",
+        }, {
+          dedup_key: "event-2",
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "team-1",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          ts: "2026-07-10 10:06:00.000",
+          input_tokens: "200",
+          output_tokens: "40",
+          cache_read_tokens: "10",
+          cache_creation_tokens: "6",
+          cost_usd: "9.99000000",
+          pricing_revision_id: "legacy-revision",
+          cost_status: "legacy",
           log_adapter: "claude",
           host: "macbook",
         }],
@@ -630,24 +647,28 @@ test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 p
     generation: "2026-07-10T12:00:00.000Z",
   };
 
-  const first = await storage.repairUnpricedUsage(request, resolver);
-  const second = await storage.repairUnpricedUsage(request, resolver);
+  const first = await storage.repairPricingUsage(request, resolver);
+  const second = await storage.repairPricingUsage(request, resolver);
 
   assert.match(queries[0] ?? "", /FROM usage_events FINAL/);
-  assert.match(queries[0] ?? "", /cost_status = 'unpriced'[\s\S]*pricing_revision_id IN/);
+  assert.match(queries[0] ?? "", /cost_status IN \('unpriced', 'legacy'\)[\s\S]*pricing_revision_id IN/);
   assert.deepEqual(actions.slice(0, 3), ["mark-dirty", "mark-dirty", "insert-replacement"]);
   assert.equal(inserts[0]?.values[0]?.dedup_key, "event-1");
   assert.equal(inserts[0]?.values[0]?.cost_status, "priced");
   assert.equal(inserts[0]?.values[0]?.pricing_revision_id, "revision-1");
+  assert.equal(inserts[0]?.values[1]?.dedup_key, "event-2");
+  assert.equal(inserts[0]?.values[1]?.input_tokens, 200);
+  assert.equal(inserts[0]?.values[1]?.cost_status, "priced");
   assert.match(inserts[0]?.token ?? "", /^pricing-repair:/);
   assert.equal(inserts[1]?.token, inserts[0]?.token);
   assert.deepEqual(first, {
-    scanned: 1,
+    scanned: 2,
     recovered: 1,
+    repricedLegacy: 1,
     affectedBuckets: [new Date("2026-07-10T10:00:00.000Z")],
     hasMore: false,
   });
-  assert.equal(second.recovered, 1);
+  assert.equal(second.repricedLegacy, 1);
 });
 
 test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 mutation으로 제거한다", async () => {
@@ -787,7 +808,7 @@ test("ClickHouse exact-key 보정은 소유권 범위를 유지하고 dirty-firs
   });
 });
 
-test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한다", async () => {
+test("ClickHouse 가격 복구 모델 진단은 FINAL 원본의 unpriced와 legacy를 상태별 집계한다", async () => {
   let query = "";
   let params: Record<string, unknown> = {};
   const ch = {
@@ -795,23 +816,28 @@ test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한�
     query: async (args: { query: string; query_params: Record<string, unknown> }) => {
       query = args.query;
       params = args.query_params;
-      return { json: async () => [{ model: "model-a", events: "2", first_at: "2026-07-01 00:00:00.000", last_at: "2026-07-02 00:00:00.000" }] };
+      return { json: async () => [{
+        model: "model-a", events: "5", unpriced_events: "2", legacy_events: "3",
+        first_at: "2025-09-01 00:00:00.000", last_at: "2026-07-02 00:00:00.000",
+      }] };
     },
   } as unknown as ClickHouseClient;
   const storage = new ClickHouseStorage(ch, {} as Pool);
   const from = new Date("2026-07-01T00:00:00Z");
   const to = new Date("2026-07-03T00:00:00Z");
 
-  const result = await storage.getUnpricedUsageModels(from, to, ["bootstrap-revision"]);
+  const result = await storage.getPricingRecoveryModels(from, to, ["bootstrap-revision"]);
 
   assert.match(query, /FROM usage_events FINAL/);
-  assert.match(query, /cost_status = 'unpriced'[\s\S]*pricing_revision_id IN/);
+  assert.match(query, /cost_status IN \('unpriced', 'legacy'\)[\s\S]*pricing_revision_id IN/);
   assert.equal(params.from, "2026-07-01 00:00:00.000");
   assert.deepEqual(params.replace_revision_ids, ["bootstrap-revision"]);
   assert.deepEqual(result, [{
     model: "model-a",
-    events: 2,
-    firstAt: new Date("2026-07-01T00:00:00.000Z"),
+    events: 5,
+    unpricedEvents: 2,
+    legacyEvents: 3,
+    firstAt: new Date("2025-09-01T00:00:00.000Z"),
     lastAt: new Date("2026-07-02T00:00:00.000Z"),
   }]);
 });

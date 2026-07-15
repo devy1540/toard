@@ -204,6 +204,25 @@ test("전체 snapshot 전에는 canonical revision과 repair generation을 변�
   assert.deepEqual(repository.events, ["save-snapshots:4"]);
 });
 
+test("90일보다 오래된 보존 이벤트도 실제 최초 시각부터 가격 이력 job을 만든다", async () => {
+  const repository = new FakeRepository(null);
+  const fixture = dependencies(repository);
+
+  const result = await runHistoricalPricingStepWith(fixture.value, [{
+    model: "model-a",
+    events: 3,
+    firstAt: "2025-09-15T12:34:56.000Z",
+    lastAt: "2026-07-10T01:02:03.000Z",
+  }]);
+
+  assert.deepEqual(result, {
+    state: "listing",
+    nextAttemptAt: new Date("2026-07-14T00:00:00.000Z"),
+  });
+  assert.equal(repository.active?.rangeFrom.toISOString(), "2025-09-15T00:00:00.000Z");
+  assert.equal(repository.active?.rangeTo.toISOString(), "2026-07-11T00:00:00.000Z");
+});
+
 test("promotion은 revision·cache version·repair pending을 한 transaction으로 확정한다", async () => {
   const repository = new FakeRepository(job({ state: "promoting", nextCommitIndex: 6 }));
   const fixture = dependencies(repository);

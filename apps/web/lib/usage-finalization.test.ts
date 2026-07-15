@@ -294,6 +294,7 @@ test("logs 경로는 provider별 expired를 합산하고 gate와 dedup 결과를
 
 test("전체 보존 재가격 action과 UI와 번역은 제거한다", () => {
   const panel = source("app/(dashboard)/admin/pricing-panel.tsx");
+  const adminStatus = source("lib/pricing-admin-status.ts");
   const ko = JSON.parse(source("messages/ko/admin.json"));
   const en = JSON.parse(source("messages/en/admin.json"));
 
@@ -301,9 +302,18 @@ test("전체 보존 재가격 action과 UI와 번역은 제거한다", () => {
   assert.equal(existsSync(new URL("./pricing-reprice.test.ts", import.meta.url)), false);
   assert.equal(existsSync(new URL("../app/(dashboard)/admin/pricing-actions.ts", import.meta.url)), false);
   assert.doesNotMatch(panel, /repriceUsageAction|PricingRepriceState|confirm-reprice|repriceState/);
+  assert.match(panel, /repricedLegacyEvents/);
+  assert.match(panel, /remainingLegacyEvents/);
+  assert.match(adminStatus, /repricedLegacyEvents: repair\.repricedLegacyEvents/);
+  assert.match(adminStatus, /remainingLegacyEvents: repair\.remainingLegacyEvents/);
   for (const messages of [ko, en]) {
-    assert.equal(Object.keys(messages.system).some((key) => key.startsWith("reprice")), false);
+    assert.equal(
+      Object.keys(messages.system).some((key) => key.startsWith("reprice") && key !== "repricedLegacyEvents"),
+      false,
+    );
     assert.equal(Object.keys(messages.errors).some((key) => key.startsWith("reprice")), false);
     assert.equal(typeof messages.errors.onlyAdmin, "string");
+    assert.equal(typeof messages.system.repricedLegacyEvents, "string");
+    assert.equal(typeof messages.system.remainingLegacyEvents, "string");
   }
 });

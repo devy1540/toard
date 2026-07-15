@@ -67,6 +67,48 @@
     "title": "사용 데이터가 없습니다",
     "description": "선택한 기간과 프로바이더에서 비용, 세션, 토큰 사용이 확인되지 않습니다."
   },
+  "utilization": {
+    "title": "AI 활용 지수",
+    "description": "많이 썼는지가 아니라, 내 평소 작업 방식과 비교한 맥락 유지·실행 안정성·복구 부담을 보여줍니다.",
+    "selfBaseline": "내 기준선 중앙값은 50입니다.",
+    "unavailable": "계산할 데이터가 부족합니다",
+    "baseline": "기준 기간: {range}",
+    "currentPeriod": "현재 기간: {range}",
+    "periodRange": "{from}~{to}",
+    "delay": "데이터는 최대 10분 지연될 수 있습니다.",
+    "dimensionValues": "현재 {current} · 기준 {baseline}",
+    "dimensions": {
+      "context_continuity": "맥락 연속성",
+      "execution_stability": "실행 안정성",
+      "recovery_burden": "복구 부담"
+    },
+    "confidence": {
+      "high": "높은 신뢰도",
+      "medium": "보통 신뢰도",
+      "low": "낮은 신뢰도"
+    },
+    "observations": {
+      "title": "중립 관측값",
+      "activeDays": "활성일",
+      "sessions": "세션",
+      "toolSessionRate": "도구 사용 세션 비율",
+      "distinctTools": "하루 최대 도구 종류"
+    },
+    "reasons": {
+      "insufficient_current_days": "현재 기간의 활성일이 3일 미만입니다.",
+      "insufficient_current_sessions": "현재 기간의 세션이 5개 미만입니다.",
+      "insufficient_baseline_days": "기준 기간의 활성일이 7일 미만입니다.",
+      "unsupported_cache_signal": "현재 수집원은 cache 신호를 지원하지 않습니다.",
+      "insufficient_context_days": "맥락 연속성을 계산할 일별 신호가 부족합니다.",
+      "insufficient_known_tool_calls": "결과가 확인된 도구 호출이 10회 미만입니다.",
+      "low_tool_outcome_coverage": "도구 실행 결과 확인 범위가 70% 미만입니다.",
+      "insufficient_session_tool_calls": "세션이 확인된 도구 호출이 10회 미만입니다.",
+      "insufficient_valid_dimensions": "계산 가능한 세부 축이 2개 미만입니다.",
+      "suppressed_small_cohort": "조직 최소 표본 기준을 충족하지 않습니다.",
+      "insufficient_eligible_users": "신뢰도 기준을 충족한 사용자가 부족합니다.",
+      "mixed_methodology_versions": "서로 다른 방법론 버전의 결과는 함께 집계하지 않습니다."
+    }
+  },
   "rules": {
     "usage": {
       "new": "이전 기간에는 없던 사용이 새로 시작되었습니다."

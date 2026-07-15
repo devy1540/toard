@@ -6,6 +6,7 @@ import { InsightComposition } from "@/components/dashboard/insight-composition";
 import { InsightFilters } from "@/components/dashboard/insight-filters";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { DeltaBadge, type StatDelta } from "@/components/dashboard/stat-card";
+import { UtilizationIndexCard } from "@/components/dashboard/utilization-index-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
@@ -19,6 +20,7 @@ import { generateInsightCandidates, type InsightRuleKey } from "@/lib/insight-ru
 import { getEnabledProviders, resolveInsightProvider } from "@/lib/providers";
 import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
+import { getCachedPersonalUtilization } from "@/lib/ai-utilization";
 import { getCachedUserInsights } from "@/lib/user-insights";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -96,7 +98,10 @@ export default async function InsightsPage({
   const pair = buildInsightPeriodPair(preset, timezone, anchor);
   const providers = await getEnabledProviders();
   const providerKey = resolveInsightProvider(sp.provider, providers);
-  const comparison = await getCachedUserInsights(userId, pair, providerKey);
+  const [comparison, utilization] = await Promise.all([
+    getCachedUserInsights(userId, pair, providerKey),
+    getCachedPersonalUtilization(userId),
+  ]);
   const comparisonCoverage = {
     pricedEvents: comparison.current.costCoverage.pricedEvents + comparison.previous.costCoverage.pricedEvents,
     unpricedEvents: comparison.current.costCoverage.unpricedEvents + comparison.previous.costCoverage.unpricedEvents,
@@ -208,6 +213,8 @@ export default async function InsightsPage({
       </header>
 
       <PricingNotice coverage={comparisonCoverage} />
+
+      <UtilizationIndexCard result={utilization} />
 
       {!hasCurrentUsage ? (
         <Empty>

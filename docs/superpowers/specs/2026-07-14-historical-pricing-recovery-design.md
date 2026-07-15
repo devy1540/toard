@@ -113,7 +113,7 @@ GitHub `List commits` API에서 `path=model_prices_and_context_window.json`, `si
 4. 각 snapshot에서 대상 모델을 기존 alias 규칙으로 찾되 실제로 매칭된 LiteLLM key도 함께 저장한다.
 5. 가격이 달라지거나 모델이 추가·삭제된 시각에만 구간 경계를 만든다.
 
-가격 파일 commit 시각은 공급자의 공식 가격 발효 시각이 아니라 LiteLLM에서 그 가격을 관측할 수 있었던 시각이다. 따라서 commit 전 이벤트에 미래 snapshot을 소급하지 않는다. 근거가 없는 구간은 `unpriced`로 유지한다.
+가격 파일 commit 시각은 공급자의 공식 가격 발효 시각이 아니라 LiteLLM에서 그 가격을 관측할 수 있었던 시각이다. 따라서 commit 전 이벤트에 미래 snapshot을 소급하지 않는다. 다만 snapshot 하나를 읽지 못했다는 사실은 가격 삭제 근거가 아니므로 직전 확인 가격을 닫지 않는다. 다음 정상 snapshot에서 변경 또는 삭제가 확인될 때까지 기존 구간을 유지한다.
 
 ### 유효 종료 시각
 
@@ -250,7 +250,8 @@ event 수와 모든 token 합계는 보정 전후 동일해야 한다. 의도적
 
 - GitHub API 장애: staging과 cursor를 보존하고 backoff 뒤 재시도한다.
 - rate limit: reset 시각 전에는 요청하지 않는다.
-- malformed snapshot 또는 0개 가격: 해당 commit 처리를 실패로 기록하고 canonical promotion을 하지 않는다.
+- 모델 항목 경계의 닫는 괄호와 쉼표만 빠진 malformed snapshot: 가격 값은 변경하지 않고 구조 문자만 복구한 뒤 정상 snapshot으로 처리한다.
+- 그 밖의 malformed snapshot 또는 0개 가격: 일시적인 응답 손상을 고려해 재시도한다. 반복 실패 뒤 해당 commit을 건너뛰더라도 직전 가격 구간을 닫지 않아 인위적인 미가격 공백을 만들지 않는다.
 - 프로세스 종료: 오래된 running job을 다음 coordinator가 회수한다.
 - candidate 저장 실패: 해당 tick만 rollback하고 같은 index부터 재시도한다.
 - promotion 실패: canonical revision과 repair generation이 모두 rollback된다.

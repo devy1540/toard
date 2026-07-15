@@ -664,24 +664,6 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
       if (job.commitRefs[job.nextCommitIndex]?.sha !== ref.sha) {
         throw new Error("historical pricing snapshot cursor mismatch");
       }
-      const committedAt = new Date(ref.committedAt);
-      if (!Number.isFinite(committedAt.getTime())) throw new Error("invalid pricing history commit time");
-      const boundary = committedAt < job.rangeFrom
-        ? job.rangeFrom
-        : committedAt > job.rangeTo
-          ? job.rangeTo
-          : committedAt;
-      await client.query(
-        `UPDATE pricing_history_candidates
-         SET valid_until = $2
-         WHERE job_id = $1 AND valid_until IS NULL AND effective_at < $2`,
-        [id, boundary],
-      );
-      await client.query(
-        `DELETE FROM pricing_history_candidates
-         WHERE job_id = $1 AND valid_until IS NULL`,
-        [id],
-      );
       const nextIndex = job.nextCommitIndex + 1;
       const result = await client.query<HistoricalPricingJobRow>(
         `UPDATE pricing_history_jobs

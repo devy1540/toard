@@ -1265,7 +1265,12 @@ export class ClickHouseStorage implements StorageBackend {
         SELECT 'current' AS period, ${columns}
         FROM ${current.source} ${current.where}
       )`,
-      params: { ...previous.params, ...current.params },
+      params: {
+        ...previous.params,
+        ...current.params,
+        previous_from: chTs(q.previous.from),
+        current_from: chTs(q.current.from),
+      },
     };
   }
 

@@ -1638,6 +1638,35 @@ test("인사이트의 current·previous 집계도 공통 router의 ready timezon
   }
 });
 
+test("partial 인사이트의 head·cache·tail SQL은 모든 기간 파라미터를 바인딩한다", async () => {
+  const range = localDayRange("Asia/Seoul", "2026-07-01", 9);
+  const previousFrom = new Date(range.from.getTime() + 12 * 60 * 60 * 1000);
+  const previousTo = new Date(range.jobs[4]!.bucket.getTime() + 12 * 60 * 60 * 1000);
+  const currentFrom = previousTo;
+  const currentTo = new Date(range.jobs[8]!.bucket.getTime() + 12 * 60 * 60 * 1000);
+  const { storage, queries } = sourceRouterFixture({ watermark: currentTo, jobs: range.jobs });
+
+  await storage.getUserInsightComparison("user-1", {
+    previous: { from: previousFrom, to: previousTo },
+    current: { from: currentFrom, to: currentTo },
+    timezone: "Asia/Seoul",
+  });
+
+  assert.equal(queries.length, 2);
+  const aggregate = queries.find(({ query }) => query.includes("tagged AS"));
+  assert.ok(aggregate);
+  assert.match(aggregate.query, /previous_head_from/);
+  assert.match(aggregate.query, /previous_cache_from/);
+  assert.match(aggregate.query, /previous_tail_from/);
+  assert.match(aggregate.query, /current_head_from/);
+  assert.match(aggregate.query, /current_cache_from/);
+  assert.match(aggregate.query, /current_tail_from/);
+
+  const referenced = [...aggregate.query.matchAll(/\{([A-Za-z0-9_]+):/g)].map((match) => match[1]!);
+  const missing = [...new Set(referenced.filter((name) => !(name in aggregate.params)))];
+  assert.deepEqual(missing, []);
+});
+
 test("v2 read가 꺼진 dashboard router는 hourly가 아니라 raw source로 fallback한다", async () => {
   const range = localDayRange("UTC", "2026-07-01", 1);
   const { storage, queries } = sourceRouterFixture({

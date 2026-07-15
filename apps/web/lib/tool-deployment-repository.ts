@@ -1,6 +1,14 @@
-import type { ToolDeploymentStatus } from "@toard/core";
+import {
+  diffToolPermissions,
+  type ResolveDesiredInput,
+  type ToolDeploymentManifestV1,
+  type ToolDeploymentStatus,
+  type ToolPermissionDiff,
+  type ToolRolloutPhase,
+} from "@toard/core";
 import type { IngestAuthResult } from "./ingest-auth";
 import { getPool } from "./db";
+import { validateInstallManifest } from "./tool-source";
 
 type QueryResult<T> = { rows: T[]; rowCount?: number | null };
 
@@ -34,9 +42,27 @@ export type DeploymentReportInput = {
   rolloutId: string | null;
 };
 
+export type SaveTeamPolicyInput = {
+  actorUserId: string;
+  teamId: string;
+  catalogItemId: string;
+  versionId: string;
+  rolloutPhase: ToolRolloutPhase;
+  rolloutPercent: number;
+};
+
 export type ToolDeploymentRepository = {
   savePersonalPreference(input: PersonalPreferenceInput): Promise<void>;
   saveDeploymentReport(owner: IngestAuthResult, report: DeploymentReportInput): Promise<void>;
+  getDeviceContext(owner: IngestAuthResult, fingerprint: string): Promise<ResolveDesiredInput | null>;
+  getManifestVersion(versionId: string): Promise<ToolDeploymentManifestV1 | null>;
+  deviceBelongsToToken(owner: IngestAuthResult, fingerprint: string): Promise<boolean>;
+  permissionDiffFromLastKnownGood(
+    teamId: string,
+    catalogItemId: string,
+    versionId: string,
+  ): Promise<Pick<ToolPermissionDiff, "approvalRequired">>;
+  saveTeamPolicy(input: SaveTeamPolicyInput): Promise<void>;
 };
 
 const FINGERPRINT = /^[a-f0-9]{64}$/;
@@ -73,6 +99,157 @@ function validateReport(report: DeploymentReportInput): void {
 
 export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploymentRepository {
   return {
+    async getDeviceContext(owner, fingerprint) {
+      if (!FINGERPRINT.test(fingerprint)) return null;
+      const device = await db.query<{ team_id: string | null }>(
+        `SELECT u.team_id
+         FROM device_tool_inventory_snapshots s
+         JOIN users u ON u.id = s.user_id
+         WHERE s.user_id = $1 AND s.ingest_token_id = $2 AND s.fingerprint = $3
+         LIMIT 1`,
+        [owner.userId, owner.tokenId, fingerprint],
+      );
+      const row = device.rows[0];
+      if (!row) return null;
+      const preferences = await db.query<{
+        catalog_item_id: string;
+        mode: "install" | "exclude";
+        install_scope: "all_devices" | "selected_devices";
+        target_version_id: string | null;
+        device_fingerprints: string[];
+      }>(
+        `SELECT p.catalog_item_id, p.mode, p.install_scope, p.target_version_id,
+                COALESCE(array_agg(d.device_fingerprint ORDER BY d.device_fingerprint)
+                  FILTER (WHERE d.device_fingerprint IS NOT NULL), '{}') AS device_fingerprints
+         FROM user_tool_preferences p
+         LEFT JOIN user_tool_preference_devices d
+           ON d.user_id = p.user_id AND d.catalog_item_id = p.catalog_item_id
+         WHERE p.user_id = $1
+         GROUP BY p.user_id, p.catalog_item_id, p.mode, p.install_scope, p.target_version_id`,
+        [owner.userId],
+      );
+      const policies = row.team_id
+        ? await db.query<{
+            catalog_item_id: string;
+            target_version_id: string;
+            rollout_seed: string;
+            rollout_percent: number;
+          }>(
+            `SELECT catalog_item_id, target_version_id, rollout_seed::text, rollout_percent
+             FROM team_tool_policies
+             WHERE team_id = $1 AND enabled = true
+               AND rollout_phase IN ('canary', 'expand', 'active', 'rollback')`,
+            [row.team_id],
+          )
+        : { rows: [] };
+      return {
+        userId: owner.userId,
+        deviceFingerprint: fingerprint,
+        preferences: preferences.rows.map((preference) => ({
+          catalogItemId: preference.catalog_item_id,
+          mode: preference.mode,
+          scope: preference.install_scope,
+          versionId: preference.target_version_id,
+          deviceFingerprints: preference.device_fingerprints,
+        })),
+        teamPolicies: policies.rows.map((policy) => ({
+          catalogItemId: policy.catalog_item_id,
+          versionId: policy.target_version_id,
+          rolloutSeed: policy.rollout_seed,
+          rolloutPercent: policy.rollout_percent,
+        })),
+      };
+    },
+
+    async getManifestVersion(versionId) {
+      const result = await db.query<{ manifest: ToolDeploymentManifestV1 | string }>(
+        "SELECT manifest FROM tool_versions WHERE id = $1",
+        [versionId],
+      );
+      const raw = result.rows[0]?.manifest;
+      if (!raw) return null;
+      return validateInstallManifest(typeof raw === "string" ? JSON.parse(raw) : raw);
+    },
+
+    async deviceBelongsToToken(owner, fingerprint) {
+      if (!FINGERPRINT.test(fingerprint)) return false;
+      const result = await db.query<{ exists: boolean }>(
+        `SELECT EXISTS(
+           SELECT 1 FROM device_tool_inventory_snapshots
+           WHERE user_id = $1 AND ingest_token_id = $2 AND fingerprint = $3
+         ) AS exists`,
+        [owner.userId, owner.tokenId, fingerprint],
+      );
+      return result.rows[0]?.exists === true;
+    },
+
+    async permissionDiffFromLastKnownGood(teamId, catalogItemId, versionId) {
+      const result = await db.query<{
+        next_manifest: ToolDeploymentManifestV1 | string;
+        previous_manifest: ToolDeploymentManifestV1 | string | null;
+      }>(
+        `SELECT next.manifest AS next_manifest, previous.manifest AS previous_manifest
+         FROM tool_versions next
+         LEFT JOIN team_tool_policies policy
+           ON policy.team_id = $1 AND policy.catalog_item_id = $2
+         LEFT JOIN tool_versions previous ON previous.id = policy.last_known_good_version_id
+         WHERE next.id = $3 AND next.catalog_item_id = $2`,
+        [teamId, catalogItemId, versionId],
+      );
+      const row = result.rows[0];
+      if (!row) throw new Error("tool version not found");
+      if (!row.previous_manifest) return { approvalRequired: false };
+      const previous = validateInstallManifest(
+        typeof row.previous_manifest === "string" ? JSON.parse(row.previous_manifest) : row.previous_manifest,
+      );
+      const next = validateInstallManifest(
+        typeof row.next_manifest === "string" ? JSON.parse(row.next_manifest) : row.next_manifest,
+      );
+      return { approvalRequired: diffToolPermissions(previous, next).approvalRequired };
+    },
+
+    async saveTeamPolicy(input) {
+      await inTransaction(db, async (client) => {
+        await client.query(
+          `INSERT INTO team_tool_policies
+             (team_id, catalog_item_id, target_version_id, tracking_mode,
+              rollout_phase, rollout_percent, enabled, created_by, updated_by)
+           VALUES ($1, $2, $3, 'auto', $4, $5, true, $6, $6)
+           ON CONFLICT (team_id, catalog_item_id) DO UPDATE SET
+             target_version_id = EXCLUDED.target_version_id,
+             rollout_phase = EXCLUDED.rollout_phase,
+             rollout_percent = EXCLUDED.rollout_percent,
+             phase_started_at = now(),
+             enabled = true,
+             updated_by = EXCLUDED.updated_by,
+             updated_at = now()`,
+          [
+            input.teamId,
+            input.catalogItemId,
+            input.versionId,
+            input.rolloutPhase,
+            input.rolloutPercent,
+            input.actorUserId,
+          ],
+        );
+        await client.query(
+          `INSERT INTO tool_deployment_audit
+             (actor_user_id, action, team_id, catalog_item_id, after_value)
+           VALUES ($1, 'team_policy_changed', $2, $3, $4::jsonb)`,
+          [
+            input.actorUserId,
+            input.teamId,
+            input.catalogItemId,
+            JSON.stringify({
+              versionId: input.versionId,
+              rolloutPhase: input.rolloutPhase,
+              rolloutPercent: input.rolloutPercent,
+            }),
+          ],
+        );
+      });
+    },
+
     async savePersonalPreference(input) {
       validatePersonalPreference(input);
       await inTransaction(db, async (client) => {

@@ -5,12 +5,14 @@ import { dayStartUtc, getOrgTimezone } from "./org-time";
 import { invalidatePricingCache, PRICING_CACHE_VERSION_SETTING_KEY } from "./pricing";
 import {
   GitHubPricingHistorySource,
+  PricingSnapshotInvalidError,
   PricingSourceRateLimitError,
   type PricingHistoryCommitRef,
 } from "./pricing-history-source";
 
 const MAX_MODELS_PER_JOB = 20;
 const MAX_SNAPSHOTS_PER_STEP = 4;
+const INVALID_SNAPSHOT_SKIP_AFTER_FAILURES = 2;
 const SOURCE_RETRY_BASE_MS = 60_000;
 const SOURCE_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_SOURCE = "litellm-git-history";
@@ -67,6 +69,7 @@ export interface HistoricalPricingRepository {
     at: Date,
   ): Promise<HistoricalPricingJob>;
   saveSnapshots(id: string, snapshots: HistoricalPricingSnapshot[], at: Date): Promise<HistoricalPricingJob>;
+  skipSnapshot(id: string, ref: PricingHistoryCommitRef, at: Date): Promise<HistoricalPricingJob>;
   promote(id: string, at: Date): Promise<{ insertedRevisions: number; evidenceFound: boolean }>;
   waitForSource(
     id: string,
@@ -347,7 +350,17 @@ export async function runHistoricalPricingStepWith(
       }
       const snapshots: HistoricalPricingSnapshot[] = [];
       for (const ref of refs) {
-        snapshots.push({ ref, pricing: await dependencies.source.fetchSnapshot(ref.sha) });
+        try {
+          snapshots.push({ ref, pricing: await dependencies.source.fetchSnapshot(ref.sha) });
+        } catch (error) {
+          if (!(error instanceof PricingSnapshotInvalidError)) throw error;
+          if (job.consecutiveFailures < INVALID_SNAPSHOT_SKIP_AFTER_FAILURES) throw error;
+          if (snapshots.length > 0) {
+            job = await dependencies.repository.saveSnapshots(job.id, snapshots, now);
+          }
+          await dependencies.repository.skipSnapshot(job.id, ref, now);
+          return { state: "fetching", nextAttemptAt: now };
+        }
       }
       await dependencies.repository.saveSnapshots(job.id, snapshots, now);
       return { state: "fetching", nextAttemptAt: now };
@@ -620,6 +633,65 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
          WHERE id = $1 AND state = 'fetching'
          RETURNING ${JOB_FIELDS}`,
         [id, nextIndex, finished, at],
+      );
+      if (!result.rows[0]) throw new Error("historical pricing job update was superseded");
+      await client.query("COMMIT");
+      return mapJob(result.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async skipSnapshot(
+    id: string,
+    ref: PricingHistoryCommitRef,
+    at: Date,
+  ): Promise<HistoricalPricingJob> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const locked = await client.query<HistoricalPricingJobRow>(
+        `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
+         WHERE id = $1 AND state = 'fetching'
+         FOR UPDATE`,
+        [id],
+      );
+      if (!locked.rows[0]) throw new Error("historical pricing job was superseded");
+      const job = mapJob(locked.rows[0]);
+      if (job.commitRefs[job.nextCommitIndex]?.sha !== ref.sha) {
+        throw new Error("historical pricing snapshot cursor mismatch");
+      }
+      const committedAt = new Date(ref.committedAt);
+      if (!Number.isFinite(committedAt.getTime())) throw new Error("invalid pricing history commit time");
+      const boundary = committedAt < job.rangeFrom
+        ? job.rangeFrom
+        : committedAt > job.rangeTo
+          ? job.rangeTo
+          : committedAt;
+      await client.query(
+        `UPDATE pricing_history_candidates
+         SET valid_until = $2
+         WHERE job_id = $1 AND valid_until IS NULL AND effective_at < $2`,
+        [id, boundary],
+      );
+      await client.query(
+        `DELETE FROM pricing_history_candidates
+         WHERE job_id = $1 AND valid_until IS NULL`,
+        [id],
+      );
+      const nextIndex = job.nextCommitIndex + 1;
+      const result = await client.query<HistoricalPricingJobRow>(
+        `UPDATE pricing_history_jobs
+         SET state = CASE WHEN $3 THEN 'promoting' ELSE 'fetching' END,
+             next_commit_index = $2, consecutive_failures = 0,
+             next_attempt_at = NULL, rate_limit_reset_at = NULL,
+             last_error = 'invalid pricing snapshot skipped', updated_at = $4
+         WHERE id = $1 AND state = 'fetching'
+         RETURNING ${JOB_FIELDS}`,
+        [id, nextIndex, nextIndex === job.commitRefs.length, at],
       );
       if (!result.rows[0]) throw new Error("historical pricing job update was superseded");
       await client.query("COMMIT");

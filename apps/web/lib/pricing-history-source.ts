@@ -28,6 +28,13 @@ export class PricingSourceRateLimitError extends Error {
   }
 }
 
+export class PricingSnapshotInvalidError extends Error {
+  constructor(public readonly sha: string) {
+    super("pricing snapshot is invalid");
+    this.name = "PricingSnapshotInvalidError";
+  }
+}
+
 function rateLimitReset(response: Response, now: Date): Date | null {
   const limited = response.status === 403 || response.status === 429 ||
     response.headers.get("x-ratelimit-remaining") === "0";
@@ -109,9 +116,13 @@ export class GitHubPricingHistorySource {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new Error(`pricing snapshot fetch failed: ${response.status}`);
-    const raw = await response.json() as Parameters<typeof fromLiteLLM>[0];
-    const pricing = fromLiteLLM(raw);
-    if (pricing.size === 0) throw new Error("pricing snapshot parsed 0 models");
-    return pricing;
+    try {
+      const raw = await response.json() as Parameters<typeof fromLiteLLM>[0];
+      const pricing = fromLiteLLM(raw);
+      if (pricing.size === 0) throw new Error("pricing snapshot parsed 0 models");
+      return pricing;
+    } catch {
+      throw new PricingSnapshotInvalidError(sha);
+    }
   }
 }

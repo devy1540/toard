@@ -239,9 +239,11 @@ export interface SaveResult {
   deduped: number;
 }
 
-export interface UnpricedUsageModelDiagnostic {
+export interface PricingRecoveryModelDiagnostic {
   model: string | null;
   events: number;
+  unpricedEvents: number;
+  legacyEvents: number;
   firstAt: Date;
   lastAt: Date;
 }
@@ -260,9 +262,10 @@ export interface PricingRepairRequest {
   generation: string;
 }
 
-export interface PricingRepairBatchResult {
+export interface PricingRecoveryBatchResult {
   scanned: number;
   recovered: number;
+  repricedLegacy: number;
   affectedBuckets: Date[];
   hasMore: boolean;
 }
@@ -310,17 +313,17 @@ export interface StorageBackend {
   saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
-  /** 보존 범위 안에서 아직 가격이 확정되지 않은 모델별 진단. */
-  getUnpricedUsageModels(
+  /** 저장소에 남은 미확정·이전 가격·비권위 revision 모델별 진단. */
+  getPricingRecoveryModels(
     from: Date,
     to: Date,
     replaceRevisionIds?: string[],
-  ): Promise<UnpricedUsageModelDiagnostic[]>;
-  /** 가격표로 확정 가능한 unpriced 이벤트만 제한된 batch로 복구한다. */
-  repairUnpricedUsage(
+  ): Promise<PricingRecoveryModelDiagnostic[]>;
+  /** 권위 가격표로 확정 가능한 가격 복구 대상을 제한된 batch로 처리한다. */
+  repairPricingUsage(
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
-  ): Promise<PricingRepairBatchResult>;
+  ): Promise<PricingRecoveryBatchResult>;
   /** 모델 문맥 전에 재생된 Codex 사용량 중 모델이 있는 원본과 정확히 일치하는 행만 보정한다. */
   reconcileCodexReplayUsage(
     request: UsageReplayReconciliationRequest,

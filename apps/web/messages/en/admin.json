@@ -82,11 +82,14 @@
       "failed": "Temporary error · retrying automatically"
     },
     "recoveredEvents": "Recovered",
+    "repricedLegacyEvents": "Legacy prices recalculated",
     "reconciledEvents": "Duplicates reconciled",
     "remainingEvents": "Unconfirmed remaining",
+    "remainingLegacyEvents": "Legacy-priced remaining",
     "lastRepair": "Last automatic run",
     "unresolvedModels": "Models without confirmed pricing history for the usage date",
     "unresolvedEvents": "{count} events",
+    "unresolvedEventBreakdown": "{unpriced} unconfirmed · {legacy} legacy-priced",
     "historyTitle": "Automatic historical pricing lookup",
     "historyStates": {
       "pending": "Preparing",

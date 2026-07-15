@@ -41,6 +41,7 @@ export function PricingSyncPanel({
 
   const healthy = status.repair.state === "idle"
     && status.repair.remainingUnpricedEvents === 0
+    && status.repair.remainingLegacyEvents === 0
     && status.repair.lastSucceededAt != null;
   return (
     <div className="space-y-3 text-sm">
@@ -65,10 +66,12 @@ export function PricingSyncPanel({
             {t(`system.repairStates.${status.repair.state}`)}
           </Badge>
         </div>
-        <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-4">
+        <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
           <div><dt className="text-muted-foreground inline">{t("system.recoveredEvents")}: </dt><dd className="inline">{status.repair.recoveredEvents.toLocaleString()}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.repricedLegacyEvents")}: </dt><dd className="inline">{status.repair.repricedLegacyEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.reconciledEvents")}: </dt><dd className="inline">{status.repair.reconciledEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.remainingEvents")}: </dt><dd className="inline">{status.repair.remainingUnpricedEvents.toLocaleString()}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.remainingLegacyEvents")}: </dt><dd className="inline">{status.repair.remainingLegacyEvents.toLocaleString()}</dd></div>
           <div><dt className="text-muted-foreground inline">{t("system.lastRepair")}: </dt><dd className="inline">{status.repair.lastSucceededAt ? new Date(status.repair.lastSucceededAt).toLocaleString() : "—"}</dd></div>
         </dl>
         {status.unresolvedModels.length > 0 ? (
@@ -78,6 +81,10 @@ export function PricingSyncPanel({
               <p key={`${item.model ?? "unknown"}:${item.firstAt}`}>
                 <span className="font-mono">{item.model ?? "(unknown)"}</span>
                 {" · "}{t("system.unresolvedEvents", { count: item.events.toLocaleString() })}
+                {" · "}{t("system.unresolvedEventBreakdown", {
+                  unpriced: item.unpricedEvents.toLocaleString(),
+                  legacy: item.legacyEvents.toLocaleString(),
+                })}
               </p>
             ))}
           </div>

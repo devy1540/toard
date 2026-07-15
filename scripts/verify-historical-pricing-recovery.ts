@@ -13,6 +13,7 @@ import {
 } from "../apps/web/lib/pricing-history";
 import type { PricingHistoryCommitRef } from "../apps/web/lib/pricing-history-source";
 import { loadPricingSchedule } from "../apps/web/lib/pricing";
+import { PostgresStorage } from "../packages/storage-postgres/src/storage";
 import { Client, Pool } from "pg";
 
 const execFileAsync = promisify(execFile);
@@ -21,7 +22,7 @@ const NOW = new Date("2026-07-14T00:00:00.000Z");
 const MODEL = "fixture-history-model";
 const BASELINE: PricingHistoryCommitRef = {
   sha: "a".repeat(40),
-  committedAt: "2026-05-31T23:00:00.000Z",
+  committedAt: "2025-09-14T23:00:00.000Z",
 };
 const CHANGE: PricingHistoryCommitRef = {
   sha: "b".repeat(40),
@@ -90,7 +91,7 @@ async function verifyDurableHistoryPromotion(pool: Pool): Promise<Record<string,
   const diagnostics = [{
     model: MODEL,
     events: 4,
-    firstAt: "2026-06-10T12:00:00.000Z",
+    firstAt: "2025-09-15T12:00:00.000Z",
     lastAt: "2026-06-20T12:00:00.000Z",
   }];
   let result: HistoricalPricingStepResult | undefined;
@@ -133,7 +134,7 @@ async function verifyDurableHistoryPromotion(pool: Pool): Promise<Record<string,
     authoritative: row.authoritative,
   })), [
     {
-      effectiveAt: "2026-06-10T00:00:00.000Z",
+      effectiveAt: "2025-09-15T00:00:00.000Z",
       validUntil: "2026-06-15T00:00:00.000Z",
       input: 5,
       output: 25,
@@ -173,6 +174,92 @@ async function verifyDurableHistoryPromotion(pool: Pool): Promise<Record<string,
   assert.equal(after.status, "priced");
   assert.equal(after.costUsd, 6);
 
+  await pool.query(`
+    INSERT INTO providers (key, display_name, service_name_patterns, collection_method)
+    VALUES ('fixture', 'Fixture', ARRAY['fixture'], 'otel')
+    ON CONFLICT (key) DO NOTHING
+  `);
+  await pool.query(
+    `INSERT INTO usage_events (
+       dedup_key, provider_key, model, ts,
+       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+       cost_usd, cost_status
+     ) VALUES ($1, 'fixture', $2, $3, 1000000, 500000, 300000, 200000, 99, 'legacy')`,
+    ["legacy-before-90-days", MODEL, new Date("2025-10-01T12:00:00.000Z")],
+  );
+  const invariantBefore = await pool.query<{
+    events: string;
+    input_tokens: string;
+    output_tokens: string;
+    cache_read_tokens: string;
+    cache_creation_tokens: string;
+  }>(`
+    SELECT count(*) AS events,
+           sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
+           sum(cache_read_tokens) AS cache_read_tokens,
+           sum(cache_creation_tokens) AS cache_creation_tokens
+    FROM usage_events WHERE dedup_key = 'legacy-before-90-days'
+  `);
+  const storage = new PostgresStorage(pool, { timezone: "UTC" });
+  const recoveryDiagnostics = await storage.getPricingRecoveryModels(new Date(0), NOW);
+  assert.deepEqual(recoveryDiagnostics.map((item) => ({
+    model: item.model,
+    events: item.events,
+    unpricedEvents: item.unpricedEvents,
+    legacyEvents: item.legacyEvents,
+    firstAt: item.firstAt.toISOString(),
+  })), [{
+    model: MODEL,
+    events: 1,
+    unpricedEvents: 0,
+    legacyEvents: 1,
+    firstAt: "2025-10-01T12:00:00.000Z",
+  }]);
+  const repaired = await storage.repairPricingUsage({
+    from: new Date(0),
+    to: NOW,
+    models: [MODEL],
+    replaceRevisionIds: [],
+    limit: 100,
+    generation: NOW.toISOString(),
+  }, (event) => {
+    const resolved = resolveCostAt({
+      ...event,
+      occurredAt: event.ts,
+      schedule,
+      mode: "calculate",
+    });
+    return resolved.status === "priced" && resolved.pricingRevisionId
+      ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId }
+      : null;
+  });
+  assert.deepEqual(repaired, {
+    scanned: 1,
+    recovered: 0,
+    repricedLegacy: 1,
+    affectedBuckets: [new Date("2025-10-01T00:00:00.000Z")],
+    hasMore: false,
+  });
+  const repriced = await pool.query<{
+    cost_usd: string;
+    cost_status: string;
+    pricing_revision_id: string | null;
+  }>(`
+    SELECT cost_usd, cost_status, pricing_revision_id
+    FROM usage_events WHERE dedup_key = 'legacy-before-90-days'
+  `);
+  assert.equal(Number(repriced.rows[0]?.cost_usd), 18.9);
+  assert.equal(repriced.rows[0]?.cost_status, "priced");
+  assert.ok(repriced.rows[0]?.pricing_revision_id);
+  const invariantAfter = await pool.query(`
+    SELECT count(*) AS events,
+           sum(input_tokens) AS input_tokens, sum(output_tokens) AS output_tokens,
+           sum(cache_read_tokens) AS cache_read_tokens,
+           sum(cache_creation_tokens) AS cache_creation_tokens
+    FROM usage_events WHERE dedup_key = 'legacy-before-90-days'
+  `);
+  assert.deepEqual(invariantAfter.rows, invariantBefore.rows);
+
   const repair = await pool.query<{ state: string; target_to: Date }>(
     "SELECT state, target_to FROM pricing_repair_status WHERE singleton",
   );
@@ -187,6 +274,8 @@ async function verifyDurableHistoryPromotion(pool: Pool): Promise<Record<string,
     revisions: revisions.rows.length,
     beforeChangeCostUsd: before.costUsd,
     afterChangeCostUsd: after.costUsd,
+    repricedLegacy: repaired.repricedLegacy,
+    retainedEventInvariants: "preserved",
     repairState: repair.rows[0]?.state,
   };
 }

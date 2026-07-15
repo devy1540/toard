@@ -1,5 +1,6 @@
-import { USAGE_EVENT_LOGICAL_RETENTION_DAYS, type StorageBackend } from "@toard/core";
+import type { StorageBackend } from "@toard/core";
 import { resolveCostAt, type PricingSchedule } from "@toard/pricing";
+import { revalidateTag } from "next/cache";
 import type { Pool } from "pg";
 import { getPool } from "./db";
 import { getPricingSchedule } from "./pricing";
@@ -14,7 +15,6 @@ import type { RollupSchedulerOutcome } from "./rollup-coordinator-state";
 import { sanitizeRollupError } from "./rollup-worker-state";
 import { getStorage } from "./storage";
 
-const RETENTION_MS = USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000;
 const STALE_RUNNING_MS = 5 * 60 * 1_000;
 const WAITING_RETRY_MS = 60 * 60 * 1_000;
 
@@ -23,6 +23,8 @@ export type PricingRepairState = "idle" | "pending" | "running" | "waiting_for_c
 export type PricingUnresolvedModel = {
   model: string | null;
   events: number;
+  unpricedEvents: number;
+  legacyEvents: number;
   firstAt: string;
   lastAt: string;
 };
@@ -34,7 +36,9 @@ export type PricingRepairStatusRecord = {
   processedEvents: number;
   recoveredEvents: number;
   reconciledEvents: number;
+  repricedLegacyEvents: number;
   remainingUnpricedEvents: number;
+  remainingLegacyEvents: number;
   unresolvedModels: PricingUnresolvedModel[];
   lastStartedAt: Date | null;
   lastSucceededAt: Date | null;
@@ -54,7 +58,9 @@ type PricingRepairStatusRow = {
   processed_events: string | number;
   recovered_events: string | number;
   reconciled_events: string | number;
+  repriced_legacy_events: string | number;
   remaining_unpriced_events: string | number;
+  remaining_legacy_events: string | number;
   unresolved_models: PricingUnresolvedModel[] | null;
   last_started_at: Date | null;
   last_succeeded_at: Date | null;
@@ -70,7 +76,8 @@ type PricingRepairStatusRow = {
 // pg의 기본 TIMESTAMPTZ parser는 마이크로초를 Date의 밀리초로 잘라 generation exact match를 깨뜨린다.
 const SELECT_FIELDS = `
   generation::text AS generation, state, target_to, processed_events, recovered_events, reconciled_events,
-  remaining_unpriced_events, unresolved_models, last_started_at, last_succeeded_at, last_error,
+  repriced_legacy_events, remaining_unpriced_events, remaining_legacy_events,
+  unresolved_models, last_started_at, last_succeeded_at, last_error,
   adaptive_limit, load_state, eligible_since, next_attempt_at,
   consecutive_failures, updated_at`;
 
@@ -82,7 +89,9 @@ function mapStatus(row: PricingRepairStatusRow): PricingRepairStatusRecord {
     processedEvents: Number(row.processed_events),
     recoveredEvents: Number(row.recovered_events),
     reconciledEvents: Number(row.reconciled_events),
+    repricedLegacyEvents: Number(row.repriced_legacy_events),
     remainingUnpricedEvents: Number(row.remaining_unpriced_events),
+    remainingLegacyEvents: Number(row.remaining_legacy_events),
     unresolvedModels: row.unresolved_models ?? [],
     lastStartedAt: row.last_started_at,
     lastSucceededAt: row.last_succeeded_at,
@@ -107,7 +116,9 @@ export type PricingRepairProgress = {
   processed: number;
   recovered: number;
   reconciled: number;
+  repricedLegacy: number;
   remaining: number;
+  remainingLegacy: number;
   unresolvedModels: PricingUnresolvedModel[];
   adaptiveLimit: number;
   loadState: "normal" | "throttled";
@@ -166,16 +177,18 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
            processed_events = processed_events + $3,
            recovered_events = recovered_events + $4,
            reconciled_events = reconciled_events + $5,
-           remaining_unpriced_events = $6,
-           unresolved_models = $7::jsonb,
-           last_succeeded_at = $8,
+           repriced_legacy_events = repriced_legacy_events + $6,
+           remaining_unpriced_events = $7,
+           remaining_legacy_events = $8,
+           unresolved_models = $9::jsonb,
+           last_succeeded_at = $10,
            last_error = NULL,
-           adaptive_limit = $9,
-           load_state = $10,
-           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $8) ELSE NULL END,
-           next_attempt_at = $11,
+           adaptive_limit = $11,
+           load_state = $12,
+           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $10) ELSE NULL END,
+           next_attempt_at = $13,
            consecutive_failures = 0,
-           updated_at = $8
+           updated_at = $10
        WHERE singleton AND generation = $1::timestamptz
        RETURNING singleton`,
       [
@@ -184,7 +197,9 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
         input.processed,
         input.recovered,
         input.reconciled,
+        input.repricedLegacy,
         input.remaining,
+        input.remainingLegacy,
         JSON.stringify(input.unresolvedModels),
         input.at,
         input.adaptiveLimit,
@@ -249,6 +264,7 @@ type PricingRepairTaskDependencies = {
   runHistoricalPricingStep?(
     diagnostics: HistoricalPricingDiagnostic[],
   ): Promise<HistoricalPricingStepResult>;
+  invalidateInsightCache?(): void;
   now(): Date;
 };
 
@@ -269,7 +285,7 @@ function localDate(value: Date, timezone: string): string {
 }
 
 function supportedModels(
-  diagnostics: Awaited<ReturnType<StorageBackend["getUnpricedUsageModels"]>>,
+  diagnostics: Awaited<ReturnType<StorageBackend["getPricingRecoveryModels"]>>,
   schedule: PricingSchedule,
 ): string[] {
   const models = new Set<string>();
@@ -308,18 +324,20 @@ export function nextPricingRepairBatchLimit(
 }
 
 function unresolvedModels(
-  diagnostics: Awaited<ReturnType<StorageBackend["getUnpricedUsageModels"]>>,
+  diagnostics: Awaited<ReturnType<StorageBackend["getPricingRecoveryModels"]>>,
 ): PricingUnresolvedModel[] {
   return diagnostics.map((item) => ({
     model: item.model,
     events: item.events,
+    unpricedEvents: item.unpricedEvents,
+    legacyEvents: item.legacyEvents,
     firstAt: item.firstAt.toISOString(),
     lastAt: item.lastAt.toISOString(),
   }));
 }
 
 function completedHistoricalDiagnostics(
-  diagnostics: Awaited<ReturnType<StorageBackend["getUnpricedUsageModels"]>>,
+  diagnostics: Awaited<ReturnType<StorageBackend["getPricingRecoveryModels"]>>,
   todayStart: Date,
 ): HistoricalPricingDiagnostic[] {
   const historicalEnd = new Date(todayStart.getTime() - 1);
@@ -340,7 +358,7 @@ export async function runPricingRepairTaskWith(
   const startedAt = dependencies.now();
   const claimed = await dependencies.repository.claim(startedAt);
   if (!claimed?.generation || !claimed.targetTo) return "superseded";
-  const from = new Date(claimed.targetTo.getTime() - RETENTION_MS);
+  const from = new Date(0);
   try {
     const replay = await dependencies.storage.reconcileCodexReplayUsage({
       from,
@@ -360,7 +378,9 @@ export async function runPricingRepairTaskWith(
         processed: replay.scanned,
         recovered: 0,
         reconciled: replay.reconciled,
+        repricedLegacy: 0,
         remaining: replay.remainingUnpriced,
+        remainingLegacy: claimed.remainingLegacyEvents,
         unresolvedModels: claimed.unresolvedModels,
         adaptiveLimit: adaptive.limit,
         loadState: adaptive.loadState,
@@ -372,15 +392,21 @@ export async function runPricingRepairTaskWith(
 
     const schedule = await dependencies.getSchedule();
     const replaceRevisionIds = await (dependencies.getNonAuthoritativeRevisionIds?.() ?? Promise.resolve([]));
-    const diagnostics = await dependencies.storage.getUnpricedUsageModels(
+    const diagnostics = await dependencies.storage.getPricingRecoveryModels(
       from,
       claimed.targetTo,
       replaceRevisionIds,
     );
     const models = supportedModels(diagnostics, schedule);
-    let result = { scanned: 0, recovered: 0, affectedBuckets: [] as Date[], hasMore: false };
+    let result = {
+      scanned: 0,
+      recovered: 0,
+      repricedLegacy: 0,
+      affectedBuckets: [] as Date[],
+      hasMore: false,
+    };
     if (models.length > 0) {
-      result = await dependencies.storage.repairUnpricedUsage({
+      result = await dependencies.storage.repairPricingUsage({
         from,
         to: claimed.targetTo,
         models,
@@ -401,11 +427,20 @@ export async function runPricingRepairTaskWith(
     }
     const remaining = Math.max(
       0,
-      diagnostics.reduce((sum, item) => sum + item.events, 0) - result.recovered,
+      diagnostics.reduce((sum, item) => sum + item.unpricedEvents, 0) - result.recovered,
     );
-    const remainingSupported = result.hasMore || result.scanned > result.recovered;
+    const remainingLegacy = Math.max(
+      0,
+      diagnostics.reduce((sum, item) => sum + item.legacyEvents, 0) - result.repricedLegacy,
+    );
+    const remainingTotal = Math.max(
+      0,
+      diagnostics.reduce((sum, item) => sum + item.events, 0) - result.recovered - result.repricedLegacy,
+    );
+    const remainingSupported = result.hasMore || result.scanned > result.recovered + result.repricedLegacy;
     const resolvedModelSet = new Set(models);
-    const remainingDiagnostics = !result.hasMore && result.scanned === result.recovered
+    const remainingDiagnostics = !result.hasMore &&
+        result.scanned === result.recovered + result.repricedLegacy
       ? diagnostics.filter((item) => !item.model || !resolvedModelSet.has(item.model))
       : diagnostics;
     const at = dependencies.now();
@@ -416,7 +451,7 @@ export async function runPricingRepairTaskWith(
     );
     let state: PricingRepairProgress["state"] = result.hasMore || remainingSupported
       ? "pending"
-      : remaining === 0
+      : remainingTotal === 0
         ? "idle"
         : "waiting_for_catalog";
     let nextAttemptAt: Date | null = state === "waiting_for_catalog"
@@ -427,7 +462,7 @@ export async function runPricingRepairTaskWith(
     const timezone = getOrgTimezone();
     const todayStart = dayStartUtc(localDate(at, timezone), timezone);
     const historicalDiagnostics = completedHistoricalDiagnostics(remainingDiagnostics, todayStart);
-    if (!result.hasMore && !remainingSupported && remaining > 0 && historicalDiagnostics.length > 0 &&
+    if (!result.hasMore && !remainingSupported && remainingTotal > 0 && historicalDiagnostics.length > 0 &&
       dependencies.runHistoricalPricingStep) {
       const history = await dependencies.runHistoricalPricingStep(historicalDiagnostics);
       if (history.state === "promoted") {
@@ -447,13 +482,22 @@ export async function runPricingRepairTaskWith(
       processed: replay.scanned + result.scanned,
       recovered: result.recovered,
       reconciled: replay.reconciled,
+      repricedLegacy: result.repricedLegacy,
       remaining,
+      remainingLegacy,
       unresolvedModels: unresolvedModels(remainingDiagnostics),
       adaptiveLimit: adaptive.limit,
       loadState: adaptive.loadState,
       nextAttemptAt,
       at,
     });
+    if (applied && (state === "idle" || state === "waiting_for_catalog")) {
+      try {
+        dependencies.invalidateInsightCache?.();
+      } catch {
+        // 복구 상태는 이미 확정됐으므로 cache 무효화 실패가 generation을 되돌리면 안 된다.
+      }
+    }
     return applied ? "success" : "superseded";
   } catch (error) {
     const applied = await dependencies.repository.markFailed(
@@ -473,6 +517,7 @@ export async function runPricingRepairTask(now?: Date): Promise<RollupSchedulerO
     getSchedule: getPricingSchedule,
     getNonAuthoritativeRevisionIds: loadNonAuthoritativeRevisionIds,
     runHistoricalPricingStep,
+    invalidateInsightCache: () => revalidateTag("user-insights"),
     now: clock,
   });
 }

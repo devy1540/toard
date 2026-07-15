@@ -88,6 +88,34 @@
     "users": "활성 사용자",
     "devices": "활성 기기"
   },
+  "utilization": {
+    "title": "조직 AI 활용 지수",
+    "description": "구성원의 자기 기준 결과를 익명 집계한 중앙값입니다.",
+    "range": "가운데 50% 범위 {p25}~{p75}",
+    "sample": "포함 {included}명 · 기준 미충족 {excluded}명",
+    "policy": "활용 지수 정책 보기",
+    "disclaimer": "개인 순위나 성과평가에 사용하지 않습니다.",
+    "dimensions": {
+      "context_continuity": "맥락 연속성 중앙값",
+      "execution_stability": "실행 안정성 중앙값",
+      "recovery_burden": "복구 부담 중앙값"
+    },
+    "distribution": {
+      "title": "자기 기준 상태 분포",
+      "above": "평소보다 높음",
+      "usual": "평소 범위",
+      "below": "평소보다 낮음"
+    },
+    "suppressed": {
+      "title": "최소 표본을 충족하지 않았습니다",
+      "description": "개인정보 보호를 위해 현재 기간의 활성 사용자 5명 이상일 때만 조직 집계를 표시합니다."
+    },
+    "insufficient": {
+      "title": "신뢰도 있는 조직 집계를 계산할 수 없습니다",
+      "insufficient_eligible_users": "활성 사용자는 충분하지만 보통 이상 신뢰도의 결과가 5명 미만입니다.",
+      "mixed_methodology_versions": "서로 다른 방법론 버전의 결과는 함께 집계하지 않습니다."
+    }
+  },
   "teamDailyUsage": "팀 일별 사용량",
   "teamHourlyUsage": "팀 시간별 사용량",
   "teamUsage30m": "팀 30분별 사용량",

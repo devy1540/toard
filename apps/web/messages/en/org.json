@@ -88,6 +88,34 @@
     "users": "Active users",
     "devices": "Active devices"
   },
+  "utilization": {
+    "title": "Organization AI utilization index",
+    "description": "An anonymous median of members' results against their own baselines.",
+    "range": "Middle 50% range {p25}–{p75}",
+    "sample": "{included} included · {excluded} below the threshold",
+    "policy": "View utilization index policy",
+    "disclaimer": "Not for personal ranking or performance evaluation.",
+    "dimensions": {
+      "context_continuity": "Context continuity median",
+      "execution_stability": "Execution stability median",
+      "recovery_burden": "Recovery burden median"
+    },
+    "distribution": {
+      "title": "Distribution against each member's baseline",
+      "above": "Above usual",
+      "usual": "Usual range",
+      "below": "Below usual"
+    },
+    "suppressed": {
+      "title": "Minimum cohort not met",
+      "description": "For privacy, organization aggregates appear only when there are at least 5 active users in the current period."
+    },
+    "insufficient": {
+      "title": "A reliable organization aggregate cannot be calculated",
+      "insufficient_eligible_users": "There are enough active users, but fewer than 5 have medium-or-higher confidence results.",
+      "mixed_methodology_versions": "Results from different methodology versions are not aggregated."
+    }
+  },
   "teamDailyUsage": "Team daily usage",
   "teamHourlyUsage": "Team hourly usage",
   "teamUsage30m": "Team 30-minute usage",

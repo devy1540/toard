@@ -8,12 +8,14 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
+import { OrgUtilizationCard } from "@/components/dashboard/org-utilization-card";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
+import { getCachedOrganizationUtilization } from "@/lib/ai-utilization";
 import {
   ORG_LEADERBOARD_METRIC,
   cacheSharePercent,
@@ -456,7 +458,7 @@ async function OverviewTab({
   const [t, dashboardT] = await Promise.all([getTranslations("org"), getTranslations("dashboard")]);
   const metric: ChartMetric = getOrgChartMetric(sp.metric);
   const storage = getStorage();
-  const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown, toolActivity] = await Promise.all([
+  const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown, toolActivity, utilization] = await Promise.all([
     storage.getOverview(period),
     storage.getOverview(previousPeriod(period)),
     storage.getDailyTimeseries(period),
@@ -464,6 +466,7 @@ async function OverviewTab({
     canSeeTeamRanking ? storage.getLeaderboard({ ...period, scope: "team" }) : Promise.resolve([]),
     storage.getProviderBreakdown(period),
     getOrgToolSummary(period),
+    getCachedOrganizationUtilization(),
   ]);
 
   const series = fillSeriesGaps(daily, period);
@@ -594,6 +597,8 @@ async function OverviewTab({
           <SummaryTile label={t("toolActivity.devices")} value={fmtNum(toolActivity.activeDevices ?? 0)} />
         </CardContent>
       </Card>
+
+      <OrgUtilizationCard result={utilization} />
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
         <Card className="min-w-0">

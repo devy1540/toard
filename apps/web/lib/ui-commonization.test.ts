@@ -143,7 +143,8 @@ test("dashboard filters delegate their visual shell to the shared toolbar", () =
   assert.match(toolbar, /FeatureStatusBadge/);
   assert.match(toolbar, /splitHeader[\s\S]*filters/);
   assert.match(filters, /<DashboardToolbar[\s\S]*filters=\{filterControls\}/);
-  assert.match(filters, /showCustom[\s\S]*<Input/);
+  assert.match(filters, /showCustom[\s\S]*<DateRangePicker/);
+  assert.match(filters, /<Button size="sm" onClick=\{applyCustom\} disabled=\{!from \|\| !to\}>/);
 });
 
 test("demo open mode can render settings with the dashboard viewer fallback", () => {

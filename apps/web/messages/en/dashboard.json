@@ -93,6 +93,8 @@
     "customRange": "Custom",
     "startDate": "Start date",
     "endDate": "End date",
+    "dateRange": "Date range",
+    "selectDateRange": "Select date range",
     "apply": "Apply",
     "allTools": "All tools",
     "bucketLabel": "Chart interval",

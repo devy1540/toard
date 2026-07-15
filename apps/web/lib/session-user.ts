@@ -6,6 +6,7 @@ export type SessionUser = {
   id: string;
   email: string;
   role: string;
+  teamRole: "member" | "leader";
   teamId: string | null;
   teamName: string | null;
   teamOnboardingCompletedAt: Date | null;
@@ -15,11 +16,12 @@ async function getUserById(id: string): Promise<SessionUser | null> {
   const r = await getPool().query<{
     email: string;
     role: string;
+    team_role: "member" | "leader";
     team_id: string | null;
     team_name: string | null;
     team_onboarding_completed_at: Date | null;
   }>(
-    `SELECT u.email, u.role, u.team_id, u.team_onboarding_completed_at, t.name AS team_name
+    `SELECT u.email, u.role, u.team_role, u.team_id, u.team_onboarding_completed_at, t.name AS team_name
      FROM users u
      LEFT JOIN teams t ON t.id = u.team_id
      WHERE u.id = $1`,
@@ -31,6 +33,7 @@ async function getUserById(id: string): Promise<SessionUser | null> {
         id,
         email: row.email,
         role: row.role,
+        teamRole: row.team_id ? row.team_role : "member",
         teamId: row.team_id,
         teamName: row.team_name,
         teamOnboardingCompletedAt: row.team_onboarding_completed_at,

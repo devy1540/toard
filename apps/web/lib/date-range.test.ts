@@ -29,8 +29,10 @@ test("유효한 날짜 키만 Calendar 날짜로 변환한다", () => {
   assert.equal(dateKeyToCalendarDate("not-a-date"), undefined);
 });
 
-test("시작일과 종료일이 모두 유효할 때만 범위를 만든다", () => {
-  assert.equal(dateKeysToCalendarRange("2026-07-12", ""), undefined);
+test("시작일만 선택한 부분 범위를 유지하고 잘못된 종료일은 거부한다", () => {
+  const partial = dateKeysToCalendarRange("2026-07-12", "");
+  assert.equal(partial?.from?.getDate(), 12);
+  assert.equal(partial?.to, undefined);
   assert.equal(dateKeysToCalendarRange("2026-07-12", "invalid"), undefined);
 
   const range = dateKeysToCalendarRange("2026-07-12", "2026-07-15");

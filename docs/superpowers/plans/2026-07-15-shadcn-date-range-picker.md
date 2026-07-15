@@ -78,7 +78,7 @@ Expected: FAIL because `./date-range` does not exist. The missing module is the 
 
 - [ ] **Step 3: Implement the minimal adapter**
 
-Create `apps/web/lib/date-range.ts` with strict `YYYY-MM-DD` parsing. Construct valid values with `new Date(year, month - 1, day, 12)` and reject overflow by comparing local getters back to the parsed values. Format with zero-padded local getters. Return `undefined` for incomplete ranges.
+Create `apps/web/lib/date-range.ts` with strict `YYYY-MM-DD` parsing. Construct valid values with `new Date(year, month - 1, day, 12)` and reject overflow by comparing local getters back to the parsed values. Format with zero-padded local getters. Preserve `{ from }` when the end key is empty so the first range click remains selected; reject a non-empty invalid end key. Return date keys only for complete ranges.
 
 The implementation must not reference `toISOString`.
 

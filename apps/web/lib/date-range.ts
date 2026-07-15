@@ -33,8 +33,11 @@ export function calendarDateToDateKey(value: Date): string {
 
 export function dateKeysToCalendarRange(from: string, to: string): CalendarRange | undefined {
   const fromDate = dateKeyToCalendarDate(from);
+  if (!fromDate) return undefined;
+  if (!to) return { from: fromDate };
+
   const toDate = dateKeyToCalendarDate(to);
-  if (!fromDate || !toDate || fromDate.getTime() > toDate.getTime()) return undefined;
+  if (!toDate || fromDate.getTime() > toDate.getTime()) return undefined;
   return { from: fromDate, to: toDate };
 }
 

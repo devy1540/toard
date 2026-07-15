@@ -32,6 +32,8 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageEventReconciliationRequest,
+  UsageEventReconciliationResult,
   UsageReplayReconciliationRequest,
   UsageReplayReconciliationResult,
   UnpricedUsageModelDiagnostic,
@@ -1457,6 +1459,111 @@ export class ClickHouseStorage implements StorageBackend {
       remainingUnpriced: Math.max(0, n(rows[0]?.total_unpriced) - candidates.length),
       affectedBuckets: this.dirty15mBuckets(candidates),
       hasMore: rows.length > limit,
+    };
+  }
+
+  async reconcileUsageEvents(
+    request: UsageEventReconciliationRequest,
+  ): Promise<UsageEventReconciliationResult> {
+    const dedupKeys = [...new Set(request.dedupKeys)].slice(0, 1_000);
+    if (dedupKeys.length === 0) {
+      return { reconciled: 0, affectedBuckets: [] };
+    }
+    const outboxClient = await this.pg.connect();
+    let outboxRows: Array<{ dedup_key: string; ts: Date }> = [];
+    try {
+      await outboxClient.query("BEGIN");
+      const selectedOutbox = await outboxClient.query<{ dedup_key: string; ts: Date }>(
+        `SELECT dedup_key, ts
+         FROM clickhouse_usage_outbox
+         WHERE user_id = $1
+           AND provider_key = $2
+           AND log_adapter = $3
+           AND dedup_key = ANY($4::text[])
+         FOR UPDATE`,
+        [request.userId, request.providerKey, request.logAdapter, dedupKeys],
+      );
+      outboxRows = selectedOutbox.rows;
+      if (outboxRows.length > 0) {
+        await outboxClient.query(
+          `DELETE FROM clickhouse_usage_outbox
+           WHERE user_id = $1
+             AND provider_key = $2
+             AND log_adapter = $3
+             AND dedup_key = ANY($4::text[])`,
+          [request.userId, request.providerKey, request.logAdapter, dedupKeys],
+        );
+      }
+      await outboxClient.query("COMMIT");
+    } catch (error) {
+      await outboxClient.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      outboxClient.release();
+    }
+    const rows = await this.queryJson<{ dedup_key: string; ts: string | Date }>(
+      `SELECT dedup_key, ts
+       FROM usage_events FINAL
+       WHERE user_id = {user_id:String}
+         AND provider_key = {provider_key:String}
+         AND log_adapter = {log_adapter:String}
+         AND dedup_key IN {dedup_keys:Array(String)}`,
+      {
+        user_id: request.userId,
+        provider_key: request.providerKey,
+        log_adapter: request.logAdapter,
+        dedup_keys: dedupKeys,
+      },
+    );
+    const candidateByKey = new Map<string, { dedup_key: string; ts: Date }>();
+    for (const row of outboxRows) {
+      candidateByKey.set(row.dedup_key, { dedup_key: row.dedup_key, ts: row.ts });
+    }
+    for (const row of rows) {
+      candidateByKey.set(row.dedup_key, {
+        dedup_key: row.dedup_key,
+        ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
+      });
+    }
+    const candidates = [...candidateByKey.values()];
+    if (candidates.length === 0) {
+      return { reconciled: 0, affectedBuckets: [] };
+    }
+
+    const markDirty = async (): Promise<void> => {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(client, candidates);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    await markDirty();
+    await this.ch.command({
+      query: `ALTER TABLE usage_events
+              DELETE WHERE user_id = {user_id:String}
+                AND provider_key = {provider_key:String}
+                AND log_adapter = {log_adapter:String}
+                AND dedup_key IN {dedup_keys:Array(String)}`,
+      query_params: {
+        user_id: request.userId,
+        provider_key: request.providerKey,
+        log_adapter: request.logAdapter,
+        dedup_keys: candidates.map((row) => row.dedup_key),
+      },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
+    await markDirty();
+
+    return {
+      reconciled: candidates.length,
+      affectedBuckets: this.dirty15mBuckets(candidates),
     };
   }
 

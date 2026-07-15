@@ -16,6 +16,9 @@ use crate::fsx;
 pub struct Cursor {
     #[serde(default)]
     pub files: HashMap<String, FileState>,
+    /// 성공한 일회성 데이터 보정 버전. 구버전 cursor는 0으로 역직렬화된다.
+    #[serde(default)]
+    pub reconciliation_version: u32,
 }
 
 /// 파일 변경 판정용 stat 스냅샷 (mtime+size).
@@ -120,6 +123,18 @@ mod tests {
                 size: 2
             }
         );
+        assert_eq!(back.reconciliation_version, 0);
+    }
+
+    #[test]
+    fn reconciliation_version_roundtrips() {
+        let cursor = Cursor {
+            reconciliation_version: 1,
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&cursor).unwrap();
+        let back: Cursor = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.reconciliation_version, 1);
     }
 
     #[test]

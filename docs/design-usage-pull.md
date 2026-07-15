@@ -92,6 +92,17 @@ payload.info.total_token_usage = { … }   # 누적(사용 안 함)
 - OTLP 스킴(`req|{requestId}|…` / `nat|{session}|{eventSequence}|…`, `dedup.ts`)과 접두·구분자·필드가 모두 달라 **서로 dedup 안 됨** → §5.2 게이트 필수.
 - 재파싱(파일 제자리 갱신) 중복은 서버 `ON CONFLICT(dedup_key) DO NOTHING` 이 흡수(멱등). 커서(`{adapter}.json`, mtime+size)로 변한 파일만 재파싱.
 
+#### 4.3.1 Codex fork/subagent history replay 보정 (2026-07-15)
+
+Codex Desktop의 fork/subagent rollout은 새 작업의 실제 출력 앞에 부모 rollout history를 복사할 수 있다. 복사본의 `token_count` timestamp가 새 파일 생성 시각으로 다시 기록되므로 기존 `session+ts+model+in+out` dedup으로는 원본과 합쳐지지 않고 별도 사용량으로 저장된다.
+
+- **신규 수집 차단**: 시간 간격을 추정하지 않는다. 첫 `session_meta.source.subagent`가 있는 rollout은 첫 `inter_agent_communication_metadata`, 일반 vscode fork는 첫 session과 다른 `session_meta`가 존재할 때 현재 session UUIDv7 이상인 첫 `task_started.turn_id`를 live 경계로 사용한다. foreign meta 직후에도 복사된 task가 이어지는 실측 형태를 포함하며, root 세션의 일반 inter-agent marker는 경계로 쓰지 않는다.
+- **정확 키 재현**: 경계 전 이벤트도 과거 parser와 같은 `session_id`·모델 승계 및 total-change 규칙으로 파싱한 뒤 `replayed_usage`로 분리한다. 이로써 이미 저장된 행의 dedup key를 정확히 재현한다. 정상 구간에서 발견된 키와 교집합인 키는 철회 목록에서 제외한다.
+- **신뢰 경계**: `POST /api/v1/events/reconcile`은 본문에서 user/provider를 받지 않고 ingest token의 user ID를 사용한다. 64자리 소문자 SHA-256 키를 최대 1,000개만 받고 `codex/codex` 범위의 정확 키만 삭제한다. 시간 밀도·토큰 유사도 같은 서버 휴리스틱이나 직접 DB 삭제는 금지한다.
+- **집계 일관성**: PostgreSQL은 동일 transaction에서 영향 local day의 mart를 재계산한다. ClickHouse는 PostgreSQL outbox의 동일 키를 먼저 제거하고, 15분 dirty bucket을 삭제 전후 기록한 뒤 `mutations_sync=1`로 원본을 삭제한다.
+- **1회 실행·호환성**: `codex` cursor의 `reconciliation_version=1`은 정상 usage 전송과 전체 철회 요청이 성공한 뒤에만 기록한다. 일부 요청 실패는 전체 키를 멱등 재시도한다. 구버전 서버의 404/405는 기존 usage cursor 진행을 막지 않고 24시간 backoff 후 재탐색한다.
+- **실측 검증**: 2026-07-15 사고 디렉터리만 격리한 dry-run에서 재생 14,448건과 1,955,040,513토큰을 검출해 독립 원인 분석값과 일치했다. 정상 키 교집합과 중복을 제외한 실제 철회 키는 14,408개였다.
+
 ### 4.4 비용 — 서버 권위(변경 없음)
 - shim 은 토큰만(costUsd=0, userId=null) 전송. 서버 `/v1/events` 가 `resolveCost(mode:"calculate")` 로 확정(§7 재사용). `resolveCost` 는 이미 ccusage 이식판: input/output 200k tiered, 캐시생성=`cacheCreatePerM ?? input×1.25`, 캐시읽기=`cacheReadPerM ?? input×0.1`, fast 배수, LiteLLM/models.dev 가격.
 - **캐시생성 5m/1h 차등(구현 완료 — 리스크 B 재평가)**: ccusage 처럼 5m=`cacheCreatePerM`(≈input×1.25)·1h=input×2 로 분리 가격한다. shim 이 `cache_creation.ephemeral_1h_input_tokens` 를 `cacheCreation1hTokens` 힌트로 전송(claude 만; 미제공=0=전량 5m, 구 클라·OTLP 하위호환). `resolveCost` 가 1h 를 input×2 로 가산. **실측 반증**: 초안 가정("대부분 5m")과 달리 실데이터의 캐시생성 토큰 **86.8% 가 1h** → 단일 요율은 캐시생성 34.3%·**총비용 15.3% 과소계상**(§8.2). DB 미영속(cost 는 인제스트 시 확정·저장, 재계산 경로 없음).

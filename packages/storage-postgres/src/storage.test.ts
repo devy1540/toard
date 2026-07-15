@@ -78,6 +78,54 @@ test("PostgresStorage groups team member usage by bucket and user", async () => 
   ]);
 });
 
+test("Postgres 활용 지수는 사용자별 로컬 일자와 지원 cache 신호만 집계한다", async () => {
+  let capturedSql = "";
+  let capturedParams: unknown[] = [];
+  const pool = {
+    query: async (sql: string, params: unknown[]) => {
+      capturedSql = sql;
+      capturedParams = params;
+      return {
+        rows: [{
+          user_id: "user-1",
+          day: "2026-07-10",
+          sessions: "2",
+          input: "100",
+          cache_read: "80",
+          cache_creation: "20",
+          cache_signal_events: "3",
+          cache_unsupported_events: "1",
+        }],
+      };
+    },
+  } as unknown as Pool;
+  const storage = new PostgresStorage(pool);
+  const query = {
+    from: new Date("2026-06-10T00:00:00.000Z"),
+    to: new Date("2026-07-15T00:00:00.000Z"),
+    timezone: "Asia/Seoul",
+  };
+
+  const result = await storage.getUserUtilizationUsage("user-1", query);
+
+  assert.match(capturedSql, /AT TIME ZONE/);
+  assert.match(capturedSql, /COUNT\(DISTINCT session_id\)/);
+  assert.match(capturedSql, /provider_key = ANY/);
+  assert.match(capturedSql, /user_id = \$/);
+  assert.equal(capturedParams.includes("user-1"), true);
+  assert.equal(capturedParams.includes("Asia/Seoul"), true);
+  assert.deepEqual(result, [{
+    userId: "user-1",
+    day: "2026-07-10",
+    sessions: 2,
+    inputTokens: 100,
+    cacheReadTokens: 80,
+    cacheCreationTokens: 20,
+    cacheSignalEvents: 3,
+    cacheUnsupportedEvents: 1,
+  }]);
+});
+
 test("Postgres usage_events는 pricing revision과 모든 cost status를 보존한다", async () => {
   const usageInserts: Array<{ sql: string; params: unknown[] }> = [];
   const client = {

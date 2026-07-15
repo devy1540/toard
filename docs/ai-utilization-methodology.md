@@ -129,7 +129,7 @@ recoveryBurden = repeatedFailures / knownCalls
 다음 값은 화면에 표시할 수 있지만 종합점수와 세부 축 점수에는 포함하지 않는다.
 
 - 도구를 사용한 세션 비율
-- 사용한 MCP·스킬 종류 수
+- 하루에 사용한 MCP·스킬 종류 수의 현재 기간 최대값
 - 활성 일수
 - provider·model 구성
 - 세션, 이벤트, 토큰, 비용 총량
@@ -246,12 +246,14 @@ overallScore = round(sum(validDimensionScores) / validDimensionCount)
 조직 집계에는 같은 방법론 버전이고 신뢰도가 보통 이상인 개인 결과만 포함한다.
 
 - 활성 사용자 5명 미만: `suppressed`
-- 5명 이상: 개인 행을 버린 뒤 다음 값만 반환
+- 활성 사용자 5명 이상이면서 신뢰도 보통 이상 결과 5명 이상: 개인 행을 버린 뒤 다음 값만 반환
   - 종합점수 중앙값
   - 종합점수 25·75 백분위
   - 세부 축별 중앙값
   - 각 개인 점수가 본인 기준선보다 `높음`, `평소 범위`, `낮음`인 비율
   - 포함 인원 수와 제외 인원 수
+
+활성 사용자는 5명 이상이지만 신뢰도 보통 이상 결과가 5명 미만이면 숫자를 공개하지 않고 `insufficient_data`를 반환한다.
 
 포함·제외 인원 수 자체가 5명 미만 하위 집단을 드러내는 필터에서는 세부 제외 사유를 반환하지 않는다.
 
@@ -267,6 +269,7 @@ overallScore = round(sum(validDimensionScores) / validDimensionCount)
 - `insufficient_session_tool_calls`
 - `insufficient_valid_dimensions`
 - `suppressed_small_cohort`
+- `insufficient_eligible_users`
 - `mixed_methodology_versions`
 
 사용자 화면은 이유 코드를 번역된 설명으로 표시하고 내부 구현 세부사항이나 식별자를 노출하지 않는다.

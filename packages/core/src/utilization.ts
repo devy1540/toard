@@ -95,7 +95,6 @@ export interface PersonalUtilizationResult {
     distinctTools: number;
   };
 }
-
 export type OrganizationUtilizationResult =
   | {
       state: "suppressed";
@@ -403,4 +402,3 @@ export function aggregateOrganizationUtilization(
     },
   };
 }
-

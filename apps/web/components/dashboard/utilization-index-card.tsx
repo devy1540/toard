@@ -1,7 +1,8 @@
-import type { PersonalUtilizationResult, UtilizationReason } from "@toard/core";
+import type { UtilizationReason } from "@toard/core";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import type { PersonalUtilizationView } from "@/lib/ai-utilization";
 import { getOrgTimezone } from "@/lib/org-time";
 
 function percent(value: number | null, format: Awaited<ReturnType<typeof getFormatter>>): string {
@@ -10,7 +11,7 @@ function percent(value: number | null, format: Awaited<ReturnType<typeof getForm
     : format.number(value, { style: "percent", maximumFractionDigits: 0 });
 }
 
-export async function UtilizationIndexCard({ result }: { result: PersonalUtilizationResult }) {
+export async function UtilizationIndexCard({ result }: { result: PersonalUtilizationView }) {
   const [t, format] = await Promise.all([getTranslations("insights"), getFormatter()]);
   const timezone = getOrgTimezone();
   const period = (from: Date, to: Date) => t("utilization.periodRange", {
@@ -89,6 +90,13 @@ export async function UtilizationIndexCard({ result }: { result: PersonalUtiliza
         <span>{t("utilization.currentPeriod", { range: period(result.currentPeriod.from, result.currentPeriod.to) })}</span>
         <span>{t("utilization.baseline", { range: period(result.baselinePeriod.from, result.baselinePeriod.to) })}</span>
         <span>{result.methodologyVersion}</span>
+        <span>{t("utilization.calculatedAt", {
+          time: format.dateTime(new Date(result.calculatedAt), {
+            dateStyle: "medium",
+            timeStyle: "short",
+            timeZone: timezone,
+          }),
+        })}</span>
         <span>{t("utilization.delay")}</span>
       </CardFooter>
     </Card>

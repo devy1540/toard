@@ -75,6 +75,7 @@
     "baseline": "Baseline period: {range}",
     "currentPeriod": "Current period: {range}",
     "periodRange": "{from}–{to}",
+    "calculatedAt": "Calculated at {time}",
     "delay": "Data can be delayed by up to 10 minutes.",
     "dimensionValues": "Current {current} · baseline {baseline}",
     "dimensions": {

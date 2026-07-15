@@ -636,4 +636,3 @@ Expected: all commands exit 0.
 git add README.md docs/ai-utilization-methodology.md docs/superpowers/specs/2026-07-15-ai-utilization-index-design.md apps/web/lib/ai-utilization-ui.test.ts
 git commit -m "docs(insights): AI 활용 지수 운영 문서를 연결"
 ```
-

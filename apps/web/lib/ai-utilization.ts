@@ -17,6 +17,9 @@ import { getOrgTimezone } from "./org-time";
 import { getStorage } from "./storage";
 
 const featureKey = (userId: string, day: string): string => `${userId}\0${day}`;
+export type PersonalUtilizationView = PersonalUtilizationResult & { calculatedAt: string };
+const reviveDate = (value: Date | string): Date =>
+  value instanceof Date ? new Date(value.getTime()) : new Date(value);
 
 function emptyUsage(userId: string, day: string): UtilizationUsageDay {
   return {
@@ -80,19 +83,22 @@ function utilizationRange(periods: UtilizationPeriods) {
 async function calculatePersonalForPeriods(
   userId: string,
   periods: UtilizationPeriods,
-): Promise<PersonalUtilizationResult> {
+): Promise<PersonalUtilizationView> {
   const range = utilizationRange(periods);
   const [usage, tools] = await Promise.all([
     getStorage().getUserUtilizationUsage(userId, range),
     getUserUtilizationToolDays(userId, range, periods.timezone),
   ]);
-  return calculatePersonalUtilization(mergeUtilizationDays(usage, tools), periods);
+  return {
+    ...calculatePersonalUtilization(mergeUtilizationDays(usage, tools), periods),
+    calculatedAt: new Date().toISOString(),
+  };
 }
 
 export async function calculatePersonalUtilizationForUser(
   userId: string,
   now = new Date(),
-): Promise<PersonalUtilizationResult> {
+): Promise<PersonalUtilizationView> {
   const periods = buildUtilizationPeriods(now, getOrgTimezone());
   return calculatePersonalForPeriods(userId, periods);
 }
@@ -204,9 +210,20 @@ const readCachedOrganization = unstable_cache(
   { revalidate: 600 },
 );
 
-export function getCachedPersonalUtilization(userId: string, now = new Date()) {
+export async function getCachedPersonalUtilization(userId: string, now = new Date()) {
   const periods = buildUtilizationPeriods(now, getOrgTimezone());
-  return readCachedPersonal(...utilizationCacheArgs(userId, periods));
+  const result = await readCachedPersonal(...utilizationCacheArgs(userId, periods));
+  return {
+    ...result,
+    currentPeriod: {
+      from: reviveDate(result.currentPeriod.from),
+      to: reviveDate(result.currentPeriod.to),
+    },
+    baselinePeriod: {
+      from: reviveDate(result.baselinePeriod.from),
+      to: reviveDate(result.baselinePeriod.to),
+    },
+  } satisfies PersonalUtilizationView;
 }
 
 export function getCachedOrganizationUtilization(now = new Date()) {

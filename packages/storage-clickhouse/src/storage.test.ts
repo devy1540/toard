@@ -527,6 +527,62 @@ test("ClickHouseStorage groups team member usage by bucket and user", async () =
   ]);
 });
 
+test("ClickHouseStorage는 활용 지수 일별 사용량을 provider capability와 함께 집계한다", async () => {
+  let query = "";
+  let queryParams: Record<string, unknown> = {};
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      query = args.query;
+      queryParams = args.query_params;
+      return {
+        json: async () => [
+          {
+            user_id: "u1",
+            day: "2026-07-06",
+            sessions: "2",
+            input: "100",
+            cache_read: "80",
+            cache_creation: "20",
+            cache_signal_events: "3",
+            cache_unsupported_events: "1",
+          },
+        ],
+      };
+    },
+  } as unknown as ClickHouseClient;
+
+  const storage = new ClickHouseStorage(ch, {} as Pool, {
+    readRollup: false,
+    read15mRollup: false,
+    read15mV2Rollup: false,
+  });
+  const queryInput = {
+    from: new Date("2026-07-06T00:00:00.000Z"),
+    to: new Date("2026-07-08T00:00:00.000Z"),
+    timezone: "UTC",
+  };
+  const result = await storage.getUserUtilizationUsage("u1", queryInput);
+
+  assert.match(query, /user_id = \{uid:String\}/);
+  assert.match(query, /uniqExactIf\(session_id, session_id != ''\)/);
+  assert.match(query, /provider_key IN \{cacheProviders:Array\(String\)\}/);
+  assert.match(query, /sumIf\(event_count,/);
+  assert.deepEqual(queryParams.cacheProviders, ["claude_code", "codex", "gemini", "qwen"]);
+  assert.deepEqual(result, [
+    {
+      userId: "u1",
+      day: "2026-07-06",
+      sessions: 2,
+      inputTokens: 100,
+      cacheReadTokens: 80,
+      cacheCreationTokens: 20,
+      cacheSignalEvents: 3,
+      cacheUnsupportedEvents: 1,
+    },
+  ]);
+});
+
 test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다", async () => {
   const inserts: InsertedRows[] = [];
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];

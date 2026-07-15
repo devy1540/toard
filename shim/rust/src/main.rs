@@ -24,6 +24,7 @@ mod otel;
 mod recovery;
 mod resolve;
 mod tool_event;
+mod tool_deployment;
 mod update;
 mod usage_event;
 

@@ -69,6 +69,7 @@
   },
   "utilization": {
     "title": "AI 활용 지수",
+    "experiment": "실험",
     "description": "많이 썼는지가 아니라, 내 평소 작업 방식과 비교한 맥락 유지·실행 안정성·복구 부담을 보여줍니다.",
     "selfBaseline": "내 기준선 중앙값은 50입니다.",
     "unavailable": "계산할 데이터가 부족합니다",

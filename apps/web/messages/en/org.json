@@ -90,6 +90,7 @@
   },
   "utilization": {
     "title": "Organization AI utilization index",
+    "experiment": "Experimental",
     "description": "An anonymous median of members' results against their own baselines.",
     "range": "Middle 50% range {p25}–{p75}",
     "sample": "{included} included · {excluded} below the threshold",

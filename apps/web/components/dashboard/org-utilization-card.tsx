@@ -1,5 +1,6 @@
 import type { OrganizationUtilizationResult, UtilizationDimensionKey } from "@toard/core";
 import { getFormatter, getTranslations } from "next-intl/server";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 
 const dimensions: UtilizationDimensionKey[] = [
@@ -15,7 +16,10 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
     return (
       <Card>
         <CardHeader>
-          <CardTitle>{t("utilization.title")}</CardTitle>
+          <CardTitle className="flex flex-wrap items-center gap-2">
+            {t("utilization.title")}
+            <Badge variant="outline">{t("utilization.experiment")}</Badge>
+          </CardTitle>
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
         <CardContent>
@@ -33,7 +37,10 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
     return (
       <Card>
         <CardHeader>
-          <CardTitle>{t("utilization.title")}</CardTitle>
+          <CardTitle className="flex flex-wrap items-center gap-2">
+            {t("utilization.title")}
+            <Badge variant="outline">{t("utilization.experiment")}</Badge>
+          </CardTitle>
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
         <CardContent>
@@ -50,7 +57,10 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{t("utilization.title")}</CardTitle>
+        <CardTitle className="flex flex-wrap items-center gap-2">
+          {t("utilization.title")}
+          <Badge variant="outline">{t("utilization.experiment")}</Badge>
+        </CardTitle>
         <CardDescription>{t("utilization.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">

@@ -69,6 +69,7 @@
   },
   "utilization": {
     "title": "AI utilization index",
+    "experiment": "Experimental",
     "description": "Compares context continuity, execution stability, and recovery burden with your own usual working pattern—not how much AI you used.",
     "selfBaseline": "Your baseline median is 50.",
     "unavailable": "There is not enough data to calculate the index",

@@ -30,7 +30,10 @@ export async function UtilizationIndexCard({ result }: { result: PersonalUtiliza
       <CardHeader className="gap-2">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <CardTitle>{t("utilization.title")}</CardTitle>
+            <div className="flex flex-wrap items-center gap-2">
+              <CardTitle>{t("utilization.title")}</CardTitle>
+              <Badge variant="outline">{t("utilization.experiment")}</Badge>
+            </div>
             <CardDescription>{t("utilization.description")}</CardDescription>
           </div>
           <Badge variant="secondary">{t(`utilization.confidence.${result.confidence}`)}</Badge>

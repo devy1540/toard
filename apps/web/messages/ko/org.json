@@ -90,6 +90,7 @@
   },
   "utilization": {
     "title": "조직 AI 활용 지수",
+    "experiment": "실험",
     "description": "구성원의 자기 기준 결과를 익명 집계한 중앙값입니다.",
     "range": "가운데 50% 범위 {p25}~{p75}",
     "sample": "포함 {included}명 · 기준 미충족 {excluded}명",

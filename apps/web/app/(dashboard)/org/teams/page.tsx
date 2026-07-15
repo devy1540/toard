@@ -11,7 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { parseDashboardPeriod, type DashboardSearchParams } from "@/lib/period";
-import { formatCostForCoverage } from "@/lib/pricing";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
@@ -236,6 +236,10 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
   };
+  const legacyCount = legacyCostHintCount(coverage);
+  const rankedCostSub = legacyCount == null
+    ? t("ranking.totalCostSub", { scope: scopeLabel })
+    : dashboardT("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
 
   return (
     <div data-dashboard-ready="team-overview" className="contents">
@@ -245,7 +249,7 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
         <SummaryTile
           label={t("ranking.totalCost")}
           value={formatCostForCoverage(fmtUsd(rankedCost), coverage, costLabels)}
-          sub={t("ranking.totalCostSub", { scope: scopeLabel })}
+          sub={rankedCostSub}
           icon={<DollarSign className="size-3.5" />}
         />
         <SummaryTile

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RollupWorkerName, RollupWorkerRecord } from "./rollup-worker-state";
+import type { RollupCutoverLayer, RollupCutoverRecord } from "./rollup-cutover-state";
 import {
   deriveRollupProgress,
   getRollupAdminStatusWith,
@@ -10,6 +11,26 @@ import {
 } from "./rollup-status";
 
 const NOW = new Date("2026-07-12T12:00:00.000Z");
+
+function cutoverRecord(
+  layer: RollupCutoverLayer,
+  overrides: Partial<RollupCutoverRecord> = {},
+): RollupCutoverRecord {
+  return {
+    layer,
+    state: "backfilling",
+    targetWatermark: null,
+    healthySeconds: 0,
+    lastCheckedAt: null,
+    lastValidationAt: null,
+    consecutiveFailures: 0,
+    lastFailureKind: null,
+    lastFailure: null,
+    activatedAt: null,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
 
 function workerRecord(
   worker: RollupWorkerName,
@@ -31,6 +52,11 @@ function workerRecord(
     processedUnitsTotal: 0,
     processedRowsTotal: 0,
     throughputUnitsPerMinute: null,
+    adaptiveLimit: worker === "usage_15m_v2" ? 16 : 8,
+    loadState: "normal",
+    eligibleSince: null,
+    nextAttemptAt: null,
+    consecutiveFailures: 0,
     ...overrides,
   };
 }
@@ -60,6 +86,21 @@ function dependencies(
       workerRecord("usage_15m_v2"),
       workerRecord("timezone"),
     ],
+    loadCutoverRecords: async () => [
+      cutoverRecord("usage_15m_v2"),
+      cutoverRecord("timezone"),
+    ],
+    loadSchedulerStatus: async () => ({
+      singleton: true,
+      lastHeartbeatAt: NOW,
+      lastSelectedTask: "usage_15m_v2",
+      lastTaskStartedAt: new Date(NOW.getTime() - 1_000),
+      lastTaskFinishedAt: NOW,
+      lastTaskOutcome: "success",
+      lastError: null,
+      updatedAt: NOW,
+    }),
+    loadTimezoneBacklog: async () => ({ eligible: 0, waitingForBase: 0 }),
     loadPostgresProgress: async () => ({
       watermark: new Date("2026-07-12T11:30:00.000Z"),
       dirtyBuckets: [],
@@ -270,6 +311,7 @@ test("ETA 표본이 없으면 worker별 configured 처리량을 사용한다", a
       coverage: { hour: 10, day: 2 },
       postgresRawEvents: 3,
     }),
+    loadTimezoneBacklog: async () => ({ eligible: 7, waitingForBase: 0 }),
   }));
 
   assert.equal(status.workers.usage15mV2.etaBasis, "configured");
@@ -368,6 +410,9 @@ test("비정렬 watermark의 remaining은 ETA와 ready·catching_up·stalled 상
         workerRecord("usage_15m_v2", {
           lastSuccessAt: lastProgressAt,
           lastProgressAt,
+          eligibleSince: lastProgressAt.getTime() < NOW.getTime() - 120_000
+            ? lastProgressAt
+            : null,
         }),
         workerRecord("timezone"),
       ],
@@ -482,6 +527,37 @@ test("read flags와 normalized raw TTL은 명시 opt-in이 없으면 OFF다", as
   assert.equal(status.workers.timezone.state, "not_applicable");
 });
 
+test("자동 전환 active 상태는 effective read source와 관찰 정보를 노출한다", async () => {
+  const status = await getRollupAdminStatusWith(dependencies({
+    loadCutoverRecords: async () => [
+      cutoverRecord("usage_15m_v2", {
+        state: "active",
+        targetWatermark: new Date("2026-07-12T11:30:00.000Z"),
+        healthySeconds: 3_600,
+        lastValidationAt: NOW,
+        activatedAt: NOW,
+      }),
+      cutoverRecord("timezone", {
+        state: "observing",
+        targetWatermark: new Date("2026-07-12T11:30:00.000Z"),
+        healthySeconds: 1_200,
+        lastValidationAt: NOW,
+      }),
+    ],
+  }));
+
+  assert.deepEqual(status.readSources, {
+    usage15mV2: true,
+    timezone: false,
+  });
+  assert.equal(status.cutover.mode, "auto");
+  assert.equal(status.cutover.usage15mV2.state, "active");
+  assert.equal(status.cutover.usage15mV2.healthySeconds, 3_600);
+  assert.equal(status.cutover.timezone.state, "observing");
+  assert.equal(status.workers.usage15mV2.adaptiveLimit, 16);
+  assert.equal(status.workers.usage15mV2.loadState, "normal");
+});
+
 test("worker 상태는 disabled와 paused를 오류·ready보다 우선한다", async () => {
   const failedAt = new Date("2026-07-12T11:59:00.000Z");
   const status = await getRollupAdminStatusWith(dependencies({
@@ -505,6 +581,51 @@ test("worker 상태는 disabled와 paused를 오류·ready보다 우선한다", 
 
   assert.equal(status.workers.usage15mV2.state, "disabled");
   assert.equal(status.workers.timezone.state, "paused");
+});
+
+test("pending이 있지만 eligible이 없으면 waiting_for_base다", async () => {
+  const status = await getRollupAdminStatusWith(dependencies({
+    loadPostgresProgress: async () => ({
+      watermark: new Date("2026-07-12T11:30:00.000Z"),
+      dirtyBuckets: [],
+      pending: 10,
+      inflight: 0,
+      activeTimezones: ["Asia/Seoul"],
+      coverage: { hour: 4, day: 2 },
+      postgresRawEvents: 0,
+    }),
+    loadTimezoneBacklog: async () => ({ eligible: 0, waitingForBase: 10 }),
+  }));
+
+  assert.equal(status.workers.timezone.state, "waiting_for_base");
+  assert.equal(status.workers.timezone.eligiblePendingJobs, 0);
+  assert.equal(status.workers.timezone.waitingForBaseJobs, 10);
+  assert.equal(status.workers.timezone.etaMinutes, null);
+});
+
+test("eligible backlog와 오래된 eligibleSince가 있을 때만 stalled다", async () => {
+  const eligibleSince = new Date(NOW.getTime() - 121_000);
+  const status = await getRollupAdminStatusWith(dependencies({
+    loadWorkerRecords: async () => [
+      workerRecord("usage_15m_v2"),
+      workerRecord("timezone", { eligibleSince }),
+    ],
+    loadPostgresProgress: async () => ({
+      watermark: new Date("2026-07-12T11:30:00.000Z"),
+      dirtyBuckets: [],
+      pending: 3,
+      inflight: 0,
+      activeTimezones: ["Asia/Seoul"],
+      coverage: { hour: 4, day: 2 },
+      postgresRawEvents: 0,
+    }),
+    loadTimezoneBacklog: async () => ({ eligible: 3, waitingForBase: 0 }),
+  }));
+
+  assert.equal(status.workers.timezone.state, "stalled");
+  assert.equal(status.workers.timezone.eligibleSince, eligibleSince.toISOString());
+  assert.equal(status.workers.timezone.eligiblePendingJobs, 3);
+  assert.equal(status.scheduler.lastSelectedTask, "usage_15m_v2");
 });
 
 test("성공한 storage snapshot만 30초 cache하고 실패는 cache하지 않는다", async () => {

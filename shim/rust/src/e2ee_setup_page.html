@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>toard Recovery Kit</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:900px;margin:48px auto;padding:0 20px;color:#172033;background:#f7f8fa}
+  main{background:#fff;border:1px solid #dce1e8;border-radius:16px;padding:28px;box-shadow:0 8px 30px #17203312}
+  h1{margin-top:0}.warning{padding:14px;background:#fff4dc;border-radius:10px}.words{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:0;padding:16px;list-style:none;background:#f0f3f7;border-radius:10px;user-select:all}
+  .word{display:flex;align-items:center;min-width:0;padding:9px 10px;background:#fff;border:1px solid #dce1e8;border-radius:8px}.word-index{flex:0 0 2.5em;color:#6c7687;font-variant-numeric:tabular-nums;font-weight:650}.word-value{min-width:0;overflow-wrap:anywhere}
+  button{margin:16px 0;padding:11px 16px;border:0;border-radius:9px;background:#2357d9;color:white;font-weight:650;cursor:pointer}
+  form{display:grid;gap:12px}label{display:grid;gap:5px}input{font:inherit;padding:9px;border:1px solid #b9c1cc;border-radius:8px}
+  @media(max-width:520px){body{margin:20px auto;padding:0 12px}main{padding:20px}.words{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;padding:12px}.word{padding:8px}.word-index{flex-basis:2.25em}}
+</style>
+<main>
+  <h1>Recovery Kit 저장</h1>
+  <p class="warning">이 24단어는 기기를 모두 잃었을 때 히스토리를 복구하는 최후의 수단입니다. toard 서버는 이 단어를 저장하지 않습니다.</p>
+  <ol id="recovery-words" class="words">{{WORD_ITEMS}}</ol>
+  <button id="save-kit" type="button">Recovery Kit 파일 저장</button>
+  <form id="confirm" method="post" action="{{ACTION}}" hidden>
+    <input id="saved" name="saved" type="hidden" value="no">
+    <p>저장 확인을 위해 아래 단어를 입력하세요.</p>
+    {{INPUTS}}
+    <button type="submit">확인하고 E2EE 활성화</button>
+  </form>
+</main>
+<script>{{SCRIPT}}</script>
+</html>

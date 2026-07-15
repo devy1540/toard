@@ -92,21 +92,74 @@
   },
   "system": {
     "pricingTitle": "가격 동기화",
-    "pricingDescription": "LiteLLM 모델 가격을 받아 비용 계산에 사용합니다. 가격이 없으면 비용이 $0 으로 계산됩니다 — 자동 동기화와 별개로 여기서 수동 실행할 수 있습니다.",
+    "pricingDescription": "LiteLLM 모델 가격을 매일 동기화하고 미확정 비용을 자동으로 복구합니다. 관리자가 실행할 작업은 없습니다.",
     "modelsCount": "{count}개 모델",
     "lastSync": "· 마지막 동기화 {day}",
-    "noPricing": "동기화된 가격이 없습니다 — 수집되는 비용이 $0 으로 계산됩니다.",
-    "syncing": "동기화 중…",
-    "syncNow": "지금 동기화",
-    "syncedWithDay": "동기화 완료 — {count}개 모델 반영 ({day})",
-    "synced": "동기화 완료 — {count}개 모델 반영",
+    "noPricing": "동기화된 가격 없음",
+    "autoSyncActive": "자동 운영 중",
+    "repairTitle": "미확정 비용 자동 복구",
+    "repairStates": {
+      "idle": "정상",
+      "pending": "가격 확인 대기",
+      "running": "자동 반영 중",
+      "waiting_for_catalog": "가격표 지원 대기",
+      "failed": "일시 오류 · 자동 재시도"
+    },
+    "recoveredEvents": "복구 완료",
+    "reconciledEvents": "중복 보정",
+    "remainingEvents": "남은 미확정",
+    "lastRepair": "마지막 자동 처리",
+    "unresolvedModels": "해당 사용 날짜의 가격 이력이 확인되지 않은 모델",
+    "unresolvedEvents": "{count}건",
+    "historyTitle": "과거 가격 이력 자동 확인",
+    "historyStates": {
+      "pending": "확인 준비",
+      "listing": "변경 이력 확인 중",
+      "fetching": "날짜별 가격 확인 중",
+      "promoting": "검증 결과 반영 중",
+      "waiting_source": "외부 소스 재시도 대기",
+      "failed": "일시 오류",
+      "completed": "완료"
+    },
+    "historyProgress": "{models}개 모델 · 가격 스냅샷 {processed}/{total}",
+    "historyRetryAt": "다음 자동 재시도 {time}",
+    "pricingStatusFailed": "가격 자동 복구 상태를 일시적으로 확인할 수 없습니다. 자동 처리는 계속 재시도합니다.",
     "contentTitle": "본문 수집",
     "contentBadgeOn": "활성",
     "contentBadgeOff": "비활성",
     "contentDescription": "프롬프트·응답 본문 저장 여부. 서버 암호화 키(KEK)가 있어야 켜지며, 켜지면 사용자가 설치 시 본문 수집을 opt-in 할 수 있습니다.",
     "contentEnabledBody": "본문은 서버에서 봉투 암호화되어 저장되고, 각 사용자는 <code>/history</code> 에서 본인 것만 조회합니다.",
+    "contentRetiredBody": "레거시 서버 키가 제거되었습니다. E2EE 본문 수집과 브라우저 복호화는 계속 동작하며 새 KEK를 만들 필요가 없습니다.",
     "contentSetupHint": "서버 env 에 아래를 설정하고 재시작하면 켜집니다.",
     "contentSetupNote": "RLS 발효를 위한 앱 롤(<code>toard_app</code>) 전환은 <code>docs/DEPLOY.md</code> 참고. 키를 잃으면 기존 본문은 복호화 불가.",
+    "legacyRetirementTitle": "레거시 본문 키 폐기",
+    "legacyRetirementDescription": "전체 server_v1 전환, 백업 보존 만료, 서버 KEK 제거를 순서대로 확인합니다. 앱은 백업이나 Secret Store를 자동 삭제하지 않습니다.",
+    "legacyRetirementUnavailable": "레거시 키 폐기 상태를 확인할 수 없습니다.",
+    "legacyRemaining": "전체 server_v1 기록",
+    "legacyRecords": "{count}건",
+    "legacyZeroObserved": "전체 0건 최초 확인",
+    "legacyRetention": "백업 보존기간",
+    "legacyDays": "{count}일",
+    "legacyUnconfigured": "미설정",
+    "legacyEligibleAt": "가장 이른 키 폐기 시각",
+    "legacyBackupConfirmed": "백업·스냅샷 폐기 확인",
+    "legacyKek": "서버 KEK",
+    "legacyKekPresent": "설정됨",
+    "legacyKekRemoved": "제거됨",
+    "legacyConfirmBackup": "백업 폐기 확인 기록",
+    "legacyConfirmBackupNote": "자동 백업, WAL, 복제본과 수동 스냅샷에 복구 가능한 server_v1 데이터가 남지 않았을 때만 확인하세요.",
+    "legacyConfirmFailed": "현재 상태에서는 백업 폐기 확인을 기록할 수 없습니다.",
+    "legacyRetirementStates": {
+      "migrating": "기존 기록 전환 중",
+      "unsafe_key_missing": "위험 · 키 없이 legacy 존재",
+      "zero_observation_required": "전체 0건 확인 중",
+      "backup_policy_unconfigured": "백업 보존기간 설정 필요",
+      "waiting_backup_retention": "백업 보존기간 만료 대기",
+      "backup_confirmation_required": "백업 폐기 확인 필요",
+      "ready_to_remove_key": "서버 키 폐기 가능",
+      "key_removed_unconfirmed": "키 제거됨 · 백업 확인 필요",
+      "retired": "Legacy 키 폐기 완료"
+    },
     "serverTitle": "서버",
     "serverDescription": "실행 중인 toard 서버 정보입니다. 배포 후 버전이 바뀌었는지 여기서 확인하세요.",
     "serverVersion": "버전",
@@ -126,11 +179,9 @@
     "updatePhaseVerifying": "상태 확인 중",
     "updatePhaseCompleted": "업데이트 완료",
     "updatePhaseFailed": "업데이트 실패",
-    "autoSyncLabel": "자동 동기화 (일 1회)",
-    "autoSyncHint": "켜면 서버가 매일(조직 타임존 기준) 한 번 자동으로 동기화합니다. 변경은 재시작 없이 최대 1시간 안에 반영됩니다.",
-    "autoSyncUnavailable": "이 배포는 내장 스케줄러가 비활성입니다(Vercel cron 또는 PRICING_AUTO_SYNC=off) — 외부 스케줄러가 동기화를 담당합니다.",
+    "autoSyncUnavailable": "내장 자동화 비활성",
     "rollupTitle": "Rollup 운영 상태",
-    "rollupDescription": "15분·시간대별 rollup의 백필 진행률과 저장 규모를 확인하고 worker를 일시 중지하거나 재개합니다. 읽기 전환과 raw TTL은 서버 설정에서만 변경합니다."
+    "rollupDescription": "15분 기준 rollup과 시간대별 1시간·1일 rollup의 백필·자동 읽기 전환·서버 부하를 확인합니다. 원본 TTL은 서버 설정에서만 변경합니다."
   },
   "rollup": {
     "summary": {
@@ -144,20 +195,90 @@
       "paused": "일시 중지",
       "starting": "시작 중",
       "catching_up": "백필 중",
+      "waiting_for_base": "15분 기준 대기",
       "ready": "완료",
       "stalled": "진행 정체",
       "error": "오류"
     },
     "worker": {
-      "usage15mV2": "15분 v2",
-      "timezone": "시간대별 cache"
+      "usage15mV2": "15분 기준 rollup",
+      "timezone": "시간대별 1시간·1일 rollup"
+    },
+    "coordinator": {
+      "title": "Rollup coordinator",
+      "description": "무거운 집계와 검증을 한 번에 하나씩 공정하게 실행합니다.",
+      "states": {
+        "not_applicable": "해당 없음",
+        "healthy": "정상",
+        "stalled": "heartbeat 지연",
+        "unavailable": "상태 확인 불가"
+      },
+      "lastHeartbeat": "최근 heartbeat",
+      "lastTask": "최근 작업",
+      "lastOutcome": "최근 결과",
+      "tasks": {
+        "pricing_repair": "가격 자동 복구",
+        "usage_15m_v2": "15분 기준 rollup",
+        "timezone": "시간대별 rollup",
+        "validation": "정합성 검증",
+        "idle": "대기"
+      },
+      "outcomes": {
+        "success": "성공",
+        "failed": "실패",
+        "superseded": "새 데이터로 재예약",
+        "idle": "대기"
+      }
+    },
+    "cutover": {
+      "title": "자동 읽기 전환",
+      "description": "고정된 과거 목표까지 검증하고 정상 상태를 60분 누적하면 자동으로 rollup 읽기를 사용합니다.",
+      "mode": "운영 모드",
+      "modes": {
+        "auto": "자동",
+        "forced_on": "서버 강제 ON",
+        "forced_off": "서버 강제 OFF",
+        "mixed": "계층별 서버 설정"
+      },
+      "layer": {
+        "usage15mV2": "15분 기준 rollup",
+        "timezone": "시간대별 1시간·1일 rollup"
+      },
+      "states": {
+        "backfilling": "백필 중",
+        "observing": "검증 관찰 중",
+        "active": "rollup 읽기 사용",
+        "fallback": "대체 조회",
+        "unavailable": "상태 확인 불가"
+      },
+      "target": "고정 목표",
+      "observation": "정상 관찰",
+      "observationValue": "{current}분 / {required}분",
+      "lastValidation": "마지막 검증",
+      "failure": "최근 상태",
+      "failures": {
+        "mismatch": "데이터 불일치",
+        "lag": "처리 지연",
+        "unavailable": "일시 확인 실패"
+      }
+    },
+    "load": {
+      "limit": "다음 batch 상한 {limit}",
+      "state": "부하 상태 {state}",
+      "states": {
+        "normal": "정상",
+        "throttled": "자동 감속"
+      }
     },
     "progress": "진행률",
     "progressLabel": "{worker} 진행률",
     "sourceProgress": "기준",
     "watermark": "watermark {value}",
-    "coverage": "hour {hour} · day {day}",
+    "coverage": "1시간 {hour} · 1일 {day}",
     "remaining": "남은 단위",
+    "eligiblePending": "지금 처리 가능",
+    "waitingForBase": "15분 기준 대기",
+    "eligibleSince": "처리 가능 시작",
     "eta": "예상 완료",
     "etaMinutes": "약 {minutes}분",
     "etaConfigured": "설정 기준 추정",
@@ -176,9 +297,9 @@
     "on": "ON",
     "off": "OFF",
     "readSource": {
-      "label": "읽기 source",
-      "usage15mV2": "15분 v2",
-      "timezone": "시간대별 cache"
+      "label": "실제 조회",
+      "usage15mV2": "15분 기준 rollup",
+      "timezone": "시간대별 1시간·1일 rollup"
     },
     "rawTtl": {
       "label": "정규화 raw TTL",
@@ -219,9 +340,6 @@
     "teamHasEvents": "수집 이력이 귀속된 팀은 삭제할 수 없습니다.",
     "roleInvalid": "변경할 역할이 올바르지 않습니다.",
     "userNotFound": "대상 멤버를 찾을 수 없습니다.",
-    "lastAdminRequired": "마지막 관리자는 member로 변경할 수 없습니다.",
-    "pricingDownloadKept": "가격 다운로드에 실패해 기존 스냅샷을 유지했습니다 — {error}",
-    "pricingSyncFailed": "동기화 실패 — {error}",
-    "autoSyncSaveFailed": "자동 동기화 설정 저장 실패: {error}"
+    "lastAdminRequired": "마지막 관리자는 member로 변경할 수 없습니다."
   }
 }

@@ -2,6 +2,19 @@ import { CLICKHOUSE_RAW_RETENTION_DAYS } from "@toard/core";
 import type { RollupStorageStats } from "@toard/storage-clickhouse";
 import { getPool } from "./db";
 import {
+  PgRollupCoordinatorRepository,
+  type RollupSchedulerOutcome,
+  type RollupSchedulerRecord,
+  type RollupSchedulerTask,
+} from "./rollup-coordinator-state";
+import {
+  PgRollupCutoverRepository,
+  type RollupCutoverLayer,
+  type RollupCutoverRecord,
+  type RollupCutoverState,
+  type RollupFailureKind,
+} from "./rollup-cutover-state";
+import {
   deriveWorkerState,
   PgRollupWorkerRepository,
   shadowWorkerEnabled,
@@ -10,11 +23,13 @@ import {
   type RollupWorkerState,
 } from "./rollup-worker-state";
 import { getStorage } from "./storage";
+import { PgTimezoneRollupRepository } from "./timezone-rollup";
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1_000;
 const DEFAULT_FINALIZE_DELAY_MS = 30 * 60 * 1_000;
 const V2_RETENTION_MS = 400 * 24 * 60 * 60 * 1_000;
 const STORAGE_CACHE_MS = 30 * 1_000;
+const SCHEDULER_STALLED_MS = 120 * 1_000;
 const CONFIGURED_THROUGHPUT = {
   usage_15m_v2: 16,
   timezone: 8,
@@ -50,6 +65,11 @@ export type RollupWorkerStatusView = RollupProgress & {
   activatedAt: string | null;
   watermark: string | null;
   throughputUnitsPerMinute: number | null;
+  adaptiveLimit: number | null;
+  loadState: "normal" | "throttled" | null;
+  eligiblePendingJobs: number | null;
+  waitingForBaseJobs: number | null;
+  eligibleSince: string | null;
   lastStartedAt: string | null;
   lastFinishedAt: string | null;
   lastSuccessAt: string | null;
@@ -64,6 +84,27 @@ export type RollupWorkerStatusView = RollupProgress & {
   totals: { units: number; rows: number } | null;
 };
 
+export type RollupSchedulerStatusView = {
+  state: "not_applicable" | "healthy" | "stalled" | "unavailable";
+  lastHeartbeatAt: string | null;
+  lastSelectedTask: RollupSchedulerTask | null;
+  lastTaskStartedAt: string | null;
+  lastTaskFinishedAt: string | null;
+  lastTaskOutcome: RollupSchedulerOutcome | null;
+};
+
+export type RollupCutoverStatusView = {
+  layer: RollupCutoverLayer;
+  state: RollupCutoverState | "unavailable";
+  targetWatermark: string | null;
+  healthySeconds: number;
+  requiredHealthySeconds: number;
+  lastCheckedAt: string | null;
+  lastValidationAt: string | null;
+  lastFailureKind: RollupFailureKind | null;
+  activatedAt: string | null;
+};
+
 export type RollupAdminStatus = {
   backend: "postgres" | "clickhouse";
   collectedAt: string;
@@ -72,10 +113,16 @@ export type RollupAdminStatus = {
     usage15mV2: boolean;
     timezone: boolean;
   };
+  cutover: {
+    mode: "auto" | "forced_on" | "forced_off" | "mixed";
+    usage15mV2: RollupCutoverStatusView;
+    timezone: RollupCutoverStatusView;
+  };
   normalizedRawTtl: {
     enabled: boolean;
     days: number;
   };
+  scheduler: RollupSchedulerStatusView;
   workers: {
     usage15mV2: RollupWorkerStatusView;
     timezone: RollupWorkerStatusView;
@@ -101,6 +148,9 @@ export type RollupStatusDependencies = {
   env: Record<string, string | undefined>;
   now(): Date;
   loadWorkerRecords(): Promise<RollupWorkerRecord[]>;
+  loadCutoverRecords(): Promise<RollupCutoverRecord[]>;
+  loadSchedulerStatus(): Promise<RollupSchedulerRecord>;
+  loadTimezoneBacklog(): Promise<{ eligible: number; waitingForBase: number }>;
   loadPostgresProgress(targetFrom: Date, targetTo: Date): Promise<RollupPostgresProgress>;
   loadStorageStats(): Promise<RollupStorageStats>;
 };
@@ -178,15 +228,89 @@ function enabled(value: string | undefined): boolean {
   return normalized === "1" || normalized === "true" || normalized === "on";
 }
 
-function timezoneReadEnabled(env: Record<string, string | undefined>): boolean {
+type ReadOverride = "auto" | "forced_on" | "forced_off";
+
+function readOverride(value: string | undefined): ReadOverride {
+  return value == null || value.trim() === ""
+    ? "auto"
+    : enabled(value)
+      ? "forced_on"
+      : "forced_off";
+}
+
+function timezoneReadOverride(env: Record<string, string | undefined>): ReadOverride {
   const current = env.CLICKHOUSE_READ_TIMEZONE_ROLLUP;
   return current != null && current.trim() !== ""
-    ? enabled(current)
-    : enabled(env.CLICKHOUSE_READ_ROLLUP);
+    ? readOverride(current)
+    : readOverride(env.CLICKHOUSE_READ_ROLLUP);
+}
+
+function effectiveRead(override: ReadOverride, record: RollupCutoverRecord | undefined): boolean {
+  if (override === "forced_on") return true;
+  if (override === "forced_off") return false;
+  return record?.state === "active";
+}
+
+function combinedReadMode(a: ReadOverride, b: ReadOverride): RollupAdminStatus["cutover"]["mode"] {
+  return a === b ? a : "mixed";
 }
 
 function iso(value: Date | null): string | null {
   return value && Number.isFinite(value.getTime()) ? value.toISOString() : null;
+}
+
+function cutoverView(
+  layer: RollupCutoverLayer,
+  record: RollupCutoverRecord | undefined,
+): RollupCutoverStatusView {
+  return {
+    layer,
+    state: record?.state ?? "unavailable",
+    targetWatermark: iso(record?.targetWatermark ?? null),
+    healthySeconds: record?.healthySeconds ?? 0,
+    requiredHealthySeconds: 60 * 60,
+    lastCheckedAt: iso(record?.lastCheckedAt ?? null),
+    lastValidationAt: iso(record?.lastValidationAt ?? null),
+    lastFailureKind: record?.lastFailureKind ?? null,
+    activatedAt: iso(record?.activatedAt ?? null),
+  };
+}
+
+function schedulerView(
+  applicable: boolean,
+  record: RollupSchedulerRecord | undefined,
+  now: Date,
+): RollupSchedulerStatusView {
+  if (!applicable) {
+    return {
+      state: "not_applicable",
+      lastHeartbeatAt: null,
+      lastSelectedTask: null,
+      lastTaskStartedAt: null,
+      lastTaskFinishedAt: null,
+      lastTaskOutcome: null,
+    };
+  }
+  if (!record) {
+    return {
+      state: "unavailable",
+      lastHeartbeatAt: null,
+      lastSelectedTask: null,
+      lastTaskStartedAt: null,
+      lastTaskFinishedAt: null,
+      lastTaskOutcome: null,
+    };
+  }
+  const stalled = !record.lastHeartbeatAt
+    || now.getTime() - record.lastHeartbeatAt.getTime() > SCHEDULER_STALLED_MS;
+  return {
+    state: stalled ? "stalled" : "healthy",
+    lastHeartbeatAt: iso(record.lastHeartbeatAt),
+    lastSelectedTask: record.lastSelectedTask,
+    lastTaskStartedAt: iso(record.lastTaskStartedAt),
+    lastTaskFinishedAt: iso(record.lastTaskFinishedAt),
+    lastTaskOutcome: record.lastTaskOutcome,
+  };
 }
 
 function countProgress(
@@ -222,6 +346,11 @@ function unavailableWorker(
     activatedAt: null,
     watermark: null,
     throughputUnitsPerMinute: null,
+    adaptiveLimit: null,
+    loadState: null,
+    eligiblePendingJobs: null,
+    waitingForBaseJobs: null,
+    eligibleSince: null,
     progressPercent: 0,
     completedUnits: 0,
     totalUnits: 0,
@@ -247,28 +376,46 @@ function workerView(input: {
   watermark: Date | null;
   progress: RollupProgress;
   throughput: number;
+  eligibleUnits: number;
+  waitingForBaseUnits: number;
+  exposeBacklog: boolean;
 }): RollupWorkerStatusView {
   const { record } = input;
+  const derivedState = deriveWorkerState({
+    applicable: input.applicable,
+    hardDisabled: !input.hardEnabled,
+    paused: record.paused,
+    remaining: input.progress.remainingUnits,
+    activatedAt: record.activatedAt,
+    lastStartedAt: record.lastStartedAt,
+    lastSuccessAt: record.lastSuccessAt,
+    lastProgressAt: record.lastProgressAt,
+    lastErrorAt: record.lastErrorAt,
+    now: input.now,
+  });
+  const canDeriveQueueState = ["starting", "catching_up", "stalled"].includes(derivedState);
+  const eligibleStalled = input.eligibleUnits > 0
+    && record.eligibleSince != null
+    && input.now.getTime() - record.eligibleSince.getTime() >= SCHEDULER_STALLED_MS;
+  const state = canDeriveQueueState && input.waitingForBaseUnits > 0 && input.eligibleUnits === 0
+    ? "waiting_for_base"
+    : derivedState === "stalled" && !eligibleStalled
+      ? record.lastSuccessAt ? "catching_up" : "starting"
+      : derivedState;
   return {
     worker: record.worker,
-    state: deriveWorkerState({
-      applicable: input.applicable,
-      hardDisabled: !input.hardEnabled,
-      paused: record.paused,
-      remaining: input.progress.remainingUnits,
-      activatedAt: record.activatedAt,
-      lastStartedAt: record.lastStartedAt,
-      lastSuccessAt: record.lastSuccessAt,
-      lastProgressAt: record.lastProgressAt,
-      lastErrorAt: record.lastErrorAt,
-      now: input.now,
-    }),
+    state,
     hardEnabled: input.hardEnabled,
     controlAvailable: input.applicable,
     paused: record.paused,
     activatedAt: iso(record.activatedAt),
     watermark: iso(input.watermark),
     throughputUnitsPerMinute: input.throughput,
+    adaptiveLimit: record.adaptiveLimit,
+    loadState: record.loadState,
+    eligiblePendingJobs: input.exposeBacklog ? input.eligibleUnits : null,
+    waitingForBaseJobs: input.exposeBacklog ? input.waitingForBaseUnits : null,
+    eligibleSince: iso(record.eligibleSince),
     ...input.progress,
     lastStartedAt: iso(record.lastStartedAt),
     lastFinishedAt: iso(record.lastFinishedAt),
@@ -335,18 +482,32 @@ export async function getRollupAdminStatusWith(
     Math.floor((now.getTime() - finalizeDelayMs) / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS,
   );
   const targetFrom = new Date(targetTo.getTime() - V2_RETENTION_MS);
-  const [workersResult, progressResult, storageResult] = await Promise.allSettled([
+  const [workersResult, cutoverResult, schedulerResult, backlogResult, progressResult, storageResult] = await Promise.allSettled([
     dependencies.loadWorkerRecords(),
+    dependencies.loadCutoverRecords(),
+    dependencies.loadSchedulerStatus(),
+    dependencies.loadTimezoneBacklog(),
     dependencies.loadPostgresProgress(targetFrom, targetTo),
     applicable ? cachedStorageStats(dependencies.loadStorageStats, now) : Promise.resolve(null),
   ]);
   const degraded = workersResult.status === "rejected"
+    || cutoverResult.status === "rejected"
+    || schedulerResult.status === "rejected"
+    || backlogResult.status === "rejected"
     || progressResult.status === "rejected"
     || storageResult.status === "rejected";
   const progress = progressResult.status === "fulfilled" ? progressResult.value : EMPTY_PROGRESS;
+  const timezoneBacklog = backlogResult.status === "fulfilled"
+    ? backlogResult.value
+    : { eligible: 0, waitingForBase: 0 };
   const records = workersResult.status === "fulfilled"
     ? new Map(workersResult.value.map((record) => [record.worker, record]))
     : new Map<RollupWorkerName, RollupWorkerRecord>();
+  const cutoverRecords = cutoverResult.status === "fulfilled"
+    ? new Map(cutoverResult.value.map((record) => [record.layer, record]))
+    : new Map<RollupCutoverLayer, RollupCutoverRecord>();
+  const usageReadOverride = readOverride(dependencies.env.CLICKHOUSE_READ_15M_V2_ROLLUP);
+  const timezoneOverride = timezoneReadOverride(dependencies.env);
   const hardEnabled = {
     usage_15m_v2: shadowWorkerEnabled(dependencies.env, "CLICKHOUSE_15M_V2_COMPACTOR"),
     timezone: shadowWorkerEnabled(dependencies.env, "CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR"),
@@ -370,7 +531,7 @@ export async function getRollupAdminStatusWith(
   const timezoneThroughput = timezoneRecord?.throughputUnitsPerMinute && timezoneRecord.throughputUnitsPerMinute > 0
     ? timezoneRecord.throughputUnitsPerMinute
     : CONFIGURED_THROUGHPUT.timezone;
-  const timezoneProgress = countProgress(
+  const timezoneTotalProgress = countProgress(
     progress.coverage.hour + progress.coverage.day,
     progress.pending + progress.inflight,
     timezoneThroughput,
@@ -378,12 +539,28 @@ export async function getRollupAdminStatusWith(
       ? "recent"
       : "configured",
   );
+  const timezoneProgress: RollupProgress = {
+    ...timezoneTotalProgress,
+    etaMinutes: timezoneTotalProgress.remainingUnits === 0
+      ? 0
+      : timezoneBacklog.eligible > 0
+        ? Math.ceil(timezoneBacklog.eligible / timezoneThroughput)
+        : null,
+    etaBasis: timezoneBacklog.eligible > 0
+      ? timezoneRecord?.throughputUnitsPerMinute && timezoneRecord.throughputUnitsPerMinute > 0
+        ? "recent"
+        : "configured"
+      : null,
+  };
   const view = (
     worker: RollupWorkerName,
     record: RollupWorkerRecord | undefined,
     workerProgress: RollupProgress,
     throughput: number,
     watermark: Date | null,
+    eligibleUnits: number,
+    waitingForBaseUnits: number,
+    exposeBacklog: boolean,
   ) => record
     ? workerView({
       record,
@@ -400,6 +577,9 @@ export async function getRollupAdminStatusWith(
         etaBasis: null,
       },
       throughput,
+      eligibleUnits,
+      waitingForBaseUnits,
+      exposeBacklog,
     })
     : unavailableWorker(worker, applicable, hardEnabled[worker]);
 
@@ -408,16 +588,44 @@ export async function getRollupAdminStatusWith(
     collectedAt: now.toISOString(),
     degraded,
     readSources: {
-      usage15mV2: enabled(dependencies.env.CLICKHOUSE_READ_15M_V2_ROLLUP),
-      timezone: timezoneReadEnabled(dependencies.env),
+      usage15mV2: effectiveRead(usageReadOverride, cutoverRecords.get("usage_15m_v2")),
+      timezone: effectiveRead(timezoneOverride, cutoverRecords.get("timezone")),
+    },
+    cutover: {
+      mode: combinedReadMode(usageReadOverride, timezoneOverride),
+      usage15mV2: cutoverView("usage_15m_v2", cutoverRecords.get("usage_15m_v2")),
+      timezone: cutoverView("timezone", cutoverRecords.get("timezone")),
     },
     normalizedRawTtl: {
       enabled: enabled(dependencies.env.CLICKHOUSE_ENFORCE_RETENTION_TTL),
       days: CLICKHOUSE_RAW_RETENTION_DAYS,
     },
+    scheduler: schedulerView(
+      applicable,
+      schedulerResult.status === "fulfilled" ? schedulerResult.value : undefined,
+      now,
+    ),
     workers: {
-      usage15mV2: view("usage_15m_v2", v2Record, v2Progress, v2Throughput, progress.watermark),
-      timezone: view("timezone", timezoneRecord, timezoneProgress, timezoneThroughput, progress.watermark),
+      usage15mV2: view(
+        "usage_15m_v2",
+        v2Record,
+        v2Progress,
+        v2Throughput,
+        progress.watermark,
+        v2Progress.remainingUnits,
+        0,
+        false,
+      ),
+      timezone: view(
+        "timezone",
+        timezoneRecord,
+        timezoneProgress,
+        timezoneThroughput,
+        progress.watermark,
+        timezoneBacklog.eligible,
+        timezoneBacklog.waitingForBase,
+        true,
+      ),
     },
     activeTimezones: progress.activeTimezones,
     coverage: progress.coverage,
@@ -433,6 +641,18 @@ async function loadDefaultWorkerRecords(): Promise<RollupWorkerRecord[]> {
     repository.get("usage_15m_v2"),
     repository.get("timezone"),
   ]);
+}
+
+async function loadDefaultCutoverRecords(): Promise<RollupCutoverRecord[]> {
+  return new PgRollupCutoverRepository(getPool()).getAll();
+}
+
+async function loadDefaultSchedulerStatus(): Promise<RollupSchedulerRecord> {
+  return new PgRollupCoordinatorRepository(getPool()).get();
+}
+
+async function loadDefaultTimezoneBacklog(): Promise<{ eligible: number; waitingForBase: number }> {
+  return new PgTimezoneRollupRepository(getPool()).countBacklog();
 }
 
 export async function loadPostgresProgressWith(
@@ -508,6 +728,9 @@ export function getRollupAdminStatus(): Promise<RollupAdminStatus> {
     env: process.env,
     now: () => new Date(),
     loadWorkerRecords: loadDefaultWorkerRecords,
+    loadCutoverRecords: loadDefaultCutoverRecords,
+    loadSchedulerStatus: loadDefaultSchedulerStatus,
+    loadTimezoneBacklog: loadDefaultTimezoneBacklog,
     loadPostgresProgress: loadDefaultPostgresProgress,
     loadStorageStats: loadDefaultStorageStats,
   });

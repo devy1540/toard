@@ -1,12 +1,19 @@
-import type { UsageCostCoverage, UsageCostStatus } from "@toard/core";
 import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "@toard/pricing";
 import { getAppSetting } from "./app-settings";
 import { getPool } from "./db";
+export {
+  costCoverageForStatus,
+  costCoverageState,
+  formatCostForCoverage,
+  legacyCostHintCount,
+  type CostCoverageState,
+} from "./cost-coverage";
 
 type PricingRevisionRow = {
   id: string;
   model_id: string;
   effective_at: Date | string;
+  valid_until: Date | string | null;
   input_price_per_mtok: string | number;
   output_price_per_mtok: string | number;
   cache_read_price_per_mtok: string | number | null;
@@ -21,38 +28,11 @@ type PricingRevisionQuery = (sql: string) => Promise<{ rows: PricingRevisionRow[
 const TTL_MS = 60 * 60 * 1000;
 
 export const PRICING_SYNC_STATUS_SETTING_KEY = "pricing_sync_status";
+export const PRICING_CACHE_VERSION_SETTING_KEY = "pricing_cache_version";
 
-export type CostCoverageState = "complete" | "partial" | "unpriced" | "legacy";
-
-/** 비용 숫자를 그대로 완전 합계로 표시해도 되는지 결정하는 순수 표시 상태. */
-export function costCoverageState(coverage: UsageCostCoverage): CostCoverageState {
-  if (coverage.unpricedEvents > 0) {
-    return coverage.pricedEvents + coverage.legacyEvents > 0 ? "partial" : "unpriced";
-  }
-  if (coverage.legacyEvents > 0) return "legacy";
-  return "complete";
-}
-
-export function formatCostForCoverage(
-  cost: string,
-  coverage: UsageCostCoverage,
-  labels: { partial: string; unpriced: string; legacy: string },
-): string {
-  const state = costCoverageState(coverage);
-  if (state === "unpriced") return labels.unpriced;
-  if (state === "partial") return `${cost} · ${labels.partial}`;
-  if (state === "legacy") return `${cost} · ${labels.legacy}`;
-  return cost;
-}
-
-/** 단일 usage event의 가격 상태를 공통 집계 표시 형식으로 변환한다. */
-export function costCoverageForStatus(status: UsageCostStatus): UsageCostCoverage {
-  return {
-    pricedEvents: status === "priced" ? 1 : 0,
-    unpricedEvents: status === "unpriced" ? 1 : 0,
-    legacyEvents: status === "legacy" ? 1 : 0,
-  };
-}
+export type PricingCacheVersion = {
+  updatedAt: string;
+};
 
 export type PricingSyncStatus = {
   day: string;
@@ -91,12 +71,13 @@ export function createPricingScheduleCache({
 
 export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<PricingSchedule> {
   const res = await query(
-    `SELECT id, model_id, effective_at,
+    `SELECT id, model_id, effective_at, valid_until,
        input_price_per_mtok, output_price_per_mtok,
        cache_read_price_per_mtok, cache_creation_price_per_mtok,
        input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier
      FROM pricing_revisions
-     ORDER BY model_id, effective_at ASC`,
+     WHERE authoritative
+     ORDER BY model_id, effective_at ASC, observed_at ASC, id ASC`,
   );
 
   const schedule: PricingSchedule = new Map();
@@ -117,6 +98,7 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
       effectiveAt: new Date(r.effective_at),
       pricing,
     };
+    if (r.valid_until != null) revision.validUntil = new Date(r.valid_until);
     const revisions = schedule.get(r.model_id);
     if (revisions) {
       schedule.set(r.model_id, [...revisions, revision]);
@@ -130,6 +112,8 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
 const pricingScheduleCache = createPricingScheduleCache({
   loadSchedule: () => loadPricingSchedule((sql) => getPool().query<PricingRevisionRow>(sql)),
   readVersion: async () => {
+    const cacheVersion = await getAppSetting<PricingCacheVersion>(PRICING_CACHE_VERSION_SETTING_KEY);
+    if (cacheVersion?.updatedAt) return cacheVersion.updatedAt;
     const status = await getAppSetting<PricingSyncStatus>(PRICING_SYNC_STATUS_SETTING_KEY);
     return status?.syncedAt ?? null;
   },

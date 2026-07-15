@@ -77,15 +77,16 @@ services:
       CLICKHOUSE_READ_ROLLUP: ${CLICKHOUSE_READ_ROLLUP:-} # deprecated alias: timezone cache guard+exact fallback으로만 이동; migration 후 unset
       CLICKHOUSE_15M_ROLLUP_COMPACTOR: ${CLICKHOUSE_15M_ROLLUP_COMPACTOR:-} # 1/true/on 이면 finalized 15분 rollup compactor 실행
       CLICKHOUSE_READ_15M_ROLLUP: ${CLICKHOUSE_READ_15M_ROLLUP:-} # 1/true/on 이면 검증 완료된 15분 rollup + raw tail 로 시계열 조회
-      CLICKHOUSE_15M_V2_COMPACTOR: ${CLICKHOUSE_15M_V2_COMPACTOR:-} # 가격 provenance를 보존한 15분 v2 shadow compactor
-      CLICKHOUSE_READ_15M_V2_ROLLUP: ${CLICKHOUSE_READ_15M_V2_ROLLUP:-} # 검증 완료된 15분 v2 + raw tail 읽기
-      CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR: ${CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR:-} # 활성 IANA 시간대 hour/day cache worker
-      CLICKHOUSE_READ_TIMEZONE_ROLLUP: ${CLICKHOUSE_READ_TIMEZONE_ROLLUP:-} # ready 상태인 시간대별 hour/day cache 읽기
-      CLICKHOUSE_ENFORCE_RETENTION_TTL: ${CLICKHOUSE_ENFORCE_RETENTION_TTL:-} # 최종 전환 뒤 raw usage_events 물리 97일 TTL(논리 90일 + grace 7일)
+      CLICKHOUSE_15M_V2_COMPACTOR: ${CLICKHOUSE_15M_V2_COMPACTOR:-} # 가격 provenance를 보존한 15분 기준 rollup worker(기본 on)
+      CLICKHOUSE_READ_15M_V2_ROLLUP: ${CLICKHOUSE_READ_15M_V2_ROLLUP:-} # 미설정=자동 전환, 1=비상 강제 ON, 0=비상 override OFF
+      CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR: ${CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR:-} # 활성 IANA 시간대별 1시간·1일 rollup worker(기본 on)
+      CLICKHOUSE_READ_TIMEZONE_ROLLUP: ${CLICKHOUSE_READ_TIMEZONE_ROLLUP:-} # 미설정=자동 전환, 1=비상 강제 ON, 0=비상 override OFF
+      CLICKHOUSE_ENFORCE_RETENTION_TTL: ${CLICKHOUSE_ENFORCE_RETENTION_TTL:-} # 자동 전환과 별도 승인: raw usage_events 물리 97일 TTL(논리 90일 + grace 7일)
       CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS: ${CLICKHOUSE_ROLLUP_FINALIZE_DELAY_MS:-} # 15분 rollup 확정 지연(ms), 기본 30분
       CLICKHOUSE_ROLLUP_MAX_BUCKETS: ${CLICKHOUSE_ROLLUP_MAX_BUCKETS:-} # compactor tick 당 최대 bucket 수, 기본 16
       ORG_TIMEZONE: ${ORG_TIMEZONE:-UTC}
       TOARD_CONTENT_KEK_B64: ${TOARD_CONTENT_KEK_B64:-}   # 설정 시 본문 수집 활성(암호화 KEK, base64 32B)
+      TOARD_LEGACY_BACKUP_RETENTION_DAYS: ${TOARD_LEGACY_BACKUP_RETENTION_DAYS:-}   # legacy 0건 뒤 백업 보존일
       CONTENT_COLLECTION_DEFAULT: ${CONTENT_COLLECTION_DEFAULT:-}   # on 이면 설치 기본 opt-out(자동 켜짐), 기본 opt-in
       TOARD_UPDATER_URL: ${TOARD_UPDATER_URL:-}       # 선택: Compose updater agent 내부 URL (예: http://updater:3201)
       TOARD_UPDATER_SECRET: ${TOARD_UPDATER_SECRET:-} # 선택: app ↔ updater 공유 secret

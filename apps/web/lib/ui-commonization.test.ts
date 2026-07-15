@@ -6,6 +6,10 @@ function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
 }
 
+function repoSource(path: string): string {
+  return readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
+}
+
 function messageShape(value: unknown): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return typeof value;
   return Object.fromEntries(
@@ -21,10 +25,10 @@ test("dashboard and settings segmented choices use the shared segmented control"
   assert.match(source("app/(dashboard)/settings/appearance-form.tsx"), /@\/components\/ui\/segmented-control/);
 });
 
-test("visible boolean settings use the shared switch control", () => {
+test("남아 있는 boolean 설정은 shared switch control을 사용한다", () => {
   assert.match(source("components/ui/switch.tsx"), /function Switch/);
-  assert.match(source("app/(dashboard)/admin/pricing-panel.tsx"), /@\/components\/ui\/switch/);
-  assert.match(source("app/(dashboard)/settings/onboarding-panel.tsx"), /@\/components\/ui\/switch/);
+  assert.match(source("app/(dashboard)/settings/onboarding-wizard.tsx"), /@\/components\/ui\/switch/);
+  assert.doesNotMatch(source("app/(dashboard)/admin/pricing-panel.tsx"), /@\/components\/ui\/switch/);
 });
 
 test("관리자 시스템 탭은 rollup 상태를 표시하되 read와 TTL을 제어하지 않는다", () => {
@@ -51,8 +55,22 @@ test("관리자 시스템 탭은 rollup 상태를 표시하되 read와 TTL을 �
   assert.match(panel, /status\.backend === "postgres"/);
   assert.match(panel, /const summaryLabel = status\.degraded[\s\S]*status\.backend === "postgres"/);
   assert.match(panel, /formatDateTime\(worker\.lastErrorAt, locale\)/);
+  assert.match(panel, /status\.cutover/);
+  assert.match(panel, /healthySeconds/);
+  assert.match(panel, /requiredHealthySeconds/);
+  assert.match(panel, /worker\.adaptiveLimit/);
+  assert.match(panel, /worker\.loadState/);
+  assert.match(panel, /status\.scheduler/);
+  assert.match(panel, /worker\.eligiblePendingJobs/);
+  assert.match(panel, /worker\.waitingForBaseJobs/);
   assert.doesNotMatch(panel, /CLICKHOUSE_READ_|CLICKHOUSE_ENFORCE_RETENTION_TTL/);
   assert.doesNotMatch(panel, />\{worker\.lastError\}</);
+});
+
+test("rollup worker는 현재 오류 상태일 때만 실패 안내를 표시한다", () => {
+  const panel = source("app/(dashboard)/admin/rollup-status-panel.tsx");
+
+  assert.match(panel, /worker\.state === "error" && worker\.lastError/);
 });
 
 test("rollup 관리자 메시지는 한영 shape와 상태·storage 계약을 같이 유지한다", () => {
@@ -60,10 +78,16 @@ test("rollup 관리자 메시지는 한영 shape와 상태·storage 계약을 �
   const en = JSON.parse(source("messages/en/admin.json")) as Record<string, unknown>;
   const koRollup = ko.rollup as Record<string, unknown> | undefined;
   const enRollup = en.rollup as Record<string, unknown> | undefined;
+  const koWorker = koRollup?.worker as Record<string, unknown> | undefined;
+  const koReadSource = koRollup?.readSource as Record<string, unknown> | undefined;
 
   assert.deepEqual(messageShape(ko), messageShape(en));
   assert.equal(typeof (ko.system as Record<string, unknown>)?.rollupTitle, "string");
   assert.equal(typeof (en.system as Record<string, unknown>)?.rollupDescription, "string");
+  assert.equal(koWorker?.usage15mV2, "15분 기준 rollup");
+  assert.equal(koWorker?.timezone, "시간대별 1시간·1일 rollup");
+  assert.equal(koReadSource?.usage15mV2, "15분 기준 rollup");
+  assert.equal(koReadSource?.timezone, "시간대별 1시간·1일 rollup");
   for (const catalog of [koRollup, enRollup]) {
     assert.equal(typeof catalog?.progress, "string");
     assert.equal(typeof catalog?.eta, "string");
@@ -77,7 +101,26 @@ test("rollup 관리자 메시지는 한영 shape와 상태·storage 계약을 �
     assert.equal(typeof catalog?.states, "object");
     assert.equal(typeof catalog?.worker, "object");
     assert.equal(typeof catalog?.storage, "object");
+    assert.equal(typeof catalog?.cutover, "object");
+    assert.equal(typeof catalog?.load, "object");
+    assert.equal(typeof catalog?.coordinator, "object");
+    assert.equal(typeof (catalog?.states as Record<string, unknown>)?.waiting_for_base, "string");
   }
+});
+
+test("rollup 운영 문서는 고정 T0 자동 전환과 TTL 분리를 안내한다", () => {
+  const runbook = repoSource("docs/clickhouse-exact-rollup-runbook.md");
+  const readme = repoSource("README.md");
+  const compose = repoSource("docker-compose.yml");
+
+  for (const document of [runbook, readme]) {
+    assert.match(document, /고정.*T0|T0.*고정/);
+    assert.match(document, /60분.*자동.*전환|자동.*전환.*60분/s);
+    assert.match(document, /신규 데이터.*전환.*(밀리|초기화).*않/s);
+    assert.match(document, /TTL.*별도|별도.*TTL/s);
+  }
+  assert.match(compose, /CLICKHOUSE_READ_15M_V2_ROLLUP:.*비상.*override/);
+  assert.match(compose, /CLICKHOUSE_READ_TIMEZONE_ROLLUP:.*비상.*override/);
 });
 
 test("dashboard disclosures use the shared disclosure wrapper", () => {
@@ -112,6 +155,95 @@ test("demo open mode can render settings with the dashboard viewer fallback", ()
   );
 });
 
+test("onboarding token actions issue once and poll within the authenticated owner", () => {
+  const actions = source("app/(dashboard)/settings/token-actions.ts");
+  assert.match(actions, /issueOnboardingTokenAction/);
+  assert.match(actions, /issueDeviceToken\(userId\)/);
+  assert.match(actions, /checkTokenConnectionAction/);
+  assert.match(actions, /getTokenConnectionStatus\(userId, tokenId\)/);
+});
+
+test("Windows installer routes serve generated no-store PowerShell", () => {
+  const install = source("app/install.ps1/route.ts");
+  const uninstall = source("app/uninstall.ps1/route.ts");
+  assert.match(install, /buildPowerShellInstallScript/);
+  assert.match(install, /getIngestEndpoint/);
+  assert.match(install, /cache-control.*no-store/s);
+  assert.match(uninstall, /buildPowerShellUninstallScript/);
+  assert.match(uninstall, /cache-control.*no-store/s);
+});
+
+test("macOS and Linux one-line installer does not stop for a daemon prompt", () => {
+  const install = source("lib/shell-installer.ts");
+  assert.match(install, /TOARD_INSTALL_DAEMON/);
+  assert.match(install, /:-1/);
+});
+
+test("shell installer builder stays outside the Next.js route module", () => {
+  const route = source("app/install.sh/route.ts");
+  assert.match(route, /@\/lib\/shell-installer/);
+  assert.doesNotMatch(route, /export function installScript/);
+
+  const installer = source("lib/shell-installer.ts");
+  assert.match(installer, /export function installScript/);
+
+  const e2e = repoSource(".github/scripts/test-shim-installer-unix.sh");
+  assert.match(e2e, /lib\/shell-installer\.ts/);
+});
+
+test("installers accept an explicit release mirror for pre-release E2E", () => {
+  const install = source("lib/shell-installer.ts");
+  const releaseInstall = repoSource("shim/install.sh");
+  assert.match(install, /TOARD_SHIM_RELEASE_BASE/);
+  assert.match(releaseInstall, /TOARD_SHIM_RELEASE_BASE/);
+});
+
+test("shim CI parses generated PowerShell when installer routes change", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  assert.match(workflow, /apps\/web\/lib\/powershell-installer\.ts/);
+  assert.match(workflow, /apps\/web\/app\/install\.ps1\/\*\*/);
+  assert.match(workflow, /scriptblock.*Create/s);
+});
+
+test("shim CI runs installer E2E on Windows, Linux, and macOS", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  assert.match(workflow, /windows-latest/);
+  assert.match(workflow, /ubuntu-latest/);
+  assert.match(workflow, /macos-latest/);
+  assert.match(workflow, /test-shim-installer-windows\.ps1/);
+  assert.match(workflow, /test-shim-installer-unix\.sh/);
+});
+
+test("device onboarding uses OS-aware wizard and separate management", () => {
+  const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
+  const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");
+  assert.match(wizard, /detectInstallPlatform/);
+  assert.match(wizard, /issueOnboardingTokenAction/);
+  assert.match(wizard, /checkTokenConnectionAction/);
+  assert.match(wizard, /2_000/);
+  assert.match(wizard, /120_000/);
+  assert.match(wizard, /href="\/"/);
+  assert.match(panel, /uninstall\.ps1/);
+  assert.doesNotMatch(panel, /issueOnboardingTokenAction/);
+});
+
+test("settings catalogs keep wizard shape aligned", () => {
+  const ko = JSON.parse(source("messages/ko/settings.json"));
+  const en = JSON.parse(source("messages/en/settings.json"));
+  assert.equal(ko.tabInstall, "컴퓨터 연결");
+  assert.equal(en.tabInstall, "Connect computer");
+  assert.equal(typeof ko.wizard, "object");
+  assert.deepEqual(messageShape(ko.wizard), messageShape(en.wizard));
+});
+
+test("web test script includes lib and app tests", () => {
+  const pkg = JSON.parse(source("package.json")) as { scripts?: { test?: string } };
+  const rootPkg = JSON.parse(repoSource("package.json")) as { scripts?: { "test:migrations"?: string } };
+  assert.match(pkg.scripts?.test ?? "", /lib\/\*\.test\.ts/);
+  assert.match(pkg.scripts?.test ?? "", /app\/\*\*\/\*\.test\.ts/);
+  assert.match(rootPkg.scripts?.["test:migrations"] ?? "", /e2ee-content-migration\.integration\.test\.ts/);
+});
+
 test("personal navigation includes insights between usage and history", () => {
   const nav = source("components/dashboard/sidebar-nav.tsx");
   assert.match(nav, /key: "myUsage"[\s\S]*key: "insights"[\s\S]*key: "history"/);
@@ -143,17 +275,23 @@ test("insight KPI deltas use the shared dashboard badge and calculation", () => 
 
 test("insights와 history 비용 UI는 같은 query coverage formatter를 재사용한다", () => {
   const insights = source("app/(dashboard)/insights/page.tsx");
-  const overview = source("components/dashboard/overview-view.tsx");
   const history = source("app/(dashboard)/history/page.tsx");
   const detail = source("app/(dashboard)/history/session-detail.tsx");
 
   assert.match(insights, /<PricingNotice coverage=\{comparisonCoverage\}/);
   assert.match(insights, /formatCostForCoverage/);
   assert.match(insights, /costComplete[\s\S]*costDelta/);
-  assert.match(overview, /formatCostForCoverage\(fmtUsd\(u\.costUsd\), u\.costCoverage/);
   assert.match(history, /formatCostForCoverage\(fmtUsd\(usage\.costUsd\), usage\.costCoverage/);
   assert.match(detail, /formatCostForCoverage\(fmtUsd\(summary\.costUsd\), summary\.costCoverage/);
   assert.match(detail, /costCoverageForStatus\(usage\.costStatus\)/);
+});
+
+test("insights 비용 표시는 locale 국가 접두사 없이 $ 기호만 사용한다", () => {
+  const page = source("app/(dashboard)/insights/page.tsx");
+  const chart = source("components/charts/insight-comparison-chart.tsx");
+
+  assert.match(page, /currency: "USD",\s*currencyDisplay: "narrowSymbol"/);
+  assert.match(chart, /currency: "USD",\s*currencyDisplay: "narrowSymbol"/);
 });
 
 test("insights default to tokens while preserving explicit cost selection", () => {
@@ -398,4 +536,23 @@ test("organization page uses anonymous tool summary without drilldown", () => {
   const org = source("app/(dashboard)/org/page.tsx");
   assert.match(org, /getOrgToolSummary/);
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
+});
+
+test("history security exposes legacy migration counts and bilingual copy", () => {
+  const panel = source("app/(dashboard)/settings/history-security-panel.tsx");
+  const ko = JSON.parse(source("messages/ko/settings.json"));
+  const en = JSON.parse(source("messages/en/settings.json"));
+  assert.match(panel, /encryption_scheme/);
+  assert.match(panel, /legacy_records/);
+  assert.match(panel, /octet_length\(ciphertext\)/);
+  for (const messages of [ko, en]) {
+    assert.equal(typeof messages.historySecurity.legacyProtecting, "string");
+    assert.equal(typeof messages.historySecurity.legacyComplete, "string");
+    assert.equal(typeof messages.historySecurity.legacyBlocked, "string");
+  }
+});
+
+test("empty legacy page rechecks authoritative status instead of declaring completion", () => {
+  const history = source("app/(dashboard)/history/e2ee-history-client.tsx");
+  assert.doesNotMatch(history, /if \(result\.complete\) \{ setLegacyRemaining\(0\); return; \}/);
 });

@@ -8,6 +8,11 @@ on:
     paths:
       - "shim/**"
       - "npm/**"
+      - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/app/install.sh/**"
+      - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.ps1/**"
+      - ".github/scripts/**"
       - "fixtures/usage-event.golden.json" # UsageEvent 계약 미러 테스트 (§5.6)
       - ".github/workflows/shim-ci.yml"
   push:
@@ -15,6 +20,11 @@ on:
     paths:
       - "shim/**"
       - "npm/**"
+      - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/app/install.sh/**"
+      - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.ps1/**"
+      - ".github/scripts/**"
       - "fixtures/usage-event.golden.json"
       - ".github/workflows/shim-ci.yml"
 
@@ -43,14 +53,41 @@ jobs:
         run: cargo test
       - name: build (release)
         run: cargo build --release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+      - name: install workspace dependencies
+        working-directory: ${{ github.workspace }}
+        run: pnpm install --frozen-lockfile
+      - name: ensure cron fallback is available
+        working-directory: ${{ github.workspace }}
+        run: command -v crontab || (sudo apt-get update && sudo apt-get install -y cron)
+      - name: installer E2E (Linux)
+        working-directory: ${{ github.workspace }}
+        env:
+          TOARD_E2E_DAEMON: "1"
+        run: .github/scripts/test-shim-installer-unix.sh shim/rust/target/release/shim
 
   check-windows:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: shim/rust
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+      - name: install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - name: parse generated PowerShell installers
+        shell: pwsh
+        run: |
+          pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(join(process.env.RUNNER_TEMP, 'install.ps1'), buildPowerShellInstallScript('https://toard.example/api', false)); writeFileSync(join(process.env.RUNNER_TEMP, 'uninstall.ps1'), buildPowerShellUninstallScript());"
+          [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/install.ps1")) | Out-Null
+          [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/uninstall.ps1")) | Out-Null
+          [scriptblock]::Create((Get-Content -Raw ".github/scripts/test-shim-installer-windows.ps1")) | Out-Null
+      - name: test generated PowerShell installer behavior
+        run: pnpm --filter @toard/web exec tsx --test lib/powershell-installer.test.ts
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -58,11 +95,39 @@ jobs:
         with:
           workspaces: shim/rust
       - name: clippy
+        working-directory: shim/rust
         run: cargo clippy --all-targets -- -D warnings
       - name: test
+        working-directory: shim/rust
         run: cargo test
       - name: build (release)
+        working-directory: shim/rust
         run: cargo build --release
+      - name: installer E2E (Windows)
+        shell: pwsh
+        run: .github/scripts/test-shim-installer-windows.ps1 -Binary shim/rust/target/release/shim.exe
+
+  check-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: pnpm/action-setup@v4
+      - name: install workspace dependencies
+        run: pnpm install --frozen-lockfile
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shim/rust
+      - name: build (release)
+        working-directory: shim/rust
+        run: cargo build --release
+      - name: installer E2E (macOS)
+        env:
+          TOARD_E2E_DAEMON: "1"
+        run: .github/scripts/test-shim-installer-unix.sh shim/rust/target/release/shim
 
   scripts:
     runs-on: ubuntu-latest
@@ -72,5 +137,6 @@ jobs:
         run: |
           sh -n shim/install.sh
           sh -n shim/fake-claude.sh
+          sh -n .github/scripts/test-shim-installer-unix.sh
       - name: node syntax check
         run: node --check npm/bin/toard.mjs

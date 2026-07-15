@@ -70,7 +70,7 @@ const row = {
 };
 
 test("migration은 카탈로그 상태를 제한하고 down migration을 제공한다", () => {
-  const sql = readFileSync(new URL("../../../migrations/1700000025_tool_catalog.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../../migrations/1700000032_tool_catalog.sql", import.meta.url), "utf8");
 
   assert.match(sql, /CREATE TABLE tool_catalog_items/);
   assert.match(sql, /trust_status IN \('community', 'verified'\)/);

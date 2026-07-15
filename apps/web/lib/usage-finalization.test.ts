@@ -293,17 +293,17 @@ test("logs 경로는 provider별 expired를 합산하고 gate와 dedup 결과를
 });
 
 test("전체 보존 재가격 action과 UI와 번역은 제거한다", () => {
-  const actions = source("app/(dashboard)/admin/pricing-actions.ts");
   const panel = source("app/(dashboard)/admin/pricing-panel.tsx");
   const ko = JSON.parse(source("messages/ko/admin.json"));
   const en = JSON.parse(source("messages/en/admin.json"));
 
   assert.equal(existsSync(new URL("./pricing-reprice.ts", import.meta.url)), false);
   assert.equal(existsSync(new URL("./pricing-reprice.test.ts", import.meta.url)), false);
-  assert.doesNotMatch(actions, /repriceUsageAction|PricingRepriceState|pricing-reprice/);
+  assert.equal(existsSync(new URL("../app/(dashboard)/admin/pricing-actions.ts", import.meta.url)), false);
   assert.doesNotMatch(panel, /repriceUsageAction|PricingRepriceState|confirm-reprice|repriceState/);
   for (const messages of [ko, en]) {
     assert.equal(Object.keys(messages.system).some((key) => key.startsWith("reprice")), false);
     assert.equal(Object.keys(messages.errors).some((key) => key.startsWith("reprice")), false);
+    assert.equal(typeof messages.errors.onlyAdmin, "string");
   }
 });

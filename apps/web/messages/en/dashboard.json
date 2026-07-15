@@ -59,11 +59,6 @@
   "moreDevices": "+{n} more devices",
   "rhythmTitle": "Hourly rhythm",
   "rhythmDescription": "Token density by weekday and hour",
-  "recentSessionsTitle": "Recent sessions",
-  "recentSessionsDescription": "Sessions with history enabled",
-  "recentSessionsUnavailable": "Content history is disabled, so recent session previews are not shown.",
-  "noRecentSessions": "No saved sessions in the selected period.",
-  "viewHistory": "History",
   "toolActivity": {
     "title": "AI tool activity",
     "description": "MCP, skill, and plugin activity confirmed in the selected period",
@@ -112,15 +107,15 @@
   },
   "pricingNotice": {
     "unpricedTitle": "Cost total is incomplete because {count} usage events have no confirmed price.",
-    "unpricedAdminAction": "Run pricing sync from <link>Admin → System</link>. Daily auto-refresh requires registering the sync-pricing cron (see the scheduler section in the README).",
-    "unpricedMemberAction": "Ask an administrator to run pricing sync (sync-pricing).",
+    "unpricedAction": "Prices are checked automatically. Once a price is available, it is applied without any administrator action.",
     "legacyTitle": "{count} usage events use stored legacy costs.",
     "legacyDescription": "These costs are included in the total, but the legacy data has no pricing revision provenance."
   },
   "costCoverage": {
     "partial": "Partial total",
     "unpriced": "Price unconfirmed",
-    "legacy": "Stored legacy cost"
+    "legacy": "Stored legacy cost",
+    "legacyHint": "{count} events use earlier stored prices"
   },
   "chart": {
     "cost": "Cost",
@@ -166,6 +161,7 @@
     "emptyTitle": "No history saved yet",
     "emptyDescription": "Turn on content collection in the shim (TOARD_SHIM_COLLECT_CONTENT=1) to see it here.",
     "privacyNote": "Only you can see this — administrators and other users cannot view this content.",
+    "legacyPrivacyNote": "Legacy server encryption · server operators can decrypt this content.",
     "rolePrompt": "Prompt",
     "roleResponse": "Response",
     "metaSystem": "System message",
@@ -204,6 +200,38 @@
     "codeRawHint": "Original formatting with horizontal scroll",
     "codeDiagramRendering": "Rendering diagram.",
     "codeDiagramFailed": "Couldn't render the diagram. Use Read or Raw to inspect the source.",
-    "codeCopied": "Code copied."
+    "codeCopied": "Code copied.",
+    "e2ee": {
+      "title": "End-to-end encrypted history",
+      "loading": "Checking encryption status…",
+      "notActive": "E2EE history is not active yet. Enable it under History security in Settings.",
+      "lockedTitle": "History is locked",
+      "lockedDescription": "Content is decrypted only in this browser. Approve it from a connected computer, or use the Recovery Kit only as a last resort.",
+      "approveComputer": "Approve from connected computer",
+      "unlockThisBrowser": "Unlock in this browser",
+      "useRecoveryKit": "Use Recovery Kit",
+      "confirmationCode": "Confirmation code",
+      "approvalCountdown": "{minutes}m {seconds}s remaining",
+      "approvalCommand": "Run `toard-shim e2ee approve` on a connected computer and enter this code.",
+      "recoveryWords": "24-word Recovery Kit",
+      "recoveryLocalOnly": "The words never leave this browser and are used only in memory.",
+      "recover": "Recover and unlock",
+      "unlockedBadge": "E2EE · unlocked in this browser",
+      "lockNow": "Lock now",
+      "legacyProtecting": "Protecting existing history · {count} remaining",
+      "legacyComplete": "All history is protected with E2EE",
+      "legacyBlocked": "Existing history protection paused",
+      "back": "Back to E2EE list",
+      "empty": "No E2EE history has been saved yet.",
+      "previewUnavailable": "Preview unavailable",
+      "contentUnavailable": "This record cannot be decrypted.",
+      "turns": "{count} turns",
+      "prompt": "Prompt",
+      "response": "Response",
+      "more": "Show more",
+      "less": "Show less",
+      "truncated": "Long conversation — showing the first 500 turns.",
+      "error": "E2EE history could not be opened ({code})."
+    }
   }
 }

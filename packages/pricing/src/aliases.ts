@@ -7,15 +7,17 @@ const DATE_SUFFIX = /-(\d{8})$/; // 8자리 YYYYMMDD (ccusage MODEL_DATE_SUFFIX_
  * 모델 가격 조회 (설계 §6.4).
  * 풀 ID 직접 조회 우선 → 미스 시에만 폴백(프리픽스 strip → 8자리 날짜 제거 → fuzzy).
  */
-function resolveAlias<T>(
+type ResolvedAliasEntry<T> = { key: string; value: T };
+
+function resolveAliasEntry<T>(
   model: string | null,
   values: ReadonlyMap<string, T>,
-): T | undefined {
+): ResolvedAliasEntry<T> | undefined {
   if (!model) return undefined;
 
   // 1) 풀 ID 우선 (LiteLLM 키는 날짜 포함 풀 ID)
   const direct = values.get(model);
-  if (direct) return direct;
+  if (direct !== undefined) return { key: model, value: direct };
 
   // 2) 벤더 프리픽스 strip
   let key = model;
@@ -26,25 +28,40 @@ function resolveAlias<T>(
     }
   }
   const afterPrefix = values.get(key);
-  if (afterPrefix) return afterPrefix;
+  if (afterPrefix !== undefined) return { key, value: afterPrefix };
 
   // 3) 8자리 날짜 접미사 제거
   const stripped = key.replace(DATE_SUFFIX, "");
   if (stripped !== key) {
     const afterDate = values.get(stripped);
-    if (afterDate) return afterDate;
+    if (afterDate !== undefined) return { key: stripped, value: afterDate };
   }
 
   // 4) 부분문자열 fuzzy — 가장 긴 매칭 키 우선
-  let best: T | undefined;
+  let best: ResolvedAliasEntry<T> | undefined;
   let bestLen = 0;
   for (const [k, v] of values) {
     if ((key.includes(k) || k.includes(stripped)) && k.length > bestLen) {
-      best = v;
+      best = { key: k, value: v };
       bestLen = k.length;
     }
   }
   return best;
+}
+
+function resolveAlias<T>(model: string | null, values: ReadonlyMap<string, T>): T | undefined {
+  return resolveAliasEntry(model, values)?.value;
+}
+
+export type ResolvedPricingEntry = { modelId: string; pricing: ModelPricing };
+
+/** 가격과 함께 실제로 매칭된 LiteLLM source key를 반환한다. */
+export function resolvePricingEntry(
+  model: string | null,
+  pricing: PricingMap,
+): ResolvedPricingEntry | undefined {
+  const resolved = resolveAliasEntry(model, pricing);
+  return resolved ? { modelId: resolved.key, pricing: resolved.value } : undefined;
 }
 
 export function resolvePricing(

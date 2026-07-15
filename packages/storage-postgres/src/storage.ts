@@ -12,6 +12,9 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
+  PricingRepairBatchResult,
+  PricingRepairRequest,
+  PricingRepairResolver,
   ProviderBreakdown,
   SaveResult,
   SessionUsageEventRow,
@@ -23,6 +26,9 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageReplayReconciliationRequest,
+  UsageReplayReconciliationResult,
+  UnpricedUsageModelDiagnostic,
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
@@ -188,47 +194,258 @@ export class PostgresStorage implements StorageBackend {
     try {
       for (const { day } of days) {
         await client.query("BEGIN");
-        // 동일 day 의 동시 재계산을 직렬화 (트랜잭션 종료 시 자동 해제)
-        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`recompute:${day}`]);
-
-        // ── 사용자별 일별 집계 (SUM + DISTINCT 세션) ──
-        await client.query("DELETE FROM usage_daily_user WHERE day = $1::date", [day]);
-        await client.query(
-          `INSERT INTO usage_daily_user
-             (user_id, day, provider_key, request_count, sessions,
-              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
-           SELECT user_id, $1::date, provider_key,
-                  COUNT(*), COUNT(DISTINCT session_id),
-                  SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
-                  SUM(cache_creation_tokens), SUM(cost_usd)
-           FROM usage_events
-           WHERE user_id IS NOT NULL
-             AND (ts AT TIME ZONE $2)::date = $1::date
-           GROUP BY user_id, provider_key`,
-          [day, this.tz],
-        );
-
-        // ── 팀별 일별 집계 — 이벤트의 비정규화 team_id 기준(시점 귀속, JOIN users 제거) ──
-        await client.query("DELETE FROM usage_daily_team WHERE day = $1::date", [day]);
-        await client.query(
-          `INSERT INTO usage_daily_team
-             (team_id, day, provider_key, request_count, active_users, sessions,
-              input_tokens, output_tokens, cost_usd)
-           SELECT team_id, $1::date, provider_key,
-                  COUNT(*), COUNT(DISTINCT user_id), COUNT(DISTINCT session_id),
-                  SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
-           FROM usage_events
-           WHERE team_id IS NOT NULL
-             AND (ts AT TIME ZONE $2)::date = $1::date
-           GROUP BY team_id, provider_key`,
-          [day, this.tz],
-        );
-
+        await this.recomputeDailyWithClient(client, day);
         await client.query("COMMIT");
       }
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async recomputeDailyWithClient(client: PoolClient, day: string): Promise<void> {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`recompute:${day}`]);
+    await client.query("DELETE FROM usage_daily_user WHERE day = $1::date", [day]);
+    await client.query(
+      `INSERT INTO usage_daily_user
+         (user_id, day, provider_key, request_count, sessions,
+          input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd)
+       SELECT user_id, $1::date, provider_key,
+              COUNT(*), COUNT(DISTINCT session_id),
+              SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens),
+              SUM(cache_creation_tokens), SUM(cost_usd)
+       FROM usage_events
+       WHERE user_id IS NOT NULL
+         AND (ts AT TIME ZONE $2)::date = $1::date
+       GROUP BY user_id, provider_key`,
+      [day, this.tz],
+    );
+    await client.query("DELETE FROM usage_daily_team WHERE day = $1::date", [day]);
+    await client.query(
+      `INSERT INTO usage_daily_team
+         (team_id, day, provider_key, request_count, active_users, sessions,
+          input_tokens, output_tokens, cost_usd)
+       SELECT team_id, $1::date, provider_key,
+              COUNT(*), COUNT(DISTINCT user_id), COUNT(DISTINCT session_id),
+              SUM(input_tokens), SUM(output_tokens), SUM(cost_usd)
+       FROM usage_events
+       WHERE team_id IS NOT NULL
+         AND (ts AT TIME ZONE $2)::date = $1::date
+       GROUP BY team_id, provider_key`,
+      [day, this.tz],
+    );
+  }
+
+  async getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds: string[] = [],
+  ): Promise<UnpricedUsageModelDiagnostic[]> {
+    const result = await this.pool.query<{
+      model: string | null;
+      events: string | number;
+      first_at: Date;
+      last_at: Date;
+    }>(
+      `SELECT model, count(*) AS events, min(ts) AS first_at, max(ts) AS last_at
+       FROM usage_events
+       WHERE ts >= $1 AND ts < $2
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id = ANY($3::uuid[])
+         )
+       GROUP BY model
+       ORDER BY events DESC, model NULLS LAST`,
+      [from, to, replaceRevisionIds],
+    );
+    return result.rows.map((row) => ({
+      model: row.model,
+      events: n(row.events),
+      firstAt: row.first_at,
+      lastAt: row.last_at,
+    }));
+  }
+
+  async reconcileCodexReplayUsage(
+    request: UsageReplayReconciliationRequest,
+  ): Promise<UsageReplayReconciliationResult> {
+    if (request.limit <= 0) {
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query<{
+        dedup_key: string;
+        ts: Date;
+        local_day: string;
+      }>(
+        `SELECT bad.dedup_key, bad.ts,
+                to_char((bad.ts AT TIME ZONE $4)::date, 'YYYY-MM-DD') AS local_day
+         FROM usage_events bad
+         WHERE bad.ts >= $1 AND bad.ts < $2
+           AND bad.provider_key = 'codex'
+           AND bad.cost_status = 'unpriced'
+           AND COALESCE(bad.model, '') = ''
+           AND COALESCE(bad.session_id, '') <> ''
+           AND COALESCE(bad.log_adapter, '') = 'codex'
+           AND EXISTS (
+             SELECT 1
+             FROM usage_events good
+             WHERE good.provider_key = 'codex'
+               AND COALESCE(good.model, '') <> ''
+               AND good.session_id = bad.session_id
+               AND good.user_id IS NOT DISTINCT FROM bad.user_id
+               AND good.host IS NOT DISTINCT FROM bad.host
+               AND good.log_adapter IS NOT DISTINCT FROM bad.log_adapter
+               AND good.input_tokens = bad.input_tokens
+               AND good.output_tokens = bad.output_tokens
+               AND good.cache_read_tokens = bad.cache_read_tokens
+               AND good.cache_creation_tokens = bad.cache_creation_tokens
+           )
+         ORDER BY bad.ts, bad.dedup_key
+         FOR UPDATE OF bad SKIP LOCKED
+         LIMIT $3`,
+        [request.from, request.to, limit + 1, this.tz],
+      );
+      const candidates = selected.rows.slice(0, limit);
+      const keys = candidates.map((row) => row.dedup_key);
+      let reconciled = 0;
+      if (keys.length > 0) {
+        const deletion = await client.query(
+          `DELETE FROM usage_events
+           WHERE dedup_key = ANY($1::text[])
+             AND provider_key = 'codex'
+             AND cost_status = 'unpriced'
+             AND COALESCE(model, '') = ''`,
+          [keys],
+        );
+        reconciled = deletion.rowCount ?? 0;
+      }
+      const days = [...new Set(candidates.map((row) => row.local_day))].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      const remainingResult = await client.query<{ remaining_unpriced: string | number }>(
+        `SELECT count(*) AS remaining_unpriced
+         FROM usage_events
+         WHERE ts >= $1 AND ts < $2
+           AND cost_status = 'unpriced'`,
+        [request.from, request.to],
+      );
+      await client.query("COMMIT");
+      return {
+        scanned: candidates.length,
+        reconciled,
+        remainingUnpriced: n(remainingResult.rows[0]?.remaining_unpriced),
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: selected.rows.length > limit,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async repairUnpricedUsage(
+    request: PricingRepairRequest,
+    resolver: PricingRepairResolver,
+  ): Promise<PricingRepairBatchResult> {
+    if (request.models.length === 0 || request.limit <= 0) {
+      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query<{
+        dedup_key: string;
+        provider_key: string;
+        user_id: string | null;
+        session_id: string | null;
+        model: string | null;
+        ts: Date;
+        input_tokens: string | number;
+        output_tokens: string | number;
+        cache_read_tokens: string | number;
+        cache_creation_tokens: string | number;
+        cost_usd: string | number;
+        log_adapter: string | null;
+        host: string | null;
+        local_day: string;
+      }>(
+        `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                cost_usd, log_adapter, host,
+                to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
+         FROM usage_events
+         WHERE ts >= $1 AND ts < $2
+           AND (
+             cost_status = 'unpriced'
+             OR pricing_revision_id = ANY($4::uuid[])
+           )
+           AND model = ANY($3::text[])
+         ORDER BY ts, dedup_key
+         FOR UPDATE SKIP LOCKED
+         LIMIT $5`,
+        [request.from, request.to, request.models, request.replaceRevisionIds, limit, this.tz],
+      );
+
+      let recovered = 0;
+      const days = new Set<string>();
+      for (const row of selected.rows) {
+        const resolved = resolver({
+          dedupKey: row.dedup_key,
+          providerKey: row.provider_key,
+          userId: row.user_id,
+          sessionId: row.session_id,
+          model: row.model,
+          ts: row.ts,
+          inputTokens: n(row.input_tokens),
+          outputTokens: n(row.output_tokens),
+          cacheReadTokens: n(row.cache_read_tokens),
+          cacheCreationTokens: n(row.cache_creation_tokens),
+          costUsd: n(row.cost_usd),
+          logAdapter: row.log_adapter,
+          host: row.host,
+        });
+        if (!resolved) continue;
+        const update = await client.query(
+          `UPDATE usage_events
+           SET cost_usd = $2,
+               pricing_revision_id = $3,
+               cost_status = 'priced'
+           WHERE dedup_key = $1
+             AND (
+               cost_status = 'unpriced'
+               OR pricing_revision_id = ANY($4::uuid[])
+             )`,
+          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
+        );
+        if (update.rowCount === 1) {
+          recovered += 1;
+          days.add(row.local_day);
+        }
+      }
+
+      for (const day of [...days].sort()) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        scanned: selected.rows.length,
+        recovered,
+        affectedBuckets: [...days].sort().map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: selected.rows.length >= limit,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally {
       client.release();
     }

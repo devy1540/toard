@@ -87,7 +87,9 @@ pnpm dev                      # http://localhost:3000
 ```
 
 대시보드 레이아웃을 실제 데이터로 확인하려면 로컬 DB에 합성 사용량을 추가한다. `localhost`/`127.0.0.1`
-DB에서만 기본 실행되며, 본문 히스토리는 `TOARD_CONTENT_KEK_B64` 가 있을 때만 암호화해 넣는다:
+DB에서만 기본 실행된다. 새 본문 히스토리는 shim에서 암호화하는 `e2ee_v1`을 권장한다. `TOARD_CONTENT_KEK_B64`는 기존 `server_v1` 호환 본문에만 필요하며 E2EE 본문을 복호화할 수 없다. 활성화·복구·기기 승인 절차는 [E2EE 운영 런북](docs/e2ee-prompt-history-runbook.md)을 따른다:
+
+전체 `server_v1` 전환 뒤 서버 KEK를 폐기하려면 실제 백업 정책과 같은 `TOARD_LEGACY_BACKUP_RETENTION_DAYS`를 설정한다. 관리 → 시스템은 전체 0건 확인, 백업 보존 만료, 관리자 확인, KEK 제거 상태를 순서대로 표시한다. legacy 행이 남아 있는데 KEK가 없으면 `/api/ready`가 503으로 배포를 차단한다.
 
 ```bash
 pnpm seed:dashboard-demo --dry-run
@@ -150,15 +152,21 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
 
-**한 줄 설치(권장)** — 로그인 후 **설정 → 설치 · 토큰 탭**에서 토큰을 발급하면 아래 명령이 내 토큰으로 채워진다. toard 가 서빙하는 `install.sh` 가 바이너리 설치(SHA 검증) + `~/.toard/credentials`(토큰·endpoint 자동 주입) + PATH 설정까지 처리한다. 사용량은 로컬 세션 파일 pull 로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필). 같은 탭의 **"연결 확인"** 으로 실제 수신 여부를 즉시 점검한다:
+**한 줄 설치(권장)** — 로그인 후 **설정 → 컴퓨터 연결**에서 운영체제를 확인하고 안내된 명령을 복사한다. 이 컴퓨터용 토큰은 자동 발급되며, 설치 후 첫 인증 요청까지 화면이 자동으로 확인한다. 사용량은 로컬 세션 파일 pull로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필).
 
 ```bash
 curl -fsSL <toard 주소>/install.sh | TOARD_INGEST_TOKEN=<내 토큰> sh
 ```
 
-**직접 설정(고급)** — 바이너리만 [GitHub 릴리스 install.sh](https://github.com/devy1540/toard/releases/latest/download/install.sh) 로 설치하고, `~/.toard/credentials` 에 `agent_key`(개인 ingest 토큰)·`endpoint`(`<toard>/api`) 를 직접 작성 + `~/.toard/bin` 을 PATH 앞(진짜 claude 보다)에 둔다. 사용량은 pull 로 자동 수집(Desktop·IDE 포함, env 불필요). 릴리스는 `v*` 태그 push 시 GitHub Actions 가 5-플랫폼(macOS·Linux arm64/x64, Windows x64) 빌드 후 게시(`npx @toard/shim` 은 npm 게시 후 제공 예정). Windows 는 `install.sh` 대신 `npx @toard/shim` 으로 설치한다(주기 수집 데몬 등록은 아직 미지원).
+Windows x64에서는 같은 화면이 PowerShell 명령을 제공한다:
 
-**제거** — `curl -fsSL <toard>/uninstall.sh | sh` (shim·자격증명·PATH·claude-env(`settings.json`)·codex `[otel]` 블록을 백업 남기고 되돌림. 진짜 claude/codex 는 그대로).
+```powershell
+$env:TOARD_INGEST_TOKEN='<내 토큰>'; irm '<toard 주소>/install.ps1' | iex
+```
+
+**직접 설정(고급)** — 설정 화면의 `연결된 컴퓨터 관리`에서 OS별 진단·업데이트·제거 명령과 credentials 경로를 확인한다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows는 GitHub Release 바이너리를 PowerShell 설치기가 직접 내려받아 SHA256을 검증하며, Windows 주기 수집 데몬 등록은 아직 지원하지 않는다.
+
+**제거** — macOS·Linux는 `curl -fsSL <toard>/uninstall.sh | sh`, Windows는 `irm '<toard>/uninstall.ps1' | iex`. toard가 설치한 shim·자격증명·PATH 설정만 제거하고 기존 Claude/Codex는 유지한다.
 
 ## 🧊 ClickHouse 모드 (옵트인)
 
@@ -171,22 +179,26 @@ STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
 
 기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
 
-다중 해상도 rollup은 shadow worker와 읽기를 독립적으로 운영한다. ClickHouse backend에서는 15분 v2와 시간대 shadow worker가 **기본 ON**이며, 각 compactor 값을 `0`·`false`·`off`로 명시할 때만 hard disable된다. 반면 두 read flag와 정규화 `usage_events`의 97일 TTL은 **기본 OFF**다.
+다중 해상도 rollup은 worker와 읽기를 독립적으로 운영한다. ClickHouse backend에서는 **15분 기준 rollup**과 **시간대별 1시간·1일 rollup** worker가 기본 ON이며, 각 compactor 값을 `0`·`false`·`off`로 명시할 때만 hard disable된다. 읽기 환경변수를 비워 두면 고정된 과거 목표 `T0`까지 백필·검증하고 정상 상태를 60분 누적한 뒤 자동으로 읽기를 전환한다. 정규화 `usage_events`의 97일 TTL만 기본 OFF이며 자동으로 켜지지 않는다.
 
 | 환경변수 | 역할 |
 |---|---|
-| `CLICKHOUSE_15M_V2_COMPACTOR` | 기본 ON. 가격 revision/status를 보존한 15분 v2 shadow 생성; `0`·`false`·`off`는 hard disable |
-| `CLICKHOUSE_READ_15M_V2_ROLLUP` | 기본 OFF. 검증 완료된 15분 v2와 raw tail 조회 |
-| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 기본 ON. 활성 IANA 시간대별 hour/day cache 생성; `0`·`false`·`off`는 hard disable |
-| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | 기본 OFF. ready인 시간대별 hour/day cache 조회, 미완료 구간은 15분 v2 fallback |
-| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 기본 OFF. 모든 shadow/read 검증 뒤 정규화 `usage_events`에 90일 논리 보정 기간 + 7일 safety grace(물리 97일) TTL 적용 |
-| `CLICKHOUSE_READ_ROLLUP` | **deprecated alias**. 구 `usage_hourly_rollup`을 읽지 않으며 새 flag가 없을 때만 guarded timezone cache read를 요청하고, 미완료 구간은 exact fallback |
+| `CLICKHOUSE_15M_V2_COMPACTOR` | 기본 ON. 가격 revision/status를 보존한 15분 기준 rollup 생성; `0`·`false`·`off`는 hard disable |
+| `CLICKHOUSE_READ_15M_V2_ROLLUP` | 미설정 시 자동. `1`은 비상 강제 ON, `0`은 비상 override OFF; 준비되지 않은 구간은 세밀한 원본으로 대체 조회 |
+| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 기본 ON. 활성 IANA 시간대별 1시간·1일 rollup 생성; `0`·`false`·`off`는 hard disable |
+| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | 미설정 시 자동. `1`은 비상 강제 ON, `0`은 비상 override OFF; 미완료 구간은 15분 기준 rollup으로 대체 조회 |
+| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 기본 OFF. 자동 읽기 전환과 별도로 승인한 뒤 정규화 `usage_events`에 90일 논리 보정 기간 + 7일 safety grace(물리 97일) TTL 적용 |
+| `CLICKHOUSE_READ_ROLLUP` | **deprecated alias**. 구 `usage_hourly_rollup`을 읽지 않으며 새 flag가 없을 때만 시간대별 rollup read를 강제한다. migration 후 unset |
 
-전환 순서는 **schema 배포 → 기본 ON shadow backfill 관찰 → raw diff·격리 verifier·HTTP benchmark → timezone day/hour read → 15분 v2 read → 정규화 raw TTL**이다. 앱은 기동 시 `ORG_TIMEZONE`과 `users.timezone`의 고유 값을 canonicalize·ClickHouse capability-check해 비동기로 등록하며, rollout에서 즉시 seed하려면 ClickHouse 환경변수와 함께 `pnpm rollup:activate-timezones`를 실행한다. 신규·coverage-missing bucket만 day 최근 400 local days와 hour 최근 32 local days를 16-bucket chunk로 prewarm하므로 재시작·replica activation이 완료 coverage를 무효화하지 않는다.
+전환 순서는 **schema 배포 → worker 자동 백필 → T0 고정 → 원본·rollup 정합성 검증 → 60분 정상 관찰 → 15분 기준 rollup 자동 전환 → 시간대별 1시간·1일 rollup 자동 전환**이다. `T0`는 현재 시각에서 finalize 지연을 뺀 15분 경계로 한 번 고정한다. T0 이후 신규 데이터와 신규 사용자는 실시간 worker가 별도로 처리하므로 자동 전환 시간이 밀리거나 관찰 시간이 초기화되지 않는다. T0 이전에 늦게 도착한 데이터만 해당 버킷을 재계산하는 동안 관찰 누적을 멈췄다가 이어간다.
 
-관리자는 **관리자 → 시스템 → Rollup 상태**(`/admin?tab=system`)에서 두 worker의 상태·진행률·ETA·최근 오류·table 규모를 확인한다. 화면은 보이는 동안 `GET /api/admin/rollups/status`를 10초마다 호출하고, pause/resume은 관리자 전용 `POST /api/admin/rollups/control`을 사용한다. pause 값은 Postgres에 저장되어 앱 재시작 뒤에도 유지된다. pause는 실행 중인 batch를 강제 중단하지 않고 다음 60초 worker tick부터 건너뛰며, resume도 다음 tick부터 반영된다. hard-disabled worker는 화면에서 resume할 수 없고 서버 환경변수를 고친 뒤 앱을 재생성해야 한다. 이 화면은 read flag와 TTL 상태를 표시만 하며 변경하지 않는다.
+앱은 기동 시 `ORG_TIMEZONE`과 `users.timezone`의 고유 값을 canonicalize·ClickHouse capability-check해 비동기로 등록한다. 신규·coverage-missing bucket만 1일은 최근 400 local days, 1시간은 최근 32 local days를 16-bucket chunk로 prewarm한다. 전역 전환 뒤 새 시간대가 등록되어도 기존 시간대의 읽기를 되돌리지 않는다. 새 시간대만 백필과 대표 hour/day 검증이 끝나 `validated_at`이 기록될 때까지 15분 기준의 정확 경로를 사용한다. 정상 조회는 요청 해상도에 맞는 rollup을 우선 사용하고, coverage가 없거나 재계산이 필요한 구간은 15분 기준 rollup 또는 세밀한 원본으로 자동 대체 조회한다.
 
-기존 `CLICKHOUSE_READ_ROLLUP=1` 설치의 업그레이드 계약은 **schema → `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0` 명시 override → activation CLI (`pnpm rollup:activate-timezones`) → worker/coverage 확인 → verifier·benchmark → new read flags (`CLICKHOUSE_READ_TIMEZONE_ROLLUP=1`, `CLICKHOUSE_READ_15M_V2_ROLLUP=1`) → legacy unset** 순서다. 검증 기간에는 명시적 `0`이 legacy alias보다 우선해 timezone read를 OFF로 유지한다. legacy 값이 남아 있으면 process당 한 번 deprecation 경고를 남기고 `/api/ready`의 `rollups.legacyFlagMigration`이 `deprecated_alias`가 된다. Postgres·ClickHouse 연결이 정상이면 이 migration 경고 때문에 HTTP 200을 503으로 바꾸지는 않는다.
+관리자는 **관리자 → 시스템 → Rollup 운영 상태**(`/admin?tab=system`)에서 자동 전환 단계, 고정 T0, 60분 관찰 누적, 실제 조회 source, coordinator heartbeat·최근 작업, worker 진행률·ETA, adaptive batch 상한, 자동 감속 상태와 저장 규모를 확인한다. 화면은 보이는 동안 `GET /api/admin/rollups/status`를 10초마다 호출한다. pause/resume은 관리자 전용 `POST /api/admin/rollups/control`을 사용하며 앱 재시작 뒤에도 유지된다. worker는 최근 batch가 2초 이내이고 한도를 모두 사용하면 처리량을 늘리고, 10초 이상이거나 실패하면 절반으로 줄인다.
+
+하나의 coordinator가 replica 전체에서 전역 load slot을 잡고 15분 기준 rollup, 시간대별 rollup, 정합성 검증 중 무거운 작업 하나만 실행한다. 10초마다 완료 후 다음 실행을 예약하고 각 worker는 최소 60초 간격을 지키며, 처리 가능한 상태가 120초를 넘은 worker를 우선해 서로 굶지 않게 한다. 시간대별 작업은 해당 `source_to`까지 15분 watermark가 도달하고 dirty bucket이 없을 때만 처리 가능하다. 그 전에는 오류나 정체가 아니라 `15분 기준 대기`로 표시한다. 처리 중 늦은 데이터가 들어오면 job generation이 바뀌므로 오래된 결과를 완료로 승인하지 않고 새 generation을 다시 처리한다. 반면 신규 수집 outbox는 이 load slot 밖에서 계속 전달된다.
+
+기존 `CLICKHOUSE_READ_ROLLUP=1` 설치는 schema를 먼저 배포하고 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0`으로 legacy alias를 차단한 뒤 migration과 worker 상태를 확인한다. 이후 `CLICKHOUSE_READ_ROLLUP`과 새 read override를 모두 unset하면 자동 전환 상태를 사용한다. legacy 값이 남아 있으면 process당 한 번 deprecation 경고를 남기고 `/api/ready`의 `rollups.legacyFlagMigration`이 `deprecated_alias`가 된다.
 
 수집 API의 late-event cutoff와 대시보드 쿼리는 계속 90일을 논리 경계로 사용한다. 물리 raw TTL과 delivered outbox/batch만 97일 보존해 정확히 90일 경계에서 수락된 이벤트가 outbox flush와 v2 compactor를 거칠 7일의 안전 여유를 둔다. 정규화 `usage_events` TTL은 위 opt-in 플래그를 켜기 전에는 init/runtime 어디에서도 적용하지 않는다. 이와 별개로 보조 ClickHouse `raw_events` 7일, legacy hourly·15분 v2·시간대 cache 400일 TTL은 schema에서 자동 적용되고, production non-Vercel 앱은 Postgres `raw_events` 7일·완료 timezone job 7일·outbox/batch 97일·시간대 coverage hour 32 local days/day 400 local days 정리를 매일 실행한다. Postgres raw 정리는 transaction당 최대 1,000행의 참조 분리+삭제 원자성을 유지하면서 batch가 가득 차면 1초 뒤 raw-only batch를 이어가고, 짧은 batch에서 멈춘다. 오류는 60초 backoff 후 재시도하며 같은 process의 drain은 겹치지 않는다.
 
@@ -202,7 +214,7 @@ pnpm benchmark:dashboard-http
 
 release wrapper는 정상·실패·중단 경로에서 전용 Compose project를 한 번만 정리한다. cleanup 자체가 실패하면 release 성공으로 종료하지 않으며, benchmark와 cleanup이 모두 실패하면 두 오류를 함께 출력한다. `SIGINT`/`SIGTERM`은 실행 중인 child에 전달하고 cleanup 완료를 기다린 뒤 각각 130/143으로 종료한다. 실제 signal 정리 회귀는 `pnpm test:benchmark-dashboard-signal`로 확인한다.
 
-read 전환 뒤 문제가 생기면 해당 `CLICKHOUSE_READ_*`를 끄고 앱만 재생성한다. 단, `CLICKHOUSE_READ_ROLLUP=1` legacy alias가 아직 남아 있으면 timezone read rollback은 빈 값이 아니라 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0`이어야 한다. legacy unset을 확인한 뒤에만 새 flag를 빈 값으로 되돌릴 수 있다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다.
+자동 검증에서 실제 데이터 불일치가 한 번 발견되면 즉시 대체 조회로 복귀하고, 일시 연결·지연 오류는 세 번 연속일 때 복귀한다. 추가 비상 차단이 필요하면 해당 `CLICKHOUSE_READ_*`를 `0`으로 설정하고 앱만 재생성한다. 문제를 해결한 뒤 override를 unset하면 새 T0와 60분 관찰을 거쳐 자동 재전환된다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다. TTL 적용은 읽기 전환과 별도 단계이며, 이미 TTL로 삭제된 원본은 읽기 rollback으로 복구되지 않는다.
 
 ```bash
 docker compose up -d --no-deps --force-recreate app
@@ -254,15 +266,18 @@ AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정
 
 `sync-pricing`(LiteLLM 가격 일 동기화)은 **self-host 에선 별도 등록이 필요 없다** — 앱이 기동 시
 내장 스케줄러를 등록해 일 1회(조직 타임존 기준) 자동 실행한다(compose·k8s·helm·bare 공통).
-등록/해지는 **관리 → 시스템 탭의 "자동 동기화" 토글**로 재시작 없이 바꿀 수 있고,
-env `PRICING_AUTO_SYNC=off` 는 토글보다 우선하는 인프라 킬스위치다. 외부 스케줄러를 쓰는 경우:
+동기화 뒤 보존 범위의 가격 미확정 사용량도 자동으로 다시 계산하며 PostgreSQL·ClickHouse rollup을 함께 갱신한다.
+최근 90일 안의 과거 로그가 늦게 들어왔는데 해당 사용 날짜의 가격 revision이 없으면, toard가 LiteLLM 공개 Git 이력을 백그라운드에서 확인한다. 전체 기간의 근거가 확인된 가격만 한 번에 승격하고 비용을 다시 계산한 뒤 15분·1시간·1일 rollup을 자동 재집계한다. GitHub 장애나 요청 제한은 수집과 조회를 막지 않으며 저장된 cursor와 backoff 시각부터 자동으로 이어진다. 특정 모델이나 월을 코드에 추가하는 방식이 아니므로 6월 등 다른 과거 월과 새 모델에도 같은 흐름이 적용된다.
+관리자 조작은 필요 없고, env `PRICING_AUTO_SYNC=off` 만 인프라 비상 킬스위치로 사용한다. 외부 스케줄러를 쓰는 경우:
 
 - **Vercel**: `vercel.json` 의 `crons` 가 자동 실행(Vercel 에선 내장 스케줄러가 자동 비활성) — `CRON_SECRET` env 설정 시 Vercel 이 `Authorization: Bearer` 를 자동 첨부.
 - **GitHub Actions**: `.github/workflows/cron.yml` 이 `secrets.APP_URL`·`secrets.CRON_SECRET` 로 엔드포인트를 호출 — 정시(UTC 18:00) 실행이 필요하면 내장 대신 이걸 쓰고 `PRICING_AUTO_SYNC=off` 로 중복을 피한다.
 
 `CRON_SECRET` 미설정 시 `/api/cron/*` 엔드포인트가 인증 없이 열리므로 **프로덕션에선 반드시 설정**. `recompute` 는 Mart 를 서빙에 쓸 때만 등록(현재 event-direct 라 불필요 — §4.4).
 
-동기화 전이거나 실패했다면 **관리 → 시스템 탭에서 수동 동기화**할 수 있다(모델 수·마지막 동기화 시각 표시). 가격이 비어 있으면 비용이 $0 으로 계산되므로 대시보드에 경고가 표시된다.
+관리 → 시스템 탭은 모델 수·마지막 동기화·자동 복구 진행 상태를 읽기 전용으로 표시한다. 가격표에 아직 없는 모델은 다음 일 동기화에서 자동 재확인하며, 대시보드는 확정 전 비용을 부분 합계로 명시한다.
+
+격리된 임시 PostgreSQL·ClickHouse에서 과거 가격 변경, 재시작 cursor, 비용 보정, 원본 불변성과 rollup invalidation을 함께 검증하려면 `pnpm verify:historical-pricing`을 실행한다. 이 명령은 테스트 컨테이너만 생성하고 종료 시 삭제한다.
 
 ## 🚢 배포 (Docker · Kubernetes · Helm)
 

@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
-import { Activity, ArrowUpDown, Bot, Clock3, DollarSign, Inbox, Laptop, MessageSquare } from "lucide-react";
+import { Activity, ArrowUpDown, Bot, DollarSign, Inbox, Laptop } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { CompositionToggle, type CompositionDimension } from "@/components/dashboard/composition-toggle";
 import type { ChartMetric } from "@/components/dashboard/metric-toggle";
@@ -14,8 +14,7 @@ import { orderByTokens, tokenShare } from "@/lib/composition";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { formatCostForCoverage } from "@/lib/pricing";
-import { getMyHistorySessions } from "@/lib/prompt-history";
+import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
@@ -113,7 +112,6 @@ function CompositionRow({
 /** 사이드 리스트가 세로로 길어지지 않게 상위 N개만 — 나머지는 개수로 요약 */
 const MODELS_SHOWN = 5;
 const HOSTS_SHOWN = 4;
-const RECENT_SESSIONS_SHOWN = 4;
 
 const HEAT_COLORS = [
   "var(--muted)",
@@ -144,12 +142,11 @@ export async function OverviewView({
   const t = await getTranslations("dashboard");
   const locale = await getLocale();
   const storage = getStorage();
-  const [usage, prevOverview, tokenMeta, hourly, history] = await Promise.all([
+  const [usage, prevOverview, tokenMeta, hourly] = await Promise.all([
     storage.getUserUsage(userId, period),
     storage.getOverview({ ...previousPeriod(period), userId }),
     getActiveTokenMeta(userId),
     storage.getUserHourlyTimeseries(userId, period),
-    getMyHistorySessions(userId, period, 0, RECENT_SESSIONS_SHOWN),
   ]);
   const { overview, daily, byModel, byHost } = usage;
   const costLabels = {
@@ -157,11 +154,6 @@ export async function OverviewView({
     unpriced: t("costCoverage.unpriced"),
     legacy: t("costCoverage.legacy"),
   };
-  const sessionKeys = history.sessions.filter((s) => s.isSession).map((s) => s.key);
-  const recentUsage =
-    history.enabled && sessionKeys.length > 0 ? await storage.getSessionUsageSummaries(userId, sessionKeys) : [];
-  const usageBySession = new Map(recentUsage.map((s) => [s.sessionId, s]));
-
   // 미설치 추정: 토큰이 없거나 한 번도 수신된 적 없음 → 빈 상태에서 설치 CTA 노출
   const notInstalled = !tokenMeta || !tokenMeta.lastUsedAt;
 
@@ -179,6 +171,12 @@ export async function OverviewView({
   const costDelta = overview.costCoverage.unpricedEvents === 0 && prevOverview.costCoverage.unpricedEvents === 0
     ? pctDelta(overview.totalCostUsd, prevOverview.totalCostUsd)
     : null;
+  const legacyCount = legacyCostHintCount(overview.costCoverage);
+  const costHint = legacyCount == null
+    ? costDelta
+      ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod")
+      : t("summaryPrimaryHint")
+    : t("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
   const sessionsDelta = pctDelta(overview.totalSessions, prevOverview.totalSessions);
   const tokensDelta = pctDelta(totalTokens, prevTokens);
 
@@ -191,15 +189,6 @@ export async function OverviewView({
   const topHost = namedHosts[0]?.host ?? "—";
   const modelTokenSum = modelComposition.reduce((s, m) => s + m.totalTokens, 0);
   const hostTokenSum = hostComposition.reduce((s, h) => s + h.totalTokens, 0);
-
-  const timeFmt = new Intl.DateTimeFormat(locale, {
-    timeZone: period.timezone,
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  });
 
   // 시간대 리듬: hour 버킷 → 요일(월=0)×시간 그리드, 비영 값 삼분위로 강도 산출
   const cell = new Map<string, number>();
@@ -239,7 +228,7 @@ export async function OverviewView({
           <SummaryMetric
             label={t(`costLabel.${period.preset}`)}
             value={coveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
-            sub={costDelta ? t(period.preset === "today" ? "vsPrevToday" : "vsPrevPeriod") : t("summaryPrimaryHint")}
+            sub={costHint}
             badge={costDelta ? <DeltaBadge delta={costDelta} /> : undefined}
             icon={<DollarSign className="size-3.5" />}
           />
@@ -359,9 +348,9 @@ export async function OverviewView({
         </aside>
       </div>
 
-      <ToolActivityCard userId={userId} period={period} />
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
+        <ToolActivityCard userId={userId} period={period} className="h-full" />
 
-      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
         <section className="min-w-0 rounded-lg border p-4">
           <div className="mb-3">
             <h2 className="text-sm font-medium">{t("rhythmTitle")}</h2>
@@ -393,59 +382,6 @@ export async function OverviewView({
               </div>
             </div>
           </div>
-        </section>
-
-        <section className="min-w-0 rounded-lg border p-4">
-          <div className="mb-3 flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-medium">{t("recentSessionsTitle")}</h2>
-              <p className="text-muted-foreground mt-0.5 text-xs">{t("recentSessionsDescription")}</p>
-            </div>
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/history">{t("viewHistory")}</Link>
-            </Button>
-          </div>
-
-          {!history.enabled ? (
-            <div className="text-muted-foreground rounded-md border border-dashed p-4 text-sm">
-              {t("recentSessionsUnavailable")}
-            </div>
-          ) : history.sessions.length === 0 ? (
-            <div className="text-muted-foreground rounded-md border border-dashed p-4 text-sm">{t("noRecentSessions")}</div>
-          ) : (
-            <div className="space-y-2">
-              {history.sessions.map((s) => {
-                const u = usageBySession.get(s.key);
-                const model = u?.models[0] ? (formatModelName(u.models[0]) ?? u.models[0]) : s.providerKey;
-                const cost = u
-                  ? formatCostForCoverage(fmtUsd(u.costUsd), u.costCoverage, costLabels)
-                  : t("history.noUsage");
-                return (
-                  <Link
-                    key={s.key}
-                    href={`/history?session=${encodeURIComponent(s.key)}`}
-                    className="hover:bg-muted/60 block min-w-0 rounded-md border p-3 transition-colors"
-                  >
-                    <div className="flex min-w-0 items-center gap-2 text-sm">
-                      <MessageSquare className="text-muted-foreground size-3.5 shrink-0" />
-                      <span className="truncate font-medium">{s.preview || model}</span>
-                      <span className="ml-auto shrink-0 font-medium tabular-nums">{cost}</span>
-                    </div>
-                    <div className="text-muted-foreground mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-                      <span>{model}</span>
-                      <span>·</span>
-                      <span>{t("history.turns", { count: s.turnCount })}</span>
-                      <span>·</span>
-                      <span className="inline-flex items-center gap-1 tabular-nums">
-                        <Clock3 className="size-3" />
-                        {timeFmt.format(s.latestTs)}
-                      </span>
-                    </div>
-                  </Link>
-                );
-              })}
-            </div>
-          )}
         </section>
       </div>
     </>

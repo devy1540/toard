@@ -54,9 +54,35 @@ export async function ingestToolInventory(auth: IngestAuthResult, snapshot: Tool
 }
 
 export async function readBoundedJson(req: Request, maxBytes: number): Promise<unknown> {
-  const text = await req.text();
-  if (Buffer.byteLength(text, "utf8") > maxBytes) throw new RangeError(`payload too large (max ${maxBytes} bytes)`);
-  return JSON.parse(text);
+  const contentLength = req.headers.get("content-length");
+  if (contentLength && /^\d+$/.test(contentLength) && Number(contentLength) > maxBytes) {
+    throw new RangeError(`payload too large (max ${maxBytes} bytes)`);
+  }
+  if (!req.body) return JSON.parse("");
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw new RangeError(`payload too large (max ${maxBytes} bytes)`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return JSON.parse(new TextDecoder().decode(bytes));
 }
 
 export function toolIngestClientError(error: unknown): Response | null {

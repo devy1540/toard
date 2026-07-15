@@ -1,0 +1,20 @@
+{
+  "uck": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+  "dek": "CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk",
+  "contentIv": "AQEBAQEBAQEBAQEB",
+  "dekWrapIv": "AgICAgICAgICAgIC",
+  "metadata": {
+    "schema": "e2ee_v1",
+    "contentOwnerId": "018f47d0-4d47-7b04-950b-7d18a86e1b43",
+    "dedupKey": "dedup-1",
+    "providerKey": "codex",
+    "turnRole": "user",
+    "ts": "2026-07-14T00:00:00.000Z"
+  },
+  "plaintext": "c2VjcmV0IHByb21wdA",
+  "aad": "eyJzY2hlbWEiOiJlMmVlX3YxIiwiY29udGVudE93bmVySWQiOiIwMThmNDdkMC00ZDQ3LTdiMDQtOTUwYi03ZDE4YTg2ZTFiNDMiLCJkZWR1cEtleSI6ImRlZHVwLTEiLCJwcm92aWRlcktleSI6ImNvZGV4IiwidHVyblJvbGUiOiJ1c2VyIiwidHMiOiIyMDI2LTA3LTE0VDAwOjAwOjAwLjAwMFoifQ",
+  "ciphertext": "yhXiF3aT6ABjITK9kQ",
+  "authTag": "NnFwTRXjKZBFs3kHIFUHYQ",
+  "wrappedDek": "E73gDlLivC4TWY--64vFc8MaYfN5vyO9zwP6QBOYsno",
+  "dekWrapAuthTag": "69oMSA86yEsA4EdmK_m9Og"
+}

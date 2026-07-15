@@ -92,21 +92,74 @@
   },
   "system": {
     "pricingTitle": "Pricing sync",
-    "pricingDescription": "Fetches LiteLLM model pricing for cost calculation. Without pricing, costs are calculated as $0 — you can run it manually here, independent of auto sync.",
+    "pricingDescription": "Syncs LiteLLM pricing daily and automatically repairs unconfirmed costs. No administrator action is required.",
     "modelsCount": "{count} models",
     "lastSync": "· Last synced {day}",
-    "noPricing": "No pricing has been synced — collected costs are calculated as $0.",
-    "syncing": "Syncing…",
-    "syncNow": "Sync now",
-    "syncedWithDay": "Sync complete — {count} models applied ({day})",
-    "synced": "Sync complete — {count} models applied",
+    "noPricing": "No pricing synced",
+    "autoSyncActive": "Automatic operation active",
+    "repairTitle": "Automatic unconfirmed-cost recovery",
+    "repairStates": {
+      "idle": "Healthy",
+      "pending": "Waiting to check prices",
+      "running": "Applying automatically",
+      "waiting_for_catalog": "Waiting for catalog support",
+      "failed": "Temporary error · retrying automatically"
+    },
+    "recoveredEvents": "Recovered",
+    "reconciledEvents": "Duplicates reconciled",
+    "remainingEvents": "Unconfirmed remaining",
+    "lastRepair": "Last automatic run",
+    "unresolvedModels": "Models without confirmed pricing history for the usage date",
+    "unresolvedEvents": "{count} events",
+    "historyTitle": "Automatic historical pricing lookup",
+    "historyStates": {
+      "pending": "Preparing",
+      "listing": "Checking change history",
+      "fetching": "Checking dated prices",
+      "promoting": "Applying verified results",
+      "waiting_source": "Waiting to retry source",
+      "failed": "Temporary error",
+      "completed": "Completed"
+    },
+    "historyProgress": "{models} models · pricing snapshots {processed}/{total}",
+    "historyRetryAt": "Next automatic retry {time}",
+    "pricingStatusFailed": "The automatic price recovery status is temporarily unavailable. Automatic retries continue.",
     "contentTitle": "Prompt content",
     "contentBadgeOn": "Enabled",
     "contentBadgeOff": "Disabled",
     "contentDescription": "Whether prompt and response content is stored. Requires a server encryption key (KEK); once on, users can opt in to content collection during install.",
     "contentEnabledBody": "Content is envelope-encrypted on the server, and each user views only their own in <code>/history</code>.",
+    "contentRetiredBody": "The legacy server key has been removed. E2EE collection and browser decryption continue to work; do not generate a replacement KEK.",
     "contentSetupHint": "Set the following in the server env and restart to enable.",
     "contentSetupNote": "See <code>docs/DEPLOY.md</code> for switching to the app role (<code>toard_app</code>) that enforces RLS. If the key is lost, existing content cannot be decrypted.",
+    "legacyRetirementTitle": "Legacy content key retirement",
+    "legacyRetirementDescription": "Verify global server_v1 migration, backup expiry, and server KEK removal in order. The app never deletes backups or Secret Store values automatically.",
+    "legacyRetirementUnavailable": "Legacy key retirement status is unavailable.",
+    "legacyRemaining": "All server_v1 records",
+    "legacyRecords": "{count} records",
+    "legacyZeroObserved": "Global zero first observed",
+    "legacyRetention": "Backup retention",
+    "legacyDays": "{count} days",
+    "legacyUnconfigured": "Not configured",
+    "legacyEligibleAt": "Earliest key retirement",
+    "legacyBackupConfirmed": "Backup and snapshot purge confirmed",
+    "legacyKek": "Server KEK",
+    "legacyKekPresent": "Configured",
+    "legacyKekRemoved": "Removed",
+    "legacyConfirmBackup": "Record backup purge confirmation",
+    "legacyConfirmBackupNote": "Confirm only after automatic backups, WAL, replicas, and manual snapshots no longer contain recoverable server_v1 data.",
+    "legacyConfirmFailed": "Backup purge confirmation is not allowed in the current state.",
+    "legacyRetirementStates": {
+      "migrating": "Migrating existing history",
+      "unsafe_key_missing": "Unsafe · legacy exists without key",
+      "zero_observation_required": "Observing global zero",
+      "backup_policy_unconfigured": "Configure backup retention",
+      "waiting_backup_retention": "Waiting for backup retention",
+      "backup_confirmation_required": "Backup purge confirmation required",
+      "ready_to_remove_key": "Server key can be retired",
+      "key_removed_unconfirmed": "Key removed · confirm backups",
+      "retired": "Legacy key retired"
+    },
     "serverTitle": "Server",
     "serverDescription": "Information about the running toard server. Check here after a deploy to confirm the version changed.",
     "serverVersion": "Version",
@@ -126,11 +179,9 @@
     "updatePhaseVerifying": "Verifying health",
     "updatePhaseCompleted": "Update complete",
     "updatePhaseFailed": "Update failed",
-    "autoSyncLabel": "Auto sync (daily)",
-    "autoSyncHint": "When on, the server syncs once a day (org timezone). Changes take effect within an hour, no restart needed.",
-    "autoSyncUnavailable": "The built-in scheduler is inactive in this deployment (Vercel cron or PRICING_AUTO_SYNC=off) — an external scheduler handles syncing.",
+    "autoSyncUnavailable": "Built-in automation inactive",
     "rollupTitle": "Rollup operations",
-    "rollupDescription": "Monitor backfill progress and storage size for 15-minute and timezone rollups, and pause or resume workers. Read cutover and raw TTL remain server-only settings."
+    "rollupDescription": "Monitor backfill, automatic read cutover, and server load for the 15-minute base rollup and timezone hourly/daily rollups. Raw TTL remains a server setting."
   },
   "rollup": {
     "summary": {
@@ -144,20 +195,90 @@
       "paused": "Paused",
       "starting": "Starting",
       "catching_up": "Backfilling",
+      "waiting_for_base": "Waiting for 15-minute base",
       "ready": "Ready",
       "stalled": "Stalled",
       "error": "Error"
     },
     "worker": {
-      "usage15mV2": "15-minute v2",
-      "timezone": "Timezone cache"
+      "usage15mV2": "15-minute base rollup",
+      "timezone": "Timezone hourly/daily rollup"
+    },
+    "coordinator": {
+      "title": "Rollup coordinator",
+      "description": "Runs one heavy aggregation or validation task at a time with fair scheduling.",
+      "states": {
+        "not_applicable": "Not applicable",
+        "healthy": "Healthy",
+        "stalled": "Heartbeat delayed",
+        "unavailable": "Status unavailable"
+      },
+      "lastHeartbeat": "Latest heartbeat",
+      "lastTask": "Latest task",
+      "lastOutcome": "Latest outcome",
+      "tasks": {
+        "pricing_repair": "Automatic price recovery",
+        "usage_15m_v2": "15-minute base rollup",
+        "timezone": "Timezone rollup",
+        "validation": "Exactness validation",
+        "idle": "Idle"
+      },
+      "outcomes": {
+        "success": "Success",
+        "failed": "Failed",
+        "superseded": "Rescheduled for newer data",
+        "idle": "Idle"
+      }
+    },
+    "cutover": {
+      "title": "Automatic read cutover",
+      "description": "Rollup reads turn on automatically after the frozen historical target is verified and healthy time accumulates for 60 minutes.",
+      "mode": "Operating mode",
+      "modes": {
+        "auto": "Automatic",
+        "forced_on": "Forced ON by server",
+        "forced_off": "Forced OFF by server",
+        "mixed": "Per-layer server settings"
+      },
+      "layer": {
+        "usage15mV2": "15-minute base rollup",
+        "timezone": "Timezone hourly/daily rollup"
+      },
+      "states": {
+        "backfilling": "Backfilling",
+        "observing": "Validation observation",
+        "active": "Using rollup reads",
+        "fallback": "Fallback reads",
+        "unavailable": "Status unavailable"
+      },
+      "target": "Frozen target",
+      "observation": "Healthy observation",
+      "observationValue": "{current} min / {required} min",
+      "lastValidation": "Last validation",
+      "failure": "Latest state",
+      "failures": {
+        "mismatch": "Data mismatch",
+        "lag": "Processing lag",
+        "unavailable": "Temporarily unavailable"
+      }
+    },
+    "load": {
+      "limit": "Next batch limit {limit}",
+      "state": "Load state {state}",
+      "states": {
+        "normal": "Normal",
+        "throttled": "Auto-throttled"
+      }
     },
     "progress": "Progress",
     "progressLabel": "{worker} progress",
     "sourceProgress": "Basis",
     "watermark": "watermark {value}",
-    "coverage": "hour {hour} · day {day}",
+    "coverage": "hourly {hour} · daily {day}",
     "remaining": "Remaining units",
+    "eligiblePending": "Eligible now",
+    "waitingForBase": "Waiting for 15-minute base",
+    "eligibleSince": "Eligible since",
     "eta": "Estimated completion",
     "etaMinutes": "about {minutes} min",
     "etaConfigured": "configured estimate",
@@ -176,9 +297,9 @@
     "on": "ON",
     "off": "OFF",
     "readSource": {
-      "label": "Read source",
-      "usage15mV2": "15-minute v2",
-      "timezone": "Timezone cache"
+      "label": "Effective reads",
+      "usage15mV2": "15-minute base rollup",
+      "timezone": "Timezone hourly/daily rollup"
     },
     "rawTtl": {
       "label": "Normalized raw TTL",
@@ -219,9 +340,6 @@
     "teamHasEvents": "A team with attributed collection history cannot be deleted.",
     "roleInvalid": "The selected role is not valid.",
     "userNotFound": "The selected member could not be found.",
-    "lastAdminRequired": "The last administrator cannot be changed to member.",
-    "pricingDownloadKept": "Pricing download failed, so the existing snapshot was kept — {error}",
-    "pricingSyncFailed": "Sync failed — {error}",
-    "autoSyncSaveFailed": "Failed to save auto sync setting: {error}"
+    "lastAdminRequired": "The last administrator cannot be changed to member."
   }
 }

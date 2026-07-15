@@ -137,6 +137,10 @@ export function RollupStatusPanel({
     { key: "usage15mV2", value: status.workers.usage15mV2 },
     { key: "timezone", value: status.workers.timezone },
   ];
+  const cutovers = [
+    { key: "usage15mV2" as const, value: status.cutover.usage15mV2 },
+    { key: "timezone" as const, value: status.cutover.timezone },
+  ];
   const tableEntries = status.storage
     ? Object.entries(status.storage.tables) as Array<[
       RollupStorageTable,
@@ -178,6 +182,72 @@ export function RollupStatusPanel({
       </div>
 
       {requestFailed ? <p className="text-destructive text-xs">{t("rollup.requestFailed")}</p> : null}
+
+      <section className="space-y-3 rounded-md border p-3" aria-label={t("rollup.coordinator.title")}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="space-y-1">
+            <h3 className="font-medium">{t("rollup.coordinator.title")}</h3>
+            <p className="text-muted-foreground text-xs">{t("rollup.coordinator.description")}</p>
+          </div>
+          <Badge variant={status.scheduler.state === "stalled" || status.scheduler.state === "unavailable" ? "destructive" : "outline"}>
+            {t(`rollup.coordinator.states.${status.scheduler.state}`)}
+          </Badge>
+        </div>
+        <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastHeartbeat")}: </dt><dd className="inline">{formatDateTime(status.scheduler.lastHeartbeatAt, locale)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastTask")}: </dt><dd className="inline">{status.scheduler.lastSelectedTask ? t(`rollup.coordinator.tasks.${status.scheduler.lastSelectedTask}`) : "—"}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastOutcome")}: </dt><dd className="inline">{status.scheduler.lastTaskOutcome ? t(`rollup.coordinator.outcomes.${status.scheduler.lastTaskOutcome}`) : "—"}</dd></div>
+        </dl>
+      </section>
+
+      <section className="space-y-3" aria-label={t("rollup.cutover.title")}>
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="space-y-1">
+            <h3 className="font-medium">{t("rollup.cutover.title")}</h3>
+            <p className="text-muted-foreground text-xs">{t("rollup.cutover.description")}</p>
+          </div>
+          <Badge variant="outline">
+            {t("rollup.cutover.mode")}: {t(`rollup.cutover.modes.${status.cutover.mode}`)}
+          </Badge>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {cutovers.map(({ key, value }) => {
+            const observationPercent = safePercent(
+              value.requiredHealthySeconds > 0
+                ? value.healthySeconds / value.requiredHealthySeconds * 100
+                : 0,
+            );
+            const stateDanger = value.state === "fallback" || value.state === "unavailable";
+            return (
+              <article key={key} className="space-y-3 rounded-md border p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h4 className="font-medium">{t(`rollup.cutover.layer.${key}`)}</h4>
+                  <Badge variant={stateDanger ? "destructive" : "outline"}>
+                    {t(`rollup.cutover.states.${value.state}`)}
+                  </Badge>
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span>{t("rollup.cutover.observation")}</span>
+                    <span>{t("rollup.cutover.observationValue", {
+                      current: formatNumber(Math.floor(value.healthySeconds / 60), locale),
+                      required: formatNumber(Math.ceil(value.requiredHealthySeconds / 60), locale),
+                    })}</span>
+                  </div>
+                  <div className="bg-muted h-2 overflow-hidden rounded-full">
+                    <div className="bg-primary h-full rounded-full" style={{ width: `${observationPercent}%` }} />
+                  </div>
+                </div>
+                <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+                  <div><dt className="text-muted-foreground inline">{t("rollup.cutover.target")}: </dt><dd className="inline">{formatDateTime(value.targetWatermark, locale)}</dd></div>
+                  <div><dt className="text-muted-foreground inline">{t("rollup.cutover.lastValidation")}: </dt><dd className="inline">{formatDateTime(value.lastValidationAt, locale)}</dd></div>
+                  <div className="sm:col-span-2"><dt className="text-muted-foreground inline">{t("rollup.cutover.failure")}: </dt><dd className="inline">{value.lastFailureKind ? t(`rollup.cutover.failures.${value.lastFailureKind}`) : "—"}</dd></div>
+                </dl>
+              </article>
+            );
+          })}
+        </div>
+      </section>
 
       <div className="grid gap-3 lg:grid-cols-2">
         {workers.map(({ key, value: worker }) => {
@@ -246,6 +316,23 @@ export function RollupStatusPanel({
                   </dd>
                 </div>
                 <div><dt className="text-muted-foreground inline">{t("rollup.lastSuccess")}: </dt><dd className="inline">{formatDateTime(worker.lastSuccessAt, locale)}</dd></div>
+                {key === "timezone" ? (
+                  <>
+                    <div><dt className="text-muted-foreground inline">{t("rollup.eligiblePending")}: </dt><dd className="inline">{formatNumber(worker.eligiblePendingJobs ?? 0, locale)}</dd></div>
+                    <div><dt className="text-muted-foreground inline">{t("rollup.waitingForBase")}: </dt><dd className="inline">{formatNumber(worker.waitingForBaseJobs ?? 0, locale)}</dd></div>
+                    <div className="sm:col-span-2"><dt className="text-muted-foreground inline">{t("rollup.eligibleSince")}: </dt><dd className="inline">{formatDateTime(worker.eligibleSince, locale)}</dd></div>
+                  </>
+                ) : null}
+                <div>
+                  <dt className="text-muted-foreground inline">{t("rollup.load.limit", { limit: worker.adaptiveLimit == null ? "—" : formatNumber(worker.adaptiveLimit, locale) })}</dt>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground inline">
+                    {worker.loadState
+                      ? t("rollup.load.state", { state: t(`rollup.load.states.${worker.loadState}`) })
+                      : t("rollup.load.state", { state: "—" })}
+                  </dt>
+                </div>
                 <div className="sm:col-span-2">
                   <dt className="text-muted-foreground inline">{t("rollup.lastBatch")}: </dt>
                   <dd className="inline">
@@ -261,7 +348,7 @@ export function RollupStatusPanel({
               </dl>
 
               {!worker.hardEnabled ? <p className="text-muted-foreground text-xs">{t("rollup.disabledByServer")}</p> : null}
-              {worker.lastError ? (
+              {worker.state === "error" && worker.lastError ? (
                 <p className="text-destructive text-xs">
                   {t("rollup.lastError", { value: formatDateTime(worker.lastErrorAt, locale) })}
                 </p>

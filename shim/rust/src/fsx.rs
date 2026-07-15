@@ -1,6 +1,7 @@
 // 파일시스템 헬퍼 — 원자적 쓰기와 toard 상태 디렉토리.
 
 use std::env;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// temp 파일에 쓴 뒤 rename — 부분 쓰기/동시 실행에도 대상 파일이 항상 온전하다.
@@ -32,14 +33,52 @@ pub fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
 }
 
 pub fn home_dir() -> Option<PathBuf> {
-    // Windows 는 HOME 이 없는 환경(순정 cmd/PowerShell)이 흔해 USERPROFILE 로 폴백한다
-    env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .or_else(|| env::var_os("USERPROFILE").filter(|v| !v.is_empty()))
-        .map(PathBuf::from)
+    select_home_dir(
+        env::var_os("HOME"),
+        env::var_os("USERPROFILE"),
+        cfg!(windows),
+    )
+}
+
+fn select_home_dir(
+    home: Option<OsString>,
+    user_profile: Option<OsString>,
+    windows: bool,
+) -> Option<PathBuf> {
+    let home = home.filter(|v| !v.is_empty());
+    let user_profile = user_profile.filter(|v| !v.is_empty());
+    if windows {
+        user_profile.or(home).map(PathBuf::from)
+    } else {
+        home.or(user_profile).map(PathBuf::from)
+    }
 }
 
 /// ~/.toard/state — shim 자체 북키핑(claude-env 상태, 업데이트 체크 시각 등).
 pub fn state_dir() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".toard").join("state"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_home_prefers_userprofile() {
+        let selected =
+            select_home_dir(Some("C:/git-home".into()), Some("C:/Users/GA".into()), true);
+
+        assert_eq!(selected, Some(PathBuf::from("C:/Users/GA")));
+    }
+
+    #[test]
+    fn unix_home_prefers_home() {
+        let selected = select_home_dir(
+            Some("/Users/ga".into()),
+            Some("/ignored-profile".into()),
+            false,
+        );
+
+        assert_eq!(selected, Some(PathBuf::from("/Users/ga")));
+    }
 }

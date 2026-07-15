@@ -11,10 +11,11 @@ import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
 import { listAllHostShims, worstShimByUser } from "@/lib/host-shims";
 import { listPendingInvites } from "@/lib/invites";
-import { getPricingStatus } from "@/lib/pricing";
-import { isAutoSyncEnabled, schedulerEligible } from "@/lib/pricing-auto-sync";
+import { getPricingAdminStatus } from "@/lib/pricing-admin-status";
+import { schedulerEligible } from "@/lib/pricing-auto-sync";
 import { getPublicBaseUrl } from "@/lib/public-url";
 import { getRollupAdminStatus } from "@/lib/rollup-status";
+import { getLegacyRetirementStatus } from "@/lib/e2ee-legacy-retirement";
 import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
 import { getServerVersion } from "@/lib/version";
@@ -28,6 +29,7 @@ import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
 import { InvitePanel } from "./invite-panel";
+import { LegacyRetirementPanel } from "./legacy-retirement-panel";
 import { LibraryPanel, type AdminToolItem } from "./library-panel";
 
 export const dynamic = "force-dynamic";
@@ -240,15 +242,16 @@ async function TeamsTab() {
 }
 
 async function SystemTab() {
-  const [pricing, autoSync, serverUpdate, rollupStatus, t] = await Promise.all([
-    getPricingStatus(),
-    // 마이그레이션 전 등 조회 실패 시 기본값(on)으로 표시 — 시스템 탭이 깨지지 않게
-    isAutoSyncEnabled().catch(() => true),
+  const [pricing, serverUpdate, rollupStatus, legacyRetirement, t] = await Promise.all([
+    getPricingAdminStatus(),
     getServerUpdateStatus(),
     getRollupAdminStatus().catch(() => null),
+    getLegacyRetirementStatus().catch(() => null),
     getTranslations("admin"),
   ]);
   const contentEnabled = contentCollectionEnabled();
+  const legacyKeyRemoved = legacyRetirement?.state === "retired"
+    || legacyRetirement?.state === "key_removed_unconfirmed";
   const serverVersion = getServerVersion();
 
   return (
@@ -260,11 +263,17 @@ async function SystemTab() {
 
         <SettingsRow wide label={t("system.pricingTitle")} description={t("system.pricingDescription")}>
           <PricingSyncPanel
-            models={pricing.models}
-            lastDay={pricing.lastDay}
-            autoSync={autoSync}
+            initialStatus={pricing}
             builtinScheduler={schedulerEligible(process.env)}
           />
+        </SettingsRow>
+
+        <SettingsRow
+          wide
+          label={t("system.legacyRetirementTitle")}
+          description={t("system.legacyRetirementDescription")}
+        >
+          <LegacyRetirementPanel initialStatus={legacyRetirement} />
         </SettingsRow>
 
         <SettingsRow
@@ -294,6 +303,8 @@ async function SystemTab() {
               <p className="text-muted-foreground">
                 {t.rich("system.contentEnabledBody", { code: (chunks) => <code>{chunks}</code> })}
               </p>
+            ) : legacyKeyRemoved ? (
+              <p className="text-muted-foreground">{t("system.contentRetiredBody")}</p>
             ) : (
               <>
                 <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>

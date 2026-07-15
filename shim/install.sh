@@ -9,6 +9,7 @@ set -e
 REPO="devy1540/toard"
 BIN_DIR="${TOARD_BIN_DIR:-$HOME/.toard/bin}"
 VERSION="${TOARD_SHIM_VERSION:-latest}"
+RELEASE_BASE="${TOARD_SHIM_RELEASE_BASE:-}"
 
 os=$(uname -s)
 arch=$(uname -m)
@@ -25,7 +26,10 @@ esac
 target="${arch_t}-${os_t}"
 asset="toard-shim-${target}"
 
-if [ "$VERSION" = "latest" ]; then
+if [ -n "$RELEASE_BASE" ]; then
+  url="${RELEASE_BASE%/}/${asset}"
+  sums_url="${RELEASE_BASE%/}/SHA256SUMS"
+elif [ "$VERSION" = "latest" ]; then
   url="https://github.com/${REPO}/releases/latest/download/${asset}"
   sums_url="https://github.com/${REPO}/releases/latest/download/SHA256SUMS"
 else

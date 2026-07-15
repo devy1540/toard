@@ -1,5 +1,7 @@
 import { decryptContent, loadKek } from "@/lib/content-crypto";
 import { withUserContext } from "@/lib/rls";
+export { toHistoryPreview } from "@/lib/history-preview";
+import { toHistoryPreview } from "@/lib/history-preview";
 
 // 내 프롬프트/응답 히스토리 조회 — 본인 것만(RLS + 명시 WHERE 이중 방어), 서버에서 복호화.
 // KEK 미설정이면 본문 수집이 서버에서 꺼진 것 → enabled:false 로 알린다.
@@ -58,7 +60,6 @@ export interface HistorySessionDetail {
   latestTs: Date;
 }
 
-const PREVIEW_CHARS = 200;
 /** 상세 턴 상한 — 복호화 비용 바운드(한 세션이 비정상적으로 길어도 페이지가 죽지 않게) */
 export const DETAIL_TURN_LIMIT = 500;
 
@@ -94,29 +95,13 @@ function tryDecryptRow(r: CipherRow, kek: Buffer): string | null {
   }
 }
 
-const REQUEST_MARKER_RE = /(?:^|\n)#{1,6}\s*My request for [^:\n]+:\s*/i;
-const GENERATED_ATTACHMENT_LINE_RE =
-  /^\s*#{1,6}\s+(?:[\w.-]+-)?(?:codex-clipboard|claude-clipboard)[^\n]*$/gim;
-
-/** 미리보기용 한 줄 축약 — 첨부파일 메타데이터 대신 실제 요청문을 우선 노출한다. */
-export function toHistoryPreview(text: string): string {
-  const requestMarker = REQUEST_MARKER_RE.exec(text);
-  const candidate =
-    requestMarker && requestMarker.index >= 0
-      ? text.slice(requestMarker.index + requestMarker[0].length)
-      : text;
-  const cleaned = candidate
-    .replace(/<image\b[\s\S]*?<\/image>/gi, " ")
-    .replace(/<image\b[^>]*>/gi, " ")
-    .replace(/^\s*#{1,6}\s*files? mentioned by the user:\s*$/gim, " ")
-    .replace(GENERATED_ATTACHMENT_LINE_RE, " ");
-  const oneLine = cleaned.replace(/\s+/g, " ").trim();
-  return oneLine.length > PREVIEW_CHARS ? `${oneLine.slice(0, PREVIEW_CHARS)}…` : oneLine;
-}
-
 function filterConds(f: HistoryFilter, params: unknown[]): string[] {
   params.push(f.from, f.to);
-  const conds = [`ts >= $${params.length - 1}`, `ts < $${params.length}`];
+  const conds = [
+    "encryption_scheme = 'server_v1'",
+    `ts >= $${params.length - 1}`,
+    `ts < $${params.length}`,
+  ];
   if (f.providerKey) {
     params.push(f.providerKey);
     conds.push(`provider_key = $${params.length}`);
@@ -236,6 +221,7 @@ export async function getMyHistorySession(
       `SELECT dedup_key, session_id, provider_key, turn_role, ts, ${CIPHER_COLS}
        FROM prompt_records
        WHERE user_id = $1
+         AND encryption_scheme = 'server_v1'
          AND (session_id = $2 OR (session_id IS NULL AND dedup_key = $2))
        ORDER BY ts ASC
        LIMIT $3`,

@@ -1,4 +1,9 @@
-import { type ClickHouseClient, createClient } from "@clickhouse/client";
+import {
+  type ClickHouseClient,
+  type ClickHouseSettings,
+  createClient,
+} from "@clickhouse/client";
+import { createHash } from "node:crypto";
 import type {
   BucketOptions,
   DailyPoint,
@@ -13,6 +18,9 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
+  PricingRepairBatchResult,
+  PricingRepairRequest,
+  PricingRepairResolver,
   ProviderBreakdown,
   SaveResult,
   SessionUsageEventRow,
@@ -24,6 +32,9 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageReplayReconciliationRequest,
+  UsageReplayReconciliationResult,
+  UnpricedUsageModelDiagnostic,
   UserUsage,
   UserInsightComparison,
 } from "@toard/core";
@@ -69,6 +80,10 @@ function hourBucket(ts: Date | string): string {
 
 const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;
 const V2_ROLLUP_RETENTION_MS = 400 * 24 * 60 * 60 * 1_000;
+const ROLLUP_VALIDATION_SETTINGS = {
+  max_threads: 2,
+  max_execution_time: 30,
+} as const satisfies ClickHouseSettings;
 
 function fifteenMinuteBucket(ts: Date | string): string {
   const d = new Date(ts);
@@ -128,11 +143,11 @@ export interface ClickHouseStorageOptions {
   /** ReplacingMergeTree 중복 제거를 읽기 시점에 강제할지 여부. 기본 false. */
   readFinal?: boolean;
   /** 완성된 요청 시간대별 hour/day cache를 대시보드에서 읽을지 여부. 기본 false. */
-  readRollup?: boolean;
+  readRollup?: RollupReadMode;
   /** finalized 15분 rollup + 최근 raw tail hybrid 시계열 조회를 사용할지 여부. 기본 false. */
   read15mRollup?: boolean;
   /** 가격 provenance를 보존한 v2 15분 rollup 조회를 사용할지 여부. 기본 false. */
-  read15mV2Rollup?: boolean;
+  read15mV2Rollup?: RollupReadMode;
   /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
   enforceRetentionTtl?: boolean;
 }
@@ -147,6 +162,41 @@ export const ROLLUP_STORAGE_TABLES = [
 ] as const;
 
 export type RollupStorageTable = (typeof ROLLUP_STORAGE_TABLES)[number];
+export type RollupReadMode = boolean | "auto";
+
+export type RollupDataValidationResult = {
+  ok: boolean;
+  detail: string | null;
+};
+
+type RollupValidationSummary = {
+  rows?: string | number;
+  events?: string | number;
+  input_tokens?: string | number;
+  output_tokens?: string | number;
+  cache_read_tokens?: string | number;
+  cache_creation_tokens?: string | number;
+  cost_usd?: string | number;
+  fingerprint?: string | number;
+};
+
+function validationSummarySelect(bucketColumn: "bucket_15m" | "bucket_start"): string {
+  const source = "validation_source";
+  return `SELECT count() AS rows,
+              sum(${source}.event_count) AS events,
+              sum(${source}.input_tokens) AS input_tokens,
+              sum(${source}.output_tokens) AS output_tokens,
+              sum(${source}.cache_read_tokens) AS cache_read_tokens,
+              sum(${source}.cache_creation_tokens) AS cache_creation_tokens,
+              sum(${source}.cost_usd) AS cost_usd,
+              groupBitXor(cityHash64(
+                CAST(${source}.${bucketColumn} AS DateTime64(3, 'UTC')), ${source}.provider_key, ${source}.user_id,
+                ${source}.team_id, ${source}.session_id, ${source}.model, ${source}.host,
+                ${source}.pricing_revision_id, ${source}.cost_status, ${source}.event_count,
+                ${source}.input_tokens, ${source}.output_tokens, ${source}.cache_read_tokens,
+                ${source}.cache_creation_tokens, CAST(${source}.cost_usd AS Decimal(18, 8))
+              )) AS fingerprint`;
+}
 
 export type RollupStorageStats = {
   collectedAt: string;
@@ -218,6 +268,8 @@ interface OutboxRow {
   log_adapter: string | null;
   host: string | null;
 }
+
+type PricingRepairClickHouseRow = OutboxRow;
 
 interface RollupRow {
   bucket_hour: string;
@@ -469,12 +521,18 @@ const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
 export class ClickHouseStorage implements StorageBackend {
   private readonly tz: string;
   private readonly usageEventsSource: string;
-  private readonly readRollup: boolean;
+  private readonly readRollup: RollupReadMode;
   private readonly read15mRollup: boolean;
-  private readonly read15mV2Rollup: boolean;
+  private readonly read15mV2Rollup: RollupReadMode;
   private readonly enforceRetentionTtl: boolean;
   private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
   private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
+  private runtimeReadStateCache:
+    | { expiresAt: number; states: Map<"usage_15m_v2" | "timezone", string> }
+    | undefined;
+  private runtimeReadStateInFlight:
+    | Promise<Map<"usage_15m_v2" | "timezone", string>>
+    | undefined;
   private schemaReady: Promise<void> | undefined;
 
   constructor(
@@ -492,6 +550,46 @@ export class ClickHouseStorage implements StorageBackend {
 
   async close(): Promise<void> {
     await this.ch.close();
+  }
+
+  private async runtimeReadStates(): Promise<Map<"usage_15m_v2" | "timezone", string>> {
+    const now = Date.now();
+    if (this.runtimeReadStateCache && now < this.runtimeReadStateCache.expiresAt) {
+      return this.runtimeReadStateCache.states;
+    }
+    if (this.runtimeReadStateInFlight) return this.runtimeReadStateInFlight;
+    let inFlight: Promise<Map<"usage_15m_v2" | "timezone", string>>;
+    inFlight = this.pg.query<{ layer: "usage_15m_v2" | "timezone"; state: string }>(
+      `SELECT layer, state
+       FROM clickhouse_rollup_cutover_status
+       WHERE layer IN ('usage_15m_v2', 'timezone')`,
+    ).then(
+      (result) => {
+        const states = new Map(result.rows.map(({ layer, state }) => [layer, state]));
+        this.runtimeReadStateCache = { expiresAt: Date.now() + 10_000, states };
+        return states;
+      },
+      (error: unknown) => {
+        this.runtimeReadStateCache = undefined;
+        throw error;
+      },
+    ).finally(() => {
+      if (this.runtimeReadStateInFlight === inFlight) this.runtimeReadStateInFlight = undefined;
+    });
+    this.runtimeReadStateInFlight = inFlight;
+    return inFlight;
+  }
+
+  private async readLayerEnabled(
+    layer: "usage_15m_v2" | "timezone",
+    mode: RollupReadMode,
+  ): Promise<boolean> {
+    if (mode !== "auto") return mode;
+    try {
+      return (await this.runtimeReadStates()).get(layer) === "active";
+    } catch {
+      return false;
+    }
   }
 
   async getRollupStorageStats(): Promise<RollupStorageStats> {
@@ -538,6 +636,180 @@ export class ClickHouseStorage implements StorageBackend {
       },
       tables,
     };
+  }
+
+  async validateUsage15mV2(
+    targetTo: Date,
+    lookbackMs = 400 * 24 * 60 * 60 * 1_000,
+  ): Promise<RollupDataValidationResult> {
+    if (!Number.isFinite(targetTo.getTime())) throw new Error("invalid rollup validation target");
+    const boundedLookback = Number.isFinite(lookbackMs) && lookbackMs > 0
+      ? lookbackMs
+      : 24 * 60 * 60 * 1_000;
+    const requestedFrom = new Date(targetTo.getTime() - boundedLookback);
+    const rawRange = await this.queryJson<{ from?: string | Date | null }>(
+      `SELECT if(count() = 0, NULL, min(ts)) AS from
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}`,
+      { from: chTs(requestedFrom), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
+    );
+    const rawFrom = rawRange[0]?.from;
+    const parsedRawFrom = rawFrom instanceof Date
+      ? rawFrom
+      : typeof rawFrom === "string" && rawFrom !== ""
+        ? chDate(rawFrom)
+        : null;
+    const from = parsedRawFrom && Number.isFinite(parsedRawFrom.getTime())
+      ? new Date(Math.floor(parsedRawFrom.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS)
+      : requestedFrom;
+    const summarySelect = validationSummarySelect("bucket_15m");
+    const raw = await this.queryJson<RollupValidationSummary>(
+      `${summarySelect}
+       FROM (
+         SELECT toStartOfInterval(ts, INTERVAL 15 minute, 'UTC') AS bucket_15m,
+                provider_key, user_id, team_id, session_id, model, host,
+                pricing_revision_id, cost_status,
+                count() AS event_count,
+                sum(input_tokens) AS input_tokens,
+                sum(output_tokens) AS output_tokens,
+                sum(cache_read_tokens) AS cache_read_tokens,
+                sum(cache_creation_tokens) AS cache_creation_tokens,
+                sumIf(cost_usd, cost_status != 'unpriced') AS cost_usd
+         FROM usage_events FINAL
+         WHERE ts >= {from:DateTime64(3)}
+           AND ts < {to:DateTime64(3)}
+         GROUP BY bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                  pricing_revision_id, cost_status
+       ) AS validation_source`,
+      { from: chTs(from), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
+    );
+    const rollup = await this.queryJson<RollupValidationSummary>(
+      `${summarySelect}
+       FROM usage_15m_rollup_v2 AS validation_source FINAL
+       WHERE validation_source.bucket_15m >= {from:DateTime64(3)}
+         AND validation_source.bucket_15m < {to:DateTime64(3)}`,
+      { from: chTs(from), to: chTs(targetTo) },
+      ROLLUP_VALIDATION_SETTINGS,
+    );
+    const fields = [
+      "rows",
+      "events",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "cost_usd",
+      "fingerprint",
+    ] as const;
+    const rawSummary = raw[0] ?? {};
+    const rollupSummary = rollup[0] ?? {};
+    const mismatches = fields.filter(
+      (field) => String(rawSummary[field] ?? 0) !== String(rollupSummary[field] ?? 0),
+    );
+    return mismatches.length === 0
+      ? { ok: true, detail: null }
+      : { ok: false, detail: `15m validation mismatch: ${mismatches.join(",")}` };
+  }
+
+  async validateTimezoneRollups(
+    timezones: readonly string[],
+    now = new Date(),
+  ): Promise<RollupDataValidationResult> {
+    if (!Number.isFinite(now.getTime())) throw new Error("invalid timezone rollup validation time");
+    const fields = [
+      "rows",
+      "events",
+      "input_tokens",
+      "output_tokens",
+      "cache_read_tokens",
+      "cache_creation_tokens",
+      "cost_usd",
+      "fingerprint",
+    ] as const;
+    const summarySelect = validationSummarySelect("bucket_start");
+
+    for (const timezoneInput of new Set(timezones)) {
+      const timezone = canonicalTimezoneId(timezoneInput);
+      if (!timezone) {
+        return { ok: false, detail: `timezone validation rejected: ${timezoneInput}` };
+      }
+      const today = localDateKey(now, timezone);
+      const todayStart = firstInstantOfLocalDate(today, timezone);
+      const previousDayStart = firstInstantOfLocalDate(addLocalCalendarDays(today, -1), timezone);
+      const currentHourIndex = Math.floor(
+        Math.max(0, now.getTime() - todayStart.getTime()) / (60 * 60 * 1_000),
+      );
+      const currentHourStart = new Date(todayStart.getTime() + currentHourIndex * 60 * 60 * 1_000);
+      const ranges = [
+        {
+          resolution: "hour" as const,
+          from: new Date(currentHourStart.getTime() - 60 * 60 * 1_000),
+          to: currentHourStart,
+          expression: `toStartOfInterval(bucket_15m, INTERVAL 1 HOUR, '${timezone}')`,
+          table: "usage_hourly_timezone_rollup",
+        },
+        {
+          resolution: "day" as const,
+          from: previousDayStart,
+          to: todayStart,
+          expression: `toStartOfDay(bucket_15m, '${timezone}')`,
+          table: "usage_daily_timezone_rollup",
+        },
+      ];
+
+      for (const range of ranges) {
+        const params = {
+          timezone,
+          from: chTs(range.from),
+          to: chTs(range.to),
+        };
+        const source = await this.queryJson<RollupValidationSummary>(
+          `${summarySelect}
+           FROM (
+             SELECT ${range.expression} AS bucket_start,
+                    provider_key, user_id, team_id, session_id, model, host,
+                    pricing_revision_id, cost_status,
+                    sum(event_count) AS event_count,
+                    sum(input_tokens) AS input_tokens,
+                    sum(output_tokens) AS output_tokens,
+                    sum(cache_read_tokens) AS cache_read_tokens,
+                    sum(cache_creation_tokens) AS cache_creation_tokens,
+                    sum(cost_usd) AS cost_usd
+             FROM usage_15m_rollup_v2 FINAL
+             WHERE bucket_15m >= {from:DateTime64(3)}
+               AND bucket_15m < {to:DateTime64(3)}
+             GROUP BY bucket_start, provider_key, user_id, team_id, session_id, model, host,
+                      pricing_revision_id, cost_status
+           ) AS validation_source`,
+          params,
+          ROLLUP_VALIDATION_SETTINGS,
+        );
+        const rollup = await this.queryJson<RollupValidationSummary>(
+          `${summarySelect}
+           FROM ${range.table} AS validation_source FINAL
+           WHERE validation_source.timezone = {timezone:String}
+             AND validation_source.bucket_start >= {from:DateTime64(3)}
+             AND validation_source.bucket_start < {to:DateTime64(3)}`,
+          params,
+          ROLLUP_VALIDATION_SETTINGS,
+        );
+        const sourceSummary = source[0] ?? {};
+        const rollupSummary = rollup[0] ?? {};
+        const mismatches = fields.filter(
+          (field) => String(sourceSummary[field] ?? 0) !== String(rollupSummary[field] ?? 0),
+        );
+        if (mismatches.length > 0) {
+          return {
+            ok: false,
+            detail: `${timezone} ${range.resolution} validation mismatch: ${mismatches.join(",")}`,
+          };
+        }
+      }
+    }
+    return { ok: true, detail: null };
   }
 
   // ── 공통 ──
@@ -690,7 +962,10 @@ export class ClickHouseStorage implements StorageBackend {
     const expected = this.timezoneCacheBuckets(resolution, timezone, q);
     if (expected.length === 0) return null;
     const registry = await this.pg.query(
-      "SELECT timezone FROM clickhouse_rollup_timezones WHERE timezone = $1",
+      `SELECT timezone
+       FROM clickhouse_rollup_timezones
+       WHERE timezone = $1
+         AND validated_at IS NOT NULL`,
       [timezone],
     );
     if (registry.rowCount !== 1) return null;
@@ -754,7 +1029,7 @@ export class ClickHouseStorage implements StorageBackend {
     timezoneInput: string,
     q: ScopedQuery,
   ): Promise<CacheWindow | null> {
-    if (!this.readRollup) return null;
+    if (!(await this.readLayerEnabled("timezone", this.readRollup))) return null;
     const timezone = canonicalTimezoneId(timezoneInput);
     if (!timezone) return null;
     const key = [
@@ -762,7 +1037,7 @@ export class ClickHouseStorage implements StorageBackend {
       timezone,
       q.from.toISOString(),
       q.to.toISOString(),
-      this.readRollup ? "rollup" : "exact",
+      "rollup",
     ].join("|");
     let snapshot = this.cacheReadyInFlight.get(key);
     if (!snapshot) {
@@ -934,12 +1209,13 @@ export class ClickHouseStorage implements StorageBackend {
   }
 
   private async rollup15mV2Source(q: ScopedQuery): Promise<RollupSource | null> {
-    if (!this.read15mV2Rollup) return null;
+    if (!(await this.readLayerEnabled("usage_15m_v2", this.read15mV2Rollup))) return null;
     return this.rollupSource(q, USAGE_15M_V2);
   }
 
   private async rollup15mTimeseriesSource(q: ScopedQuery): Promise<RollupSource | null> {
-    if (this.read15mV2Rollup) return this.rollup15mV2Source(q);
+    const v2 = await this.rollup15mV2Source(q);
+    if (v2) return v2;
     if (!this.read15mRollup) return null;
     return this.rollupSource(q, USAGE_15M);
   }
@@ -989,7 +1265,12 @@ export class ClickHouseStorage implements StorageBackend {
         SELECT 'current' AS period, ${columns}
         FROM ${current.source} ${current.where}
       )`,
-      params: { ...previous.params, ...current.params },
+      params: {
+        ...previous.params,
+        ...current.params,
+        previous_from: chTs(q.previous.from),
+        current_from: chTs(q.current.from),
+      },
     };
   }
 
@@ -1010,10 +1291,19 @@ export class ClickHouseStorage implements StorageBackend {
     return this.schemaReady;
   }
 
-  private async queryJson<T>(query: string, query_params: Params): Promise<T[]> {
+  private async queryJson<T>(
+    query: string,
+    query_params: Params,
+    clickhouse_settings?: ClickHouseSettings,
+  ): Promise<T[]> {
     return retryTransientClickHouseError(async () => {
       await this.ensureSchema();
-      const rs = await this.ch.query({ query, query_params, format: "JSONEachRow" });
+      const rs = await this.ch.query({
+        query,
+        query_params,
+        clickhouse_settings,
+        format: "JSONEachRow",
+      });
       return rs.json<T>();
     });
   }
@@ -1044,6 +1334,241 @@ export class ClickHouseStorage implements StorageBackend {
       }
     }
     return { inserted: res.inserted, deduped: res.deduped };
+  }
+
+  async getUnpricedUsageModels(
+    from: Date,
+    to: Date,
+    replaceRevisionIds: string[] = [],
+  ): Promise<UnpricedUsageModelDiagnostic[]> {
+    const rows = await this.queryJson<{
+      model: string | null;
+      events: string | number;
+      first_at: string | Date;
+      last_at: string | Date;
+    }>(
+      `SELECT nullIf(model, '') AS model,
+              count() AS events,
+              min(ts) AS first_at,
+              max(ts) AS last_at
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id IN {replace_revision_ids:Array(String)}
+         )
+       GROUP BY model
+       ORDER BY events DESC, model`,
+      { from: chTs(from), to: chTs(to), replace_revision_ids: replaceRevisionIds },
+    );
+    return rows.map((row) => ({
+      model: row.model || null,
+      events: n(row.events),
+      firstAt: row.first_at instanceof Date ? row.first_at : chDate(row.first_at),
+      lastAt: row.last_at instanceof Date ? row.last_at : chDate(row.last_at),
+    }));
+  }
+
+  async reconcileCodexReplayUsage(
+    request: UsageReplayReconciliationRequest,
+  ): Promise<UsageReplayReconciliationResult> {
+    if (request.limit <= 0) {
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const rows = await this.queryJson<{
+      dedup_key: string;
+      ts: string | Date;
+      total_unpriced: string | number;
+    }>(
+      `SELECT bad.dedup_key, bad.ts,
+              (SELECT count()
+               FROM usage_events FINAL
+               WHERE ts >= {from:DateTime64(3)}
+                 AND ts < {to:DateTime64(3)}
+                 AND cost_status = 'unpriced') AS total_unpriced
+       FROM usage_events AS bad FINAL
+       WHERE bad.ts >= {from:DateTime64(3)}
+         AND bad.ts < {to:DateTime64(3)}
+         AND bad.provider_key = 'codex'
+         AND bad.model = ''
+         AND bad.cost_status = 'unpriced'
+         AND bad.session_id != ''
+         AND bad.log_adapter = 'codex'
+         AND tuple(
+           bad.session_id, bad.user_id, bad.host, bad.log_adapter,
+           bad.input_tokens, bad.output_tokens, bad.cache_read_tokens, bad.cache_creation_tokens
+         ) IN (
+           SELECT tuple(
+             session_id, user_id, host, log_adapter,
+             input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+           )
+           FROM usage_events FINAL
+           WHERE provider_key = 'codex'
+             AND model != ''
+             AND session_id != ''
+           GROUP BY session_id, user_id, host, log_adapter,
+                    input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+         )
+       ORDER BY bad.ts, bad.dedup_key
+       LIMIT {row_limit:UInt32}`,
+      {
+        from: chTs(request.from),
+        to: chTs(request.to),
+        row_limit: limit + 1,
+      },
+    );
+    const candidates = rows.slice(0, limit).map((row) => ({
+      dedup_key: row.dedup_key,
+      ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
+    }));
+    if (candidates.length === 0) {
+      return { scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false };
+    }
+
+    const markDirty = async (): Promise<void> => {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(client, candidates);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    // 삭제 전 raw fallback을 활성화하고, 삭제 후 다시 표시해 compactor 경합에도 stale cache가 남지 않게 한다.
+    await markDirty();
+    await this.ch.command({
+      query: `ALTER TABLE usage_events
+              DELETE WHERE dedup_key IN {dedup_keys:Array(String)}`,
+      query_params: { dedup_keys: candidates.map((row) => row.dedup_key) },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
+    await markDirty();
+
+    return {
+      scanned: candidates.length,
+      reconciled: candidates.length,
+      remainingUnpriced: Math.max(0, n(rows[0]?.total_unpriced) - candidates.length),
+      affectedBuckets: this.dirty15mBuckets(candidates),
+      hasMore: rows.length > limit,
+    };
+  }
+
+  async repairUnpricedUsage(
+    request: PricingRepairRequest,
+    resolver: PricingRepairResolver,
+  ): Promise<PricingRepairBatchResult> {
+    if (request.models.length === 0 || request.limit <= 0) {
+      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
+    const rows = await this.queryJson<PricingRepairClickHouseRow>(
+      `SELECT dedup_key, provider_key, user_id, team_id, session_id, model, ts,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              cost_usd, pricing_revision_id, cost_status, log_adapter, host
+       FROM usage_events FINAL
+       WHERE ts >= {from:DateTime64(3)}
+         AND ts < {to:DateTime64(3)}
+         AND (
+           cost_status = 'unpriced'
+           OR pricing_revision_id IN {replace_revision_ids:Array(String)}
+         )
+         AND model IN {models:Array(String)}
+       ORDER BY ts, dedup_key
+       LIMIT {row_limit:UInt32}`,
+      {
+        from: chTs(request.from),
+        to: chTs(request.to),
+        models: request.models,
+        replace_revision_ids: request.replaceRevisionIds,
+        row_limit: limit + 1,
+      },
+    );
+    const candidates = rows.slice(0, limit);
+    const replacements: OutboxRow[] = [];
+    for (const row of candidates) {
+      const ts = row.ts instanceof Date ? row.ts : chDate(String(row.ts));
+      const resolved = resolver({
+        dedupKey: row.dedup_key,
+        providerKey: row.provider_key,
+        userId: row.user_id || null,
+        sessionId: row.session_id || null,
+        model: row.model || null,
+        ts,
+        inputTokens: n(row.input_tokens),
+        outputTokens: n(row.output_tokens),
+        cacheReadTokens: n(row.cache_read_tokens),
+        cacheCreationTokens: n(row.cache_creation_tokens),
+        costUsd: n(row.cost_usd),
+        logAdapter: row.log_adapter || null,
+        host: row.host || null,
+      });
+      if (!resolved) continue;
+      replacements.push({
+        ...row,
+        ts,
+        cost_usd: String(resolved.costUsd),
+        pricing_revision_id: resolved.pricingRevisionId,
+        cost_status: "priced",
+      });
+    }
+
+    if (replacements.length > 0) {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(client, replacements);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+
+      const sortedKeys = replacements.map((row) => row.dedup_key).sort().join("\n");
+      const digest = createHash("sha256")
+        .update(`${request.generation}:${sortedKeys}`)
+        .digest("hex");
+      await this.ch.insert({
+        table: "usage_events",
+        values: replacements.map((row) => ({
+          dedup_key: row.dedup_key,
+          provider_key: row.provider_key,
+          user_id: row.user_id ?? "",
+          team_id: row.team_id ?? "",
+          session_id: row.session_id ?? "",
+          model: row.model ?? "",
+          ts: chTs(new Date(row.ts)),
+          input_tokens: n(row.input_tokens),
+          output_tokens: n(row.output_tokens),
+          cache_read_tokens: n(row.cache_read_tokens),
+          cache_creation_tokens: n(row.cache_creation_tokens),
+          cost_usd: row.cost_usd,
+          pricing_revision_id: row.pricing_revision_id ?? "",
+          cost_status: row.cost_status,
+          log_adapter: row.log_adapter ?? "",
+          host: row.host ?? "",
+        })),
+        format: "JSONEachRow",
+        clickhouse_settings: {
+          insert_deduplication_token: `pricing-repair:${digest}`,
+        },
+      });
+    }
+
+    return {
+      scanned: candidates.length,
+      recovered: replacements.length,
+      affectedBuckets: this.dirty15mBuckets(replacements),
+      hasMore: rows.length > limit,
+    };
   }
 
   private async enqueueUsageEvents(events: FinalizedUsageEvent[]): Promise<EnqueueResult> {
@@ -1272,12 +1797,15 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
-  private dirty15mBuckets(rows: OutboxRow[]): Date[] {
+  private dirty15mBuckets(rows: ReadonlyArray<{ ts: Date | string }>): Date[] {
     const buckets = new Set(rows.map((r) => fifteenMinuteBucket(r.ts)));
     return [...buckets].map(chDate).sort((a, b) => a.getTime() - b.getTime());
   }
 
-  private async mark15mRollupDirty(client: PoolClient, rows: OutboxRow[]): Promise<void> {
+  private async mark15mRollupDirty(
+    client: PoolClient,
+    rows: ReadonlyArray<{ ts: Date | string }>,
+  ): Promise<void> {
     const buckets = this.dirty15mBuckets(rows);
     if (buckets.length === 0) return;
     for (const spec of USAGE_ROLLUPS) {
@@ -1404,13 +1932,34 @@ export class ClickHouseStorage implements StorageBackend {
     }));
   }
 
+  private async deleteRollupBuckets(spec: RollupSpec, buckets: Date[]): Promise<void> {
+    if (buckets.length === 0) return;
+    await this.ch.command({
+      query: `ALTER TABLE ${spec.table}
+              DELETE WHERE ${spec.bucketColumn} IN {buckets:Array(DateTime64(3))}`,
+      query_params: { buckets: buckets.map(chTs) },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
+  }
+
   private async invalidateTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
     if (buckets.length === 0) return;
     await client.query(
       `WITH affected(bucket) AS (
          SELECT unnest($1::timestamptz[])
-       ), requested(resolution, timezone, bucket) AS (
-         SELECT DISTINCT resolution, timezone, date_trunc(resolution, affected.bucket, timezone)
+       ), requested(resolution, timezone, bucket, source_to) AS (
+         SELECT DISTINCT
+           resolution,
+           timezone,
+           date_trunc(resolution, affected.bucket, timezone) AS bucket,
+           CASE
+             WHEN resolution = 'hour'
+               THEN date_trunc(resolution, affected.bucket, timezone) + interval '1 hour'
+             ELSE (
+               ((date_trunc(resolution, affected.bucket, timezone) AT TIME ZONE timezone)::date + 1)::timestamp
+               AT TIME ZONE timezone
+             )
+           END AS source_to
          FROM affected
          CROSS JOIN clickhouse_rollup_timezones
          CROSS JOIN (VALUES ('hour'::text), ('day'::text)) AS resolutions(resolution)
@@ -1421,11 +1970,14 @@ export class ClickHouseStorage implements StorageBackend {
            AND coverage.timezone = requested.timezone
            AND coverage.bucket = requested.bucket
        )
-       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket)
-       SELECT resolution, timezone, bucket
+       INSERT INTO clickhouse_timezone_rollup_jobs (resolution, timezone, bucket, source_to)
+       SELECT resolution, timezone, bucket, source_to
        FROM requested
        ON CONFLICT (resolution, timezone, bucket) DO UPDATE
-       SET status = 'pending', updated_at = now()`,
+       SET status = 'pending',
+           source_to = EXCLUDED.source_to,
+           generation = clickhouse_timezone_rollup_jobs.generation + 1,
+           updated_at = now()`,
       [buckets],
     );
   }
@@ -1490,6 +2042,9 @@ export class ClickHouseStorage implements StorageBackend {
 
       const version = Date.now();
       const rollupRows = await this.aggregateRollupBuckets(spec, buckets, version);
+      // dirty 재집계는 model/cost_status 차원이 바뀌거나 완전히 사라질 수 있다.
+      // ReplacingMergeTree는 키가 바뀐 이전 행을 지우지 못하므로 해당 bucket을 먼저 비운다.
+      await this.deleteRollupBuckets(spec, dirty.rows.map(({ bucket }) => bucket));
       if (rollupRows.length > 0) {
         await this.ch.insert({
           table: spec.table,
@@ -1582,11 +2137,23 @@ export class ClickHouseStorage implements StorageBackend {
                 pricing_revision_id, cost_status`,
       { bucket: chTs(bucket), to: chTs(to) },
     );
+
+    const table = resolution === "hour"
+      ? "usage_hourly_timezone_rollup"
+      : "usage_daily_timezone_rollup";
+    // 재집계 결과가 0행이어도 이전 차원의 cache는 제거해야 한다.
+    await this.ch.command({
+      query: `ALTER TABLE ${table}
+              DELETE WHERE timezone = {timezone:String}
+                AND bucket_start = {bucket:DateTime64(3)}`,
+      query_params: { timezone: tz, bucket: chTs(bucket) },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    });
     if (rows.length === 0) return 0;
 
     const version = Date.now();
     await this.ch.insert({
-      table: resolution === "hour" ? "usage_hourly_timezone_rollup" : "usage_daily_timezone_rollup",
+      table,
       values: rows.map((row) => ({
         timezone: tz,
         bucket_start: chTs(bucket),
@@ -2116,6 +2683,19 @@ function envFlagValue(value: string | undefined, defaultValue = false): boolean 
   return normalized === "1" || normalized === "true" || normalized === "on";
 }
 
+export function resolveRollupReadMode(value: string | undefined): RollupReadMode {
+  if (value == null || value.trim() === "") return "auto";
+  return envFlagValue(value);
+}
+
+function resolveTimezoneRollupReadMode(env: RollupReadEnvironment): RollupReadMode {
+  const current = env.CLICKHOUSE_READ_TIMEZONE_ROLLUP;
+  if (current != null && current.trim() !== "") return resolveRollupReadMode(current);
+  const legacy = env.CLICKHOUSE_READ_ROLLUP;
+  if (legacy != null && legacy.trim() !== "") return resolveRollupReadMode(legacy);
+  return "auto";
+}
+
 /**
  * 예전 hourly read 플래그는 새 timezone cache read 요청의 deprecated alias다.
  * source 선택 자체는 ClickHouseStorage의 registry/coverage/dirty guard가 결정한다.
@@ -2150,12 +2730,12 @@ export function resolveClickHouseRollupReadFlag(
 
 /** 환경변수로 CH 클라이언트를 구성해 스토리지를 만든다 (메타용 PG 풀은 주입). */
 export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions = {}): ClickHouseStorage {
-  const rollupRead = resolveClickHouseRollupReadFlag();
+  resolveClickHouseRollupReadFlag();
   return new ClickHouseStorage(createClickHouseClient(), pg, {
     readFinal: readEnvFlag("CLICKHOUSE_READ_FINAL", false),
-    readRollup: rollupRead.enabled,
+    readRollup: resolveTimezoneRollupReadMode(process.env),
     read15mRollup: readEnvFlag("CLICKHOUSE_READ_15M_ROLLUP", false),
-    read15mV2Rollup: readEnvFlag("CLICKHOUSE_READ_15M_V2_ROLLUP", false),
+    read15mV2Rollup: resolveRollupReadMode(process.env.CLICKHOUSE_READ_15M_V2_ROLLUP),
     enforceRetentionTtl: readEnvFlag("CLICKHOUSE_ENFORCE_RETENTION_TTL", false),
     ...opts,
   });

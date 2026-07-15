@@ -41,7 +41,9 @@ export function dateKeysToCalendarRange(from: string, to: string): CalendarRange
   return { from: fromDate, to: toDate };
 }
 
-export function isCompleteCalendarRange(range: CalendarRange | undefined): boolean {
+export function isCompleteCalendarRange(
+  range: CalendarRange | undefined,
+): range is { from: Date; to: Date } {
   return range?.from != null && range.to != null;
 }
 
@@ -50,7 +52,7 @@ export function calendarRangeToDateKeys(
 ): { from: string; to: string } | undefined {
   if (!isCompleteCalendarRange(range)) return undefined;
   return {
-    from: calendarDateToDateKey(range.from!),
-    to: calendarDateToDateKey(range.to!),
+    from: calendarDateToDateKey(range.from),
+    to: calendarDateToDateKey(range.to),
   };
 }

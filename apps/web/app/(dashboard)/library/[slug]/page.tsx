@@ -9,7 +9,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getToolCatalogItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
+import { getToolDeploymentView } from "@/lib/tool-deployment-view";
 import { archiveToolCatalogAction } from "../tool-actions";
+import { TeamDeploymentPanel } from "./team-deployment-panel";
+import { ToolInstallPanel } from "./tool-install-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -26,6 +29,7 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
   const [{ slug }, t, locale] = await Promise.all([params, getTranslations("library"), getLocale()]);
   const item = await getToolCatalogItem(viewer, slug);
   if (!item) notFound();
+  const deployment = await getToolDeploymentView(viewer.id, viewer.teamId, item.id);
 
   if (item.lifecycleStatus === "blocked") {
     return (
@@ -67,6 +71,11 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
             </>
           ) : null}
         </div>
+      </div>
+
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]">
+        <ToolInstallPanel item={item} deployment={deployment} />
+        {viewer.teamRole === "leader" ? <TeamDeploymentPanel item={item} deployment={deployment} /> : null}
       </div>
 
       <div className="grid min-w-0 gap-4 lg:grid-cols-2">

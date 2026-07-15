@@ -28,6 +28,7 @@ import { RollupStatusPanel } from "./rollup-status-panel";
 import { ServerUpdatePanel } from "./server-update-panel";
 import { TeamPanel, type TeamRow } from "./team-panel";
 import { TeamSelect } from "./team-select";
+import { TeamRoleSelect } from "./team-role-select";
 import { InvitePanel } from "./invite-panel";
 import { LegacyRetirementPanel } from "./legacy-retirement-panel";
 import { LibraryPanel, type AdminToolItem } from "./library-panel";
@@ -41,6 +42,7 @@ interface MemberRow {
   email: string;
   name: string | null;
   role: string;
+  team_role: "member" | "leader";
   team_id: string | null;
   created_at: Date;
   last_used_at: Date | null;
@@ -49,7 +51,7 @@ interface MemberRow {
 /** 멤버 목록 + 활성 토큰의 마지막 수신 시각(수집 연결 상태 확인용) */
 async function listMembers(): Promise<MemberRow[]> {
   const r = await getPool().query<MemberRow>(
-    `SELECT u.id, u.email, u.name, u.role, u.team_id, u.created_at, t.last_used_at
+    `SELECT u.id, u.email, u.name, u.role, u.team_role, u.team_id, u.created_at, t.last_used_at
      FROM users u
      LEFT JOIN LATERAL (
        SELECT max(last_used_at) AS last_used_at
@@ -169,6 +171,7 @@ async function MembersTab() {
                 <TableHead>{t("members.colMember")}</TableHead>
                 <TableHead>{t("members.colRole")}</TableHead>
                 <TableHead>{t("members.colTeam")}</TableHead>
+                <TableHead>{t("members.colTeamRole")}</TableHead>
                 <TableHead>{t("members.colShim")}</TableHead>
                 <TableHead className="text-right">{t("members.colLastReceived")}</TableHead>
                 <TableHead className="text-right">{t("members.colJoined")}</TableHead>
@@ -190,6 +193,7 @@ async function MembersTab() {
                     <TableCell>
                       <TeamSelect userId={m.id} current={m.team_id} teams={deptOptions} />
                     </TableCell>
+                    <TableCell><TeamRoleSelect userId={m.id} current={m.team_role} disabled={!m.team_id} /></TableCell>
                     <TableCell>
                       {v ? (
                         <span className="flex items-center gap-2">

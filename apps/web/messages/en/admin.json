@@ -13,12 +13,16 @@
     "colMember": "Member",
     "colRole": "Role",
     "colTeam": "Team",
+    "colTeamRole": "Tool role",
     "colLastReceived": "Last received",
     "colJoined": "Joined",
     "colShim": "Shim version",
     "shimUnreported": "Not reported (old shim)",
     "shimOutdated": "Update needed",
     "outdatedBanner": "{count, plural, one {# device runs} other {# devices run}} an outdated shim — auto-update may be stalled"
+  },
+  "teamRoleSelect": {
+    "label": "Team tool role", "member": "Member", "leader": "Leader", "updated": "Team tool role updated."
   },
   "teams": {
     "cardTitle": "Teams ({count})",
@@ -340,6 +344,8 @@
     "teamHasEvents": "A team with attributed collection history cannot be deleted.",
     "roleInvalid": "The selected role is not valid.",
     "userNotFound": "The selected member could not be found.",
-    "lastAdminRequired": "The last administrator cannot be changed to member."
+    "lastAdminRequired": "The last administrator cannot be changed to member.",
+    "teamRoleInvalid": "The selected team tool role is invalid.",
+    "teamRequiredForLeader": "Only a member assigned to a team can become a leader."
   }
 }

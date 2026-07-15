@@ -6,7 +6,7 @@ ALTER TABLE users
 
 CREATE TABLE tool_versions (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  catalog_item_id UUID NOT NULL REFERENCES tool_catalog_items(id) ON DELETE CASCADE,
+  catalog_item_id TEXT NOT NULL CHECK (char_length(catalog_item_id) BETWEEN 1 AND 200),
   source_identity TEXT NOT NULL CHECK (char_length(source_identity) BETWEEN 1 AND 300),
   exact_ref TEXT NOT NULL CHECK (char_length(exact_ref) BETWEEN 1 AND 100),
   source_path TEXT NOT NULL DEFAULT '',
@@ -24,7 +24,7 @@ CREATE INDEX idx_tool_versions_catalog_created
 CREATE TABLE team_tool_policies (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
-  catalog_item_id UUID NOT NULL REFERENCES tool_catalog_items(id) ON DELETE CASCADE,
+  catalog_item_id TEXT NOT NULL CHECK (char_length(catalog_item_id) BETWEEN 1 AND 200),
   target_version_id UUID NOT NULL REFERENCES tool_versions(id),
   last_known_good_version_id UUID REFERENCES tool_versions(id),
   tracking_mode TEXT NOT NULL DEFAULT 'auto' CHECK (tracking_mode IN ('auto', 'pinned')),
@@ -47,7 +47,7 @@ CREATE INDEX idx_team_tool_policies_rollout
 
 CREATE TABLE user_tool_preferences (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  catalog_item_id UUID NOT NULL REFERENCES tool_catalog_items(id) ON DELETE CASCADE,
+  catalog_item_id TEXT NOT NULL CHECK (char_length(catalog_item_id) BETWEEN 1 AND 200),
   mode TEXT NOT NULL CHECK (mode IN ('install', 'exclude')),
   install_scope TEXT NOT NULL DEFAULT 'all_devices'
     CHECK (install_scope IN ('all_devices', 'selected_devices')),
@@ -64,7 +64,7 @@ CREATE TABLE user_tool_preferences (
 
 CREATE TABLE user_tool_preference_devices (
   user_id UUID NOT NULL,
-  catalog_item_id UUID NOT NULL,
+  catalog_item_id TEXT NOT NULL,
   device_fingerprint TEXT NOT NULL CHECK (device_fingerprint ~ '^[a-f0-9]{64}$'),
   PRIMARY KEY (user_id, catalog_item_id, device_fingerprint),
   FOREIGN KEY (user_id, catalog_item_id)
@@ -76,7 +76,7 @@ CREATE TABLE tool_deployment_reports (
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   ingest_token_id UUID NOT NULL REFERENCES ingest_tokens(id) ON DELETE CASCADE,
   device_fingerprint TEXT NOT NULL CHECK (device_fingerprint ~ '^[a-f0-9]{64}$'),
-  catalog_item_id UUID NOT NULL REFERENCES tool_catalog_items(id) ON DELETE CASCADE,
+  catalog_item_id TEXT NOT NULL CHECK (char_length(catalog_item_id) BETWEEN 1 AND 200),
   desired_version_id UUID REFERENCES tool_versions(id),
   applied_version_id UUID REFERENCES tool_versions(id),
   status TEXT NOT NULL CHECK (status IN ('queued', 'applying', 'settings_required', 'installed', 'conflict', 'failed', 'rolled_back', 'excluded', 'unsupported')),
@@ -99,7 +99,7 @@ CREATE TABLE tool_deployment_audit (
   actor_user_id UUID NOT NULL REFERENCES users(id),
   action TEXT NOT NULL CHECK (char_length(action) BETWEEN 1 AND 80),
   team_id UUID REFERENCES teams(id),
-  catalog_item_id UUID REFERENCES tool_catalog_items(id),
+  catalog_item_id TEXT,
   before_value JSONB,
   after_value JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()

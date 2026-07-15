@@ -63,7 +63,51 @@ export async function assignTeamAction(
   const guard = await requireAdmin();
   if (guard) return guard;
 
-  await getPool().query("UPDATE users SET team_id = $2 WHERE id = $1", [userId, teamId]);
+  await getPool().query(
+    "UPDATE users SET team_id = $2, team_role = CASE WHEN $2 IS NULL THEN 'member' ELSE team_role END WHERE id = $1",
+    [userId, teamId],
+  );
+  revalidatePath("/admin");
+  return { ok: true };
+}
+
+/** 도구 팀 기본 배포 권한 — 팀 소속 사용자만 leader가 될 수 있다. */
+export async function assignTeamRoleAction(userId: string, teamRole: string): Promise<TeamState> {
+  const guard = await requireAdmin();
+  if (guard) return guard;
+  const t = await getTranslations("admin");
+  if (teamRole !== "member" && teamRole !== "leader") return { error: t("errors.teamRoleInvalid") };
+  const actor = await getSessionUser();
+  if (!actor) return { error: t("errors.onlyAdmin") };
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    const target = await client.query<{ team_id: string | null; team_role: string }>(
+      "SELECT team_id, team_role FROM users WHERE id = $1 FOR UPDATE",
+      [userId],
+    );
+    const row = target.rows[0];
+    if (!row) {
+      await client.query("ROLLBACK");
+      return { error: t("errors.userNotFound") };
+    }
+    if (teamRole === "leader" && !row.team_id) {
+      await client.query("ROLLBACK");
+      return { error: t("errors.teamRequiredForLeader") };
+    }
+    await client.query("UPDATE users SET team_role = $2 WHERE id = $1", [userId, teamRole]);
+    await client.query(
+      `INSERT INTO tool_deployment_audit (actor_user_id, action, team_id, before_value, after_value)
+       VALUES ($1, 'team_leader_changed', $2, $3::jsonb, $4::jsonb)`,
+      [actor.id, row.team_id, JSON.stringify({ userId, teamRole: row.team_role }), JSON.stringify({ userId, teamRole })],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
   revalidatePath("/admin");
   return { ok: true };
 }

@@ -78,6 +78,44 @@
     "blockedDescription": "관리자가 다음 사유로 워크스페이스 노출을 차단했습니다.",
     "blockedNoReason": "차단 사유가 기록되지 않았습니다."
   },
+  "install": {
+    "title": "내 기기에 설치",
+    "description": "toard가 원하는 상태만 전달하면 연결된 shim이 원본을 검증하고 Codex·Claude Code에 적용합니다.",
+    "source": "고정 원본",
+    "clients": "적용 클라이언트",
+    "permissions": "요청 권한",
+    "permissionCount": "환경변수 {env}개 · 외부 host {hosts}개",
+    "installAllDevices": "내 모든 기기에 설치",
+    "installAllDevicesDescription": "현재 기기와 나중에 연결하는 기기에도 자동 적용합니다.",
+    "advancedDeviceSelection": "고급: 적용할 기기만 선택",
+    "selectedDevices": "선택한 기기에만 설치",
+    "unknownDevice": "이름 없는 기기",
+    "noDevices": "먼저 설정에서 기기를 연결해주세요.",
+    "install": "설치하기",
+    "nextShimRun": "저장 후 온라인 기기는 다음 shim 동기화(기본 60초 이내)에서 적용됩니다.",
+    "versionUnavailable": "자동 설치 버전이 아직 준비되지 않았습니다",
+    "versionUnavailableDescription": "원본과 권한 정보는 볼 수 있지만 immutable manifest가 등록되기 전에는 설치를 시작하지 않습니다.",
+    "deviceStatus": "기기별 적용 상태",
+    "settingsRequiredCommand": "로컬 설정이 필요하면 실행",
+    "excludeTeamDefault": "이 팀 기본 도구를 내 계정에서 제외",
+    "excluded": "내 계정에서 팀 기본 배포를 제외했습니다.",
+    "status": {
+      "queued": "대기 중", "applying": "적용 중", "settings_required": "로컬 설정 필요", "installed": "설치됨",
+      "conflict": "기존 설정 충돌", "failed": "실패", "rolled_back": "이전 버전 복구", "excluded": "제외됨", "unsupported": "지원하지 않음"
+    }
+  },
+  "teamDeployment": {
+    "title": "팀 기본 배포",
+    "leaderOnly": "팀 리더",
+    "description": "구성원은 개별 제외할 수 있고, 새 버전은 소수 기기부터 자동 확대합니다.",
+    "notDeployed": "현재 이 팀의 기본 도구가 아닙니다.",
+    "approvePermissions": "권한 변경 확인 후 카나리 시작",
+    "deploy": "팀 기본으로 배포",
+    "update": "새 버전 배포",
+    "rolloutNotice": "최소 1대·10% → 50% → 100%로 확대하며 실패 2대 또는 20% 이상이면 자동 복구합니다.",
+    "installed": "설치", "settingsRequired": "설정 필요", "failed": "실패",
+    "phase": { "preflight": "사전 확인", "canary": "카나리", "expand": "확대 중", "active": "전체 적용", "paused": "승인 대기", "rollback": "복구 중" }
+  },
   "form": {
     "title": "도구 공유",
     "description": "Git 원본과 안전한 메타데이터를 공유합니다. 비밀값과 로컬 파일은 업로드하지 않습니다.",

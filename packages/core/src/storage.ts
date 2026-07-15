@@ -282,6 +282,18 @@ export interface UsageReplayReconciliationResult {
   hasMore: boolean;
 }
 
+export interface UsageEventReconciliationRequest {
+  userId: string;
+  providerKey: "codex";
+  logAdapter: "codex";
+  dedupKeys: string[];
+}
+
+export interface UsageEventReconciliationResult {
+  reconciled: number;
+  affectedBuckets: Date[];
+}
+
 export interface UserUsage {
   overview: OverviewStats;
   daily: DailyPoint[];
@@ -313,6 +325,10 @@ export interface StorageBackend {
   reconcileCodexReplayUsage(
     request: UsageReplayReconciliationRequest,
   ): Promise<UsageReplayReconciliationResult>;
+  /** 인증 사용자 범위에서 클라이언트가 재현한 정확한 dedup key만 철회한다. */
+  reconcileUsageEvents(
+    request: UsageEventReconciliationRequest,
+  ): Promise<UsageEventReconciliationResult>;
 
   // ── 읽기 (대시보드) ──
   /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */

@@ -712,6 +712,81 @@ test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 m
   });
 });
 
+test("ClickHouse exact-key 보정은 소유권 범위를 유지하고 dirty-first 동기 삭제한다", async () => {
+  const key = "b".repeat(64);
+  const actions: string[] = [];
+  let selectedSql = "";
+  let selectedParams: Record<string, unknown> = {};
+  let deleteCommand: Record<string, unknown> | undefined;
+  const pgQueries: Array<{ sql: string; params?: unknown[] }> = [];
+  const ch = {
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      selectedSql = args.query;
+      selectedParams = args.query_params;
+      return { json: async () => [{ dedup_key: key, ts: "2026-07-15 01:20:21.000" }] };
+    },
+    command: async (args: Record<string, unknown>) => {
+      if (/ALTER TABLE usage_events\s+DELETE WHERE user_id/.test(String(args.query ?? ""))) {
+        actions.push("delete");
+        deleteCommand = args;
+      }
+    },
+  } as unknown as ClickHouseClient;
+  const client = {
+    async query(sql: string, params?: unknown[]) {
+      pgQueries.push({ sql, params });
+      if (sql.includes("FROM clickhouse_usage_outbox") && sql.includes("FOR UPDATE")) {
+        return {
+          rows: [{ dedup_key: key, ts: new Date("2026-07-15T01:20:21.000Z") }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("DELETE FROM clickhouse_usage_outbox")) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets")) actions.push("dirty");
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  } as unknown as PoolClient;
+  const storage = new ClickHouseStorage(
+    ch,
+    { connect: async () => client } as unknown as Pool,
+  );
+
+  const result = await storage.reconcileUsageEvents({
+    userId: "user-1",
+    providerKey: "codex",
+    logAdapter: "codex",
+    dedupKeys: [key],
+  });
+
+  assert.match(selectedSql, /FROM usage_events FINAL/);
+  assert.match(selectedSql, /user_id = \{user_id:String\}/);
+  assert.match(selectedSql, /provider_key = \{provider_key:String\}/);
+  assert.match(selectedSql, /log_adapter = \{log_adapter:String\}/);
+  assert.deepEqual(selectedParams.dedup_keys, [key]);
+  const outboxDelete = pgQueries.find(({ sql }) => sql.includes("DELETE FROM clickhouse_usage_outbox"));
+  assert.ok(outboxDelete);
+  assert.match(outboxDelete.sql, /user_id = \$1/);
+  assert.match(outboxDelete.sql, /provider_key = \$2/);
+  assert.match(outboxDelete.sql, /log_adapter = \$3/);
+  assert.deepEqual(outboxDelete.params, ["user-1", "codex", "codex", [key]]);
+  assert.deepEqual(actions, ["dirty", "dirty", "delete", "dirty", "dirty"]);
+  assert.ok(deleteCommand);
+  assert.match(String(deleteCommand?.query), /user_id = \{user_id:String\}/);
+  assert.match(String(deleteCommand?.query), /provider_key = \{provider_key:String\}/);
+  assert.match(String(deleteCommand?.query), /log_adapter = \{log_adapter:String\}/);
+  assert.equal(
+    (deleteCommand?.clickhouse_settings as { mutations_sync: string }).mutations_sync,
+    "1",
+  );
+  assert.deepEqual(result, {
+    reconciled: 1,
+    affectedBuckets: [new Date("2026-07-15T01:15:00.000Z")],
+  });
+});
+
 test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한다", async () => {
   let query = "";
   let params: Record<string, unknown> = {};

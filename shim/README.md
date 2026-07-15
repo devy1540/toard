@@ -27,6 +27,8 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 ## 로컬 세션 파일 pull 수집 (사용량 기본 경로)
 claude·codex·gemini·qwen **전 도구**의 로컬 세션 파일을 어댑터로 파싱해 `UsageEvent[]` 로 정규화하고 `POST /api/v1/events` 로 보낸다. 파서는 ccusage(MIT) Rust 어댑터에서 이식(`shim/NOTICE` attribution 참조).
 - **소스·매핑**: claude=`~/.claude/projects/**/*.jsonl`(`assistant.message.usage`, Desktop 사용분 포함, `input_tokens` 는 캐시 제외), codex=`~/.codex/sessions/**/*.jsonl`(`token_count.info.last_token_usage`, 모델은 `turn_context.model`, `input−cached`, `total_token_usage` 변화 기준 중복 방출 dedup), gemini·qwen=각 CLI 로그.
+- **Codex fork/subagent 재생 방어**: Codex가 새 rollout 앞에 부모 history를 복사하는 경우, subagent의 첫 `inter_agent_communication_metadata` 또는 vscode fork에서 현재 session UUIDv7 이상인 첫 `task_started.turn_id`를 구조적 경계로 사용한다. 경계 전 `token_count`는 신규 사용량에서 제외한다. 일반 root 세션의 inter-agent 메시지는 제외 대상이 아니다.
+- **기존 재생 오염 1회 보정**: 업그레이드된 shim은 Codex usage cursor의 `reconciliation_version`을 보고 로그 전체를 한 번 다시 읽는다. 과거 parser와 동일한 session/model/token 승계로 재생분의 `dedup_key`만 재현해 인증된 `/api/v1/events/reconcile`로 최대 1,000개씩 보낸다. 정상 구간에서도 발견된 키는 절대 철회하지 않는다. 서버는 인증 토큰의 사용자 + `provider=codex` + `log_adapter=codex` 범위의 정확 키만 삭제하고 PostgreSQL daily mart 또는 ClickHouse dirty rollup/outbox를 함께 갱신한다. 직접 DB 삭제나 시간 기반 추정은 하지 않는다. 404/405 서버는 기존 usage 수집을 유지하고 24시간 뒤 다시 확인한다.
 - **커서**: 로그가 append 가 아니라 세션 파일 제자리 갱신이라, 파일별 stamp(mtime+size) 를 `~/.toard/state/cursors/` 에 기록하고 변한 파일만 재파싱. **전송 필터**: 파일별 전송 진행(sent 개수 + dedup_key prefix 해시)을 커서에 함께 기록해, 재파싱해도 이전에 보낸 prefix 가 그대로면 **신규분만 전송**한다 — 활성 세션 파일이 주기마다 변해도 전체 재전송하지 않음. 판정이 어긋나면(파일 재작성 등) 전체 전송으로 폴백하고 서버 dedup_key 멱등 저장이 흡수.
 - **백필**: usage 커서가 없으면 전 파일 스캔 → 과거 사용량 전량 백필(토큰 카운트라 민감정보 아님, 히스토리 가치↑). 이후엔 커서로 변한 파일만.
 - **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).

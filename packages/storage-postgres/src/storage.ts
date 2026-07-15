@@ -26,6 +26,8 @@ import type {
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageEventReconciliationRequest,
+  UsageEventReconciliationResult,
   UsageReplayReconciliationRequest,
   UsageReplayReconciliationResult,
   UnpricedUsageModelDiagnostic,
@@ -343,6 +345,61 @@ export class PostgresStorage implements StorageBackend {
         remainingUnpriced: n(remainingResult.rows[0]?.remaining_unpriced),
         affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
         hasMore: selected.rows.length > limit,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async reconcileUsageEvents(
+    request: UsageEventReconciliationRequest,
+  ): Promise<UsageEventReconciliationResult> {
+    const dedupKeys = [...new Set(request.dedupKeys)].slice(0, 1_000);
+    if (dedupKeys.length === 0) {
+      return { reconciled: 0, affectedBuckets: [] };
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query<{
+        dedup_key: string;
+        ts: Date;
+        local_day: string;
+      }>(
+        `SELECT dedup_key, ts,
+                to_char((ts AT TIME ZONE $5)::date, 'YYYY-MM-DD') AS local_day
+         FROM usage_events
+         WHERE user_id = $1
+           AND provider_key = $2
+           AND log_adapter = $3
+           AND dedup_key = ANY($4::text[])
+         FOR UPDATE`,
+        [request.userId, request.providerKey, request.logAdapter, dedupKeys, this.tz],
+      );
+      const selectedKeys = selected.rows.map((row) => row.dedup_key);
+      let reconciled = 0;
+      if (selectedKeys.length > 0) {
+        const deletion = await client.query(
+          `DELETE FROM usage_events
+           WHERE user_id = $1
+             AND provider_key = $2
+             AND log_adapter = $3
+             AND dedup_key = ANY($4::text[])`,
+          [request.userId, request.providerKey, request.logAdapter, selectedKeys],
+        );
+        reconciled = deletion.rowCount ?? 0;
+      }
+      const days = [...new Set(selected.rows.map((row) => row.local_day))].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        reconciled,
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
       };
     } catch (error) {
       await client.query("ROLLBACK").catch(() => undefined);

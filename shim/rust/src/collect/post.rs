@@ -14,6 +14,8 @@ pub struct PostResult {
     pub inserted: u64,
     #[serde(default)]
     pub deduped: u64,
+    #[serde(default)]
+    pub reconciled: u64,
 }
 
 enum Outcome {
@@ -124,6 +126,23 @@ pub fn post_tool_events(endpoint: &str, token: &str, body: &str) -> EndpointResu
         "POST",
         "/v1/tool-events",
         "tool-events",
+        body,
+    ) {
+        Outcome::Ok(result) => EndpointResult::Ok(result),
+        Outcome::Unsupported => EndpointResult::Unsupported,
+        Outcome::Unauthorized => EndpointResult::Unauthorized,
+        Outcome::Disabled => EndpointResult::Err("HTTP 503".into()),
+        Outcome::Err(error) => EndpointResult::Err(error),
+    }
+}
+
+pub fn post_usage_reconciliation(endpoint: &str, token: &str, body: &str) -> EndpointResult {
+    match post_batch(
+        endpoint,
+        token,
+        "POST",
+        "/v1/events/reconcile",
+        "usage-reconciliation",
         body,
     ) {
         Outcome::Ok(result) => EndpointResult::Ok(result),

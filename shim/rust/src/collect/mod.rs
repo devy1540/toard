@@ -27,6 +27,7 @@ use crate::usage_event::{to_events_body, UsageEvent};
 pub const SPAWN_ARG: &str = "___toard-spawn-collector";
 pub const RUN_ARG: &str = "___toard-collect";
 const DEFAULT_INTERVAL_SECS: u64 = 600;
+const CODEX_REPLAY_RECONCILIATION_VERSION: u32 = 1;
 
 /// wrap 경로에서 호출 — 토큰 있는 머신만, 기본 10분 스로틀로 백그라운드 수집.
 /// 도구를 쓸 때마다 수집이 따라오므로 데몬 관리가 필요 없다. 동시 실행 레이스로
@@ -100,6 +101,9 @@ pub struct RawToolActivity {
 #[derive(Debug, Default)]
 pub struct ParsedLog {
     pub usage: Vec<RawUsage>,
+    /// fork/subagent rollout에 복사되어 과거 parser가 이미 전송한 부모 사용량.
+    /// 기존 dedup key를 그대로 재현해 서버 reconciliation에만 사용한다.
+    pub replayed_usage: Vec<RawUsage>,
     pub content: Vec<RawContent>,
     pub tools: Vec<RawToolActivity>,
 }
@@ -122,6 +126,7 @@ pub trait LogAdapter {
     fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
         ParsedLog {
             usage: self.parse_file(path),
+            replayed_usage: Vec::new(),
             content: if include_content {
                 self.parse_content(path)
             } else {
@@ -179,8 +184,21 @@ fn should_parse_tool_file(
     first_tool_run: bool,
     usage_same: bool,
     tools_same: bool,
+    reconciliation_scan: bool,
 ) -> bool {
-    !usage_same || (collect_tools && probe_due && !first_tool_run && !tools_same)
+    reconciliation_scan
+        || !usage_same
+        || (collect_tools && probe_due && !first_tool_run && !tools_same)
+}
+
+fn reconciliation_active(
+    adapter: &str,
+    cursor_version: u32,
+    probe_due: bool,
+    dry_run: bool,
+) -> bool {
+    adapter == "codex"
+        && (dry_run || (cursor_version < CODEX_REPLAY_RECONCILIATION_VERSION && probe_due))
 }
 
 /// 디렉토리를 재귀 순회하며 확장자가 일치하는 파일 수집 (심링크 루프 방지 깊이 캡).
@@ -253,6 +271,21 @@ fn to_usage_event(adapter: &str, r: &RawUsage, host: Option<&str>) -> UsageEvent
         log_adapter: Some(adapter.to_string()),
         host: host.map(String::from),
     }
+}
+
+fn to_reconciliation_body(dedup_keys: &[String]) -> String {
+    serde_json::json!({ "dedupKeys": dedup_keys }).to_string()
+}
+
+fn reconciliation_keys(
+    replay_keys: Vec<String>,
+    legitimate_keys: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    replay_keys
+        .into_iter()
+        .filter(|key| !legitimate_keys.contains(key) && seen.insert(key.clone()))
+        .collect()
 }
 
 /// 본문 수집 opt-in — 기본 off. 이게 켜져야 shim 이 프롬프트/응답 본문을 담는다.
@@ -501,6 +534,12 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
 
         let files = adapter.discover_files();
         let mut cur = cursor::load(key);
+        let reconciliation_scan = reconciliation_active(
+            key,
+            cur.reconciliation_version,
+            post::unsupported_probe_due("usage-reconciliation"),
+            dry_run,
+        );
         let tool_cursor_key = format!("{key}-tools");
         let mut tool_cur = cursor::load(&tool_cursor_key);
         let first_tool_run = collect_tools && tool_cur.files.is_empty();
@@ -521,7 +560,11 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
 
         let mut changed = 0usize;
         let mut parsed_total = 0usize;
+        let mut replayed_total = 0usize;
+        let mut replayed_tokens = 0u64;
         let mut events: Vec<UsageEvent> = Vec::new();
+        let mut replay_keys: Vec<String> = Vec::new();
+        let mut legitimate_keys = std::collections::HashSet::new();
         let mut tool_events: Vec<RawToolActivity> = Vec::new();
         let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
         let mut tool_updates: Vec<(String, cursor::FileState)> = Vec::new();
@@ -538,6 +581,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 first_tool_run,
                 usage_same,
                 tools_same,
+                reconciliation_scan,
             ) {
                 continue;
             }
@@ -548,6 +592,24 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 .iter()
                 .map(|raw| to_usage_event(key, raw, host.as_deref()))
                 .collect();
+            legitimate_keys.extend(file_events.iter().map(|event| event.dedup_key.clone()));
+            if reconciliation_scan {
+                replayed_total += parsed.replayed_usage.len();
+                replayed_tokens =
+                    parsed
+                        .replayed_usage
+                        .iter()
+                        .fold(replayed_tokens, |total, usage| {
+                            total.saturating_add(
+                                usage
+                                    .input_tokens
+                                    .saturating_add(usage.output_tokens)
+                                    .saturating_add(usage.cache_read_tokens)
+                                    .saturating_add(usage.cache_creation_tokens),
+                            )
+                        });
+                replay_keys.extend(parsed.replayed_usage.iter().map(|raw| dedup_key(key, raw)));
+            }
             parsed_total += file_events.len();
             let keys: Vec<&str> = file_events
                 .iter()
@@ -599,11 +661,12 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 tool_events.extend(file_tools.into_iter().skip(start));
             }
         }
+        let replay_keys = reconciliation_keys(replay_keys, &legitimate_keys);
 
         if dry_run {
             println!(
-                "{key}: 파일 {}개 (변경 {changed}개) → 이벤트 {parsed_total}건, 전송 대상 {}건 [dry-run]",
-                files.len(), events.len()
+                "{key}: 파일 {}개 (변경 {changed}개) → 정상 이벤트 {parsed_total}건, 전송 대상 {}건, 재생 감지 {replayed_total}건 · 재생 토큰 {replayed_tokens} · 철회 키 {}건 [dry-run]",
+                files.len(), events.len(), replay_keys.len()
             );
             if collect_tools {
                 println!("{key} 도구: 전송 대상 {}건 [dry-run]", tool_events.len());
@@ -643,6 +706,52 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 );
             }
         }
+
+        let mut reconciliation_complete = !reconciliation_scan;
+        if reconciliation_scan {
+            if replay_keys.is_empty() {
+                reconciliation_complete = true;
+            } else {
+                let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
+                let mut reconciled = 0u64;
+                let mut reconciliation_ok = true;
+                for chunk in replay_keys.chunks(CHUNK) {
+                    match post::post_usage_reconciliation(
+                        &endpoint,
+                        token,
+                        &to_reconciliation_body(chunk),
+                    ) {
+                        post::EndpointResult::Ok(result) => reconciled += result.reconciled,
+                        post::EndpointResult::Unsupported => {
+                            post::mark_unsupported("usage-reconciliation");
+                            reconciliation_ok = false;
+                            break;
+                        }
+                        post::EndpointResult::Unauthorized => {
+                            eprintln!(
+                                "toard-shim: {key} 재생 보정 실패 — 토큰이 유효하지 않습니다"
+                            );
+                            reconciliation_ok = false;
+                            failed = true;
+                            break;
+                        }
+                        post::EndpointResult::Err(error) => {
+                            eprintln!("toard-shim: {key} 재생 보정 실패 — {error}");
+                            reconciliation_ok = false;
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if reconciliation_ok {
+                    println!(
+                        "{key}: 기존 재생 오염 키 {}건 확인 · {reconciled}건 철회",
+                        replay_keys.len()
+                    );
+                    reconciliation_complete = true;
+                }
+            }
+        }
         if usage_ok {
             for (path, state) in updates {
                 cur.files.insert(path, state);
@@ -652,6 +761,9 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 .map(|file| file.display().to_string())
                 .collect::<std::collections::HashSet<_>>();
             cur.files.retain(|path, _| alive.contains(path));
+            if reconciliation_scan && reconciliation_complete {
+                cur.reconciliation_version = CODEX_REPLAY_RECONCILIATION_VERSION;
+            }
             cursor::save(key, &cur);
         }
 
@@ -1007,6 +1119,36 @@ mod tests {
     }
 
     #[test]
+    fn codex_reconciliation_forces_legacy_cursor_scan_only_when_probe_is_due() {
+        assert!(reconciliation_active("codex", 0, true, false));
+        assert!(!reconciliation_active("codex", 0, false, false));
+        assert!(!reconciliation_active("codex", 1, true, false));
+        assert!(!reconciliation_active("claude", 0, true, false));
+        assert!(reconciliation_active("codex", 1, false, true));
+    }
+
+    #[test]
+    fn replay_reconciliation_body_contains_keys_only() {
+        let body = to_reconciliation_body(&["a".repeat(64), "b".repeat(64)]);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 1);
+        assert_eq!(value["dedupKeys"].as_array().unwrap().len(), 2);
+        assert!(body.find("session").is_none());
+    }
+
+    #[test]
+    fn reconciliation_never_retracts_a_key_also_seen_as_legitimate() {
+        let legitimate = std::collections::HashSet::from(["keep".to_string()]);
+        assert_eq!(
+            reconciliation_keys(
+                vec!["keep".into(), "remove".into(), "remove".into()],
+                &legitimate,
+            ),
+            vec!["remove".to_string()],
+        );
+    }
+
+    #[test]
     fn dedup_key_prefers_message_id_and_is_stable() {
         let r = RawUsage {
             ts_ms: 1_700_000_000_000,
@@ -1200,9 +1342,18 @@ mod tests {
 
     #[test]
     fn unsupported_backoff_skips_tool_parse_until_probe_is_due() {
-        assert!(!should_parse_tool_file(true, false, false, true, false));
-        assert!(should_parse_tool_file(true, true, false, true, false));
-        assert!(!should_parse_tool_file(true, true, false, true, true));
+        assert!(!should_parse_tool_file(
+            true, false, false, true, false, false
+        ));
+        assert!(should_parse_tool_file(
+            true, true, false, true, false, false
+        ));
+        assert!(!should_parse_tool_file(
+            true, true, false, true, true, false
+        ));
+        assert!(should_parse_tool_file(
+            false, false, false, true, true, true
+        ));
     }
 
     #[test]

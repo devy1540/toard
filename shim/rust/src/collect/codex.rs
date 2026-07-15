@@ -40,7 +40,7 @@ impl LogAdapter for Codex {
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
-        parse_rollout_usage(path)
+        parse_rollout_all(path, false, false).usage
     }
 
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
@@ -117,7 +117,13 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
     let mut session_id: Option<Arc<str>> = None;
     let mut model: Option<String> = None;
     let mut last_seen_total: Option<(u64, u64)> = None;
-    for line in bytes.split(|byte| *byte == b'\n') {
+    let mut first_session_id: Option<String> = None;
+    let mut source_is_subagent = false;
+    let mut saw_foreign_session = false;
+    let mut first_live_fork_task: Option<usize> = None;
+    let mut first_inter_agent_marker: Option<usize> = None;
+    let mut positioned_usage = Vec::new();
+    for (line_index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             continue;
         };
@@ -132,10 +138,26 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             .and_then(iso_to_epoch_ms)
             .unwrap_or(fallback);
         if ty == Some("session_meta") {
-            session_id = payload
+            let next_session_id = payload
                 .and_then(|item| item.get("session_id"))
                 .and_then(Value::as_str)
-                .map(Arc::from);
+                .map(str::to_string);
+            if first_session_id.is_none() {
+                first_session_id = next_session_id.clone();
+                source_is_subagent = payload
+                    .and_then(|item| item.get("source"))
+                    .and_then(Value::as_object)
+                    .is_some_and(|source| source.contains_key("subagent"));
+            } else if next_session_id != first_session_id {
+                // vscode fork/resume는 새 rollout의 session_meta 뒤에 다른 세션의 전체
+                // 기록을 복사한다. 현재 session UUID 이후의 첫 turn이 live 경계다.
+                saw_foreign_session = true;
+            }
+            session_id = next_session_id.map(Arc::from);
+            continue;
+        }
+        if ty == Some("inter_agent_communication_metadata") {
+            first_inter_agent_marker.get_or_insert(line_index);
             continue;
         }
         if ty == Some("turn_context") {
@@ -149,6 +171,20 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
         }
         if ty == Some("event_msg") {
             let Some(item) = payload else { continue };
+            if item.get("type").and_then(Value::as_str) == Some("task_started")
+                && saw_foreign_session
+                && !source_is_subagent
+                && first_live_fork_task.is_none()
+            {
+                let is_current_turn = item
+                    .get("turn_id")
+                    .and_then(Value::as_str)
+                    .zip(first_session_id.as_deref())
+                    .is_some_and(|(turn_id, current_session_id)| turn_id >= current_session_id);
+                if is_current_turn {
+                    first_live_fork_task = Some(line_index);
+                }
+            }
             match item.get("type").and_then(Value::as_str) {
                 Some("token_count") => {
                     let Some(info) = item.get("info").and_then(Value::as_object) else {
@@ -185,7 +221,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                         cache_creation_1h_tokens: 0,
                     };
                     if usage.input_tokens + usage.output_tokens + usage.cache_read_tokens > 0 {
-                        parsed.usage.push(usage);
+                        positioned_usage.push((line_index, usage));
                     }
                 }
                 Some("user_message" | "agent_message") if include_content => {
@@ -274,6 +310,20 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             }
         }
     }
+    let replay_cutoff = if source_is_subagent {
+        first_inter_agent_marker
+    } else if saw_foreign_session {
+        first_live_fork_task
+    } else {
+        None
+    };
+    for (line_index, usage) in positioned_usage {
+        if replay_cutoff.is_some_and(|cutoff| line_index < cutoff) {
+            parsed.replayed_usage.push(usage);
+        } else {
+            parsed.usage.push(usage);
+        }
+    }
     parsed
 }
 
@@ -287,104 +337,6 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
 ///    authoritative total 과 정확히 일치(실측: input_excl+cache_read=total.input, output=total.output).
 ///  - Codex `input_tokens` 는 cached 를 **포함** → `input − cached`(saturating)로 캐시 제외분 산출(§4.2).
 ///  - `info==null` 이벤트(실측 존재)와 토큰 전부 0 은 스킵.
-fn parse_rollout_usage(path: &Path) -> Vec<RawUsage> {
-    let fallback = file_mtime_ms(path);
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let mut session_id: Option<String> = None;
-    let mut model: Option<String> = None;
-    let mut last_seen_total: Option<(u64, u64)> = None;
-    let mut out = Vec::new();
-    for line in bytes.split(|b| *b == b'\n') {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Some(obj) = v.as_object() else {
-            continue;
-        };
-        let ty = obj.get("type").and_then(Value::as_str);
-        let payload = obj.get("payload").and_then(Value::as_object);
-
-        match ty {
-            Some("session_meta") => {
-                if let Some(p) = payload {
-                    session_id = p
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
-                }
-                continue;
-            }
-            Some("turn_context") => {
-                if let Some(m) = payload.and_then(|p| p.get("model")).and_then(Value::as_str) {
-                    model = Some(m.to_string());
-                }
-                continue;
-            }
-            Some("event_msg") => {}
-            _ => continue,
-        }
-
-        let Some(p) = payload else { continue };
-        if p.get("type").and_then(Value::as_str) != Some("token_count") {
-            continue;
-        }
-        // info==null 이벤트는 스킵(실측: 18995개 중 4개 등 존재 — 스킵 안 하면 크래시).
-        let Some(info) = p.get("info").and_then(Value::as_object) else {
-            continue;
-        };
-        // subagent rollout 앞부분에는 부모 세션 token_count가 재생될 수 있다.
-        // 이 세션의 turn_context(model)가 나오기 전 값은 자체 사용량이 아니다.
-        let Some(current_model) = model.as_ref().filter(|value| !value.is_empty()) else {
-            continue;
-        };
-
-        // 중복 방출 dedup: total_token_usage(누적)가 직전과 같으면 같은 턴 재방출 → 스킵.
-        // total 부재(구/특수 포맷)면 비교 불가라 그대로 emit(실측상 total 은 항상 존재).
-        if let Some(tt) = info.get("total_token_usage").and_then(Value::as_object) {
-            let u = |k: &str| tt.get(k).and_then(Value::as_u64).unwrap_or(0);
-            let cur = (u("input_tokens"), u("output_tokens"));
-            if last_seen_total == Some(cur) {
-                continue;
-            }
-            last_seen_total = Some(cur);
-        }
-
-        let Some(lt) = info.get("last_token_usage").and_then(Value::as_object) else {
-            continue;
-        };
-        let tok = |k: &str| lt.get(k).and_then(Value::as_u64).unwrap_or(0);
-        let cached = tok("cached_input_tokens");
-        // Codex input_tokens 는 cached 를 포함(실측: total=input+output, cached⊂input) →
-        // UsageEvent 불변식(input=캐시 제외)에 맞춰 빼준다. saturating 으로 음수 방어(리스크 A).
-        let input_tokens = tok("input_tokens").saturating_sub(cached);
-        // reasoning_output_tokens ⊂ output_tokens(실측) → 따로 더하지 않음.
-        let output_tokens = tok("output_tokens");
-        if input_tokens == 0 && output_tokens == 0 && cached == 0 {
-            continue;
-        }
-        out.push(RawUsage {
-            ts_ms: obj
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(iso_to_epoch_ms)
-                .unwrap_or(fallback),
-            session_id: session_id.clone(),
-            model: Some(current_model.clone()),
-            // token_count 엔 message id 가 없음 → dedup 은 session+ts+model+in+out(§4.3).
-            message_id: None,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens: cached,
-            // Codex 는 캐시 생성 개념 없음 → 0.
-            cache_creation_tokens: 0,
-            cache_creation_1h_tokens: 0,
-        });
-    }
-    out
-}
-
 fn sessions_dir() -> Option<PathBuf> {
     if let Some(h) = std::env::var_os("CODEX_HOME") {
         return Some(PathBuf::from(h).join("sessions"));
@@ -579,6 +531,84 @@ mod tests {
                 iso_to_epoch_ms("2026-07-13T09:14:57.000Z").unwrap(),
             );
         }
+    }
+
+    #[test]
+    fn separates_full_fork_replay_from_live_subagent_usage() {
+        let tmp = TempDir::new("codex-full-fork-replay");
+        let path = tmp.write(
+            "sessions/2026/07/15/rollout.jsonl",
+            &[
+                // 새 subagent rollout의 정체성. 그 뒤에는 부모 rollout이 통째로 복사된다.
+                r#"{"timestamp":"2026-07-15T01:20:20.000Z","type":"session_meta","payload":{"session_id":"subagent-current","source":{"subagent":{"thread_spawn":true}}}}"#,
+                r#"{"timestamp":"2026-07-15T01:20:21.000Z","type":"session_meta","payload":{"session_id":"parent-replayed","source":"vscode"}}"#,
+                r#"{"timestamp":"2026-07-15T01:20:21.000Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-07-15T01:20:21.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+                // 이 구조적 marker 이후부터가 새 subagent의 실제 실행이다.
+                r#"{"timestamp":"2026-07-15T01:20:27.000Z","type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}"#,
+                r#"{"timestamp":"2026-07-15T01:20:28.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":160,"output_tokens":20},"total_token_usage":{"input_tokens":300,"output_tokens":30}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Codex.parse_changed(&path, false, false);
+
+        assert_eq!(parsed.replayed_usage.len(), 1);
+        assert_eq!(parsed.replayed_usage[0].output_tokens, 10);
+        assert_eq!(parsed.usage.len(), 1);
+        assert_eq!(parsed.usage[0].output_tokens, 20);
+        // 과거 parser가 저장한 키를 그대로 재현하려면 복사된 부모 session_id 승계를 보존해야 한다.
+        assert_eq!(
+            parsed.replayed_usage[0].session_id.as_deref(),
+            Some("parent-replayed")
+        );
+    }
+
+    #[test]
+    fn separates_vscode_fork_without_inter_agent_marker() {
+        let tmp = TempDir::new("codex-vscode-fork-replay");
+        let path = tmp.write(
+            "sessions/2026/07/15/rollout.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"session_id":"019f5a26-67e2-7011-9a5f-abeff38bf4df","source":"vscode"}}"#,
+                r#"{"type":"session_meta","payload":{"session_id":"019f5634-1aba-70c3-95f1-d1dacd259ecb","source":"vscode"}}"#,
+                // foreign meta 직후의 task도 복사본일 수 있다. 이 지점에서 live로 바꾸면 안 된다.
+                r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"019f5634-1dec-7282-a5fb-4f65770d9e50"}}"#,
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-07-15T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+                r#"{"timestamp":"2026-07-15T02:00:00Z","type":"event_msg","payload":{"type":"task_started","turn_id":"019f5a26-b995-70f0-8529-fc00110fe745"}}"#,
+                r#"{"timestamp":"2026-07-15T02:00:01Z","type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-07-15T02:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":160,"output_tokens":20},"total_token_usage":{"input_tokens":300,"output_tokens":30}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Codex.parse_changed(&path, false, false);
+
+        assert_eq!(parsed.replayed_usage.len(), 1);
+        assert_eq!(parsed.usage.len(), 1);
+        assert_eq!(parsed.usage[0].output_tokens, 20);
+    }
+
+    #[test]
+    fn keeps_root_usage_around_inter_agent_messages() {
+        let tmp = TempDir::new("codex-root-inter-agent-message");
+        let path = tmp.write(
+            "sessions/2026/07/15/rollout.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"session_id":"root","source":"vscode"}}"#,
+                r#"{"type":"turn_context","payload":{"model":"gpt-5.6-sol"}}"#,
+                r#"{"timestamp":"2026-07-15T01:00:00Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":80,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}"#,
+                r#"{"timestamp":"2026-07-15T01:00:01Z","type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}"#,
+                r#"{"timestamp":"2026-07-15T01:00:02Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":200,"cached_input_tokens":160,"output_tokens":20},"total_token_usage":{"input_tokens":300,"output_tokens":30}}}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Codex.parse_changed(&path, false, false);
+
+        assert!(parsed.replayed_usage.is_empty());
+        assert_eq!(parsed.usage.len(), 2);
     }
 
     #[test]

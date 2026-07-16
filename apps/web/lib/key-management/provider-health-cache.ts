@@ -49,13 +49,50 @@ function validCheckedAt(checkedAt: () => Date): Date | null {
 function unhealthyHealth(
   latencyMs: number,
   checkedAt: Date,
+  errorCode = "PROVIDER_CANARY_FAILED",
 ): KeyProviderHealth {
   return {
     status: "unhealthy",
     latencyMs,
     checkedAt,
-    errorCode: "PROVIDER_CANARY_FAILED",
+    errorCode,
   };
+}
+
+const SAFE_PROVIDER_ERROR_CODES = new Set([
+  "AUTH_FAILED",
+  "EMPTY_CIPHERTEXT",
+  "EMPTY_PLAINTEXT",
+  "FAILED",
+  "INVALID_CIPHERTEXT",
+  "INVALID_PLAINTEXT",
+  "KEY_DISABLED",
+  "KEY_INVALID_STATE",
+  "KEY_MISMATCH",
+  "KEY_NOT_FOUND",
+  "RESPONSE_INVALID",
+  "TEMPORARY",
+  "THROTTLED",
+  "WRAPPER_MISMATCH",
+]);
+
+function safeProviderErrorCode(
+  provider: KeyManagementProvider,
+  error: unknown,
+): string {
+  try {
+    if (!(error instanceof Error) || typeof error.message !== "string") {
+      return "PROVIDER_CANARY_FAILED";
+    }
+    const prefix = `${provider.name}:`;
+    if (!error.message.startsWith(prefix)) return "PROVIDER_CANARY_FAILED";
+    const code = error.message.slice(prefix.length);
+    return SAFE_PROVIDER_ERROR_CODES.has(code)
+      ? code
+      : "PROVIDER_CANARY_FAILED";
+  } catch {
+    return "PROVIDER_CANARY_FAILED";
+  }
 }
 
 export async function runProviderCanary(
@@ -93,13 +130,14 @@ export async function runProviderCanary(
       latencyMs: safeLatency(startedAt, finishedAt),
       checkedAt: resultCheckedAt,
     };
-  } catch {
+  } catch (error) {
     const finishedAt = startedAt === null ? null : finiteNow(now);
     return unhealthyHealth(
       startedAt !== null && finishedAt !== null
         ? safeLatency(startedAt, finishedAt)
         : 0,
       validCheckedAt(checkedAt) ?? new Date(0),
+      safeProviderErrorCode(provider, error),
     );
   } finally {
     uck?.fill(0);

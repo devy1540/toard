@@ -92,6 +92,70 @@ test("canary mismatch와 provider 예외는 detail 없는 안전한 unhealthy re
   assert.equal(JSON.stringify(failedResult).includes("secret provider detail"), false);
 });
 
+test("canary는 provider의 안전한 allowlisted error code만 보존한다", async () => {
+  const safeFailureProvider: KeyManagementProvider = {
+    name: "aws-kms",
+    keyRef: "test:aws-key",
+    fingerprint: "aws-kms:safe-failure",
+    async wrapKey(): Promise<WrappedUserKey> {
+      throw new Error("aws-kms:THROTTLED");
+    },
+    async unwrapKey(): Promise<Buffer> {
+      throw new Error("unused");
+    },
+    async healthCheck(): Promise<KeyProviderHealth> {
+      throw new Error("unused");
+    },
+    async describeCredentialSource(): Promise<CredentialSourceSummary> {
+      return { kind: "test", staticCredential: false };
+    },
+  };
+
+  const transient = await runProviderCanary(safeFailureProvider);
+  assert.equal(transient.status, "unhealthy");
+  if (transient.status === "unhealthy") {
+    assert.equal(transient.errorCode, "THROTTLED");
+  }
+
+  for (const message of [
+    "aws-kms:UNKNOWN",
+    "aws-kms:TEMPORARY requestId=secret",
+    "gcp-kms:TEMPORARY",
+    "secret provider detail",
+  ]) {
+    const unsafeFailureProvider: KeyManagementProvider = {
+      ...safeFailureProvider,
+      async wrapKey(): Promise<WrappedUserKey> {
+        throw new Error(message);
+      },
+    };
+    const result = await runProviderCanary(unsafeFailureProvider);
+    assert.equal(result.status, "unhealthy");
+    if (result.status === "unhealthy") {
+      assert.equal(result.errorCode, "PROVIDER_CANARY_FAILED");
+      assert.equal(JSON.stringify(result).includes("secret"), false);
+    }
+  }
+
+  const maliciousError = new Error("placeholder");
+  Object.defineProperty(maliciousError, "message", {
+    get() {
+      throw new Error("message getter secret");
+    },
+  });
+  const hostileProvider: KeyManagementProvider = {
+    ...safeFailureProvider,
+    async wrapKey(): Promise<WrappedUserKey> {
+      throw maliciousError;
+    },
+  };
+  const hostileResult = await runProviderCanary(hostileProvider);
+  assert.equal(hostileResult.status, "unhealthy");
+  if (hostileResult.status === "unhealthy") {
+    assert.equal(hostileResult.errorCode, "PROVIDER_CANARY_FAILED");
+  }
+});
+
 test("health cache는 fingerprint별 60초 TTL과 concurrent single-flight를 보장한다", async () => {
   let now = 1_000;
   let release!: () => void;

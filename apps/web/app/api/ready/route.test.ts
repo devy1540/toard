@@ -1,0 +1,173 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import type { ContentEncryptionReadiness } from "../../../lib/content-encryption-readiness";
+import { GET } from "./route";
+
+const DISABLED: ContentEncryptionReadiness = {
+  status: "disabled",
+  provider: null,
+  keyRef: null,
+  fingerprint: null,
+  managedRecords: 0,
+  lastCheckAt: null,
+  errorCode: null,
+};
+
+const DEGRADED: ContentEncryptionReadiness = {
+  status: "degraded",
+  provider: "aws-kms",
+  keyRef:
+    "arn:aws:kms:ap-northeast-2:123456789012:key/12345678-1234-1234-1234-123456789012",
+  fingerprint: "aws-kms:0123456789abcdef01234567",
+  managedRecords: 2,
+  lastCheckAt: "2026-07-17T01:02:03.000Z",
+  errorCode: "TEMPORARY",
+};
+
+function dependencies(
+  contentEncryption: ContentEncryptionReadiness = DISABLED,
+) {
+  const calls: string[] = [];
+  const pool = {
+    async query(sql: string) {
+      calls.push(`query:${sql}`);
+      return { rows: [] };
+    },
+  };
+  return {
+    calls,
+    overrides: {
+      env: {},
+      getPool: () => {
+        calls.push("pool");
+        return pool;
+      },
+      assertLegacyContentKeyReady: async () => {
+        calls.push("legacy");
+      },
+      getManagedContentRuntime: async () => {
+        calls.push("runtime");
+        return null;
+      },
+      getContentEncryptionReadiness: async () => {
+        calls.push("managed");
+        return contentEncryption;
+      },
+      pingClickHouse: async () => {
+        calls.push("clickhouse");
+      },
+      getTimezoneRollupReadinessAt: async () => {
+        calls.push("rollup");
+        return {
+          status: "disabled" as const,
+          watermark: null,
+          lagSeconds: null,
+          pendingJobs: 0,
+          legacyFlagMigration: null,
+        };
+      },
+      getServerVersion: () => "0.0.0",
+    },
+  };
+}
+
+test("ready payload에 disabled contentEncryption을 추가하고 DB 확보 뒤 검사한다", async () => {
+  const { calls, overrides } = dependencies();
+  const response = await GET.withDependencies(overrides)();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual((await response.json()).contentEncryption, DISABLED);
+  assert.deepEqual(calls.slice(0, 5), [
+    "pool",
+    "query:SELECT 1",
+    "legacy",
+    "runtime",
+    "managed",
+  ]);
+  assert.equal(calls.includes("clickhouse"), false);
+});
+
+test("temporary managed provider 장애는 degraded payload로 200을 유지한다", async () => {
+  const { overrides } = dependencies(DEGRADED);
+  const response = await GET.withDependencies(overrides)();
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(body.contentEncryption, DEGRADED);
+  assert.equal(body.status, "ready");
+});
+
+test("managed permanent/config/runtime/DB 오류는 detail 없이 503만 반환한다", async () => {
+  const failures = [
+    {
+      error: new Error("AUTH_FAILED secret=credential"),
+      override: {
+        getContentEncryptionReadiness: async () => {
+          throw new Error("AUTH_FAILED secret=credential");
+        },
+      },
+    },
+    {
+      error: new Error("MANAGED_KEY_CONFIG_INVALID TOARD_KEY_ACTIVE_SECRET"),
+      override: {
+        getManagedContentRuntime: async () => {
+          throw new Error(
+            "MANAGED_KEY_CONFIG_INVALID TOARD_KEY_ACTIVE_SECRET",
+          );
+        },
+      },
+    },
+    {
+      error: new Error("database detail"),
+      override: {
+        getPool: () => ({
+          async query() {
+            throw new Error("database detail");
+          },
+        }),
+      },
+    },
+  ];
+  for (const { error, override } of failures) {
+    const { overrides } = dependencies();
+    const response = await GET.withDependencies({
+      ...overrides,
+      ...override,
+    })();
+    const text = await response.text();
+
+    assert.equal(response.status, 503);
+    assert.deepEqual(JSON.parse(text), { status: "not-ready" });
+    assert.equal(text.includes(error.message), false);
+  }
+});
+
+test("기존 ClickHouse ping, rollup fallback, historical pricing payload 계약을 유지한다", async () => {
+  const { calls, overrides } = dependencies();
+  const response = await GET.withDependencies({
+    ...overrides,
+    env: { STORAGE_BACKEND: "clickhouse", CLICKHOUSE_READ_ROLLUP: "1" },
+    getTimezoneRollupReadinessAt: async () => {
+      calls.push("rollup");
+      throw new Error("observation unavailable");
+    },
+    getServerVersion: () => "0.15.16",
+  })();
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.includes("clickhouse"), true);
+  assert.equal(calls.includes("rollup"), true);
+  assert.deepEqual(body.rollups, {
+    timezone: "fallback",
+    timezoneWatermark: null,
+    timezoneLagSeconds: null,
+    timezonePendingJobs: 0,
+    legacyFlagMigration: "deprecated_alias",
+  });
+  assert.deepEqual(body.historicalPricingReader, {
+    currentVersion: "0.15.16",
+    minimumVersion: "0.15.16",
+    compatible: true,
+  });
+});

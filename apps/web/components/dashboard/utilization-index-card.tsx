@@ -2,6 +2,7 @@ import type { UtilizationReason } from "@toard/core";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import type { PersonalUtilizationView } from "@/lib/ai-utilization";
 import { getOrgTimezone } from "@/lib/org-time";
 
@@ -32,7 +33,7 @@ export async function UtilizationIndexCard({ result }: { result: PersonalUtiliza
           <div>
             <div className="flex flex-wrap items-center gap-2">
               <CardTitle>{t("utilization.title")}</CardTitle>
-              <Badge variant="outline">{t("utilization.experiment")}</Badge>
+              <FeatureStatusBadge status="experiment">{t("utilization.experiment")}</FeatureStatusBadge>
             </div>
             <CardDescription>{t("utilization.description")}</CardDescription>
           </div>

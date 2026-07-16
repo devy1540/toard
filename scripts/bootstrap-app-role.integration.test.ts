@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
@@ -8,6 +8,18 @@ import { Client } from "pg";
 import { getE2eeManagedMigrationStatus, type E2eeMigrationDb } from "../apps/web/lib/e2ee-to-managed-migration";
 
 const execFileAsync = promisify(execFile);
+
+async function execFileWithInput(file: string, args: string[], input: string): Promise<{ code: number | null; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stderr }));
+    child.stdin.end(input);
+  });
+}
 
 async function waitForPostgres(connectionString: string): Promise<void> {
   const deadline = Date.now() + 30_000; let last: unknown;
@@ -33,6 +45,84 @@ async function bootstrap(container: string): Promise<void> {
 function db(client: Client): E2eeMigrationDb {
   return { async query(sql, params = []) { const result = await client.query(sql, params); return { rows: result.rows, rowCount: result.rowCount }; } };
 }
+
+test("bootstrap script wraps every role and privilege mutation in one transaction", async () => {
+  const sql = await readFile("scripts/bootstrap-app-role.sql", "utf8");
+  const begin = sql.indexOf("BEGIN;");
+  const createRole = sql.indexOf("SELECT format('CREATE ROLE toard_app");
+  const alterRole = sql.indexOf("ALTER ROLE toard_app");
+  const broadGrant = sql.indexOf("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES");
+  const sensitiveRevoke = sql.indexOf("REVOKE ALL PRIVILEGES ON TABLE public.content_e2ee_migration_sources");
+  const defaultPrivileges = sql.lastIndexOf("ALTER DEFAULT PRIVILEGES IN SCHEMA public");
+  const commit = sql.indexOf("COMMIT;");
+  const validation = sql.indexOf("SELECT rolname, rolsuper");
+  const metaValidation = sql.indexOf("\\if :{?app_password}");
+  const metaQuit = sql.indexOf("\\quit");
+  assert.ok(metaValidation >= 0 && metaValidation < metaQuit && metaQuit < begin);
+  assert.ok(begin >= 0 && begin < createRole);
+  assert.ok(createRole < alterRole && alterRole < broadGrant && broadGrant < sensitiveRevoke);
+  assert.ok(sensitiveRevoke < defaultPrivileges && defaultPrivileges < commit);
+  assert.ok(commit < validation);
+  assert.equal(sql.indexOf("BEGIN;", begin + 1), -1);
+  assert.equal(sql.indexOf("COMMIT;", commit + 1), -1);
+});
+
+test("bootstrap privilege replacement is atomic to concurrent sessions", { timeout: 120_000 }, async () => {
+  const container = `toard-bootstrap-atomic-${randomUUID().slice(0, 6)}`;
+  let writer: Client | null = null; let observer: Client | null = null;
+  try {
+    await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432", "postgres:16-alpine"]);
+    const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = stdout.trim().match(/:(\d+)$/)?.[1]; assert.ok(port);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+    await bootstrap(container);
+    writer = new Client({ connectionString }); await writer.connect();
+    for (const sql of await migrationUps()) await writer.query(sql);
+    observer = new Client({ connectionString }); await observer.connect();
+    assert.equal((await observer.query("SELECT has_table_privilege('toard_app','content_e2ee_migration_sources','DELETE') AS ok")).rows[0].ok, false);
+
+    await writer.query("BEGIN");
+    await writer.query("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO toard_app");
+    assert.equal((await writer.query("SELECT has_table_privilege('toard_app','content_e2ee_migration_sources','DELETE') AS ok")).rows[0].ok, true);
+    await observer.query("SET statement_timeout = '2s'");
+    assert.equal((await observer.query("SELECT has_table_privilege('toard_app','content_e2ee_migration_sources','DELETE') AS ok")).rows[0].ok, false);
+    await writer.query("REVOKE ALL PRIVILEGES ON TABLE public.content_e2ee_migration_sources FROM toard_app");
+    await writer.query("COMMIT");
+    assert.equal((await observer.query("SELECT has_table_privilege('toard_app','content_e2ee_migration_sources','DELETE') AS ok")).rows[0].ok, false);
+  } finally {
+    await writer?.query("ROLLBACK").catch(() => undefined);
+    await observer?.end().catch(() => undefined); await writer?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});
+
+test("ON_ERROR_STOP exits nonzero and rolls back the bootstrap transaction", { timeout: 120_000 }, async () => {
+  const container = `toard-bootstrap-rollback-${randomUUID().slice(0, 6)}`;
+  let admin: Client | null = null;
+  try {
+    await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432", "postgres:16-alpine"]);
+    const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = stdout.trim().match(/:(\d+)$/)?.[1]; assert.ok(port);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+    const sql = (await readFile("scripts/bootstrap-app-role.sql", "utf8"))
+      .replace("COMMIT;", "SELECT 1 / 0;\nCOMMIT;");
+    const result = await execFileWithInput("docker", ["exec", "-i", container, "psql", "-U", "postgres", "-d", "toard",
+      "-v", "app_password=integration-password", "-f", "-"], sql);
+    assert.notEqual(result.code, 0, result.stderr);
+    assert.match(result.stderr, /division by zero/);
+    admin = new Client({ connectionString }); await admin.connect();
+    assert.equal((await admin.query("SELECT count(*)::int AS count FROM pg_roles WHERE rolname='toard_app'")).rows[0].count, 0);
+  } finally {
+    await admin?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});
 
 for (const topology of ["role-before", "role-after"] as const) {
   test(`bootstrap app role preserves migration security in ${topology} topology`, { timeout: 120_000 }, async () => {

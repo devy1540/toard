@@ -19,6 +19,8 @@
   \quit
 \endif
 
+BEGIN;
+
 -- 1) 롤 생성 (없을 때만) — 멱등
 SELECT format('CREATE ROLE toard_app LOGIN PASSWORD %L', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app')
@@ -61,6 +63,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO toard_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT USAGE, SELECT ON SEQUENCES TO toard_app;
+
+COMMIT;
 
 -- 확인: RLS 가 발효되려면 rolsuper·rolbypassrls 가 모두 f 여야 한다
 SELECT rolname, rolsuper AS is_superuser, rolbypassrls AS bypasses_rls

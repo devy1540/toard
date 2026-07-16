@@ -12,6 +12,10 @@
   },
   "dependencies": {
     "@auth/pg-adapter": "^1.7.4",
+    "@aws-sdk/client-kms": "^3.1088.0",
+    "@azure/identity": "^4.13.1",
+    "@azure/keyvault-keys": "^4.10.2",
+    "@google-cloud/kms": "^5.6.0",
     "@hpke/core": "1.9.0",
     "@radix-ui/react-select": "^2.1.4",
     "@radix-ui/react-slot": "^1.1.1",

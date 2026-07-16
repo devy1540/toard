@@ -236,7 +236,23 @@
       "more": "더보기",
       "less": "접기",
       "truncated": "턴이 많아 처음 500개까지만 표시합니다.",
-      "error": "E2EE 히스토리를 열 수 없습니다 ({code})."
+      "error": "E2EE 히스토리를 열 수 없습니다 ({code}).",
+      "migration": {
+        "title": "히스토리 보안 전환 중",
+        "description": "이 브라우저에서 E2EE 기록을 복호화한 뒤 서버 관리형 암호화로 안전하게 전환하고 있습니다. 완료 전에는 일부 기록을 섞어 표시하지 않습니다.",
+        "progressLabel": "전환 완료 {migrated}건, 남은 기록 {remaining}건",
+        "progress": "{migrated}건 전환 완료 · {remaining}건 남음",
+        "ciphertextPreserved": "전환이 멈추거나 키를 찾지 못해도 기존 암호문은 서버에 그대로 보존됩니다.",
+        "blockedTitle": "키를 찾을 때까지 전환을 중단했습니다",
+        "blockedDescription": "현재 키로 복호화할 수 없어 히스토리 본문을 열람할 수 없습니다. 기존 암호문은 삭제되지 않습니다.",
+        "resume": "키를 다시 찾았습니다",
+        "cannotRecover": "복구할 수 없음으로 표시",
+        "confirmTitle": "정말 키를 복구할 수 없나요?",
+        "confirmDescription": "전환을 중단하고 암호문을 그대로 보존합니다. 기록을 삭제하지 않으며, 나중에 키를 찾으면 다시 시작할 수 있습니다.",
+        "cancel": "취소",
+        "confirmBlock": "복구할 수 없음으로 표시",
+        "error": "전환을 계속할 수 없습니다 ({code})."
+      }
     }
   }
 }

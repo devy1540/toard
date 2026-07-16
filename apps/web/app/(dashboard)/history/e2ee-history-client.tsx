@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import Link from "next/link";
 import { ArrowLeft, Inbox, KeyRound, LockKeyhole } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { TurnText } from "@/components/dashboard/turn-text";
@@ -21,10 +21,9 @@ import {
 import { contentKeyVault } from "@/lib/content-key-vault";
 import { unlockApprovedBrowser } from "@/lib/content-auto-unlock";
 import {
-  LEGACY_MIGRATION_INITIAL_BATCH_SIZE,
-  nextLegacyMigrationBatchLimit,
-  runLegacyMigrationBatch,
-} from "@/lib/e2ee-legacy-worker";
+  createE2eeToManagedLoop,
+  type E2eeManagedMigrationStatus,
+} from "@/lib/e2ee-to-managed-worker";
 import {
   decryptE2eeRecord,
   exportBrowserPublicKey,
@@ -43,6 +42,10 @@ import { initialE2eeHistoryState, reduceE2eeHistory } from "./e2ee-history-state
 import { HistorySessionList } from "./history-session-list";
 import { historyPagination, type HistoryListItem } from "./history-list-view";
 import { LockedHistory } from "./locked-history";
+import {
+  managedMigrationStateBody,
+  ManagedMigrationPanel,
+} from "./managed-migration-panel";
 
 type DecryptedSession = E2eeHistoryPage["sessions"][number] & { preview: string };
 type DecryptedTurn = E2eePromptRecordWire & { text: string | null };
@@ -61,6 +64,7 @@ export function E2eeHistoryClient({
   const t = useTranslations("dashboard.history.e2ee");
   const dashboardT = useTranslations("dashboard");
   const locale = useLocale();
+  const router = useRouter();
   const searchParams = useSearchParams();
   const queryString = searchParams.toString();
   const sessionKey = searchParams.get("session");
@@ -80,10 +84,10 @@ export function E2eeHistoryClient({
   const [busy, setBusy] = useState(false);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
-  const [activeDeviceId, setActiveDeviceId] = useState<string | null>(null);
   const [hasLocalDevice, setHasLocalDevice] = useState(false);
-  const [legacyRemaining, setLegacyRemaining] = useState<number | null>(null);
-  const [migrationBlocked, setMigrationBlocked] = useState(false);
+  const [managedMigration, setManagedMigration] = useState<E2eeManagedMigrationStatus | null>(null);
+  const [managedMigrationLoaded, setManagedMigrationLoaded] = useState(false);
+  const [managedMigrationError, setManagedMigrationError] = useState<string | null>(null);
   const pendingKey = useRef<CryptoKeyPair | null>(null);
   const manuallyLocked = useRef(false);
 
@@ -113,7 +117,6 @@ export function E2eeHistoryClient({
     setHasLocalDevice(result !== null);
     if (!result) return false;
     manuallyLocked.current = false;
-    setActiveDeviceId(result.deviceId);
     unlock(result.uck);
     return true;
   }, [unlock]);
@@ -143,60 +146,63 @@ export function E2eeHistoryClient({
   }, [unlockLocal]);
 
   useEffect(() => {
-    if (state.kind !== "unlocked" || !activeDeviceId) return;
-    const controller = new AbortController();
-    let stopped = false;
-    let batchLimit = LEGACY_MIGRATION_INITIAL_BATCH_SIZE;
-    const run = async () => {
-      while (!stopped && document.visibilityState === "visible" && navigator.onLine) {
-        try {
-          const status = await fetchJson<{
-            state: "pending" | "complete" | "blocked";
-            contentOwnerId: string;
-            contentKeyVersion: number;
-            legacyRecords: number;
-            migratableRecords: number;
-            blockedRecords: number;
-          }>("/api/content/legacy-migration/status", { signal: controller.signal });
-          setLegacyRemaining(status.legacyRecords);
-          setMigrationBlocked(status.state === "blocked");
-          if (status.state !== "pending" || status.legacyRecords === 0) return;
-          const batchUck = contentKeyVault.withUnlockedUck((uck) => uck.slice());
-          try {
-            const startedAt = performance.now();
-            const result = await runLegacyMigrationBatch({
-              deviceId: activeDeviceId,
-              contentOwnerId: status.contentOwnerId,
-              contentKeyVersion: status.contentKeyVersion,
-              batchLimit,
-              uck: batchUck,
-              signal: controller.signal,
-              fetchJson: (url, init) => fetchJson<unknown>(url, init),
-            });
-            if (result.complete) batchLimit = LEGACY_MIGRATION_INITIAL_BATCH_SIZE;
-            else {
-              batchLimit = nextLegacyMigrationBatchLimit(
-                batchLimit,
-                performance.now() - startedAt,
-                result.payloadBytes,
-              );
-            }
-          } finally {
-            batchUck.fill(0);
-          }
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        } catch {
-          if (!controller.signal.aborted) setMigrationBlocked(true);
-          return;
-        }
-      }
-    };
-    void run();
-    return () => { stopped = true; controller.abort(); };
-  }, [activeDeviceId, state.kind]);
+    let cancelled = false;
+    void fetchJson<E2eeManagedMigrationStatus>("/api/content/managed-migration/status")
+      .then((status) => {
+        if (!cancelled) setManagedMigration(status);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const code = errorCode(error);
+        if (code === "MIGRATION_NOT_FOUND") setManagedMigration(null);
+        else setManagedMigrationError(code);
+      })
+      .finally(() => {
+        if (!cancelled) setManagedMigrationLoaded(true);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  const managedMigrationRunnable = managedMigration?.state === "pending"
+    || managedMigration?.state === "running";
+  const managedMigrationVisible = managedMigration !== null
+    && managedMigration.state !== "complete"
+    && (managedMigration.state === "blocked" || managedMigration.e2eeRecords > 0);
 
   useEffect(() => {
-    if (state.kind !== "unlocked") return;
+    if (state.kind !== "unlocked" || !managedMigrationRunnable) return;
+    const loop = createE2eeToManagedLoop({
+      copyUck: () => contentKeyVault.withUnlockedUck((uck) => uck.slice()),
+      fetchJson: (url, init) => fetchJson<unknown>(url, init),
+      environment: {
+        isVisible: () => document.visibilityState === "visible",
+        isOnline: () => navigator.onLine,
+        onVisibilityChange: (listener) => {
+          document.addEventListener("visibilitychange", listener);
+          return () => document.removeEventListener("visibilitychange", listener);
+        },
+        onOnline: (listener) => {
+          window.addEventListener("online", listener);
+          return () => window.removeEventListener("online", listener);
+        },
+      },
+      onStatus: (status) => {
+        setManagedMigration(status);
+        setManagedMigrationError(null);
+      },
+      onComplete: () => {
+        lock(false);
+        router.refresh();
+      },
+      onError: (error) => setManagedMigrationError(errorCode(error)),
+    });
+    loop.start();
+    return () => loop.dispose();
+  }, [lock, managedMigrationRunnable, router, state.kind]);
+
+  useEffect(() => {
+    if (state.kind !== "unlocked" || !managedMigrationLoaded || managedMigrationVisible
+      || managedMigrationError !== null) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -221,7 +227,7 @@ export function E2eeHistoryClient({
       }
     })();
     return () => { cancelled = true; };
-  }, [filterQuery, state.kind, t]);
+  }, [filterQuery, managedMigrationError, managedMigrationLoaded, managedMigrationVisible, state.kind, t]);
 
   useEffect(() => {
     const onUnload = () => contentKeyVault.lock();
@@ -349,6 +355,37 @@ export function E2eeHistoryClient({
     }
   };
 
+  const updateManagedMigrationState = useCallback(async (
+    body: { action: "resume" } | { action: "block"; confirmation: "KEY_UNAVAILABLE" },
+  ) => {
+    setBusy(true);
+    setManagedMigrationError(null);
+    try {
+      await fetchJson("/api/content/managed-migration/state", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+      const status = await fetchJson<E2eeManagedMigrationStatus>(
+        "/api/content/managed-migration/status",
+      );
+      setManagedMigration(status);
+    } catch (error) {
+      setManagedMigrationError(errorCode(error));
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  const resumeManagedMigration = useCallback(() => {
+    void updateManagedMigrationState(managedMigrationStateBody("resume"));
+  }, [updateManagedMigrationState]);
+
+  const blockManagedMigration = useCallback((confirmation: "KEY_UNAVAILABLE") => {
+    const body = managedMigrationStateBody("block");
+    if (confirmation !== body.confirmation) return;
+    void updateManagedMigrationState(body);
+  }, [updateManagedMigrationState]);
+
   const openSession = useCallback(async (key: string) => {
     setBusy(true);
     try {
@@ -376,13 +413,13 @@ export function E2eeHistoryClient({
   }, []);
 
   useEffect(() => {
-    if (state.kind !== "unlocked") return;
+    if (state.kind !== "unlocked" || managedMigrationVisible) return;
     if (!sessionKey) {
       setDetail(null);
       return;
     }
     if (detail?.key !== sessionKey) void openSession(sessionKey);
-  }, [detail?.key, openSession, sessionKey, state.kind]);
+  }, [detail?.key, managedMigrationVisible, openSession, sessionKey, state.kind]);
 
   const providerLabel = useCallback((key: string): string =>
     providers.find((provider) => provider.key === key)?.label ?? key, [providers]);
@@ -419,18 +456,44 @@ export function E2eeHistoryClient({
     && (!searchParams.get("provider") || searchParams.get("provider") === "all");
   const backHref = historyClientHref(queryString, { session: null });
 
-  if (state.kind === "loading") return <p className="text-muted-foreground text-sm">{t("loading")}</p>;
+  const migrationPanel = managedMigrationVisible && managedMigration ? (
+    <ManagedMigrationPanel
+      state={managedMigration.state === "complete" ? "pending" : managedMigration.state}
+      migrated={managedMigration.migratedRecords}
+      remaining={managedMigration.e2eeRecords}
+      busy={busy}
+      error={managedMigrationError}
+      onResume={resumeManagedMigration}
+      onBlock={blockManagedMigration}
+    />
+  ) : null;
+
+  if (state.kind === "loading" || !managedMigrationLoaded) {
+    return <p className="text-muted-foreground text-sm">{t("loading")}</p>;
+  }
+  if (managedMigrationError !== null && managedMigration === null) {
+    return (
+      <Card className="min-w-0">
+        <CardContent className="p-4 text-sm text-muted-foreground">
+          {t("error", { code: managedMigrationError })}
+        </CardContent>
+      </Card>
+    );
+  }
   if (state.kind === "locked" || state.kind === "approvalPending") {
     return (
-      <LockedHistory
-        approval={state.approval}
-        secondsLeft={secondsLeft}
-        busy={busy}
-        canLocalUnlock={hasLocalDevice}
-        onLocalUnlock={() => void unlockLocal()}
-        onApprove={() => void createApproval()}
-        onRecover={(mnemonic) => void recover(mnemonic)}
-      />
+      <section className="space-y-4">
+        {migrationPanel}
+        <LockedHistory
+          approval={state.approval}
+          secondsLeft={secondsLeft}
+          busy={busy}
+          canLocalUnlock={hasLocalDevice}
+          onLocalUnlock={() => void unlockLocal()}
+          onApprove={() => void createApproval()}
+          onRecover={(mnemonic) => void recover(mnemonic)}
+        />
+      </section>
     );
   }
   if (state.kind === "fatal") {
@@ -444,6 +507,13 @@ export function E2eeHistoryClient({
           {!inactive ? <Button className="sm:ml-auto" size="sm" variant="outline" onClick={() => lock()}>{t("lockNow")}</Button> : null}
         </CardContent>
       </Card>
+    );
+  }
+  if (managedMigrationVisible) {
+    return (
+      <section className="min-w-0 space-y-4" aria-label={dashboardT("history.title")}>
+        {migrationPanel}
+      </section>
     );
   }
 
@@ -462,13 +532,6 @@ export function E2eeHistoryClient({
             <Badge variant="secondary" className="whitespace-nowrap">
               <KeyRound className="mr-1 size-3" />{t("unlockedBadge")}
             </Badge>
-            {legacyRemaining !== null ? (
-              <Badge variant="outline" className="whitespace-nowrap">
-                {migrationBlocked ? t("legacyBlocked") : legacyRemaining === 0
-                  ? t("legacyComplete")
-                  : t("legacyProtecting", { count: legacyRemaining })}
-              </Badge>
-            ) : null}
             <Button size="sm" variant="ghost" onClick={() => lock()}>
               <LockKeyhole />{t("lockNow")}
             </Button>
@@ -579,4 +642,8 @@ function browserLabel(): string {
   if (agent.includes("Chrome")) return "Chrome browser";
   if (agent.includes("Safari")) return "Safari browser";
   return "Web browser";
+}
+
+function errorCode(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : "MIGRATION_FAILED";
 }

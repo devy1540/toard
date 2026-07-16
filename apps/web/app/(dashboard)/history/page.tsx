@@ -1,10 +1,8 @@
 import { getLocale, getTranslations } from "next-intl/server";
-import Link from "next/link";
 import { Inbox, Lock } from "lucide-react";
 import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
-import { Button } from "@/components/ui/button";
 import {
   Empty,
   EmptyDescription,
@@ -14,6 +12,7 @@ import {
 } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
 import { getE2eeContentStatus } from "@/lib/e2ee-history";
+import { getE2eeManagedMigrationStatus } from "@/lib/e2ee-to-managed-migration";
 import { fmtUsd } from "@/lib/format";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { formatCostForCoverage } from "@/lib/pricing";
@@ -107,54 +106,28 @@ export default async function HistoryPage({
   const providerLabel = (key: string): string => providers.find((p) => p.key === key)?.label ?? key;
   const locale = await getLocale();
   const timezone = await getViewerTimezone();
-  let e2eeActive = false;
-
   if (e2eeAllowed) {
     const contentStatus = await getE2eeContentStatus(userId);
-    e2eeActive = contentStatus.state === "active";
-    if (contentStatus.state === "active" && sp.source !== "managed") {
-      return (
-        <div className="space-y-4">
-          <div className="flex justify-end">
-            <Button asChild size="sm" variant="outline">
-              <Link href={historyHref(sp, {
-                source: "managed",
-                session: null,
-                page: null,
-              })}>
-                {t("history.managedSourceLabel")}
-              </Link>
-            </Button>
-          </div>
+    if (contentStatus.state === "active") {
+      const migrationStatus = await getE2eeManagedMigrationStatus(userId);
+      if (migrationStatus.state !== "complete") {
+        return (
           <E2eeHistoryClient
             providers={providers}
             timezone={timezone}
             previewBadgeLabel={navT("badge.preview")}
           />
-        </div>
-      );
+        );
+      }
     }
   }
-
-  const e2eeSourceControl = e2eeActive ? (
-    <Button asChild size="sm" variant="outline">
-      <Link href={historyHref(sp, {
-        source: "e2ee",
-        session: null,
-        page: null,
-      })}>
-        {t("history.e2eeSourceLabel")}
-      </Link>
-    </Button>
-  ) : null;
 
   // ── 상세 뷰 ──
   if (sp.session) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
           <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
-          {e2eeSourceControl}
         </div>
         <SessionDetail
           userId={userId}
@@ -185,9 +158,8 @@ export default async function HistoryPage({
   if (!enabled) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
           <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
-          {e2eeSourceControl}
         </div>
         <Empty>
           <EmptyHeader>
@@ -237,9 +209,6 @@ export default async function HistoryPage({
 
   return (
     <div className="space-y-6">
-      {e2eeSourceControl ? (
-        <div className="flex justify-end">{e2eeSourceControl}</div>
-      ) : null}
       <DashboardFilters
         providers={providers}
         defaultPeriod="all"

@@ -52,23 +52,53 @@ function loadKekFromEnvironment(
 
 export function encryptContent(plaintext: string, kek: Buffer): EncryptedContent {
   const dek = randomBytes(DEK_BYTES);
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", dek, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  return {
-    keyVersion: KEY_VERSION,
-    wrappedDek: wrapDek(dek, kek),
-    iv,
-    ciphertext,
-    authTag: cipher.getAuthTag(),
-  };
+  let plaintextBytes: Buffer | undefined;
+  try {
+    const iv = randomBytes(IV_BYTES);
+    const cipher = createCipheriv("aes-256-gcm", dek, iv);
+    plaintextBytes = Buffer.from(plaintext, "utf8");
+    const ciphertext = Buffer.concat([cipher.update(plaintextBytes), cipher.final()]);
+    return {
+      keyVersion: KEY_VERSION,
+      wrappedDek: wrapDek(dek, kek),
+      iv,
+      ciphertext,
+      authTag: cipher.getAuthTag(),
+    };
+  } finally {
+    plaintextBytes?.fill(0);
+    dek.fill(0);
+  }
 }
 
 export function decryptContent(row: EncryptedContent, kek: Buffer): string {
-  const dek = unwrapDek(row.wrappedDek, kek);
-  const decipher = createDecipheriv("aes-256-gcm", dek, row.iv);
-  decipher.setAuthTag(row.authTag);
-  return Buffer.concat([decipher.update(row.ciphertext), decipher.final()]).toString("utf8");
+  let dek: Buffer | undefined;
+  let plaintext: Buffer | undefined;
+  try {
+    if (
+      row.keyVersion !== KEY_VERSION
+      || !Buffer.isBuffer(kek)
+      || kek.length !== DEK_BYTES
+      || !Buffer.isBuffer(row.wrappedDek)
+      || row.wrappedDek.length !== IV_BYTES + TAG_BYTES + DEK_BYTES
+      || !Buffer.isBuffer(row.iv)
+      || row.iv.length !== IV_BYTES
+      || !Buffer.isBuffer(row.ciphertext)
+      || row.ciphertext.length === 0
+      || !Buffer.isBuffer(row.authTag)
+      || row.authTag.length !== TAG_BYTES
+    ) {
+      throw new Error("INVALID_LEGACY_CONTENT");
+    }
+    dek = unwrapDek(row.wrappedDek, kek);
+    const decipher = createDecipheriv("aes-256-gcm", dek, row.iv);
+    decipher.setAuthTag(row.authTag);
+    plaintext = Buffer.concat([decipher.update(row.ciphertext), decipher.final()]);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(plaintext);
+  } finally {
+    plaintext?.fill(0);
+    dek?.fill(0);
+  }
 }
 
 // 로컬 KEK wrap (KMS 미사용 시). 포맷: [iv 12B | tag 16B | enc DEK]

@@ -55,6 +55,7 @@ export function encryptManagedContent(
   keyVersion: number,
 ): ManagedEncryptedContent {
   let dek: Buffer | undefined;
+  let plaintext: Buffer | undefined;
   try {
     assertKey(uck);
     const aadInput = managedContentAadInput(record, installationId, userId, keyVersion);
@@ -71,7 +72,8 @@ export function encryptManagedContent(
     assertBufferLength(iv, IV_BYTES);
     assertBufferLength(dekWrapIv, IV_BYTES);
 
-    const body = encryptAesGcm(dek, iv, aad, Buffer.from(record.text, "utf8"));
+    plaintext = Buffer.from(record.text, "utf8");
+    const body = encryptAesGcm(dek, iv, aad, plaintext);
     const wrapped = encryptAesGcm(uck, dekWrapIv, aad, dek);
     return {
       encryptionScheme: "managed_v1",
@@ -87,6 +89,7 @@ export function encryptManagedContent(
   } catch {
     throw new Error("CONTENT_ENCRYPT_FAILED");
   } finally {
+    plaintext?.fill(0);
     dek?.fill(0);
   }
 }
@@ -98,6 +101,7 @@ export function decryptManagedContent(
   userId: string,
 ): string {
   let dek: Buffer | undefined;
+  let plaintext: Buffer | undefined;
   try {
     if (row.encryptionScheme !== "managed_v1" || row.aadVersion !== 2) {
       throw new Error("INVALID_MANAGED_SCHEME");
@@ -122,10 +126,12 @@ export function decryptManagedContent(
     const aad = canonicalManagedContentAad(aadInput);
     dek = decryptAesGcm(uck, row.dekWrapIv, aad, row.wrappedDek, row.dekWrapAuthTag);
     assertBufferLength(dek, KEY_BYTES);
-    return decryptAesGcm(dek, row.iv, aad, row.ciphertext, row.authTag).toString("utf8");
+    plaintext = decryptAesGcm(dek, row.iv, aad, row.ciphertext, row.authTag);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(plaintext);
   } catch {
     throw new Error("CONTENT_DECRYPT_FAILED");
   } finally {
+    plaintext?.fill(0);
     dek?.fill(0);
   }
 }

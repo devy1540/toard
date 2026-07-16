@@ -6,6 +6,7 @@ const TRANSIT_MOUNT_MAX_BYTES = 1_024;
 const TRANSIT_PATH_SEGMENT_MAX_BYTES = 128;
 const TRANSIT_CIPHERTEXT_MAX_BYTES = 16_384;
 const CONTROL_OR_DEL = /[\u0000-\u001f\u007f]/;
+const VISIBLE_ASCII = /^[\x21-\x7e]+$/;
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
@@ -32,7 +33,7 @@ export function isSafeHttpFieldValue(
 ): boolean {
   return (
     isExactTrimmed(value)
-    && !CONTROL_OR_DEL.test(value)
+    && VISIBLE_ASCII.test(value)
     && byteLength(value) <= maxBytes
   );
 }

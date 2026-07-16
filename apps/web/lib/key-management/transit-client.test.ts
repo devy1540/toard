@@ -134,6 +134,9 @@ test("Transit client는 namespace와 token header를 fetch 전에 strict 검증�
   for (const namespace of [
     " team-a",
     "team-a ",
+    "team a",
+    "팀-a",
+    "tëam-a",
     "team\r\nx-injected: yes",
     "team\u007fvalue",
     "x".repeat(513),
@@ -153,6 +156,9 @@ test("Transit client는 namespace와 token header를 fetch 전에 strict 검증�
   for (const token of [
     " token",
     "token ",
+    "token value",
+    "토큰",
+    "tökën",
     "token\r\nx-injected: yes",
     "token\u0000value",
     "token\u007fvalue",

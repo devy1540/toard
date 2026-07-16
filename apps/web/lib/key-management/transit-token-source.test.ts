@@ -89,6 +89,9 @@ test("token-file source는 file whitespace만 정규화하고 위험한 HTTP hea
     "token\r\nx-injected: yes",
     "token\u0000value",
     "token\u007fvalue",
+    "토큰",
+    "tökën",
+    "token value",
     "x".repeat(4_097),
   ]) {
     const source = new FileTokenSource(
@@ -318,6 +321,9 @@ test("login source는 invalid JSON과 malformed auth data를 고정 오류로 �
   for (const clientToken of [
     " token",
     "token ",
+    "token value",
+    "토큰",
+    "tökën",
     "token\r\nx-injected: yes",
     "token\u007fvalue",
     "x".repeat(4_097),

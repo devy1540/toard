@@ -345,6 +345,9 @@ test("Transit config는 canonical nested mount와 안전한 key/namespace만 허
   for (const namespace of [
     " team-a",
     "team-a ",
+    "team a",
+    "팀-a",
+    "tëam-a",
     "team\r\nx-injected: yes",
     "team\u007fvalue",
     "x".repeat(513),

@@ -1,0 +1,494 @@
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import { promisify } from "node:util";
+import { Client } from "pg";
+
+const execFileAsync = promisify(execFile);
+const BASE_MIGRATIONS = [
+  "1700000001_init.sql",
+  "1700000010_prompt_records.sql",
+  "1700000030_e2ee_content_foundation.sql",
+  "1700000031_e2ee_legacy_retirement.sql",
+  "1700000035_managed_content_foundation.sql",
+] as const;
+const STATE_MIGRATION = "1700000036_managed_content_migration_state.sql";
+
+async function waitForPostgres(connectionString: string): Promise<void> {
+  let lastError: unknown;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const probe = new Client({
+      connectionString,
+      connectionTimeoutMillis: 1_000,
+      query_timeout: 1_000,
+    });
+    try {
+      await probe.connect();
+      await probe.query("SELECT 1");
+      await probe.end();
+      return;
+    } catch (error) {
+      lastError = error;
+      await probe.end().catch(() => undefined);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  throw lastError;
+}
+
+async function migrationPart(filename: string, part: "up" | "down"): Promise<string> {
+  const migration = await readFile(`migrations/${filename}`, "utf8");
+  const [up, down] = migration.split("-- Down Migration", 2);
+  assert.ok(up);
+  if (part === "down") assert.ok(down);
+  return part === "up" ? up : down;
+}
+
+async function migrationStatus(client: Client) {
+  const result = await client.query<{
+    e2ee_migration_pending: number;
+    e2ee_migration_blocked: number;
+    updated_at: Date;
+  }>(`
+    SELECT e2ee_migration_pending::int, e2ee_migration_blocked::int, updated_at
+    FROM content_encryption_status
+    WHERE singleton = TRUE
+  `);
+  assert.equal(result.rowCount, 1);
+  return result.rows[0];
+}
+
+async function expectConstraintFailure(
+  client: Client,
+  sql: string,
+  params: unknown[],
+  pattern: RegExp,
+): Promise<void> {
+  await client.query("SAVEPOINT invalid_state");
+  await assert.rejects(client.query(sql, params), pattern);
+  await client.query("ROLLBACK TO SAVEPOINT invalid_state");
+  await client.query("RELEASE SAVEPOINT invalid_state");
+}
+
+test("migration 36 models owner-scoped E2EE migration state and safe rollback", { timeout: 120_000 }, async () => {
+  const container = `toard-managed-state-${randomUUID().slice(0, 8)}`;
+  let client: Client | null = null;
+
+  try {
+    await execFileAsync("docker", [
+      "run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres",
+      "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432",
+      "postgres:16-alpine",
+    ]);
+    const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = stdout.trim().match(/:(\d+)$/)?.[1];
+    assert.ok(port, `failed to resolve PostgreSQL port from: ${stdout}`);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+
+    client = new Client({ connectionString });
+    await client.connect();
+    for (const migration of BASE_MIGRATIONS.slice(0, 3)) {
+      await client.query(await migrationPart(migration, "up"));
+    }
+
+    await client.query(`
+      CREATE ROLE toard_app NOLOGIN NOSUPERUSER NOBYPASSRLS;
+      GRANT USAGE ON SCHEMA public TO toard_app;
+    `);
+
+    const userA = randomUUID();
+    const userB = randomUUID();
+    const userC = randomUUID();
+    await client.query(
+      `INSERT INTO users (id,email) VALUES
+         ($1,'migration-a@example.com'),
+         ($2,'migration-b@example.com'),
+         ($3,'migration-c@example.com')`,
+      [userA, userB, userC],
+    );
+    await client.query(
+      `INSERT INTO providers (key,display_name,service_name_patterns,collection_method)
+       VALUES ('codex','Codex',ARRAY['codex'],'logfile')`,
+    );
+    const ownerA = randomUUID();
+    await client.query(
+      `INSERT INTO content_accounts (user_id,content_owner_id,state,recovery_confirmed_at)
+       VALUES ($1,$3,'active',now()),($2,gen_random_uuid(),'active',now()),
+              ($4,gen_random_uuid(),'pending',NULL)`,
+      [userA, userB, ownerA, userC],
+    );
+    await client.query(
+      `INSERT INTO prompt_records
+         (dedup_key,user_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,
+          ciphertext,auth_tag,encryption_scheme,content_owner_id,content_key_version,
+          dek_wrap_iv,dek_wrap_auth_tag,aad_version)
+       VALUES ('e2ee-state-source',$1,'codex','user',now(),1,$2,$3,$4,$5,
+               'e2ee_v1',$6,1,$7,$8,1)`,
+      [
+        userA,
+        Buffer.alloc(32, 1),
+        Buffer.alloc(12, 2),
+        Buffer.from("e2ee-state"),
+        Buffer.alloc(16, 3),
+        ownerA,
+        Buffer.alloc(12, 4),
+        Buffer.alloc(16, 5),
+      ],
+    );
+    for (const migration of BASE_MIGRATIONS.slice(3)) {
+      await client.query(await migrationPart(migration, "up"));
+    }
+
+    const up = await migrationPart(STATE_MIGRATION, "up");
+    const down = await migrationPart(STATE_MIGRATION, "down");
+    await client.query(up);
+
+    const backfill = await client.query<{
+      user_id: string;
+      state: string;
+      started_at: Date | null;
+      completed_at: Date | null;
+      source_e2ee_records: number;
+    }>(`
+      SELECT user_id,state,started_at,completed_at,source_e2ee_records::int
+      FROM content_e2ee_migrations
+      ORDER BY user_id
+    `);
+    const byUser = new Map(backfill.rows.map((row) => [row.user_id, row]));
+    assert.equal(backfill.rowCount, 2);
+    assert.deepEqual(byUser.get(userA), {
+      user_id: userA,
+      state: "pending",
+      started_at: null,
+      completed_at: null,
+      source_e2ee_records: 1,
+    });
+    assert.equal(byUser.get(userB)?.state, "complete");
+    assert.ok(byUser.get(userB)?.started_at instanceof Date);
+    assert.ok(byUser.get(userB)?.completed_at instanceof Date);
+    assert.equal(byUser.get(userB)?.source_e2ee_records, 0);
+    assert.deepEqual(
+      await migrationStatus(client).then(({ e2ee_migration_pending, e2ee_migration_blocked }) => ({
+        e2ee_migration_pending,
+        e2ee_migration_blocked,
+      })),
+      { e2ee_migration_pending: 1, e2ee_migration_blocked: 0 },
+    );
+
+    for (const privilege of ["SELECT", "INSERT", "UPDATE"]) {
+      assert.equal(
+        (await client.query(
+          "SELECT has_table_privilege('toard_app','content_e2ee_migrations',$1) AS ok",
+          [privilege],
+        )).rows[0].ok,
+        true,
+      );
+    }
+    assert.equal(
+      (await client.query(
+        "SELECT has_table_privilege('toard_app','content_e2ee_migrations','DELETE') AS ok",
+      )).rows[0].ok,
+      false,
+    );
+    const policies = await client.query<{ policyname: string; expression: string }>(`
+      SELECT policyname, COALESCE(qual, with_check) AS expression
+      FROM pg_policies
+      WHERE schemaname='public' AND tablename='content_e2ee_migrations'
+      ORDER BY policyname
+    `);
+    assert.equal(policies.rowCount, 3);
+    for (const policy of policies.rows) {
+      assert.match(policy.expression, /current_setting\('app.current_user_id'/);
+    }
+    const rls = await client.query(`
+      SELECT relrowsecurity, relforcerowsecurity
+      FROM pg_class
+      WHERE oid='content_e2ee_migrations'::regclass
+    `);
+    assert.deepEqual(rls.rows[0], { relrowsecurity: true, relforcerowsecurity: true });
+
+    await client.query("SET ROLE toard_app");
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_user_id', $1, true)", [userA]);
+    assert.deepEqual(
+      (await client.query("SELECT user_id FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows,
+      [{ user_id: userA }],
+    );
+    assert.equal(
+      (await client.query("SELECT user_id FROM content_e2ee_migrations WHERE user_id=$1", [userB])).rowCount,
+      0,
+    );
+    assert.equal(
+      (await client.query(
+        "UPDATE content_e2ee_migrations SET state='running',started_at=now() WHERE user_id=$1 RETURNING user_id",
+        [userB],
+      )).rowCount,
+      0,
+    );
+    await client.query("ROLLBACK");
+
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.current_user_id', $1, true)", [userC]);
+    await client.query(
+      `INSERT INTO content_e2ee_migrations
+         (user_id,state,blocked_at,blocked_reason,source_e2ee_records)
+       VALUES($1,'blocked',now(),'key_unavailable',0)`,
+      [userC],
+    );
+    assert.deepEqual(
+      (await client.query("SELECT user_id FROM content_e2ee_migrations WHERE user_id=$1", [userC])).rows,
+      [{ user_id: userC }],
+    );
+    assert.equal(
+      (await client.query("SELECT user_id FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rowCount,
+      0,
+    );
+    await client.query("ROLLBACK");
+    await client.query("RESET ROLE");
+
+    await client.query("BEGIN");
+    await expectConstraintFailure(
+      client,
+      "UPDATE content_e2ee_migrations SET state='running' WHERE user_id=$1",
+      [userA],
+      /content_e2ee_migrations_state_timestamps_check/,
+    );
+    await expectConstraintFailure(
+      client,
+      "UPDATE content_e2ee_migrations SET state='blocked',blocked_reason='key_unavailable' WHERE user_id=$1",
+      [userA],
+      /content_e2ee_migrations_blocked_fields_check/,
+    );
+    await expectConstraintFailure(
+      client,
+      "UPDATE content_e2ee_migrations SET state='complete' WHERE user_id=$1",
+      [userA],
+      /content_e2ee_migrations_state_timestamps_check/,
+    );
+    await expectConstraintFailure(
+      client,
+      "UPDATE content_e2ee_migrations SET completed_at=now() WHERE user_id=$1",
+      [userA],
+      /content_e2ee_migrations_state_timestamps_check/,
+    );
+    await expectConstraintFailure(
+      client,
+      "UPDATE content_e2ee_migrations SET last_error_code=$2 WHERE user_id=$1",
+      [userA, "x".repeat(81)],
+      /content_e2ee_migrations_last_error_code_check/,
+    );
+    await client.query("ROLLBACK");
+
+    const beforeNoop = await migrationStatus(client);
+    await client.query("UPDATE content_e2ee_migrations SET state=state WHERE user_id=$1", [userA]);
+    const afterNoop = await migrationStatus(client);
+    assert.deepEqual(afterNoop, beforeNoop);
+
+    await client.query(
+      "UPDATE content_e2ee_migrations SET state='running',started_at=now(),updated_at=now() WHERE user_id=$1",
+      [userA],
+    );
+    assert.deepEqual(
+      await migrationStatus(client).then(({ e2ee_migration_pending, e2ee_migration_blocked }) => ({
+        e2ee_migration_pending,
+        e2ee_migration_blocked,
+      })),
+      { e2ee_migration_pending: 1, e2ee_migration_blocked: 0 },
+    );
+    await client.query("SELECT pg_sleep(0.01)");
+    await client.query(
+      `UPDATE content_e2ee_migrations
+       SET state='blocked',blocked_at=now(),blocked_reason='key_unavailable',updated_at=now()
+       WHERE user_id=$1`,
+      [userA],
+    );
+    const blockedStatus = await migrationStatus(client);
+    assert.equal(blockedStatus.e2ee_migration_pending, 0);
+    assert.equal(blockedStatus.e2ee_migration_blocked, 1);
+    assert.ok(blockedStatus.updated_at > afterNoop.updated_at);
+    await client.query("SELECT pg_sleep(0.01)");
+    await client.query(
+      `UPDATE content_e2ee_migrations
+       SET state='pending',blocked_at=NULL,blocked_reason=NULL,last_error_code=NULL,updated_at=now()
+       WHERE user_id=$1`,
+      [userA],
+    );
+    const resumedStatus = await migrationStatus(client);
+    assert.equal(resumedStatus.e2ee_migration_pending, 1);
+    assert.equal(resumedStatus.e2ee_migration_blocked, 0);
+    assert.ok(resumedStatus.updated_at > blockedStatus.updated_at);
+
+    await client.query(
+      `INSERT INTO content_e2ee_migrations
+         (user_id,state,blocked_at,blocked_reason,source_e2ee_records)
+       VALUES($1,'blocked',now(),'key_unavailable',0)`,
+      [userC],
+    );
+    assert.deepEqual(
+      await migrationStatus(client).then(({ e2ee_migration_pending, e2ee_migration_blocked }) => ({
+        e2ee_migration_pending,
+        e2ee_migration_blocked,
+      })),
+      { e2ee_migration_pending: 1, e2ee_migration_blocked: 1 },
+    );
+    await client.query("DELETE FROM content_e2ee_migrations WHERE user_id=$1", [userC]);
+    assert.deepEqual(
+      await migrationStatus(client).then(({ e2ee_migration_pending, e2ee_migration_blocked }) => ({
+        e2ee_migration_pending,
+        e2ee_migration_blocked,
+      })),
+      { e2ee_migration_pending: 1, e2ee_migration_blocked: 0 },
+    );
+
+    await client.query("BEGIN");
+    await client.query(
+      "UPDATE content_encryption_status SET e2ee_migration_pending=0 WHERE singleton=TRUE",
+    );
+    await assert.rejects(
+      client.query("DELETE FROM content_e2ee_migrations WHERE user_id=$1", [userA]),
+      /content_encryption_status_e2ee_migration_pending_check/,
+    );
+    await client.query("ROLLBACK");
+    assert.equal(
+      (await client.query("SELECT state FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows[0].state,
+      "pending",
+    );
+    assert.equal((await migrationStatus(client)).e2ee_migration_pending, 1);
+
+    const triggerFunction = await client.query<{ definition: string }>(`
+      SELECT pg_get_functiondef(p.oid) AS definition
+      FROM pg_proc p
+      WHERE p.proname='sync_content_e2ee_migration_status'
+    `);
+    assert.equal(triggerFunction.rowCount, 1);
+    assert.match(triggerFunction.rows[0].definition, /SECURITY DEFINER/i);
+    assert.match(triggerFunction.rows[0].definition, /SET search_path TO 'public', 'pg_temp'/i);
+    for (const unrelatedColumn of [
+      "server_records",
+      "e2ee_records",
+      "managed_records",
+      "active_user_keys",
+      "pending_user_keys",
+      "retiring_user_keys",
+      "source_e2ee_records",
+    ]) {
+      assert.doesNotMatch(triggerFunction.rows[0].definition, new RegExp(`\\b${unrelatedColumn}\\b`, "i"));
+    }
+
+    await assert.rejects(client.query(up), /already exists/);
+    await client.query("UPDATE content_accounts SET state='migrated' WHERE user_id=$1", [userB]);
+    assert.equal(
+      (await client.query("SELECT state FROM content_accounts WHERE user_id=$1", [userB])).rows[0].state,
+      "migrated",
+    );
+    await client.query("UPDATE content_accounts SET state='active' WHERE user_id=$1", [userB]);
+    assert.equal((await client.query("SELECT COUNT(*)::int AS count FROM content_e2ee_migrations")).rows[0].count, 2);
+
+    await client.query(
+      "UPDATE content_e2ee_migrations SET state='running',started_at=COALESCE(started_at,now()) WHERE user_id=$1",
+      [userA],
+    );
+    await assert.rejects(client.query(down), /rollback blocked: E2EE migration is running or blocked/);
+    await client.query("UPDATE content_e2ee_migrations SET state='pending' WHERE user_id=$1", [userA]);
+
+    await client.query(
+      `UPDATE content_e2ee_migrations
+       SET state='blocked',blocked_at=now(),blocked_reason='key_unavailable',updated_at=now()
+       WHERE user_id=$1`,
+      [userA],
+    );
+    await assert.rejects(client.query(down), /rollback blocked: E2EE migration is running or blocked/);
+    await client.query(
+      "UPDATE content_e2ee_migrations SET state='pending',blocked_at=NULL,blocked_reason=NULL WHERE user_id=$1",
+      [userA],
+    );
+
+    await client.query("UPDATE content_accounts SET state='migrated' WHERE user_id=$1", [userB]);
+    await assert.rejects(client.query(down), /rollback blocked: migrated content account exists/);
+    await client.query("UPDATE content_accounts SET state='active' WHERE user_id=$1", [userB]);
+
+    await client.query(
+      `UPDATE prompt_records
+       SET encryption_scheme='managed_v1',content_owner_id=NULL,content_key_version=1,
+           wrapped_dek=$2,dek_wrap_iv=$3,dek_wrap_auth_tag=$4,iv=$3,
+           ciphertext=$5,auth_tag=$4,aad_version=2
+       WHERE user_id=$1 AND dedup_key='e2ee-state-source'`,
+      [userA, Buffer.alloc(32, 6), Buffer.alloc(12, 7), Buffer.alloc(16, 8), Buffer.from("managed")],
+    );
+    await client.query(
+      `UPDATE content_e2ee_migrations
+       SET state='complete',started_at=COALESCE(started_at,now()),completed_at=now(),updated_at=now()
+       WHERE user_id=$1`,
+      [userA],
+    );
+    await assert.rejects(client.query(down), /rollback blocked: converted E2EE content exists/);
+    await client.query(
+      `UPDATE prompt_records
+       SET encryption_scheme='e2ee_v1',content_owner_id=$2,content_key_version=1,
+           wrapped_dek=$3,dek_wrap_iv=$4,dek_wrap_auth_tag=$5,iv=$4,
+           ciphertext=$6,auth_tag=$5,aad_version=1
+       WHERE user_id=$1 AND dedup_key='e2ee-state-source'`,
+      [
+        userA,
+        ownerA,
+        Buffer.alloc(32, 9),
+        Buffer.alloc(12, 10),
+        Buffer.alloc(16, 11),
+        Buffer.from("e2ee-restored"),
+      ],
+    );
+    await client.query(
+      `UPDATE content_e2ee_migrations
+       SET state='pending',completed_at=NULL,blocked_at=NULL,blocked_reason=NULL WHERE user_id=$1`,
+      [userA],
+    );
+
+    await client.query(
+      `INSERT INTO prompt_records
+         (dedup_key,user_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,
+          ciphertext,auth_tag,encryption_scheme,content_key_version,
+          dek_wrap_iv,dek_wrap_auth_tag,aad_version)
+       VALUES('new-managed-row',$1,'codex','assistant',now(),1,$2,$3,$4,$5,
+              'managed_v1',1,$3,$5,2)`,
+      [
+        userC,
+        Buffer.alloc(32, 12),
+        Buffer.alloc(12, 13),
+        Buffer.from("new-managed"),
+        Buffer.alloc(16, 14),
+      ],
+    );
+    await client.query(down);
+
+    assert.equal(
+      (await client.query("SELECT to_regclass('content_e2ee_migrations') AS name")).rows[0].name,
+      null,
+    );
+    const removedColumns = await client.query(`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='content_encryption_status'
+        AND column_name IN ('e2ee_migration_pending','e2ee_migration_blocked')
+    `);
+    assert.equal(removedColumns.rowCount, 0);
+    await assert.rejects(
+      client.query("UPDATE content_accounts SET state='migrated' WHERE user_id=$1", [userA]),
+      /content_accounts_state_check/,
+    );
+    assert.equal(
+      (await client.query(
+        "SELECT COUNT(*)::int AS count FROM prompt_records WHERE dedup_key='new-managed-row'",
+      )).rows[0].count,
+      1,
+    );
+  } finally {
+    await client?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});

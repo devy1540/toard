@@ -14,8 +14,6 @@ CREATE TABLE content_e2ee_migrations (
   blocked_at           TIMESTAMPTZ,
   blocked_reason       TEXT,
   last_error_code      TEXT,
-  -- Down 시 기존 E2EE 전환과 신규 managed 행을 구분하기 위한 비민감 provenance다.
-  source_e2ee_records  BIGINT NOT NULL DEFAULT 0,
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT content_e2ee_migrations_state_check
     CHECK (state IN ('pending', 'running', 'blocked', 'complete')),
@@ -30,17 +28,40 @@ CREATE TABLE content_e2ee_migrations (
     AND (blocked_reason IS NULL OR blocked_reason = 'key_unavailable')
   ),
   CONSTRAINT content_e2ee_migrations_last_error_code_check
-    CHECK (last_error_code IS NULL OR char_length(last_error_code) BETWEEN 1 AND 80),
+    CHECK (last_error_code IS NULL OR char_length(last_error_code) <= 80),
   CONSTRAINT content_e2ee_migrations_timestamp_order_check CHECK (
     (completed_at IS NULL OR started_at IS NULL OR completed_at >= started_at)
     AND (blocked_at IS NULL OR started_at IS NULL OR blocked_at >= started_at)
     AND (started_at IS NULL OR updated_at >= started_at)
     AND (completed_at IS NULL OR updated_at >= completed_at)
     AND (blocked_at IS NULL OR updated_at >= blocked_at)
-  ),
-  CONSTRAINT content_e2ee_migrations_source_count_check
-    CHECK (source_e2ee_records >= 0)
+  )
 );
+
+-- 기존 E2EE source 행의 정확한 PK만 기록한다. 사용자 식별자는 authoritative
+-- prompt_records 행에서 얻으므로 복제하거나 앱 runtime에 노출하지 않는다.
+CREATE TABLE content_e2ee_migration_sources (
+  prompt_record_id BIGINT PRIMARY KEY REFERENCES prompt_records(id) ON DELETE RESTRICT,
+  marked_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+INSERT INTO content_e2ee_migration_sources (prompt_record_id)
+SELECT id
+FROM prompt_records
+WHERE encryption_scheme = 'e2ee_v1';
+
+CREATE FUNCTION reject_content_e2ee_migration_source_mutation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RAISE EXCEPTION 'E2EE migration source markers are immutable';
+END;
+$$;
+
+CREATE TRIGGER content_e2ee_migration_sources_immutable
+BEFORE UPDATE OR DELETE ON content_e2ee_migration_sources
+FOR EACH ROW EXECUTE FUNCTION reject_content_e2ee_migration_source_mutation();
 
 WITH active_accounts AS (
   SELECT
@@ -57,7 +78,6 @@ INSERT INTO content_e2ee_migrations (
   state,
   started_at,
   completed_at,
-  source_e2ee_records,
   updated_at
 )
 SELECT
@@ -65,7 +85,6 @@ SELECT
   CASE WHEN source_e2ee_records > 0 THEN 'pending' ELSE 'complete' END,
   CASE WHEN source_e2ee_records = 0 THEN observed_at END,
   CASE WHEN source_e2ee_records = 0 THEN observed_at END,
-  source_e2ee_records,
   observed_at
 FROM active_accounts;
 
@@ -141,8 +160,12 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app') THEN
     EXECUTE 'GRANT SELECT, INSERT, UPDATE ON content_e2ee_migrations TO toard_app';
+    EXECUTE 'REVOKE DELETE ON content_e2ee_migrations FROM toard_app';
+    EXECUTE 'REVOKE ALL PRIVILEGES ON content_e2ee_migration_sources FROM toard_app';
   END IF;
 END $$;
+
+REVOKE ALL PRIVILEGES ON content_e2ee_migration_sources FROM PUBLIC;
 
 -- Down Migration
 
@@ -160,15 +183,9 @@ BEGIN
 
   IF EXISTS (
     SELECT 1
-    FROM content_e2ee_migrations migration
-    WHERE migration.state = 'complete'
-      AND migration.source_e2ee_records > 0
-      AND EXISTS (
-        SELECT 1
-        FROM prompt_records record
-        WHERE record.user_id = migration.user_id
-          AND record.encryption_scheme = 'managed_v1'
-      )
+    FROM content_e2ee_migration_sources marker
+    LEFT JOIN prompt_records record ON record.id = marker.prompt_record_id
+    WHERE record.id IS NULL OR record.encryption_scheme <> 'e2ee_v1'
   ) THEN
     RAISE EXCEPTION 'migration 36 rollback blocked: converted E2EE content exists';
   END IF;
@@ -183,6 +200,9 @@ ALTER TABLE content_encryption_status
 DROP POLICY IF EXISTS content_e2ee_migrations_owner_select ON content_e2ee_migrations;
 DROP POLICY IF EXISTS content_e2ee_migrations_owner_insert ON content_e2ee_migrations;
 DROP POLICY IF EXISTS content_e2ee_migrations_owner_update ON content_e2ee_migrations;
+DROP TRIGGER IF EXISTS content_e2ee_migration_sources_immutable ON content_e2ee_migration_sources;
+DROP FUNCTION IF EXISTS reject_content_e2ee_migration_source_mutation();
+DROP TABLE IF EXISTS content_e2ee_migration_sources;
 DROP TABLE IF EXISTS content_e2ee_migrations;
 
 ALTER TABLE content_accounts

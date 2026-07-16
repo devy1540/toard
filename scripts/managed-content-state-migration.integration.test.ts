@@ -100,6 +100,12 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     await client.query(`
       CREATE ROLE toard_app NOLOGIN NOSUPERUSER NOBYPASSRLS;
       GRANT USAGE ON SCHEMA public TO toard_app;
+      GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO toard_app;
+      GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO toard_app;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO toard_app;
+      ALTER DEFAULT PRIVILEGES IN SCHEMA public
+        GRANT USAGE, SELECT ON SEQUENCES TO toard_app;
     `);
 
     const userA = randomUUID();
@@ -141,6 +147,12 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
         Buffer.alloc(16, 5),
       ],
     );
+    await client.query(
+      `INSERT INTO prompt_records
+         (dedup_key,user_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,ciphertext,auth_tag)
+       VALUES ('server-not-a-source',$1,'codex','assistant',now(),1,$2,$3,$4,$5)`,
+      [userB, Buffer.alloc(60, 20), Buffer.alloc(12, 21), Buffer.from("server"), Buffer.alloc(16, 22)],
+    );
     for (const migration of BASE_MIGRATIONS.slice(3)) {
       await client.query(await migrationPart(migration, "up"));
     }
@@ -154,9 +166,8 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       state: string;
       started_at: Date | null;
       completed_at: Date | null;
-      source_e2ee_records: number;
     }>(`
-      SELECT user_id,state,started_at,completed_at,source_e2ee_records::int
+      SELECT user_id,state,started_at,completed_at
       FROM content_e2ee_migrations
       ORDER BY user_id
     `);
@@ -167,12 +178,22 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       state: "pending",
       started_at: null,
       completed_at: null,
-      source_e2ee_records: 1,
     });
     assert.equal(byUser.get(userB)?.state, "complete");
     assert.ok(byUser.get(userB)?.started_at instanceof Date);
     assert.ok(byUser.get(userB)?.completed_at instanceof Date);
-    assert.equal(byUser.get(userB)?.source_e2ee_records, 0);
+    const sourceMarkers = await client.query<{
+      prompt_record_id: string;
+      user_id: string;
+      encryption_scheme: string;
+    }>(`
+      SELECT marker.prompt_record_id::text, record.user_id, record.encryption_scheme
+      FROM content_e2ee_migration_sources marker
+      JOIN prompt_records record ON record.id=marker.prompt_record_id
+    `);
+    assert.equal(sourceMarkers.rowCount, 1);
+    assert.equal(sourceMarkers.rows[0].user_id, userA);
+    assert.equal(sourceMarkers.rows[0].encryption_scheme, "e2ee_v1");
     assert.deepEqual(
       await migrationStatus(client).then(({ e2ee_migration_pending, e2ee_migration_blocked }) => ({
         e2ee_migration_pending,
@@ -196,6 +217,31 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       )).rows[0].ok,
       false,
     );
+    assert.equal(
+      (await client.query(
+        "SELECT has_table_privilege('toard_app','managed_content_keys','DELETE') AS ok",
+      )).rows[0].ok,
+      true,
+      "test topology must reproduce bootstrap default ALL table privileges",
+    );
+    for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+      assert.equal(
+        (await client.query(
+          "SELECT has_table_privilege('toard_app','content_e2ee_migration_sources',$1) AS ok",
+          [privilege],
+        )).rows[0].ok,
+        false,
+      );
+    }
+
+    for (const sql of [
+      "UPDATE content_e2ee_migration_sources SET marked_at=clock_timestamp()",
+      "DELETE FROM content_e2ee_migration_sources",
+    ]) {
+      await client.query("BEGIN");
+      await assert.rejects(client.query(sql), /E2EE migration source markers are immutable/);
+      await client.query("ROLLBACK");
+    }
     const policies = await client.query<{ policyname: string; expression: string }>(`
       SELECT policyname, COALESCE(qual, with_check) AS expression
       FROM pg_policies
@@ -234,11 +280,32 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     await client.query("ROLLBACK");
 
     await client.query("BEGIN");
+    await assert.rejects(
+      client.query("DELETE FROM content_e2ee_migrations WHERE user_id=$1", [userA]),
+      /permission denied for table content_e2ee_migrations/,
+    );
+    await client.query("ROLLBACK");
+
+    for (const sql of [
+      "SELECT prompt_record_id FROM content_e2ee_migration_sources",
+      "INSERT INTO content_e2ee_migration_sources(prompt_record_id) VALUES(999999)",
+      "UPDATE content_e2ee_migration_sources SET prompt_record_id=prompt_record_id",
+      "DELETE FROM content_e2ee_migration_sources",
+    ]) {
+      await client.query("BEGIN");
+      await assert.rejects(
+        client.query(sql),
+        /permission denied for table content_e2ee_migration_sources/,
+      );
+      await client.query("ROLLBACK");
+    }
+
+    await client.query("BEGIN");
     await client.query("SELECT set_config('app.current_user_id', $1, true)", [userC]);
     await client.query(
       `INSERT INTO content_e2ee_migrations
-         (user_id,state,blocked_at,blocked_reason,source_e2ee_records)
-       VALUES($1,'blocked',now(),'key_unavailable',0)`,
+         (user_id,state,blocked_at,blocked_reason)
+       VALUES($1,'blocked',now(),'key_unavailable')`,
       [userC],
     );
     assert.deepEqual(
@@ -285,6 +352,20 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     );
     await client.query("ROLLBACK");
 
+    await client.query(
+      "UPDATE content_e2ee_migrations SET last_error_code='' WHERE user_id=$1",
+      [userA],
+    );
+    assert.equal(
+      (await client.query("SELECT last_error_code FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows[0]
+        .last_error_code,
+      "",
+    );
+    await client.query(
+      "UPDATE content_e2ee_migrations SET last_error_code=NULL WHERE user_id=$1",
+      [userA],
+    );
+
     const beforeNoop = await migrationStatus(client);
     await client.query("UPDATE content_e2ee_migrations SET state=state WHERE user_id=$1", [userA]);
     const afterNoop = await migrationStatus(client);
@@ -326,8 +407,8 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
 
     await client.query(
       `INSERT INTO content_e2ee_migrations
-         (user_id,state,blocked_at,blocked_reason,source_e2ee_records)
-       VALUES($1,'blocked',now(),'key_unavailable',0)`,
+         (user_id,state,blocked_at,blocked_reason)
+       VALUES($1,'blocked',now(),'key_unavailable')`,
       [userC],
     );
     assert.deepEqual(
@@ -376,7 +457,6 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       "active_user_keys",
       "pending_user_keys",
       "retiring_user_keys",
-      "source_e2ee_records",
     ]) {
       assert.doesNotMatch(triggerFunction.rows[0].definition, new RegExp(`\\b${unrelatedColumn}\\b`, "i"));
     }
@@ -413,6 +493,19 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     await assert.rejects(client.query(down), /rollback blocked: migrated content account exists/);
     await client.query("UPDATE content_accounts SET state='active' WHERE user_id=$1", [userB]);
 
+    await assert.rejects(
+      client.query(
+        `DELETE FROM prompt_records
+         WHERE id=(SELECT prompt_record_id FROM content_e2ee_migration_sources LIMIT 1)`,
+      ),
+      /content_e2ee_migration_sources_prompt_record_id_fkey/,
+    );
+
+    assert.equal(
+      (await client.query("SELECT state FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows[0].state,
+      "pending",
+    );
+
     await client.query(
       `UPDATE prompt_records
        SET encryption_scheme='managed_v1',content_owner_id=NULL,content_key_version=1,
@@ -421,13 +514,11 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
        WHERE user_id=$1 AND dedup_key='e2ee-state-source'`,
       [userA, Buffer.alloc(32, 6), Buffer.alloc(12, 7), Buffer.alloc(16, 8), Buffer.from("managed")],
     );
-    await client.query(
-      `UPDATE content_e2ee_migrations
-       SET state='complete',started_at=COALESCE(started_at,now()),completed_at=now(),updated_at=now()
-       WHERE user_id=$1`,
-      [userA],
-    );
     await assert.rejects(client.query(down), /rollback blocked: converted E2EE content exists/);
+    assert.equal(
+      (await client.query("SELECT state FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows[0].state,
+      "pending",
+    );
     await client.query(
       `UPDATE prompt_records
        SET encryption_scheme='e2ee_v1',content_owner_id=$2,content_key_version=1,
@@ -444,12 +535,6 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       ],
     );
     await client.query(
-      `UPDATE content_e2ee_migrations
-       SET state='pending',completed_at=NULL,blocked_at=NULL,blocked_reason=NULL WHERE user_id=$1`,
-      [userA],
-    );
-
-    await client.query(
       `INSERT INTO prompt_records
          (dedup_key,user_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,
           ciphertext,auth_tag,encryption_scheme,content_key_version,
@@ -457,7 +542,7 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
        VALUES('new-managed-row',$1,'codex','assistant',now(),1,$2,$3,$4,$5,
               'managed_v1',1,$3,$5,2)`,
       [
-        userC,
+        userA,
         Buffer.alloc(32, 12),
         Buffer.alloc(12, 13),
         Buffer.from("new-managed"),
@@ -468,6 +553,10 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
 
     assert.equal(
       (await client.query("SELECT to_regclass('content_e2ee_migrations') AS name")).rows[0].name,
+      null,
+    );
+    assert.equal(
+      (await client.query("SELECT to_regclass('content_e2ee_migration_sources') AS name")).rows[0].name,
       null,
     );
     const removedColumns = await client.query(`

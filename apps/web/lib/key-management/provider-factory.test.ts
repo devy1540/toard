@@ -205,6 +205,17 @@ test("factory 오류는 설정 원문이나 secret 경로를 노출하지 않는
   );
 });
 
+test("factory는 runtime unknown provider도 고정 오류로 fail-closed한다", () => {
+  assert.throws(
+    () => createKeyProvider({
+      slot: "active",
+      provider: "unknown-provider",
+      settings: {},
+    } as unknown as ProviderProfile),
+    (error: Error) => error.message === "KEY_PROVIDER_CONSTRUCTION_FAILED",
+  );
+});
+
 test("registry factory는 다른 local path가 같은 KEK bytes면 거부하고 임시 buffer를 zeroize한다", () => {
   const issued: Buffer[] = [];
   const config = {

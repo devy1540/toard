@@ -26,16 +26,51 @@ function safeLatency(startedAt: number, finishedAt: number): number {
   return Number.isFinite(latency) && latency >= 0 ? latency : 0;
 }
 
+function finiteNow(now: () => number): number | null {
+  try {
+    const value = now();
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function validCheckedAt(checkedAt: () => Date): Date | null {
+  try {
+    const value = checkedAt();
+    return value instanceof Date && Number.isFinite(value.getTime())
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function unhealthyHealth(
+  latencyMs: number,
+  checkedAt: Date,
+): KeyProviderHealth {
+  return {
+    status: "unhealthy",
+    latencyMs,
+    checkedAt,
+    errorCode: "PROVIDER_CANARY_FAILED",
+  };
+}
+
 export async function runProviderCanary(
   provider: KeyManagementProvider,
   dependencies: CanaryDependencies = {},
 ): Promise<KeyProviderHealth> {
   const now = dependencies.now ?? performance.now.bind(performance);
   const checkedAt = dependencies.checkedAt ?? (() => new Date());
-  const uck = (dependencies.randomBytes ?? nodeRandomBytes)(32);
-  const startedAt = now();
+  let uck: Buffer | null = null;
   let unwrapped: Buffer | null = null;
+  let startedAt: number | null = null;
   try {
+    startedAt = finiteNow(now);
+    if (startedAt === null) throw new Error("PROVIDER_CANARY_CLOCK_INVALID");
+    uck = (dependencies.randomBytes ?? nodeRandomBytes)(32);
     if (!Buffer.isBuffer(uck) || uck.length !== 32) {
       throw new Error("PROVIDER_CANARY_RANDOM_INVALID");
     }
@@ -48,20 +83,26 @@ export async function runProviderCanary(
     ) {
       throw new Error("PROVIDER_CANARY_MISMATCH");
     }
+    const finishedAt = finiteNow(now);
+    const resultCheckedAt = validCheckedAt(checkedAt);
+    if (finishedAt === null || resultCheckedAt === null) {
+      throw new Error("PROVIDER_CANARY_REPORT_INVALID");
+    }
     return {
       status: "healthy",
-      latencyMs: safeLatency(startedAt, now()),
-      checkedAt: checkedAt(),
+      latencyMs: safeLatency(startedAt, finishedAt),
+      checkedAt: resultCheckedAt,
     };
   } catch {
-    return {
-      status: "unhealthy",
-      latencyMs: safeLatency(startedAt, now()),
-      checkedAt: checkedAt(),
-      errorCode: "PROVIDER_CANARY_FAILED",
-    };
+    const finishedAt = startedAt === null ? null : finiteNow(now);
+    return unhealthyHealth(
+      startedAt !== null && finishedAt !== null
+        ? safeLatency(startedAt, finishedAt)
+        : 0,
+      validCheckedAt(checkedAt) ?? new Date(0),
+    );
   } finally {
-    if (Buffer.isBuffer(uck)) uck.fill(0);
+    uck?.fill(0);
     unwrapped?.fill(0);
   }
 }
@@ -73,7 +114,9 @@ type ProviderHealthCacheInput = {
 };
 
 type CacheEntry = {
-  createdAt: number;
+  pending: boolean;
+  startedAt: number | null;
+  settledAt: number | null;
   promise: Promise<KeyProviderHealth>;
 };
 
@@ -96,28 +139,48 @@ export class ProviderHealthCache {
   }
 
   check(provider: KeyManagementProvider): Promise<KeyProviderHealth> {
-    const currentTime = this.now();
     const cached = this.entries.get(provider.fingerprint);
+    if (cached?.pending) return cached.promise;
+
+    const currentTime = finiteNow(this.now);
     if (
       cached
-      && Number.isFinite(currentTime)
-      && currentTime >= cached.createdAt
-      && currentTime - cached.createdAt < this.ttlMs
+      && currentTime !== null
+      && cached.settledAt !== null
+      && currentTime >= cached.settledAt
+      && currentTime - cached.settledAt < this.ttlMs
     ) {
       return cached.promise;
     }
+    if (cached) this.entries.delete(provider.fingerprint);
 
-    const createdAt = Number.isFinite(currentTime) ? currentTime : 0;
-    const entry: CacheEntry = {
-      createdAt,
-      promise: Promise.resolve().then(() => this.runCheck(provider)),
+    let entry!: CacheEntry;
+    const promise = Promise.resolve()
+      .then(() => this.runCheck(provider))
+      .catch(() => unhealthyHealth(0, new Date(0)))
+      .then((result) => {
+        entry.pending = false;
+        const settledAt = finiteNow(this.now);
+        if (
+          entry.startedAt === null
+          || settledAt === null
+          || settledAt < entry.startedAt
+        ) {
+          if (this.entries.get(provider.fingerprint) === entry) {
+            this.entries.delete(provider.fingerprint);
+          }
+        } else {
+          entry.settledAt = settledAt;
+        }
+        return result;
+      });
+    entry = {
+      pending: true,
+      startedAt: currentTime,
+      settledAt: null,
+      promise,
     };
     this.entries.set(provider.fingerprint, entry);
-    entry.promise.catch(() => {
-      if (this.entries.get(provider.fingerprint) === entry) {
-        this.entries.delete(provider.fingerprint);
-      }
-    });
-    return entry.promise;
+    return promise;
   }
 }

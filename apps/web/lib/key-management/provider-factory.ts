@@ -176,6 +176,8 @@ function createValidatedKeyProvider(
     case "vault-transit":
     case "openbao-transit":
       return createTransitProvider(profile, dependencies);
+    default:
+      throw new Error("KEY_PROVIDER_PROFILE_INVALID");
   }
 }
 

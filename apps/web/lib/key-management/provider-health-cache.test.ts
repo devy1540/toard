@@ -116,6 +116,33 @@ test("health cache는 fingerprint별 60초 TTL과 concurrent single-flight를 �
   assert.equal(provider.wrapCalls, 2);
 });
 
+test("health cache는 TTL보다 오래 pending이어도 canary를 중복 시작하지 않고 settled 시점부터 TTL을 센다", async () => {
+  let now = 0;
+  let release!: () => void;
+  const provider = new CanaryProvider();
+  provider.pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const cache = new ProviderHealthCache({ ttlMs: 100, now: () => now });
+
+  const first = cache.check(provider);
+  now = 1_000;
+  const stillPending = cache.check(provider);
+  assert.equal(first, stillPending);
+  await Promise.resolve();
+  assert.equal(provider.wrapCalls, 1);
+
+  release();
+  await first;
+  provider.pending = null;
+  now = 1_099;
+  await cache.check(provider);
+  assert.equal(provider.wrapCalls, 1);
+  now = 1_100;
+  await cache.check(provider);
+  assert.equal(provider.wrapCalls, 2);
+});
+
 test("health cache는 실패 후 inflight를 정리하고 clock rollback에도 stale 결과를 쓰지 않는다", async () => {
   let now = 10_000;
   const provider = new CanaryProvider();
@@ -139,10 +166,13 @@ test("health cache는 invalid TTL을 거부한다", () => {
   }
 });
 
-test("health cache는 check promise 예외 뒤 stale inflight를 제거한다", async () => {
+test("health cache는 check promise 예외를 안전한 unhealthy로 바꾸고 TTL 뒤 재검사한다", async () => {
   let attempts = 0;
+  let now = 0;
   const provider = new CanaryProvider();
   const cache = new ProviderHealthCache({
+    ttlMs: 10,
+    now: () => now,
     check: async () => {
       attempts += 1;
       if (attempts === 1) throw new Error("transient secret detail");
@@ -154,7 +184,69 @@ test("health cache는 check promise 예외 뒤 stale inflight를 제거한다", 
     },
   });
 
-  await assert.rejects(cache.check(provider), /transient secret detail/);
+  const failed = await cache.check(provider);
+  assert.equal(failed.status, "unhealthy");
+  assert.equal(JSON.stringify(failed).includes("transient secret detail"), false);
+  now = 10;
   assert.equal((await cache.check(provider)).status, "healthy");
   assert.equal(attempts, 2);
+});
+
+test("health cache는 clock throw, NaN, rollback에서 원문 없이 안전하게 refresh한다", async () => {
+  const provider = new CanaryProvider();
+  const values: Array<number | Error> = [
+    100,
+    new Error("clock secret"),
+    Number.NaN,
+    50,
+  ];
+  const cache = new ProviderHealthCache({
+    now: () => {
+      const value = values.shift()!;
+      if (value instanceof Error) throw value;
+      return value;
+    },
+  });
+
+  assert.equal((await cache.check(provider)).status, "healthy");
+  assert.equal((await cache.check(provider)).status, "healthy");
+  assert.equal((await cache.check(provider)).status, "healthy");
+  assert.equal((await cache.check(provider)).status, "healthy");
+  assert.equal(provider.wrapCalls, 4);
+});
+
+test("canary dependency 예외와 invalid clock/date는 항상 안전한 unhealthy로 resolve한다", async () => {
+  const provider = new CanaryProvider();
+  for (const dependencies of [
+    {
+      randomBytes: () => {
+        throw new Error("rng secret");
+      },
+    },
+    {
+      randomBytes: () => Buffer.alloc(32, 1),
+      now: () => {
+        throw new Error("clock secret");
+      },
+    },
+    {
+      randomBytes: () => Buffer.alloc(32, 1),
+      now: () => Number.NaN,
+    },
+    {
+      randomBytes: () => Buffer.alloc(32, 1),
+      checkedAt: () => {
+        throw new Error("date secret");
+      },
+    },
+    {
+      randomBytes: () => Buffer.alloc(32, 1),
+      checkedAt: () => new Date(Number.NaN),
+    },
+  ]) {
+    const result = await runProviderCanary(provider, dependencies);
+    assert.equal(result.status, "unhealthy");
+    assert.equal(Number.isFinite(result.checkedAt.getTime()), true);
+    assert.equal(JSON.stringify(result).includes("secret"), false);
+  }
 });

@@ -86,3 +86,55 @@ test("unhealthy canary는 detail 없는 제한된 JSON과 exit 1만 반환한다
   });
   assert.equal(stdout[0]!.includes("secret remote response"), false);
 });
+
+test("healthy canary는 정확한 5개 JSON 필드와 exit 0만 반환한다", async () => {
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const provider = {
+    name: "gcp-kms",
+    keyRef: "projects/test/locations/global/keyRings/toard/cryptoKeys/history",
+    fingerprint: "gcp-kms:test",
+  } as KeyManagementProvider;
+  const result = await verifyKeyProvider(
+    { TOARD_VERIFY_KEY_PROVIDER: "1" },
+    {
+      load: async () => ({
+        loadKeyManagementConfig: () => ({
+          active: {
+            slot: "active",
+            provider: "gcp-kms",
+            settings: {},
+          },
+          migration: null,
+          cacheTtlMs: 1,
+        }),
+        createKeyProvider: () => provider,
+        runProviderCanary: async (): Promise<KeyProviderHealth> => ({
+          status: "healthy",
+          latencyMs: 1.4,
+          checkedAt: new Date(0),
+        }),
+      }),
+      stdout: (line) => stdout.push(line),
+      stderr: (line) => stderr.push(line),
+    },
+  );
+
+  assert.equal(result, 0);
+  assert.deepEqual(stderr, []);
+  const output = JSON.parse(stdout[0]!);
+  assert.deepEqual(Object.keys(output).sort(), [
+    "fingerprint",
+    "keyRef",
+    "latencyMs",
+    "provider",
+    "status",
+  ]);
+  assert.deepEqual(output, {
+    provider: provider.name,
+    keyRef: provider.keyRef,
+    fingerprint: provider.fingerprint,
+    status: "healthy",
+    latencyMs: 1,
+  });
+});

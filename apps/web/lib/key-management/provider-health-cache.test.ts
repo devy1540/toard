@@ -4,6 +4,7 @@ import {
   ProviderHealthCache,
   runProviderCanary,
 } from "./provider-health-cache";
+import { providerError } from "./provider-error";
 import type {
   CredentialSourceSummary,
   KeyContext,
@@ -98,7 +99,7 @@ test("canary는 provider의 안전한 allowlisted error code만 보존한다", a
     keyRef: "test:aws-key",
     fingerprint: "aws-kms:safe-failure",
     async wrapKey(): Promise<WrappedUserKey> {
-      throw new Error("aws-kms:THROTTLED");
+      throw providerError("aws-kms", "THROTTLED");
     },
     async unwrapKey(): Promise<Buffer> {
       throw new Error("unused");
@@ -118,6 +119,7 @@ test("canary는 provider의 안전한 allowlisted error code만 보존한다", a
   }
 
   for (const message of [
+    "aws-kms:THROTTLED",
     "aws-kms:UNKNOWN",
     "aws-kms:TEMPORARY requestId=secret",
     "gcp-kms:TEMPORARY",

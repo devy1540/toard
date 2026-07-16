@@ -5,7 +5,7 @@ import {
   type DecryptCommandOutput,
   type EncryptCommandOutput,
 } from "@aws-sdk/client-kms";
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   decodeUserKeyPayload,
   encodeUserKeyPayload,
@@ -17,6 +17,11 @@ import type {
   KeyProviderHealth,
   WrappedUserKey,
 } from "./types";
+import {
+  inspectProviderError,
+  providerError,
+} from "./provider-error";
+import { awsKmsProviderFingerprint } from "./provider-fingerprint";
 
 type ProviderErrorCode =
   | "AUTH_FAILED"
@@ -32,6 +37,22 @@ type ProviderErrorCode =
   | "TEMPORARY"
   | "THROTTLED"
   | "WRAPPER_MISMATCH";
+
+const PROVIDER_ERROR_CODES: ReadonlySet<string> = new Set([
+  "AUTH_FAILED",
+  "EMPTY_CIPHERTEXT",
+  "EMPTY_PLAINTEXT",
+  "FAILED",
+  "INVALID_CIPHERTEXT",
+  "INVALID_PLAINTEXT",
+  "KEY_DISABLED",
+  "KEY_INVALID_STATE",
+  "KEY_MISMATCH",
+  "KEY_NOT_FOUND",
+  "TEMPORARY",
+  "THROTTLED",
+  "WRAPPER_MISMATCH",
+]);
 
 export interface AwsKmsClient {
   send(command: EncryptCommand): Promise<EncryptCommandOutput>;
@@ -61,25 +82,6 @@ export function keyContextMap(
     keyVersion: String(context.keyVersion),
     purpose: context.purpose,
   });
-}
-
-function providerError(
-  provider: "aws-kms",
-  code: ProviderErrorCode,
-): Error {
-  return new Error(`${provider}:${code}`);
-}
-
-function providerFingerprint(
-  keyArn: string,
-  region: string,
-  endpoint: string | undefined,
-): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify(["aws-kms", keyArn, region, endpoint ?? null]))
-    .digest("hex")
-    .slice(0, 24);
-  return `aws-kms:${digest}`;
 }
 
 function errorName(error: unknown): string {
@@ -163,10 +165,8 @@ function classifyAwsError(error: unknown): ProviderErrorCode {
 }
 
 function safeErrorCode(error: unknown): string {
-  if (error instanceof Error && error.message.startsWith("aws-kms:")) {
-    return error.message.slice("aws-kms:".length);
-  }
-  return "FAILED";
+  return inspectProviderError(error, "aws-kms", PROVIDER_ERROR_CODES)
+    ?? "FAILED";
 }
 
 export class AwsKmsProvider implements KeyManagementProvider {
@@ -177,7 +177,7 @@ export class AwsKmsProvider implements KeyManagementProvider {
 
   constructor(input: AwsKmsProviderInput) {
     this.keyRef = input.keyArn;
-    this.fingerprint = providerFingerprint(
+    this.fingerprint = awsKmsProviderFingerprint(
       input.keyArn,
       input.region,
       input.endpoint,

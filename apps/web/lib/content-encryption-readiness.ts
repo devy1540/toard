@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { loadKeyManagementConfig, type ProviderProfile } from "./key-management/config";
 import {
   canonicalTransitKeyName,
@@ -9,6 +10,13 @@ import type {
   KeyProviderName,
 } from "./key-management/types";
 import type { ManagedContentRuntime } from "./managed-content-runtime";
+import {
+  awsKmsProviderFingerprint,
+  azureKeyVaultProviderFingerprint,
+  gcpKmsProviderFingerprint,
+  localProviderFingerprint,
+  transitProviderFingerprint,
+} from "./key-management/provider-fingerprint";
 
 export type ContentEncryptionReadiness = {
   status: "disabled" | "healthy" | "degraded";
@@ -29,6 +37,8 @@ export type ContentEncryptionReadinessDb = {
 type ReadinessEnvironment = Readonly<Record<string, string | undefined>>;
 
 const TRANSIENT_PROVIDER_CODES = new Set(["TEMPORARY", "THROTTLED"]);
+const DATE_GET_TIME = Date.prototype.getTime;
+const DATE_TO_ISO_STRING = Date.prototype.toISOString;
 
 function fail(code: string): never {
   throw new Error(code);
@@ -84,14 +94,65 @@ function expectedKeyRef(profile: ProviderProfile): string {
   }
 }
 
-function assertRuntimeMatches(
+async function expectedFingerprint(profile: ProviderProfile): Promise<string> {
+  switch (profile.provider) {
+    case "local": {
+      let raw: Buffer | null = null;
+      let copy: Buffer | null = null;
+      try {
+        raw = await readFile(profile.settings.LOCAL_KEK_FILE!);
+        copy = Buffer.from(raw);
+        if (copy.length !== 32) throw new Error("LOCAL_KEY_FILE_INVALID");
+        return localProviderFingerprint(copy);
+      } finally {
+        raw?.fill(0);
+        copy?.fill(0);
+      }
+    }
+    case "aws-kms":
+      return awsKmsProviderFingerprint(
+        profile.settings.AWS_KEY_ARN!,
+        profile.settings.AWS_REGION!,
+        profile.settings.AWS_ENDPOINT,
+      );
+    case "gcp-kms":
+      return gcpKmsProviderFingerprint(
+        profile.settings.GCP_KEY_NAME!,
+        profile.settings.GCP_API_ENDPOINT,
+      );
+    case "azure-key-vault":
+      return azureKeyVaultProviderFingerprint(
+        profile.settings.AZURE_KEY_ID!,
+      );
+    case "vault-transit":
+    case "openbao-transit":
+      return transitProviderFingerprint(
+        profile.provider,
+        profile.settings.TRANSIT_ADDRESS!,
+        profile.settings.TRANSIT_MOUNT!,
+        profile.settings.TRANSIT_KEY_NAME!,
+        profile.settings.TRANSIT_NAMESPACE,
+      );
+  }
+}
+
+async function assertRuntimeMatches(
   profile: ProviderProfile,
   provider: KeyManagementProvider,
-): void {
+): Promise<void> {
+  let configuredKeyRef: string;
+  let configuredFingerprint: string;
+  try {
+    configuredKeyRef = expectedKeyRef(profile);
+    configuredFingerprint = await expectedFingerprint(profile);
+  } catch {
+    return fail("MANAGED_KEY_RUNTIME_MISMATCH");
+  }
   const fingerprintPrefix = `${provider.name}:`;
   if (
     provider.name !== profile.provider
-    || provider.keyRef !== expectedKeyRef(profile)
+    || provider.keyRef !== configuredKeyRef
+    || provider.fingerprint !== configuredFingerprint
     || typeof provider.fingerprint !== "string"
     || !provider.fingerprint.startsWith(fingerprintPrefix)
     || !/^[0-9a-f]{24}$/.test(
@@ -102,7 +163,32 @@ function assertRuntimeMatches(
   }
 }
 
+function safeDateIso(value: unknown): string | null {
+  try {
+    if (
+      typeof value !== "object"
+      || value === null
+      || Object.getPrototypeOf(value) !== Date.prototype
+      || Object.getOwnPropertyDescriptor(value, "getTime") !== undefined
+      || Object.getOwnPropertyDescriptor(value, "toISOString") !== undefined
+    ) {
+      return null;
+    }
+    const epoch = DATE_GET_TIME.call(value);
+    if (!Number.isFinite(epoch)) return null;
+    return DATE_TO_ISO_STRING.call(new Date(epoch));
+  } catch {
+    return null;
+  }
+}
+
 function checkedAtIso(health: KeyProviderHealth): string {
+  let iso: string | null;
+  try {
+    iso = safeDateIso(health.checkedAt);
+  } catch {
+    iso = null;
+  }
   if (
     typeof health !== "object"
     || health === null
@@ -110,8 +196,7 @@ function checkedAtIso(health: KeyProviderHealth): string {
     || typeof health.latencyMs !== "number"
     || !Number.isFinite(health.latencyMs)
     || health.latencyMs < 0
-    || !(health.checkedAt instanceof Date)
-    || !Number.isFinite(health.checkedAt.getTime())
+    || iso === null
     || (
       health.status === "healthy"
       && "errorCode" in health
@@ -130,7 +215,7 @@ function checkedAtIso(health: KeyProviderHealth): string {
   ) {
     return fail("MANAGED_KEY_HEALTH_INVALID");
   }
-  return health.checkedAt.toISOString();
+  return iso;
 }
 
 export async function getContentEncryptionReadiness(
@@ -171,7 +256,7 @@ export async function getContentEncryptionReadiness(
   if (!runtime) fail("MANAGED_KEY_RUNTIME_MISSING");
 
   const provider = runtime.registry.active;
-  assertRuntimeMatches(profile, provider);
+  await assertRuntimeMatches(profile, provider);
   const health = await runtime.health.check(provider);
   const lastCheckAt = checkedAtIso(health);
   const identity = {

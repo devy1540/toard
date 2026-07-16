@@ -7,6 +7,7 @@ import type {
   KeyManagementProvider,
   KeyProviderHealth,
 } from "./types";
+import { inspectProviderError } from "./provider-error";
 
 const CANARY_CONTEXT: KeyContext = Object.freeze({
   installationId: "00000000-0000-0000-0000-000000000000",
@@ -80,19 +81,11 @@ function safeProviderErrorCode(
   provider: KeyManagementProvider,
   error: unknown,
 ): string {
-  try {
-    if (!(error instanceof Error) || typeof error.message !== "string") {
-      return "PROVIDER_CANARY_FAILED";
-    }
-    const prefix = `${provider.name}:`;
-    if (!error.message.startsWith(prefix)) return "PROVIDER_CANARY_FAILED";
-    const code = error.message.slice(prefix.length);
-    return SAFE_PROVIDER_ERROR_CODES.has(code)
-      ? code
-      : "PROVIDER_CANARY_FAILED";
-  } catch {
-    return "PROVIDER_CANARY_FAILED";
-  }
+  return inspectProviderError(
+    error,
+    provider.name,
+    SAFE_PROVIDER_ERROR_CODES,
+  ) ?? "PROVIDER_CANARY_FAILED";
 }
 
 export async function runProviderCanary(

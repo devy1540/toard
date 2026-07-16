@@ -1,5 +1,4 @@
 import {
-  createHash,
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
@@ -19,6 +18,11 @@ import type {
   KeyProviderName,
   WrappedUserKey,
 } from "./types";
+import {
+  inspectProviderError,
+  providerError,
+} from "./provider-error";
+import { transitProviderFingerprint } from "./provider-fingerprint";
 
 type TransitProviderName = Extract<
   KeyProviderName,
@@ -36,6 +40,18 @@ type ProviderErrorCode =
   | "THROTTLED"
   | "WRAPPER_MISMATCH";
 
+const PROVIDER_ERROR_CODES: ReadonlySet<string> = new Set([
+  "AUTH_FAILED",
+  "FAILED",
+  "INVALID_CIPHERTEXT",
+  "INVALID_PLAINTEXT",
+  "KEY_NOT_FOUND",
+  "RESPONSE_INVALID",
+  "TEMPORARY",
+  "THROTTLED",
+  "WRAPPER_MISMATCH",
+]);
+
 export type TransitProviderInput = {
   client: TransitClientLike;
 };
@@ -51,47 +67,18 @@ const UTF8_DECODER = new TextDecoder("utf-8", { fatal: true });
 const TRANSIT_ERROR =
   /^TRANSIT:(AUTH_FAILED|FAILED|KEY_NOT_FOUND|RESPONSE_INVALID|TEMPORARY|THROTTLED)(?:\s|$)/;
 
-function providerError(
-  provider: TransitProviderName,
-  code: ProviderErrorCode,
-): Error {
-  return new Error(`${provider}:${code}`);
-}
-
 function classifyTransitError(error: unknown): ProviderErrorCode {
   if (!(error instanceof Error)) return "FAILED";
   const match = TRANSIT_ERROR.exec(error.message);
   return (match?.[1] as ProviderErrorCode | undefined) ?? "FAILED";
 }
 
-function providerFingerprint(
-  provider: TransitProviderName,
-  client: TransitClientLike,
-): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify([
-      provider,
-      client.address,
-      client.mount,
-      client.keyName,
-      client.namespace ?? null,
-    ]))
-    .digest("hex")
-    .slice(0, 24);
-  return `${provider}:${digest}`;
-}
-
 function safeErrorCode(
   provider: TransitProviderName,
   error: unknown,
 ): string {
-  if (
-    error instanceof Error
-    && error.message.startsWith(`${provider}:`)
-  ) {
-    return error.message.slice(provider.length + 1);
-  }
-  return "FAILED";
+  return inspectProviderError(error, provider, PROVIDER_ERROR_CODES)
+    ?? "FAILED";
 }
 
 export abstract class TransitKeyManagementProvider
@@ -107,7 +94,13 @@ implements KeyManagementProvider {
   ) {
     this.client = input.client;
     this.keyRef = input.client.keyRef;
-    this.fingerprint = providerFingerprint(name, input.client);
+    this.fingerprint = transitProviderFingerprint(
+      name,
+      input.client.address,
+      input.client.mount,
+      input.client.keyName,
+      input.client.namespace,
+    );
   }
 
   async wrapKey(uck: Buffer, context: KeyContext): Promise<WrappedUserKey> {

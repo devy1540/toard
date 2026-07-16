@@ -8,7 +8,6 @@ import {
   CryptographyClient,
 } from "@azure/keyvault-keys";
 import {
-  createHash,
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
@@ -23,6 +22,11 @@ import type {
   KeyProviderHealth,
   WrappedUserKey,
 } from "./types";
+import {
+  inspectProviderError,
+  providerError as createProviderError,
+} from "./provider-error";
+import { azureKeyVaultProviderFingerprint } from "./provider-fingerprint";
 
 export type AzureCredentialMode =
   | "managed-identity"
@@ -41,6 +45,20 @@ type ProviderErrorCode =
   | "TEMPORARY"
   | "THROTTLED"
   | "WRAPPER_MISMATCH";
+
+const PROVIDER_ERROR_CODES: ReadonlySet<string> = new Set([
+  "AUTH_FAILED",
+  "EMPTY_CIPHERTEXT",
+  "EMPTY_PLAINTEXT",
+  "FAILED",
+  "INVALID_CIPHERTEXT",
+  "INVALID_PLAINTEXT",
+  "KEY_DISABLED",
+  "KEY_NOT_FOUND",
+  "TEMPORARY",
+  "THROTTLED",
+  "WRAPPER_MISMATCH",
+]);
 
 type AzureCryptoResult = {
   result?: unknown;
@@ -135,15 +153,7 @@ export function createAzureCredential(
 }
 
 function providerError(code: ProviderErrorCode): Error {
-  return new Error(`azure-key-vault:${code}`);
-}
-
-function providerFingerprint(keyId: string): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify(["azure-key-vault", keyId]))
-    .digest("hex")
-    .slice(0, 24);
-  return `azure-key-vault:${digest}`;
+  return createProviderError("azure-key-vault", code);
 }
 
 function statusCode(error: unknown): number | undefined {
@@ -202,13 +212,11 @@ function classifyAzureError(error: unknown): ProviderErrorCode {
 }
 
 function safeErrorCode(error: unknown): string {
-  if (
-    error instanceof Error
-    && error.message.startsWith("azure-key-vault:")
-  ) {
-    return error.message.slice("azure-key-vault:".length);
-  }
-  return "FAILED";
+  return inspectProviderError(
+    error,
+    "azure-key-vault",
+    PROVIDER_ERROR_CODES,
+  ) ?? "FAILED";
 }
 
 function credentialSourceKind(mode: AzureCredentialMode): string {
@@ -240,7 +248,7 @@ export class AzureKeyVaultProvider implements KeyManagementProvider {
       nodeEnv,
     );
     this.keyRef = input.keyId;
-    this.fingerprint = providerFingerprint(input.keyId);
+    this.fingerprint = azureKeyVaultProviderFingerprint(input.keyId);
     this.credentialMode = input.credentialMode ?? "default";
     if (input.cryptoClient) {
       this.client = input.cryptoClient;

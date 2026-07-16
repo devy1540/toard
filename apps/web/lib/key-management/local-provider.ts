@@ -1,7 +1,6 @@
 import {
   createCipheriv,
   createDecipheriv,
-  createHash,
   randomBytes,
 } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -18,6 +17,7 @@ import type {
   KeyProviderHealth,
   WrappedUserKey,
 } from "./types";
+import { localProviderFingerprint } from "./provider-fingerprint";
 
 const IV_LENGTH = 12;
 const AUTH_TAG_LENGTH = 16;
@@ -40,10 +40,7 @@ export class LocalKeyManagementProvider implements KeyManagementProvider {
     }
     this.kek = Buffer.from(raw);
     this.keyRef = `file:${input.keyFile}`;
-    this.fingerprint = `local:${createHash("sha256")
-      .update(this.kek)
-      .digest("hex")
-      .slice(0, 24)}`;
+    this.fingerprint = localProviderFingerprint(this.kek);
   }
 
   async wrapKey(uck: Buffer, context: KeyContext): Promise<WrappedUserKey> {

@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { ContentEncryptionReadiness } from "../../../lib/content-encryption-readiness";
+import {
+  getContentEncryptionReadiness,
+  type ContentEncryptionReadiness,
+} from "../../../lib/content-encryption-readiness";
+import { awsKmsProviderFingerprint } from "../../../lib/key-management/provider-fingerprint";
+import { ProviderHealthCache } from "../../../lib/key-management/provider-health-cache";
+import { KeyProviderRegistry } from "../../../lib/key-management/registry";
+import type { KeyManagementProvider } from "../../../lib/key-management/types";
+import type { ManagedContentRuntime } from "../../../lib/managed-content-runtime";
 import { GET } from "./route";
 
 const DISABLED: ContentEncryptionReadiness = {
@@ -95,6 +103,71 @@ test("temporary managed provider 장애는 degraded payload로 200을 유지한�
   assert.equal(response.status, 200);
   assert.deepEqual(body.contentEncryption, DEGRADED);
   assert.equal(body.status, "ready");
+});
+
+test("hostile checkedAt accessor는 secret DTO 대신 고정 503을 반환한다", async () => {
+  const secret = "secret-date-token";
+  const checkedAt = new Date("2026-07-17T01:02:03.000Z");
+  Object.defineProperty(checkedAt, "toISOString", { value: () => secret });
+  const keyRef =
+    "arn:aws:kms:ap-northeast-2:123456789012:key/12345678-1234-1234-1234-123456789012";
+  const provider: KeyManagementProvider = {
+    name: "aws-kms",
+    keyRef,
+    fingerprint: awsKmsProviderFingerprint(keyRef, "ap-northeast-2"),
+    async wrapKey() {
+      throw new Error("unused");
+    },
+    async unwrapKey() {
+      throw new Error("unused");
+    },
+    async healthCheck() {
+      throw new Error("unused");
+    },
+    async describeCredentialSource() {
+      return { kind: "test", staticCredential: false };
+    },
+  };
+  const runtime: ManagedContentRuntime = {
+    installationId: "installation",
+    registry: new KeyProviderRegistry(provider, null),
+    userKeys: {
+      async withActiveUserKey() {
+        throw new Error("unused");
+      },
+      async withUserKeyVersion() {
+        throw new Error("unused");
+      },
+    } as ManagedContentRuntime["userKeys"],
+    health: new ProviderHealthCache({
+      check: async () => {
+        return { status: "healthy" as const, latencyMs: 1, checkedAt };
+      },
+    }),
+  };
+  const { overrides } = dependencies();
+  const response = await GET.withDependencies({
+    ...overrides,
+    env: {
+      TOARD_KEY_ACTIVE_PROVIDER: "aws-kms",
+      TOARD_KEY_ACTIVE_AWS_KEY_ARN: keyRef,
+      TOARD_KEY_ACTIVE_AWS_REGION: "ap-northeast-2",
+    },
+    getPool: () => ({
+      async query(sql: string) {
+        return /content_encryption_status/.test(sql)
+          ? { rows: [{ managed_records: "1" }] }
+          : { rows: [] };
+      },
+    }),
+    getManagedContentRuntime: async () => runtime,
+    getContentEncryptionReadiness,
+  })();
+  const text = await response.text();
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(text), { status: "not-ready" });
+  assert.equal(text.includes(secret), false);
 });
 
 test("managed permanent/config/runtime/DB 오류는 detail 없이 503만 반환한다", async () => {

@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import type { ManagedContentRuntime } from "./managed-content-runtime";
 import { KeyProviderRegistry } from "./key-management/registry";
@@ -13,6 +16,11 @@ import type {
   KeyProviderHealth,
   WrappedUserKey,
 } from "./key-management/types";
+import {
+  awsKmsProviderFingerprint,
+  localProviderFingerprint,
+  transitProviderFingerprint,
+} from "./key-management/provider-fingerprint";
 
 const AWS_KEY_ARN =
   "arn:aws:kms:ap-northeast-2:123456789012:key/12345678-1234-1234-1234-123456789012";
@@ -25,7 +33,10 @@ const VALID_ENV = {
 class ReadinessProvider implements KeyManagementProvider {
   readonly name = "aws-kms" as const;
   readonly keyRef = AWS_KEY_ARN;
-  readonly fingerprint = "aws-kms:0123456789abcdef01234567";
+  readonly fingerprint = awsKmsProviderFingerprint(
+    AWS_KEY_ARN,
+    "ap-northeast-2",
+  );
 
   async wrapKey(_uck: Buffer, _context: KeyContext): Promise<WrappedUserKey> {
     throw new Error("unused");
@@ -62,10 +73,10 @@ function dbStatus(
 
 function runtimeHealth(
   health: KeyProviderHealth | Record<string, unknown>,
+  provider: KeyManagementProvider = new ReadinessProvider(),
 ): ManagedContentRuntime & {
   calls: KeyManagementProvider[];
 } {
-  const provider = new ReadinessProvider();
   const calls: KeyManagementProvider[] = [];
   return {
     installationId: "installation",
@@ -189,12 +200,136 @@ test("healthy는 active provider exact instance와 공개 식별자만 반환한
     status: "healthy",
     provider: "aws-kms",
     keyRef: AWS_KEY_ARN,
-    fingerprint: "aws-kms:0123456789abcdef01234567",
+    fingerprint: awsKmsProviderFingerprint(AWS_KEY_ARN, "ap-northeast-2"),
     managedRecords: 2,
     lastCheckAt: "2026-07-17T01:02:03.000Z",
     errorCode: null,
   });
   assert.deepEqual(runtime.calls, [runtime.registry.active]);
+});
+
+test("유효한 형식이어도 config canonical fingerprint와 다르면 health 전에 거부한다", async () => {
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date(),
+  });
+  Object.defineProperty(runtime.registry.active, "fingerprint", {
+    value: "aws-kms:aaaaaaaaaaaaaaaaaaaaaaaa",
+  });
+
+  await assert.rejects(
+    getContentEncryptionReadiness(dbStatus(), VALID_ENV, runtime),
+    /MANAGED_KEY_RUNTIME_MISMATCH/,
+  );
+  assert.equal(runtime.calls.length, 0);
+});
+
+test("AWS endpoint만 다른 runtime fingerprint도 health 전에 거부한다", async () => {
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date(),
+  });
+
+  await assert.rejects(
+    getContentEncryptionReadiness(
+      dbStatus(),
+      { ...VALID_ENV, TOARD_KEY_ACTIVE_AWS_ENDPOINT: "https://kms.example.com" },
+      runtime,
+    ),
+    /MANAGED_KEY_RUNTIME_MISMATCH/,
+  );
+  assert.equal(runtime.calls.length, 0);
+});
+
+test("Transit namespace만 다른 runtime fingerprint도 health 전에 거부한다", async () => {
+  const provider: KeyManagementProvider = {
+    name: "vault-transit",
+    keyRef: "https://vault.example.com/v1/transit/keys/history",
+    fingerprint: transitProviderFingerprint(
+      "vault-transit",
+      "https://vault.example.com/",
+      "transit",
+      "history",
+      "team-a",
+    ),
+    async wrapKey() {
+      throw new Error("unused");
+    },
+    async unwrapKey() {
+      throw new Error("unused");
+    },
+    async healthCheck() {
+      throw new Error("unused");
+    },
+    async describeCredentialSource() {
+      return { kind: "test", staticCredential: false };
+    },
+  };
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date(),
+  }, provider);
+
+  await assert.rejects(
+    getContentEncryptionReadiness(dbStatus(), {
+      TOARD_KEY_ACTIVE_PROVIDER: "vault-transit",
+      TOARD_KEY_ACTIVE_TRANSIT_ADDRESS: "https://vault.example.com",
+      TOARD_KEY_ACTIVE_TRANSIT_MOUNT: "transit",
+      TOARD_KEY_ACTIVE_TRANSIT_KEY_NAME: "history",
+      TOARD_KEY_ACTIVE_TRANSIT_NAMESPACE: "team-b",
+      TOARD_KEY_ACTIVE_TRANSIT_AUTH_METHOD: "token-file",
+      TOARD_KEY_ACTIVE_TRANSIT_TOKEN_FILE: "/tmp/toard-transit-token",
+    }, runtime),
+    /MANAGED_KEY_RUNTIME_MISMATCH/,
+  );
+  assert.equal(runtime.calls.length, 0);
+});
+
+test("local readiness는 현재 key file bytes의 exact fingerprint를 비교하고 임시 buffer를 지운다", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "toard-readiness-"));
+  const keyFile = join(directory, "local-kek");
+  const original = Buffer.alloc(32, 1);
+  try {
+    await writeFile(keyFile, original);
+    const provider: KeyManagementProvider = {
+      name: "local",
+      keyRef: `file:${keyFile}`,
+      fingerprint: localProviderFingerprint(original),
+      async wrapKey() {
+        throw new Error("unused");
+      },
+      async unwrapKey() {
+        throw new Error("unused");
+      },
+      async healthCheck() {
+        throw new Error("unused");
+      },
+      async describeCredentialSource() {
+        return { kind: "test", staticCredential: true };
+      },
+    };
+    const runtime = runtimeHealth({
+      status: "healthy",
+      latencyMs: 1,
+      checkedAt: new Date(),
+    }, provider);
+    await writeFile(keyFile, Buffer.alloc(32, 2));
+
+    await assert.rejects(
+      getContentEncryptionReadiness(dbStatus(), {
+        TOARD_KEY_ACTIVE_PROVIDER: "local",
+        TOARD_KEY_ACTIVE_LOCAL_KEK_FILE: keyFile,
+      }, runtime),
+      /MANAGED_KEY_RUNTIME_MISMATCH/,
+    );
+    assert.equal(runtime.calls.length, 0);
+  } finally {
+    original.fill(0);
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("runtime의 malformed fingerprint는 readiness payload에 노출하지 않고 거부한다", async () => {
@@ -281,6 +416,39 @@ test("malformed health result는 fail-closed다", async () => {
         dbStatus(),
         VALID_ENV,
         runtimeHealth(health as Record<string, unknown>),
+      ),
+      /MANAGED_KEY_HEALTH_INVALID/,
+    );
+  }
+});
+
+test("checkedAt override, Date prototype spoof, Proxy는 secret을 ISO DTO에 노출하지 않고 fail-closed다", async () => {
+  const ownGetTime = new Date("2026-07-17T01:02:03.000Z");
+  Object.defineProperty(ownGetTime, "getTime", { value: () => 0 });
+  const ownToISOString = new Date("2026-07-17T01:02:03.000Z");
+  Object.defineProperty(ownToISOString, "toISOString", {
+    value: () => "secret-date-token",
+  });
+  class HostileDate extends Date {
+    override getTime(): number {
+      return 0;
+    }
+  }
+  const spoof = Object.create(Date.prototype) as Date;
+  const proxy = new Proxy(new Date("2026-07-17T01:02:03.000Z"), {});
+
+  for (const checkedAt of [
+    ownGetTime,
+    ownToISOString,
+    new HostileDate(),
+    spoof,
+    proxy,
+  ]) {
+    await assert.rejects(
+      getContentEncryptionReadiness(
+        dbStatus(),
+        VALID_ENV,
+        runtimeHealth({ status: "healthy", latencyMs: 1, checkedAt }),
       ),
       /MANAGED_KEY_HEALTH_INVALID/,
     );

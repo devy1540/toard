@@ -12,6 +12,7 @@ import {
   type AwsKmsClient,
 } from "./aws-kms-provider";
 import { encodeUserKeyPayload } from "./context";
+import { runProviderCanary } from "./provider-health-cache";
 import type { KeyContext } from "./types";
 
 const KEY_ARN =
@@ -220,6 +221,29 @@ test("AWS adapter는 AWS exception의 secret, metadata, request id를 버린다"
       && !error.message.includes("sensitive-request-id")
     ),
   );
+});
+
+test("AWS adapter의 transient brand는 공통 canary까지 안전한 code로 보존된다", async () => {
+  for (const [awsError, errorCode] of [
+    [
+      { name: "ThrottlingException", $metadata: { httpStatusCode: 429 } },
+      "THROTTLED",
+    ],
+    [
+      { name: "ServiceUnavailableException", $metadata: { httpStatusCode: 503 } },
+      "TEMPORARY",
+    ],
+  ] as const) {
+    const kms = provider(new StubAwsClient(async () => {
+      throw Object.assign(new Error("credential=secret requestId=secret"), awsError);
+    }));
+    const health = await runProviderCanary(kms);
+    assert.equal(health.status, "unhealthy");
+    if (health.status === "unhealthy") {
+      assert.equal(health.errorCode, errorCode);
+      assert.equal(JSON.stringify(health).includes("secret"), false);
+    }
+  }
 });
 
 test("AWS adapter는 허용된 AWS 오류 신호만 안전한 code로 분류한다", async () => {

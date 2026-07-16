@@ -1,6 +1,5 @@
 import { KeyManagementServiceClient } from "@google-cloud/kms";
 import {
-  createHash,
   randomBytes,
   timingSafeEqual,
 } from "node:crypto";
@@ -16,6 +15,11 @@ import type {
   KeyProviderHealth,
   WrappedUserKey,
 } from "./types";
+import {
+  inspectProviderError,
+  providerError as createProviderError,
+} from "./provider-error";
+import { gcpKmsProviderFingerprint } from "./provider-fingerprint";
 
 type ProviderErrorCode =
   | "AUTH_FAILED"
@@ -29,6 +33,20 @@ type ProviderErrorCode =
   | "TEMPORARY"
   | "THROTTLED"
   | "WRAPPER_MISMATCH";
+
+const PROVIDER_ERROR_CODES: ReadonlySet<string> = new Set([
+  "AUTH_FAILED",
+  "EMPTY_CIPHERTEXT",
+  "EMPTY_PLAINTEXT",
+  "FAILED",
+  "INVALID_CIPHERTEXT",
+  "INVALID_PLAINTEXT",
+  "KEY_DISABLED",
+  "KEY_NOT_FOUND",
+  "TEMPORARY",
+  "THROTTLED",
+  "WRAPPER_MISMATCH",
+]);
 
 type GcpKmsRequest = {
   name?: string | null;
@@ -68,18 +86,7 @@ const HEALTH_CONTEXT: KeyContext = Object.freeze({
 });
 
 function providerError(code: ProviderErrorCode): Error {
-  return new Error(`gcp-kms:${code}`);
-}
-
-function providerFingerprint(
-  keyName: string,
-  apiEndpoint: string | undefined,
-): string {
-  const digest = createHash("sha256")
-    .update(JSON.stringify(["gcp-kms", keyName, apiEndpoint ?? null]))
-    .digest("hex")
-    .slice(0, 24);
-  return `gcp-kms:${digest}`;
+  return createProviderError("gcp-kms", code);
 }
 
 function errorCode(error: unknown): number | undefined {
@@ -137,10 +144,8 @@ function classifyGcpError(error: unknown): ProviderErrorCode {
 }
 
 function safeErrorCode(error: unknown): string {
-  if (error instanceof Error && error.message.startsWith("gcp-kms:")) {
-    return error.message.slice("gcp-kms:".length);
-  }
-  return "FAILED";
+  return inspectProviderError(error, "gcp-kms", PROVIDER_ERROR_CODES)
+    ?? "FAILED";
 }
 
 function createDefaultClient(apiEndpoint: string | undefined): GcpKmsClient {
@@ -158,7 +163,10 @@ export class GcpKmsProvider implements KeyManagementProvider {
 
   constructor(input: GcpKmsProviderInput) {
     this.keyRef = input.keyName;
-    this.fingerprint = providerFingerprint(input.keyName, input.apiEndpoint);
+    this.fingerprint = gcpKmsProviderFingerprint(
+      input.keyName,
+      input.apiEndpoint,
+    );
     this.client = input.client ?? createDefaultClient(input.apiEndpoint);
   }
 

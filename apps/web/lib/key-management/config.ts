@@ -32,11 +32,17 @@ export type KeyManagementConfig = {
 
 type KeyManagementEnvironment = Readonly<Record<string, string | undefined>>;
 
+function configuredValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  return value;
+}
+
 function parseProviderName(value: string | undefined, variable: string): KeyProviderName {
-  if (!value || !PROVIDER_NAMES.has(value as KeyProviderName)) {
+  const configured = configuredValue(value);
+  if (!configured || !PROVIDER_NAMES.has(configured as KeyProviderName)) {
     throw new Error(`${variable}는 지원하는 provider여야 합니다`);
   }
-  return value as KeyProviderName;
+  return configured as KeyProviderName;
 }
 
 function parseLocalSettings(
@@ -44,19 +50,22 @@ function parseLocalSettings(
   env: KeyManagementEnvironment,
 ): Readonly<Record<string, string>> {
   const fileVariable = `${prefix}_LOCAL_KEK_FILE`;
-  const keyFile = env[fileVariable];
+  const keyFile = configuredValue(env[fileVariable]);
   if (!keyFile) throw new Error(`${fileVariable}이 필요합니다`);
   if (!isAbsolute(keyFile)) throw new Error(`${fileVariable}은 절대 경로여야 합니다`);
 
   const unexpectedProfileVariables = Object.entries(env)
     .filter(([name, value]) => (
-      value !== undefined
+      configuredValue(value) !== undefined
       && name.startsWith(`${prefix}_`)
       && name !== `${prefix}_PROVIDER`
       && name !== fileVariable
     ))
     .map(([name]) => name);
-  if (env.TOARD_CONTENT_KEK_B64 !== undefined || unexpectedProfileVariables.length > 0) {
+  if (
+    configuredValue(env.TOARD_CONTENT_KEK_B64) !== undefined
+    || unexpectedProfileVariables.length > 0
+  ) {
     throw new Error("local profile은 KEK file 하나만 허용하며 raw 환경변수를 받지 않습니다");
   }
 
@@ -71,8 +80,9 @@ function parseGenericSettings(
   const settings: Array<readonly [string, string]> = [];
   const namespace = PROVIDER_SETTING_NAMESPACE[provider];
   for (const [name, value] of Object.entries(env)) {
+    const configured = configuredValue(value);
     if (
-      value !== undefined
+      configured !== undefined
       && name.startsWith(`${prefix}_`)
       && name !== `${prefix}_PROVIDER`
     ) {
@@ -80,12 +90,13 @@ function parseGenericSettings(
       if (!settingName.startsWith(namespace)) {
         throw new Error(`${prefix}_${namespace}* 설정만 허용합니다`);
       }
-      const hasSensitiveName = /(?:^|_)(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY)(?:_|$)/i
-        .test(settingName);
+      const hasSensitiveName =
+        /(?:^|_)(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|CREDENTIALS?|ACCESS_KEY|CLIENT_KEY|API_KEY|ACCOUNT_KEY)(?:_|$)/i
+          .test(settingName);
       if (hasSensitiveName && !settingName.endsWith("_FILE")) {
         throw new Error(`${prefix} raw credential 환경변수는 허용하지 않습니다`);
       }
-      settings.push([settingName, value]);
+      settings.push([settingName, configured]);
     }
   }
   settings.sort(([left], [right]) => left.localeCompare(right));
@@ -112,10 +123,10 @@ function stableSettings(settings: Readonly<Record<string, string>>): string {
 
 export function loadKeyManagementConfig(env: KeyManagementEnvironment): KeyManagementConfig {
   const active = parseProfile("active", env);
-  const migration = env.TOARD_KEY_MIGRATION_PROVIDER
+  const migration = configuredValue(env.TOARD_KEY_MIGRATION_PROVIDER)
     ? parseProfile("migration", env)
     : null;
-  const ttl = Number(env.TOARD_USER_KEY_CACHE_TTL_SECONDS ?? "1800");
+  const ttl = Number(configuredValue(env.TOARD_USER_KEY_CACHE_TTL_SECONDS) ?? "1800");
   if (!Number.isSafeInteger(ttl) || ttl < 300 || ttl > 3600) {
     throw new Error("TOARD_USER_KEY_CACHE_TTL_SECONDS는 300~3600 정수여야 합니다");
   }

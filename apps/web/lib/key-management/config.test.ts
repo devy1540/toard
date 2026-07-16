@@ -128,3 +128,43 @@ test("non-local profile은 자기 namespace와 비민감 설정만 보존한다"
     AWS_REGION: "ap-northeast-2",
   });
 });
+
+test("credential 계열 raw 값은 settings와 오류에 노출하지 않는다", () => {
+  for (const [provider, variable] of [
+    ["aws-kms", "TOARD_KEY_ACTIVE_AWS_ACCESS_KEY_ID"],
+    ["gcp-kms", "TOARD_KEY_ACTIVE_GCP_CREDENTIALS_JSON"],
+    ["azure-key-vault", "TOARD_KEY_ACTIVE_AZURE_CLIENT_KEY"],
+  ] as const) {
+    const credential = `sensitive-${provider}`;
+    assert.throws(
+      () => loadKeyManagementConfig({
+        TOARD_KEY_ACTIVE_PROVIDER: provider,
+        [variable]: credential,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /raw credential/);
+        assert.equal(error.message.includes(credential), false);
+        return true;
+      },
+    );
+  }
+});
+
+test("빈 sibling provider 환경변수는 unset으로 취급한다", () => {
+  const config = loadKeyManagementConfig({
+    TOARD_KEY_ACTIVE_PROVIDER: "local",
+    TOARD_KEY_ACTIVE_LOCAL_KEK_FILE: "/run/secrets/kek",
+    TOARD_KEY_ACTIVE_AWS_KEY_ARN: "",
+    TOARD_KEY_ACTIVE_GCP_KEY_NAME: " ",
+    TOARD_KEY_ACTIVE_AZURE_KEY_ID: "\t",
+    TOARD_KEY_ACTIVE_TRANSIT_ADDRESS: "\n",
+    TOARD_KEY_MIGRATION_PROVIDER: " ",
+    TOARD_KEY_MIGRATION_LOCAL_KEK_FILE: "",
+  });
+
+  assert.deepEqual(config.active.settings, {
+    LOCAL_KEK_FILE: "/run/secrets/kek",
+  });
+  assert.equal(config.migration, null);
+});

@@ -4,7 +4,7 @@ import "dotenv/config";
 import { createHash } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";
-import { encryptContent, loadKek } from "../apps/web/lib/content-crypto";
+import { encryptContent, loadKek } from "../apps/web/lib/legacy-content-crypto";
 
 const DEFAULT_DATABASE_URL = "postgresql://toard:toard@localhost:5432/toard";
 const DEMO_PREFIX = "dashboard-demo";

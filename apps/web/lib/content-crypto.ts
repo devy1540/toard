@@ -1,93 +1,14 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-
-// 프롬프트/응답 본문의 at-rest 봉투 암호화 (설계: RLS + at-rest 트랙).
-// - 레코드마다 랜덤 DEK 로 본문을 AES-256-GCM 암호화하고, DEK 는 KEK 로 감싼다.
-// - KEK 는 앱 밖(KMS/Vault, 최소한 env)에만 존재하며 DB 에는 절대 저장하지 않는다.
-//   → DB 덤프·백업·DBA 는 암호문만 본다. KEK 를 쥔 앱/운영자만 복호화 가능(= E2EE 아님, 의도된 경계).
-// - KMS 도입 시 wrapDek/unwrapDek 두 함수만 kms.encrypt/decrypt 로 교체하면 된다.
-
-export interface EncryptedContent {
-  keyVersion: number;
-  wrappedDek: Buffer;
-  iv: Buffer;
-  ciphertext: Buffer;
-  authTag: Buffer;
-}
-
-const KEY_VERSION = 1;
-const DEK_BYTES = 32; // AES-256
-const IV_BYTES = 12; // GCM 표준 nonce
-const TAG_BYTES = 16; // GCM 인증태그
-
-/** 서버에서 본문 수집이 활성인지 = 유효한 KEK(base64 32바이트)가 설정됐는지. UI 게이트용. */
-export function contentCollectionEnabled(): boolean {
-  try {
-    loadKek();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * 본문 수집을 **설치 기본값 on(opt-out)** 으로 할지 = 운영자 정책.
- * KEK 가 있고(=수집 가능) `CONTENT_COLLECTION_DEFAULT` 가 on/1/true 일 때만 true.
- * true 면 install.sh 가 `collect_content=true` 를 기본 주입하고 설정 토글도 기본 체크된다.
- * (기본 off = 기존 per-user opt-in. 본문은 본인 전용이므로 운영자가 opt-out 을 선택 가능.)
- */
-export function contentCollectionDefaultOn(): boolean {
-  if (!contentCollectionEnabled()) return false;
-  const v = process.env.CONTENT_COLLECTION_DEFAULT?.trim().toLowerCase();
-  return v === "on" || v === "1" || v === "true" || v === "yes";
-}
-
-/** env 에서 32바이트 KEK 로드. 미설정/길이 불일치는 조용히 넘기지 않고 즉시 실패. */
-export function loadKek(): Buffer {
-  const b64 = process.env.TOARD_CONTENT_KEK_B64;
-  if (!b64) {
-    throw new Error("TOARD_CONTENT_KEK_B64 미설정 — 본문 암호화 KEK(base64 32바이트)가 필요합니다");
-  }
-  const kek = Buffer.from(b64, "base64");
-  if (kek.length !== DEK_BYTES) {
-    throw new Error(`KEK 는 32바이트여야 합니다 — 현재 ${kek.length}B (openssl rand -base64 32 로 생성)`);
-  }
-  return kek;
-}
-
-export function encryptContent(plaintext: string, kek: Buffer): EncryptedContent {
-  const dek = randomBytes(DEK_BYTES);
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", dek, iv);
-  const ciphertext = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  return {
-    keyVersion: KEY_VERSION,
-    wrappedDek: wrapDek(dek, kek),
-    iv,
-    ciphertext,
-    authTag: cipher.getAuthTag(),
-  };
-}
-
-export function decryptContent(row: EncryptedContent, kek: Buffer): string {
-  const dek = unwrapDek(row.wrappedDek, kek);
-  const decipher = createDecipheriv("aes-256-gcm", dek, row.iv);
-  decipher.setAuthTag(row.authTag);
-  return Buffer.concat([decipher.update(row.ciphertext), decipher.final()]).toString("utf8");
-}
-
-// 로컬 KEK wrap (KMS 미사용 시). 포맷: [iv 12B | tag 16B | enc DEK]
-function wrapDek(dek: Buffer, kek: Buffer): Buffer {
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", kek, iv);
-  const enc = Buffer.concat([cipher.update(dek), cipher.final()]);
-  return Buffer.concat([iv, cipher.getAuthTag(), enc]);
-}
-
-function unwrapDek(wrapped: Buffer, kek: Buffer): Buffer {
-  const iv = wrapped.subarray(0, IV_BYTES);
-  const tag = wrapped.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
-  const enc = wrapped.subarray(IV_BYTES + TAG_BYTES);
-  const decipher = createDecipheriv("aes-256-gcm", kek, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(enc), decipher.final()]);
-}
+export {
+  contentCollectionDefaultOn,
+  contentCollectionEnabled,
+  decryptContent,
+  encryptContent,
+  loadKek,
+  type EncryptedContent,
+} from "./legacy-content-crypto";
+export {
+  canonicalManagedContentAad,
+  decryptManagedContent,
+  encryptManagedContent,
+  type ManagedEncryptedContent,
+} from "./managed-content-crypto";

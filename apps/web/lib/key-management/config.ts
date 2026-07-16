@@ -1,0 +1,130 @@
+import { isAbsolute } from "node:path";
+import type { KeyProviderName } from "./types";
+
+const PROVIDER_NAMES = new Set<KeyProviderName>([
+  "local",
+  "aws-kms",
+  "gcp-kms",
+  "azure-key-vault",
+  "vault-transit",
+  "openbao-transit",
+]);
+
+const PROVIDER_SETTING_NAMESPACE: Record<Exclude<KeyProviderName, "local">, string> = {
+  "aws-kms": "AWS_",
+  "gcp-kms": "GCP_",
+  "azure-key-vault": "AZURE_",
+  "vault-transit": "TRANSIT_",
+  "openbao-transit": "TRANSIT_",
+};
+
+export type ProviderProfile = {
+  slot: "active" | "migration";
+  provider: KeyProviderName;
+  settings: Readonly<Record<string, string>>;
+};
+
+export type KeyManagementConfig = {
+  active: ProviderProfile;
+  migration: ProviderProfile | null;
+  cacheTtlMs: number;
+};
+
+type KeyManagementEnvironment = Readonly<Record<string, string | undefined>>;
+
+function parseProviderName(value: string | undefined, variable: string): KeyProviderName {
+  if (!value || !PROVIDER_NAMES.has(value as KeyProviderName)) {
+    throw new Error(`${variable}는 지원하는 provider여야 합니다`);
+  }
+  return value as KeyProviderName;
+}
+
+function parseLocalSettings(
+  prefix: "TOARD_KEY_ACTIVE" | "TOARD_KEY_MIGRATION",
+  env: KeyManagementEnvironment,
+): Readonly<Record<string, string>> {
+  const fileVariable = `${prefix}_LOCAL_KEK_FILE`;
+  const keyFile = env[fileVariable];
+  if (!keyFile) throw new Error(`${fileVariable}이 필요합니다`);
+  if (!isAbsolute(keyFile)) throw new Error(`${fileVariable}은 절대 경로여야 합니다`);
+
+  const unexpectedProfileVariables = Object.entries(env)
+    .filter(([name, value]) => (
+      value !== undefined
+      && name.startsWith(`${prefix}_`)
+      && name !== `${prefix}_PROVIDER`
+      && name !== fileVariable
+    ))
+    .map(([name]) => name);
+  if (env.TOARD_CONTENT_KEK_B64 !== undefined || unexpectedProfileVariables.length > 0) {
+    throw new Error("local profile은 KEK file 하나만 허용하며 raw 환경변수를 받지 않습니다");
+  }
+
+  return Object.freeze({ LOCAL_KEK_FILE: keyFile });
+}
+
+function parseGenericSettings(
+  prefix: "TOARD_KEY_ACTIVE" | "TOARD_KEY_MIGRATION",
+  provider: Exclude<KeyProviderName, "local">,
+  env: KeyManagementEnvironment,
+): Readonly<Record<string, string>> {
+  const settings: Array<readonly [string, string]> = [];
+  const namespace = PROVIDER_SETTING_NAMESPACE[provider];
+  for (const [name, value] of Object.entries(env)) {
+    if (
+      value !== undefined
+      && name.startsWith(`${prefix}_`)
+      && name !== `${prefix}_PROVIDER`
+    ) {
+      const settingName = name.slice(prefix.length + 1);
+      if (!settingName.startsWith(namespace)) {
+        throw new Error(`${prefix}_${namespace}* 설정만 허용합니다`);
+      }
+      const hasSensitiveName = /(?:^|_)(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY)(?:_|$)/i
+        .test(settingName);
+      if (hasSensitiveName && !settingName.endsWith("_FILE")) {
+        throw new Error(`${prefix} raw credential 환경변수는 허용하지 않습니다`);
+      }
+      settings.push([settingName, value]);
+    }
+  }
+  settings.sort(([left], [right]) => left.localeCompare(right));
+  return Object.freeze(Object.fromEntries(settings));
+}
+
+function parseProfile(
+  slot: "active" | "migration",
+  env: KeyManagementEnvironment,
+): ProviderProfile {
+  const prefix = slot === "active" ? "TOARD_KEY_ACTIVE" : "TOARD_KEY_MIGRATION";
+  const provider = parseProviderName(env[`${prefix}_PROVIDER`], `${prefix}_PROVIDER`);
+  const settings = provider === "local"
+    ? parseLocalSettings(prefix, env)
+    : parseGenericSettings(prefix, provider, env);
+  return { slot, provider, settings };
+}
+
+function stableSettings(settings: Readonly<Record<string, string>>): string {
+  return JSON.stringify(
+    Object.entries(settings).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+export function loadKeyManagementConfig(env: KeyManagementEnvironment): KeyManagementConfig {
+  const active = parseProfile("active", env);
+  const migration = env.TOARD_KEY_MIGRATION_PROVIDER
+    ? parseProfile("migration", env)
+    : null;
+  const ttl = Number(env.TOARD_USER_KEY_CACHE_TTL_SECONDS ?? "1800");
+  if (!Number.isSafeInteger(ttl) || ttl < 300 || ttl > 3600) {
+    throw new Error("TOARD_USER_KEY_CACHE_TTL_SECONDS는 300~3600 정수여야 합니다");
+  }
+  if (
+    migration
+    && migration.provider === active.provider
+    && stableSettings(migration.settings) === stableSettings(active.settings)
+  ) {
+    throw new Error("active와 migration provider fingerprint가 같을 수 없습니다");
+  }
+  return { active, migration, cacheTtlMs: ttl * 1000 };
+}

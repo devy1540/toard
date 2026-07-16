@@ -86,11 +86,21 @@ test("registry는 migration이 없어도 active만 resolve한다", () => {
   assert.equal(registry.resolveWrappedKey(wrapped(active)), active);
 });
 
-test("registry는 fingerprint가 같아도 provider와 keyRef까지 대조한다", () => {
-  const active = new FakeProvider("local", "file:/active", "shared-fingerprint");
-  const migration = new FakeProvider("local", "file:/migration", "shared-fingerprint");
+test("registry는 provider와 keyRef까지 대조한다", () => {
+  const active = new FakeProvider("local", "file:/active", "active-fingerprint");
+  const migration = new FakeProvider("local", "file:/migration", "migration-fingerprint");
   const registry = new KeyProviderRegistry(active, migration);
 
   assert.equal(registry.resolveWrappedKey(wrapped(active)), active);
   assert.equal(registry.resolveWrappedKey(wrapped(migration)), migration);
+});
+
+test("registry는 등록 시 duplicate fingerprint를 거부한다", () => {
+  const active = new FakeProvider("local", "file:/active", "shared-fingerprint");
+  const migration = new FakeProvider("local", "file:/migration", "shared-fingerprint");
+
+  assert.throws(
+    () => new KeyProviderRegistry(active, migration),
+    /KEY_PROVIDER_DUPLICATE_FINGERPRINT/,
+  );
 });

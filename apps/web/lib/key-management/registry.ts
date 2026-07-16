@@ -12,6 +12,12 @@ export class KeyProviderRegistry {
   >;
 
   constructor(active: KeyManagementProvider, migration: KeyManagementProvider | null) {
+    if (
+      migration
+      && migration.fingerprint === active.fingerprint
+    ) {
+      throw new Error("KEY_PROVIDER_DUPLICATE_FINGERPRINT");
+    }
     this.active = active;
     this.migration = migration;
     const providersByFingerprint = new Map<string, KeyManagementProvider[]>();

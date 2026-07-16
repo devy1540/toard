@@ -40,7 +40,7 @@ function runtime(fail = false): ManagedContentRuntime {
 
 class Db implements E2eeMigrationDb {
   calls: { sql: string; params?: unknown[] }[] = [];
-  source = row(); sourceRows: Record<string, unknown>[] | null = null; remaining = 0; updateCount = 1;
+  source = row(); sourceRows: Record<string, unknown>[] | null = null; remaining: unknown = 0; updateCount = 1;
   async query(sql: string, params?: unknown[]) {
     this.calls.push({ sql, params });
     if (/SELECT .*FROM prompt_records/s.test(sql) && /FOR UPDATE/.test(sql)) return { rows: [this.source] };
@@ -64,6 +64,24 @@ test("source digest는 canonical E2EE metadata/ciphertext 전체에 민감하고
   const hostile = { ...row() };
   Object.defineProperty(hostile, "ciphertext", { get() { throw new E2eeManagedMigrationError("private prompt"); } });
   assert.throws(() => e2eeSourceDigest(hostile), /^E2eeManagedMigrationError: E2EE_SOURCE_CORRUPT$/);
+});
+
+test("remaining count malformed 값은 rollback하고 complete/account migrate를 실행하지 않는다", async () => {
+  for (const remaining of [undefined, null, "", " ", "01", "1.0", "1e2", "-1", -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const db = new Db(); db.remaining = remaining;
+    await assert.rejects(
+      commitE2eeManagedBatch(USER, [{ id: "1", sourceDigest: e2eeSourceDigest(db.source), text: "private" }], runtime(), db),
+      (error: unknown) => error instanceof E2eeManagedMigrationError && error.code === "MIGRATION_STATE_CORRUPT",
+    );
+    assert.equal(db.calls.at(-1)?.sql, "ROLLBACK");
+    assert.equal(db.calls.some((call) => /SET state='complete'/.test(call.sql)), false);
+    assert.equal(db.calls.some((call) => /UPDATE content_accounts/.test(call.sql)), false);
+  }
+  for (const remaining of [0, 1, "0", "1"]) {
+    const db = new Db(); db.remaining = remaining;
+    const result = await commitE2eeManagedBatch(USER, [{ id: "1", sourceDigest: e2eeSourceDigest(db.source), text: "private" }], runtime(), db);
+    assert.equal(result.remaining, Number(remaining));
+  }
 });
 
 test("migration error classifier는 module brand 없는 prototype/Proxy 위조를 거부한다", () => {

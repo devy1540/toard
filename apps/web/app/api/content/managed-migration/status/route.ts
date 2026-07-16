@@ -1,5 +1,9 @@
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
-import { getE2eeManagedMigrationStatus } from "@/lib/e2ee-to-managed-migration";
+import {
+  e2eeManagedMigrationErrorCode,
+  e2eeManagedMigrationHttpStatus,
+  getE2eeManagedMigrationStatus,
+} from "@/lib/e2ee-to-managed-migration";
 
 export async function GET(): Promise<Response> {
   return getManagedMigrationStatusResponse({
@@ -24,7 +28,10 @@ export async function getManagedMigrationStatusResponse(
   catch { return problem(503, "MIGRATION_FAILED"); }
   if (!userId) return problem(401, "UNAUTHORIZED");
   try { return noStore(Response.json(await dependencies.status(userId))); }
-  catch { return problem(503, "MIGRATION_FAILED"); }
+  catch (error) {
+    const code = e2eeManagedMigrationErrorCode(error) ?? "MIGRATION_FAILED";
+    return problem(e2eeManagedMigrationHttpStatus(code), code);
+  }
 }
 
 function problem(status: number, code: string): Response { return noStore(Response.json({ code }, { status })); }

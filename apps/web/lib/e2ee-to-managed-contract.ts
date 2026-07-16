@@ -39,11 +39,7 @@ export function parseE2eeManagedCommit(value: unknown): E2eeManagedCommitItem[] 
     const root = exactPlainObject(value, ["items"]);
     const rawItems = ownData(root, "items");
     if (!Array.isArray(rawItems)) throw new MigrationContractError("MIGRATION_ITEMS_MUST_BE_1~25");
-    const itemCount = exactArrayLength(rawItems);
-    if (itemCount < 1 || itemCount > E2EE_MANAGED_MIGRATION_MAX_ITEMS) {
-      throw new MigrationContractError("MIGRATION_ITEMS_MUST_BE_1~25");
-    }
-    const items = exactArrayValues(rawItems, itemCount);
+    const items = exactArrayValues(rawItems);
     const seen = new Set<string>();
     return items.map((raw) => {
       const input = exactPlainObject(raw, ["id", "sourceDigest", "text"]);
@@ -141,31 +137,59 @@ function ownData(input: Record<string, unknown>, key: string): unknown {
   throw new MigrationContractError("INVALID_MIGRATION_BATCH");
 }
 
-function exactArrayLength(input: unknown[]): number {
+function arrayLengthDescriptor(input: unknown[]): PropertyDescriptor {
   try {
     const descriptor = Object.getOwnPropertyDescriptor(input, "length");
     if (!descriptor || !("value" in descriptor) || typeof descriptor.value !== "number"
-      || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0) throw new Error();
-    return descriptor.value;
+      || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0
+      || descriptor.enumerable || descriptor.configurable) throw new Error();
+    return descriptor;
   } catch { throw new MigrationContractError("INVALID_MIGRATION_BATCH"); }
 }
 
-function exactArrayValues(input: unknown[], length: number): unknown[] {
-  const values: unknown[] = [];
+function exactArrayValues(input: unknown[]): unknown[] {
+  const beforeLength = arrayLengthDescriptor(input);
+  const length = beforeLength.value as number;
+  if (length < 1 || length > E2EE_MANAGED_MIGRATION_MAX_ITEMS) {
+    throw new MigrationContractError("MIGRATION_ITEMS_MUST_BE_1~25");
+  }
   try {
+    const expectedKeys = new Set<PropertyKey>(["length", ...Array.from({ length }, (_, index) => String(index))]);
+    const beforeKeys = Reflect.ownKeys(input);
+    assertExactArrayKeys(beforeKeys, expectedKeys);
+    const descriptors: PropertyDescriptor[] = [];
+    const values: unknown[] = [];
     for (let index = 0; index < length; index += 1) {
       const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
       if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new Error();
+      descriptors.push(descriptor);
       values.push(descriptor.value);
     }
-    const keys = Reflect.ownKeys(input);
-    if (keys.some((key) => key !== "length" && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key)))) {
-      throw new Error();
+    const afterKeys = Reflect.ownKeys(input);
+    assertExactArrayKeys(afterKeys, expectedKeys);
+    const afterLength = arrayLengthDescriptor(input);
+    if (!sameDescriptor(beforeLength, afterLength)) throw new Error();
+    for (let index = 0; index < length; index += 1) {
+      const after = Object.getOwnPropertyDescriptor(input, String(index));
+      if (!after || !sameDescriptor(descriptors[index]!, after)) throw new Error();
     }
     return values;
   } catch {
     throw new MigrationContractError("INVALID_MIGRATION_BATCH");
   }
+}
+
+function assertExactArrayKeys(keys: PropertyKey[], expected: Set<PropertyKey>): void {
+  if (keys.length !== expected.size || keys.some((key) => !expected.has(key))) throw new Error();
+}
+
+function sameDescriptor(left: PropertyDescriptor, right: PropertyDescriptor): boolean {
+  return left.enumerable === right.enumerable
+    && left.configurable === right.configurable
+    && left.writable === right.writable
+    && Object.is(left.value, right.value)
+    && left.get === right.get
+    && left.set === right.set;
 }
 
 function hasOwn(input: Record<string, unknown>, key: string): boolean {

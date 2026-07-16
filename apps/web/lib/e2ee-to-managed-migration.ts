@@ -391,7 +391,15 @@ function bytes(value: unknown, min: number, max: number): Buffer { if (!Buffer.i
 function role(value: unknown): "user" | "assistant" { if (value !== "user" && value !== "assistant") throw new Error(); return value; }
 function iso(value: unknown): string { if (typeof value !== "object" || value === null) throw new Error(); let milliseconds: number; try { milliseconds = Date.prototype.getTime.call(value); } catch { throw new Error(); } if (!Number.isFinite(milliseconds)) throw new Error(); return Date.prototype.toISOString.call(new Date(milliseconds)); }
 function nullableIso(value: unknown): string | null { return value == null ? null : iso(value); }
-function count(value: unknown): number { const out = typeof value === "number" ? value : Number(value ?? 0); if (!Number.isSafeInteger(out) || out < 0) throw new E2eeManagedMigrationError("MIGRATION_STATE_CORRUPT"); return out; }
+function count(value: unknown): number {
+  if (typeof value === "number") {
+    if (Number.isSafeInteger(value) && value >= 0) return value;
+  } else if (typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value)) {
+    const parsed = Number(value);
+    if (Number.isSafeInteger(parsed)) return parsed;
+  }
+  throw new E2eeManagedMigrationError("MIGRATION_STATE_CORRUPT");
+}
 function migrationState(value: unknown): "pending" | "running" | "blocked" | "complete" { if (value === "pending" || value === "running" || value === "blocked" || value === "complete") return value; throw new E2eeManagedMigrationError("MIGRATION_STATE_CORRUPT"); }
 function safeServiceError(error: unknown): E2eeManagedMigrationError {
   return new E2eeManagedMigrationError(e2eeManagedMigrationErrorCode(error) ?? "MIGRATION_FAILED");

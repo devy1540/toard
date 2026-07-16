@@ -32,6 +32,29 @@ GRANT USAGE ON SCHEMA public TO toard_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO toard_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO toard_app;
 
+-- 보안 민감 migration 객체는 broad table grant 뒤 다시 최소 권한으로 닫는다.
+-- to_reg* 조건 덕분에 해당 migration 이전 설치에서도 이 bootstrap은 성공한다.
+DO $$
+BEGIN
+  IF to_regclass('public.content_e2ee_migration_sources') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.content_e2ee_migration_sources FROM toard_app';
+  END IF;
+
+  IF to_regclass('public.content_e2ee_migrations') IS NOT NULL THEN
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.content_e2ee_migrations TO toard_app';
+    EXECUTE 'REVOKE DELETE ON TABLE public.content_e2ee_migrations FROM toard_app';
+  END IF;
+
+  IF to_regprocedure('public.get_content_e2ee_migration_progress(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.get_content_e2ee_migration_progress(UUID) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.get_content_e2ee_migration_progress(UUID) TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.capture_content_e2ee_migration_source()') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.capture_content_e2ee_migration_source() FROM PUBLIC';
+  END IF;
+END $$;
+
 -- 3) 이후 마이그레이션이 만드는 객체에도 자동 적용
 --    (이 스크립트를 실행한 관리 롤이 앞으로 만들 객체의 기본 권한 — 마이그레이션이 같은 롤로 돌 때 유효)
 ALTER DEFAULT PRIVILEGES IN SCHEMA public

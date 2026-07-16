@@ -85,6 +85,11 @@ test("status DB failure와 session helper throw는 secret-free 503/no-store다",
     assert.equal(response.status, 503); assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal((await response.text()).includes(secret), false);
   }
+  const missing = await getManagedMigrationStatusResponse({
+    isAuthOpen: () => false, requireSession: async () => USER,
+    status: async () => { throw new E2eeManagedMigrationError("MIGRATION_NOT_FOUND"); },
+  });
+  assert.equal(missing.status, 409); assert.deepEqual(await missing.json(), { code: "MIGRATION_NOT_FOUND" });
 });
 
 test("commit은 malformed UTF-8 JSON을 runtime 전에 거부한다", async () => {

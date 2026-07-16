@@ -42,6 +42,40 @@ test("unbranded prototype forgery와 Proxy error는 allowlisted code여도 gener
   assert.equal(migrationContractErrorCode(proxy), null);
 });
 
+test("items array는 exact dense own descriptors와 안정된 snapshot만 허용한다", () => {
+  const rejects: unknown[][] = [];
+  const special = [ITEM]; Object.defineProperty(special, "4294967295", { value: ITEM, enumerable: true }); rejects.push(special);
+  const symbol = [ITEM]; Object.defineProperty(symbol, Symbol("extra"), { value: ITEM, enumerable: true }); rejects.push(symbol);
+  const hole = Array(1) as unknown[]; rejects.push(hole);
+  const hidden = [ITEM]; Object.defineProperty(hidden, "0", { value: ITEM, enumerable: false }); rejects.push(hidden);
+  const accessor = [ITEM]; Object.defineProperty(accessor, "0", { get: () => ITEM, enumerable: true }); rejects.push(accessor);
+  for (const items of rejects) assert.throws(() => parseE2eeManagedCommit({ items }), /INVALID_MIGRATION_BATCH/);
+
+  let ownKeysCalls = 0;
+  const changingKeys = new Proxy([ITEM], {
+    ownKeys(target) { ownKeysCalls += 1; return ownKeysCalls === 1 ? Reflect.ownKeys(target) : ["length"]; },
+  });
+  assert.throws(() => parseE2eeManagedCommit({ items: changingKeys }), /INVALID_MIGRATION_BATCH/);
+
+  let lengthCalls = 0;
+  const changingLength = new Proxy([ITEM], {
+    getOwnPropertyDescriptor(target, key) {
+      if (key === "length" && ++lengthCalls > 1) return { ...Reflect.getOwnPropertyDescriptor(target, key)!, value: 2 };
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  assert.throws(() => parseE2eeManagedCommit({ items: changingLength }), /INVALID_MIGRATION_BATCH/);
+
+  let itemCalls = 0;
+  const changingItem = new Proxy([ITEM], {
+    getOwnPropertyDescriptor(target, key) {
+      if (key === "0" && ++itemCalls > 1) return { ...Reflect.getOwnPropertyDescriptor(target, key)!, value: { ...ITEM } };
+      return Reflect.getOwnPropertyDescriptor(target, key);
+    },
+  });
+  assert.throws(() => parseE2eeManagedCommit({ items: changingItem }), /INVALID_MIGRATION_BATCH/);
+});
+
 test("text는 비어 있지 않은 1MiB 이하 well-formed UTF-8 문자열이고 오류에 평문을 싣지 않는다", () => {
   assert.equal(parseE2eeManagedCommit({ items: [{ ...ITEM, text: "가".repeat(349_525) }] })[0]?.text.length, 349_525);
   for (const text of ["", "a".repeat(1_048_577), "\ud800", "sensitive-secret"]) {

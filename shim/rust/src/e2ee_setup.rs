@@ -214,7 +214,7 @@ pub fn approve(request_id: Option<&str>) -> i32 {
 
 pub fn status() -> i32 {
     let credentials = read_credentials();
-    if credentials.collect_content != ContentCollectionMode::E2eeV1 {
+    if credentials.collect_content != ContentCollectionMode::LegacyE2eeV1 {
         println!("toard-shim: E2EE 비활성 (본문 수집 off)");
         return 1;
     }
@@ -327,7 +327,7 @@ fn select_approval_request<'a>(
 
 fn setup() -> Result<(), SetupError> {
     let credentials = read_credentials();
-    if credentials.collect_content == ContentCollectionMode::E2eeV1 {
+    if credentials.collect_content == ContentCollectionMode::LegacyE2eeV1 {
         return Ok(());
     }
     let token = credentials

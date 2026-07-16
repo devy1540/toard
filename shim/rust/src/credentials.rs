@@ -7,15 +7,17 @@ pub const DEFAULT_ENDPOINT: &str = "http://localhost:3000/api";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentCollectionMode {
     Off,
-    ServerV1,
-    E2eeV1,
+    ServerManaged,
+    LegacyE2eeV1,
 }
 
 impl ContentCollectionMode {
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "e2ee_v1" => Self::E2eeV1,
-            "1" | "true" | "on" | "yes" | "server_v1" => Self::ServerV1,
+            "e2ee_v1" => Self::LegacyE2eeV1,
+            "1" | "true" | "on" | "yes" | "server_v1" | "managed_v1" => {
+                Self::ServerManaged
+            }
             _ => Self::Off,
         }
     }
@@ -196,19 +198,31 @@ mod tests {
     fn parse_collect_content_flag() {
         assert_eq!(
             parse("agent_key=t\ncollect_content=true\n").collect_content,
-            ContentCollectionMode::ServerV1
+            ContentCollectionMode::ServerManaged
         );
         assert_eq!(
             parse("collect_content=1\n").collect_content,
-            ContentCollectionMode::ServerV1
+            ContentCollectionMode::ServerManaged
         );
         assert_eq!(
             parse("collect_content=on\n").collect_content,
-            ContentCollectionMode::ServerV1
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            parse("collect_content=yes\n").collect_content,
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            parse("collect_content=server_v1\n").collect_content,
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            parse("collect_content=managed_v1\n").collect_content,
+            ContentCollectionMode::ServerManaged
         );
         assert_eq!(
             parse("collect_content=e2ee_v1\n").collect_content,
-            ContentCollectionMode::E2eeV1
+            ContentCollectionMode::LegacyE2eeV1
         );
         assert_eq!(
             parse("agent_key=t\n").collect_content,

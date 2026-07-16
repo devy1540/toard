@@ -19,19 +19,16 @@ test("advances install through verification to success", () => {
   assert.equal(state.step, "success");
 });
 
-test("E2EE 선택 시 recovery 확인 전 success로 가지 않는다", () => {
-  let state = onboardingReducer(initialOnboardingState, { type: "set-e2ee", enabled: true });
-  state = onboardingReducer(state, { type: "start" });
+test("본문 수집을 선택해도 연결 확인 후 recovery 단계 없이 완료한다", () => {
+  let state = onboardingReducer(initialOnboardingState, { type: "start" });
   state = onboardingReducer(state, { type: "select-platform", platform: "macos" });
   state = onboardingReducer(state, { type: "issued", token: "tk_test", tokenId: "token-1" });
   state = onboardingReducer(state, { type: "verify" });
   state = onboardingReducer(state, { type: "connected", lastHost: "MacBook" });
-  assert.equal(state.step, "recovery");
-  state = onboardingReducer(state, { type: "recovery-confirmed" });
   assert.equal(state.step, "success");
 });
 
-test("shows recovery after polling timeout", () => {
+test("shows stalled diagnostics after polling timeout", () => {
   const state = onboardingReducer(
     {
       ...initialOnboardingState,

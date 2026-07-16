@@ -9,7 +9,7 @@ test("detects Windows, macOS, Linux, and unknown", () => {
   assert.equal(detectInstallPlatform({ userAgent: "Mozilla/5.0" }), null);
 });
 
-test("Windows command contains PowerShell only and escapes apostrophes", () => {
+test("content opt-in Windows command selects server-managed collection and escapes apostrophes", () => {
   const command = buildInstallCommand({
     platform: "windows",
     baseUrl: "https://toard.example",
@@ -19,10 +19,22 @@ test("Windows command contains PowerShell only and escapes apostrophes", () => {
 
   assert.equal(
     command,
-    "$env:TOARD_INGEST_TOKEN='tk_a''b'; $env:TOARD_SHIM_COLLECT_CONTENT='e2ee_v1'; irm 'https://toard.example/install.ps1' | iex",
+    "$env:TOARD_INGEST_TOKEN='tk_a''b'; $env:TOARD_SHIM_COLLECT_CONTENT='1'; irm 'https://toard.example/install.ps1' | iex",
   );
   assert.doesNotMatch(command, /\bsh\b|install\.sh/);
-  assert.doesNotMatch(command, /recovery|mnemonic|uck/i);
+  assert.doesNotMatch(command, /e2ee_v1|recovery|mnemonic|uck/i);
+});
+
+test("content opt-in POSIX command selects server-managed collection", () => {
+  const command = buildInstallCommand({
+    platform: "macos",
+    baseUrl: "https://toard.example/",
+    token: "tk_test",
+    collectContent: true,
+  });
+
+  assert.match(command, /TOARD_SHIM_COLLECT_CONTENT='1'/);
+  assert.doesNotMatch(command, /e2ee_v1|Recovery Kit|e2ee setup/i);
 });
 
 test("macOS and Linux commands use safely quoted POSIX shell", () => {

@@ -29,12 +29,14 @@ test("installer escapes endpoint and applies content default only when absent", 
   );
 });
 
-test("E2EE installer remains off until local setup completes", () => {
+test("content opt-in installer writes server-managed mode without E2EE setup", () => {
   const script = buildPowerShellInstallScript("https://toard.example/api", false);
-  assert.match(script, /-eq 'e2ee_v1'/);
-  assert.match(script, /collect_content=off/);
-  assert.match(script, /e2ee_setup_requested=true/);
-  assert.doesNotMatch(script, /mnemonic|recovery_secret|content_owner_id=/i);
+  assert.match(script, /\^\(1\|true\|on\|yes\)\$/);
+  assert.match(script, /collect_content=true/);
+  assert.doesNotMatch(
+    script,
+    /e2ee_v1|e2ee_setup_requested|e2ee setup|mnemonic|recovery_secret|content_owner_id=/i,
+  );
 });
 
 const testPowerShell =

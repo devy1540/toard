@@ -153,6 +153,29 @@ test("Azure provider는 전달된 env의 production에서도 default credential�
   );
 });
 
+test("Azure provider는 injected client로 production default 정책을 우회할 수 없다", () => {
+  assert.throws(
+    () => new AzureKeyVaultProvider({
+      keyId: AZURE_KEY_ID,
+      credentialMode: "default",
+      nodeEnv: "production",
+      cryptoClient: new RecordingAzureClient(),
+    }),
+    /AZURE_DEFAULT_CREDENTIAL_FORBIDDEN/,
+  );
+});
+
+test("Azure provider 직접 생성도 versionless key ID를 거부한다", () => {
+  assert.throws(
+    () => new AzureKeyVaultProvider({
+      keyId: "https://toard-prod.vault.azure.net/keys/user-keys",
+      credentialMode: "managed-identity",
+      cryptoClient: new RecordingAzureClient(),
+    }),
+    /AZURE_KEY_ID_VERSION_REQUIRED/,
+  );
+});
+
 test("Azure workload identity는 전달된 env의 필수 identity만 결정적으로 사용한다", () => {
   for (const env of [
     {

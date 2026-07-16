@@ -179,11 +179,18 @@ test("provider별 key ref와 auth mode를 엄격히 검증한다", () => {
   );
   assert.throws(
     () => activeConfig("azure-key-vault", {
-      TOARD_KEY_ACTIVE_AZURE_KEY_ID: "https://vault.vault.azure.net/keys/key",
+      TOARD_KEY_ACTIVE_AZURE_KEY_ID: "https://vault.vault.azure.net/keys/key/version",
       TOARD_KEY_ACTIVE_AZURE_CREDENTIAL_MODE: "default",
       NODE_ENV: "production",
     }),
     /production.*default/,
+  );
+  assert.throws(
+    () => activeConfig("azure-key-vault", {
+      TOARD_KEY_ACTIVE_AZURE_KEY_ID: "https://vault.vault.azure.net/keys/key",
+      TOARD_KEY_ACTIVE_AZURE_CREDENTIAL_MODE: "managed-identity",
+    }),
+    /version|AZURE_KEY_ID/,
   );
   assert.throws(
     () => activeConfig("azure-key-vault", {
@@ -194,7 +201,7 @@ test("provider별 key ref와 auth mode를 엄격히 검증한다", () => {
   );
   assert.throws(
     () => activeConfig("azure-key-vault", {
-      TOARD_KEY_ACTIVE_AZURE_KEY_ID: "https://vault.vault.azure.net/keys/key",
+      TOARD_KEY_ACTIVE_AZURE_KEY_ID: "https://vault.vault.azure.net/keys/key/version",
     }),
     /TOARD_KEY_ACTIVE_AZURE_CREDENTIAL_MODE/,
   );

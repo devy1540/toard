@@ -77,11 +77,41 @@ function configured(value: string | undefined): string | undefined {
   return value;
 }
 
+function validateCredentialModePolicy(
+  mode: AzureCredentialMode,
+  nodeEnv: string,
+): void {
+  if (mode === "default" && nodeEnv === "production") {
+    throw new Error("AZURE_DEFAULT_CREDENTIAL_FORBIDDEN");
+  }
+}
+
+function validateVersionedKeyId(keyId: string): void {
+  let keyUrl: URL;
+  try {
+    keyUrl = new URL(keyId);
+  } catch {
+    throw new Error("AZURE_KEY_ID_VERSION_REQUIRED");
+  }
+  if (
+    keyId !== keyId.trim()
+    || keyUrl.protocol !== "https:"
+    || keyUrl.username
+    || keyUrl.password
+    || keyUrl.search
+    || keyUrl.hash
+    || !/^\/keys\/[^/]+\/[^/]+$/.test(keyUrl.pathname)
+  ) {
+    throw new Error("AZURE_KEY_ID_VERSION_REQUIRED");
+  }
+}
+
 export function createAzureCredential(
   mode: AzureCredentialMode,
   env: NodeJS.ProcessEnv,
   nodeEnv: string,
 ): TokenCredential {
+  validateCredentialModePolicy(mode, nodeEnv);
   if (mode === "managed-identity") {
     const clientId = configured(env.AZURE_CLIENT_ID);
     return clientId
@@ -100,9 +130,6 @@ export function createAzureCredential(
       clientId,
       tokenFilePath,
     });
-  }
-  if (nodeEnv === "production") {
-    throw new Error("AZURE_DEFAULT_CREDENTIAL_FORBIDDEN");
   }
   return new DefaultAzureCredential();
 }
@@ -203,6 +230,15 @@ export class AzureKeyVaultProvider implements KeyManagementProvider {
   private readonly client: AzureCryptographyClient;
 
   constructor(input: AzureKeyVaultProviderInput) {
+    const nodeEnv = input.nodeEnv
+      ?? input.env?.NODE_ENV
+      ?? process.env.NODE_ENV
+      ?? "development";
+    validateVersionedKeyId(input.keyId);
+    validateCredentialModePolicy(
+      input.credentialMode ?? "default",
+      nodeEnv,
+    );
     this.keyRef = input.keyId;
     this.fingerprint = providerFingerprint(input.keyId);
     this.credentialMode = input.credentialMode ?? "default";
@@ -213,10 +249,7 @@ export class AzureKeyVaultProvider implements KeyManagementProvider {
     const credential = createAzureCredential(
       this.credentialMode,
       input.env ?? process.env,
-      input.nodeEnv
-        ?? input.env?.NODE_ENV
-        ?? process.env.NODE_ENV
-        ?? "development",
+      nodeEnv,
     );
     this.client = new CryptographyClient(
       input.keyId,

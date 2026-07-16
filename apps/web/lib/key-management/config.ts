@@ -284,9 +284,11 @@ function parseAzureSettings(
     || keyUrl.password
     || keyUrl.search
     || keyUrl.hash
-    || !/^\/keys\/[^/]+(?:\/[^/]+)?$/.test(keyUrl.pathname)
+    || !/^\/keys\/[^/]+\/[^/]+$/.test(keyUrl.pathname)
   ) {
-    throw new Error(`${keyIdVariable}는 full HTTPS Azure Key Vault key ID여야 합니다`);
+    throw new Error(
+      `${keyIdVariable}는 version이 포함된 full HTTPS Azure Key Vault key ID여야 합니다`,
+    );
   }
   return Object.freeze({
     ...settings,

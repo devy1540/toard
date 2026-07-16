@@ -3,7 +3,6 @@ import { Inbox, Lock } from "lucide-react";
 import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
-import { Badge } from "@/components/ui/badge";
 import {
   Empty,
   EmptyDescription,
@@ -123,7 +122,6 @@ export default async function HistoryPage({
     return (
       <div className="space-y-6">
         <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
-        <Badge variant="outline">{t("history.legacyPrivacyNote")}</Badge>
         <SessionDetail
           userId={userId}
           sessionKey={sp.session}
@@ -137,7 +135,13 @@ export default async function HistoryPage({
   // ── 목록 뷰 ──
   const filter = parseFilters(sp, timezone, "all");
   const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
-  const { enabled, sessions, totalSessions } = await getMyHistorySessions(
+  const {
+    enabled,
+    hasManagedContent,
+    hasLegacyContent,
+    sessions,
+    totalSessions,
+  } = await getMyHistorySessions(
     userId,
     filter,
     page,
@@ -205,10 +209,14 @@ export default async function HistoryPage({
         title={t("history.title")}
         statusBadge={{ status: "preview", label: navT("badge.preview") }}
         trailing={
-          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
+          <div className="text-muted-foreground flex max-w-xl items-start gap-1.5 text-xs">
             <Lock className="size-3.5" />
-            {t("history.legacyPrivacyNote")}
-          </span>
+            <span>
+              {t("history.privacyNote")}
+              {hasManagedContent ? ` ${t("history.managedPrivacyNote")}` : ""}
+              {hasLegacyContent ? ` ${t("history.legacyPrivacyNote")}` : ""}
+            </span>
+          </div>
         }
       />
 

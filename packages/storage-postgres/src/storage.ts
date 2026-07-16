@@ -248,6 +248,8 @@ export class PostgresStorage implements StorageBackend {
     replaceRevisionIds: string[] = [],
   ): Promise<PricingRecoveryModelDiagnostic[]> {
     const result = await this.pool.query<{
+      provider_key: string;
+      log_adapter: string | null;
       model: string | null;
       events: string | number;
       unpriced_events: string | number;
@@ -255,7 +257,7 @@ export class PostgresStorage implements StorageBackend {
       first_at: Date;
       last_at: Date;
     }>(
-      `SELECT model, count(*) AS events,
+      `SELECT provider_key, log_adapter, model, count(*) AS events,
               count(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               count(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events,
               min(ts) AS first_at, max(ts) AS last_at
@@ -265,11 +267,13 @@ export class PostgresStorage implements StorageBackend {
            cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id = ANY($3::uuid[])
          )
-       GROUP BY model
+       GROUP BY provider_key, log_adapter, model
        ORDER BY events DESC, model NULLS LAST`,
       [from, to, replaceRevisionIds],
     );
     return result.rows.map((row) => ({
+      providerKey: row.provider_key,
+      logAdapter: row.log_adapter,
       model: row.model,
       events: n(row.events),
       unpricedEvents: n(row.unpriced_events),
@@ -422,7 +426,7 @@ export class PostgresStorage implements StorageBackend {
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
   ): Promise<PricingRecoveryBatchResult> {
-    if (request.models.length === 0 || request.limit <= 0) {
+    if ((request.models.length === 0 && !request.includeCodexModelFallback) || request.limit <= 0) {
       return { scanned: 0, recovered: 0, repricedLegacy: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
@@ -456,11 +460,27 @@ export class PostgresStorage implements StorageBackend {
              cost_status IN ('unpriced', 'legacy')
              OR pricing_revision_id = ANY($4::uuid[])
            )
-           AND model = ANY($3::text[])
+           AND (
+             model = ANY($3::text[])
+             OR (
+               $7::boolean
+               AND provider_key = 'codex'
+               AND log_adapter = 'codex'
+               AND model IS NULL
+             )
+           )
          ORDER BY ts, dedup_key
          FOR UPDATE SKIP LOCKED
          LIMIT $5`,
-        [request.from, request.to, request.models, request.replaceRevisionIds, limit, this.tz],
+        [
+          request.from,
+          request.to,
+          request.models,
+          request.replaceRevisionIds,
+          limit,
+          this.tz,
+          request.includeCodexModelFallback ?? false,
+        ],
       );
 
       let recovered = 0;

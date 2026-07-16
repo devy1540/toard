@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** `팀별 현황`을 `팀 현황`과 같은 대표 카드·분석 카드 위계로 정리하고 변경을 `v0.15.33`으로 릴리스한다.
+**Goal:** `팀별 현황`을 `팀 현황`과 같은 대표 카드·분석 카드 위계로 정리하고 변경을 `v0.15.34`로 릴리스한다.
 
 **Architecture:** 데이터 조회와 순위 계산은 기존 `AllTeamsOverview`에 유지하고, 상단 표시만 전용 `TeamRankingHero` 표현 컴포넌트로 분리한다. 페이지 콘텐츠 래퍼를 명시적인 수직 스택으로 바꾸고 기존 순위·차트 컴포넌트는 그대로 재사용한다.
 
@@ -210,11 +210,11 @@ Expected: 공백 오류 없음. 설계·계획·팀별 현황 페이지·계약 
 
 ---
 
-### Task 4: PR 병합과 v0.15.33 릴리스
+### Task 4: PR 병합과 v0.15.34 릴리스
 
 **Files:**
 - No production source changes expected
-- Produces: merged PR, `v0.15.33` tag, GitHub Release, tag workflow evidence
+- Produces: merged PR, `v0.15.34` tag, GitHub Release, tag workflow evidence
 
 **Interfaces:**
 - Consumes: 검증 완료된 feature branch
@@ -246,24 +246,24 @@ gh pr merge --merge --delete-branch
 
 Expected: 필수 체크 0 failures, PR state `MERGED`.
 
-- [ ] **Step 4: 최신 `origin/main` 병합 커밋에 v0.15.33 태그를 생성한다**
+- [ ] **Step 4: 최신 `origin/main` 병합 커밋에 v0.15.34 태그를 생성한다**
 
 ```bash
 git fetch origin main --tags
-git tag -a v0.15.33 origin/main -m "v0.15.33"
-git push origin v0.15.33
+git tag -a v0.15.34 origin/main -m "v0.15.34"
+git push origin v0.15.34
 ```
 
 - [ ] **Step 5: 태그 기반 워크플로와 릴리스 자산을 검증한다**
 
 ```bash
-gh run list --branch v0.15.33 --limit 10
+gh run list --branch v0.15.34 --limit 10
 gh run watch <shim-release-run-id>
 gh run watch <docker-publish-run-id>
-gh release view v0.15.33 --json tagName,isLatest,isDraft,url,assets
+gh release view v0.15.34 --json tagName,isLatest,isDraft,url,assets
 ```
 
-Expected: `shim-release`와 `docker-publish` 성공, GitHub Release가 draft가 아니며 `v0.15.33` 자산을 포함함.
+Expected: `shim-release`와 `docker-publish` 성공, GitHub Release가 draft가 아니며 `v0.15.34` 자산을 포함함.
 
 ## Plan Self-Review
 
@@ -271,5 +271,4 @@ Expected: `shim-release`와 `docker-publish` 성공, GitHub Release가 draft가 
 - 테스트가 먼저 실패한 뒤 최소 구현으로 통과하도록 Task 1–2 순서를 고정했다.
 - 데이터 계산, 번역, 차트, 다른 페이지를 변경하는 단계가 없다.
 - 배포는 PR 체크 성공과 병합 확인 뒤에만 태그를 생성한다.
-- 최신 릴리스 `v0.15.32`의 다음 patch 버전인 `v0.15.33`을 사용한다.
-
+- 최신 릴리스 `v0.15.33`의 다음 patch 버전인 `v0.15.34`를 사용한다.

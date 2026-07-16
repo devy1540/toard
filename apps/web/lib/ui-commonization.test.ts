@@ -422,9 +422,10 @@ test("team overview uses a bounded hero and separated analysis sections", () => 
   assert.match(page, /<section className="border-border\/80 bg-card rounded-xl border px-5 py-5">/);
   assert.match(
     page,
-    /<TeamRankingHero[\s\S]*totalCost=\{rankedCost\}[\s\S]*rankCount=\{rows\.length\}[\s\S]*totalSessions=\{rankedSessions\}/,
+    /<TeamRankingHero[\s\S]*totalCost=\{rankedCost\}[\s\S]*coverage=\{coverage\}[\s\S]*costLabels=\{costLabels\}[\s\S]*rankCount=\{rows\.length\}[\s\S]*totalSessions=\{rankedSessions\}[\s\S]*topShare=\{/,
   );
   assert.match(page, /data-dashboard-ready="team-overview" className="space-y-6"/);
+  assert.match(page, /grid min-w-0 gap-4 2xl:grid-cols-/);
   assert.doesNotMatch(page, /data-dashboard-ready="team-overview" className="contents"/);
 });
 

@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import crypto from "node:crypto";
 
 // 프롬프트/응답 본문의 at-rest 봉투 암호화 (설계: RLS + at-rest 트랙).
 // - 레코드마다 랜덤 DEK 로 본문을 AES-256-GCM 암호화하고, DEK 는 KEK 로 감싼다.
@@ -51,11 +51,11 @@ function loadKekFromEnvironment(
 }
 
 export function encryptContent(plaintext: string, kek: Buffer): EncryptedContent {
-  const dek = randomBytes(DEK_BYTES);
+  const dek = crypto.randomBytes(DEK_BYTES);
   let plaintextBytes: Buffer | undefined;
   try {
-    const iv = randomBytes(IV_BYTES);
-    const cipher = createCipheriv("aes-256-gcm", dek, iv);
+    const iv = crypto.randomBytes(IV_BYTES);
+    const cipher = crypto.createCipheriv("aes-256-gcm", dek, iv);
     plaintextBytes = Buffer.from(plaintext, "utf8");
     const ciphertext = Buffer.concat([cipher.update(plaintextBytes), cipher.final()]);
     return {
@@ -91,9 +91,7 @@ export function decryptContent(row: EncryptedContent, kek: Buffer): string {
       throw new Error("INVALID_LEGACY_CONTENT");
     }
     dek = unwrapDek(row.wrappedDek, kek);
-    const decipher = createDecipheriv("aes-256-gcm", dek, row.iv);
-    decipher.setAuthTag(row.authTag);
-    plaintext = Buffer.concat([decipher.update(row.ciphertext), decipher.final()]);
+    plaintext = decryptAesGcm(dek, row.iv, row.ciphertext, row.authTag);
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(plaintext);
   } finally {
     plaintext?.fill(0);
@@ -103,8 +101,8 @@ export function decryptContent(row: EncryptedContent, kek: Buffer): string {
 
 // 로컬 KEK wrap (KMS 미사용 시). 포맷: [iv 12B | tag 16B | enc DEK]
 function wrapDek(dek: Buffer, kek: Buffer): Buffer {
-  const iv = randomBytes(IV_BYTES);
-  const cipher = createCipheriv("aes-256-gcm", kek, iv);
+  const iv = crypto.randomBytes(IV_BYTES);
+  const cipher = crypto.createCipheriv("aes-256-gcm", kek, iv);
   const enc = Buffer.concat([cipher.update(dek), cipher.final()]);
   return Buffer.concat([iv, cipher.getAuthTag(), enc]);
 }
@@ -113,7 +111,30 @@ function unwrapDek(wrapped: Buffer, kek: Buffer): Buffer {
   const iv = wrapped.subarray(0, IV_BYTES);
   const tag = wrapped.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
   const enc = wrapped.subarray(IV_BYTES + TAG_BYTES);
-  const decipher = createDecipheriv("aes-256-gcm", kek, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(enc), decipher.final()]);
+  return decryptAesGcm(kek, iv, enc, tag);
+}
+
+function decryptAesGcm(
+  key: Buffer,
+  iv: Buffer,
+  ciphertext: Buffer,
+  authTag: Buffer,
+): Buffer {
+  let updateChunk: Buffer | undefined;
+  let finalChunk: Buffer | undefined;
+  let plaintext: Buffer | undefined;
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(authTag);
+    updateChunk = decipher.update(ciphertext);
+    finalChunk = decipher.final();
+    plaintext = Buffer.concat([updateChunk, finalChunk]);
+    return plaintext;
+  } catch (error) {
+    plaintext?.fill(0);
+    throw error;
+  } finally {
+    updateChunk?.fill(0);
+    finalChunk?.fill(0);
+  }
 }

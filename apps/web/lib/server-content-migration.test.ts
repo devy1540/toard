@@ -286,6 +286,24 @@ test("source change and managed round-trip mismatch are safe errors", async () =
   );
 });
 
+test("second-row SOURCE_CHANGED rolls back the first managed update", async () => {
+  const db = fakeDb([
+    legacyRow("51", "first source"),
+    legacyRow("52", "changed source"),
+  ], { sourceChangedId: "52" });
+
+  await assert.rejects(
+    migrateServerContentBatch(USER_A, 25, runtime(), LEGACY_KEK, db),
+    assertCode("SOURCE_CHANGED"),
+  );
+  assert.equal(db.commits, 0);
+  assert.equal(db.rollbacks, 1);
+  assert.deepEqual(
+    db.rows.map((row) => row.encryption_scheme),
+    ["server_v1", "server_v1"],
+  );
+});
+
 test("limit accepts safe integers, clamps to 1..25, and rejects non-integers", async () => {
   for (const [input, expected] of [[0, 1], [1, 1], [25, 25], [99, 25]] as const) {
     const db = fakeDb([]);

@@ -157,10 +157,24 @@ function decryptAesGcm(
   ciphertext: Buffer,
   authTag: Buffer,
 ): Buffer {
-  const decipher = crypto.createDecipheriv(AES_GCM, key, iv);
-  decipher.setAAD(aad);
-  decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  let updateChunk: Buffer | undefined;
+  let finalChunk: Buffer | undefined;
+  let plaintext: Buffer | undefined;
+  try {
+    const decipher = crypto.createDecipheriv(AES_GCM, key, iv);
+    decipher.setAAD(aad);
+    decipher.setAuthTag(authTag);
+    updateChunk = decipher.update(ciphertext);
+    finalChunk = decipher.final();
+    plaintext = Buffer.concat([updateChunk, finalChunk]);
+    return plaintext;
+  } catch (error) {
+    plaintext?.fill(0);
+    throw error;
+  } finally {
+    updateChunk?.fill(0);
+    finalChunk?.fill(0);
+  }
 }
 
 function assertKey(key: Buffer): void {

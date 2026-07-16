@@ -3,6 +3,7 @@ import test from "node:test";
 import type { PricingMap } from "@toard/pricing";
 import {
   historicalPricingStatusFromJob,
+  PgPricingHistoryRepository,
   runHistoricalPricingStepWith,
   type HistoricalPricingJob,
   type HistoricalPricingRepository,
@@ -26,6 +27,7 @@ function commit(index: number): PricingHistoryCommitRef {
 function job(overrides: Partial<HistoricalPricingJob> = {}): HistoricalPricingJob {
   return {
     id: "job-1",
+    algorithmVersion: 2,
     state: "fetching",
     rangeFrom,
     rangeTo,
@@ -49,11 +51,17 @@ class FakeRepository implements HistoricalPricingRepository {
   events: string[] = [];
   canonicalInserts = 0;
   repairPendingCalls = 0;
+  completed: HistoricalPricingJob | null = null;
 
   constructor(public active: HistoricalPricingJob | null) {}
 
   async getActive(): Promise<HistoricalPricingJob | null> {
     return this.active;
+  }
+
+  async findCompleted(): Promise<HistoricalPricingJob | null> {
+    this.events.push("find-completed");
+    return this.completed;
   }
 
   async create(input: {
@@ -239,6 +247,89 @@ test("90일보다 오래된 보존 이벤트도 실제 최초 시각부터 가�
   });
   assert.equal(repository.active?.rangeFrom.toISOString(), "2025-09-15T00:00:00.000Z");
   assert.equal(repository.active?.rangeTo.toISOString(), "2026-07-11T00:00:00.000Z");
+});
+
+test("같은 범위와 모델을 이미 확인한 완료 job은 다시 생성하지 않는다", async () => {
+  const repository = new FakeRepository(null);
+  repository.completed = job({ state: "completed", commitRefs: [], nextCommitIndex: 0 });
+  const fixture = dependencies(repository);
+
+  const result = await runHistoricalPricingStepWith(fixture.value, [{
+    model: "model-a",
+    events: 3,
+    firstAt: "2026-06-01T12:34:56.000Z",
+    lastAt: "2026-06-30T01:02:03.000Z",
+  }]);
+
+  assert.deepEqual(result, {
+    state: "no_evidence",
+    nextAttemptAt: new Date("2026-07-14T01:00:00.000Z"),
+  });
+  assert.deepEqual(repository.events, ["find-completed"]);
+  assert.deepEqual(fixture.sourceCalls, []);
+});
+
+test("범위 중간에 처음 발견된 모델 가격은 해당 복구 범위 시작부터 적용한다", async () => {
+  const queries: Array<{ sql: string; params: unknown[] }> = [];
+  const firstPriceCommit = {
+    sha: "a".repeat(40),
+    committedAt: "2026-06-15T00:00:00.000Z",
+  };
+  const fetching = job({
+    commitRefs: [firstPriceCommit],
+    nextCommitIndex: 0,
+  });
+  const client = {
+    async query(sql: string, params: unknown[] = []) {
+      queries.push({ sql, params });
+      if (sql.includes("FROM pricing_history_jobs") && sql.includes("FOR UPDATE")) {
+        return { rows: [{
+          id: fetching.id,
+          algorithm_version: fetching.algorithmVersion,
+          state: fetching.state,
+          range_from: fetching.rangeFrom,
+          range_to: fetching.rangeTo,
+          models: fetching.models,
+          commit_refs: fetching.commitRefs,
+          list_page: fetching.listPage,
+          next_commit_index: fetching.nextCommitIndex,
+          next_attempt_at: null,
+          rate_limit_reset_at: null,
+          consecutive_failures: 0,
+          last_error: null,
+        }] };
+      }
+      if (sql.includes("FROM pricing_history_candidates")) return { rows: [] };
+      if (sql.includes("UPDATE pricing_history_jobs") && sql.includes("RETURNING")) {
+        return { rows: [{
+          id: fetching.id,
+          algorithm_version: fetching.algorithmVersion,
+          state: "promoting",
+          range_from: fetching.rangeFrom,
+          range_to: fetching.rangeTo,
+          models: fetching.models,
+          commit_refs: fetching.commitRefs,
+          list_page: 0,
+          next_commit_index: 1,
+          next_attempt_at: null,
+          rate_limit_reset_at: null,
+          consecutive_failures: 0,
+          last_error: null,
+        }] };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+    release() {},
+  };
+  const pool = { connect: async () => client };
+
+  await new PgPricingHistoryRepository(pool as never).saveSnapshots(fetching.id, [{
+    ref: firstPriceCommit,
+    pricing: pricing(),
+  }], new Date("2026-07-14T00:00:00.000Z"));
+
+  const candidateInsert = queries.find(({ sql }) => sql.includes("INSERT INTO pricing_history_candidates"));
+  assert.equal((candidateInsert?.params[3] as Date).toISOString(), rangeFrom.toISOString());
 });
 
 test("promotion은 revision·cache version·repair pending을 한 transaction으로 확정한다", async () => {

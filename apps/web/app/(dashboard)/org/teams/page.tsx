@@ -1,12 +1,12 @@
 import { getTranslations } from "next-intl/server";
 import { redirect } from "next/navigation";
-import type { ReactNode } from "react";
 import type { LeaderRow } from "@toard/core";
 import { Activity, Inbox, TrendingUp, Trophy } from "lucide-react";
 import { LeaderboardBarChart } from "@/components/charts/leaderboard-bar-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
+import { SummaryTile } from "@/components/dashboard/summary-tile";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
@@ -33,29 +33,6 @@ function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
   if (sp.metric) q.set("metric", sp.metric);
   const qs = q.toString();
   return qs ? `${path}?${qs}` : path;
-}
-
-function SummaryTile({
-  label,
-  value,
-  sub,
-  icon,
-}: {
-  label: string;
-  value: string;
-  sub?: string;
-  icon?: ReactNode;
-}) {
-  return (
-    <div className="border-border/70 min-w-0 border-l pl-3">
-      <div className="text-muted-foreground flex items-center gap-1.5 text-xs tracking-wide uppercase">
-        {icon}
-        {label}
-      </div>
-      <div className="mt-1 truncate text-xl font-medium tabular-nums">{value}</div>
-      {sub ? <div className="text-muted-foreground mt-0.5 truncate text-xs">{sub}</div> : null}
-    </div>
-  );
 }
 
 function TeamRankingHero({

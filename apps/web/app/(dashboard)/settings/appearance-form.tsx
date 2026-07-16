@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { ChartColumn, Check, LayoutGrid, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
+import { SettingsRow } from "@/components/dashboard/settings-row";
 import { SegmentedControl, type SegmentedControlItem } from "@/components/ui/segmented-control";
+import { Toggle } from "@/components/ui/toggle";
 import {
   BRAND_COOKIE,
   BRAND_PRESETS,
@@ -80,8 +82,7 @@ export function AppearanceForm({ timezoneControl }: { timezoneControl: ReactNode
 
   return (
     <div className="min-w-0 divide-y">
-      <section className="grid min-w-0 gap-3 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-center">
-        <h2 className="text-sm font-semibold">{t("appearance.theme")}</h2>
+      <SettingsRow layout="settings" label={t("appearance.theme")}>
         <SegmentedControl
           value={themeValue}
           items={themeItems}
@@ -89,33 +90,32 @@ export function AppearanceForm({ timezoneControl }: { timezoneControl: ReactNode
           aria-label={t("appearance.theme")}
           className="w-fit"
         />
-      </section>
+      </SettingsRow>
 
-      <section className="grid min-w-0 gap-3 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-center">
-        <h2 className="text-sm font-semibold">{t("appearance.color")}</h2>
+      <SettingsRow layout="settings" label={t("appearance.color")}>
         <div className="flex flex-wrap items-center gap-2">
           {BRAND_PRESETS.map((p) => (
-            <button
+            <Toggle
               key={p}
-              type="button"
               aria-label={p}
               title={p}
-              aria-pressed={brand === p}
-              onClick={() => onBrandChange(p)}
+              pressed={brand === p}
+              onPressedChange={(pressed) => {
+                if (pressed) onBrandChange(p);
+              }}
               className={cn(
-                "flex size-6 items-center justify-center rounded-full transition-transform hover:scale-110",
+                "flex size-6 min-w-0 items-center justify-center rounded-full p-0 text-current shadow-none transition-transform hover:scale-110 hover:bg-transparent hover:text-current data-[state=on]:bg-transparent data-[state=on]:text-current",
                 brand === p && "ring-ring ring-2 ring-offset-2",
               )}
               style={{ background: BRAND_SWATCHES[p] }}
             >
               {brand === p ? <Check className="size-3.5 text-white" /> : null}
-            </button>
+            </Toggle>
           ))}
         </div>
-      </section>
+      </SettingsRow>
 
-      <section className="grid min-w-0 gap-3 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-center">
-        <h2 className="text-sm font-semibold">{t("appearance.defaultView")}</h2>
+      <SettingsRow layout="settings" label={t("appearance.defaultView")}>
         <SegmentedControl
           value={view}
           items={viewItems}
@@ -123,12 +123,11 @@ export function AppearanceForm({ timezoneControl }: { timezoneControl: ReactNode
           aria-label={t("appearance.defaultView")}
           className="w-fit"
         />
-      </section>
+      </SettingsRow>
 
-      <section className="grid min-w-0 gap-3 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-center">
-        <h2 className="text-sm font-semibold">{t("timezone.title")}</h2>
+      <SettingsRow layout="settings" label={t("timezone.title")}>
         {timezoneControl}
-      </section>
+      </SettingsRow>
     </div>
   );
 }

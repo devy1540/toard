@@ -1,6 +1,8 @@
 // StorageBackend — 수집·대시보드가 의존하는 유일한 데이터 액세스 계약 (설계 §4.1, ADR-003).
 // 메타(users/teams) CRUD·인증은 인터페이스 밖(항상 PG). 여기는 "이벤트 저장 + 분석 쿼리"만.
 
+import type { UtilizationUsageDay, UtilizationUsageQuery } from "./utilization";
+
 export interface PeriodQuery {
   /** UTC, inclusive */
   from: Date;
@@ -345,6 +347,10 @@ export interface StorageBackend {
   ): Promise<TeamMemberTimeseriesPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
   getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison>;
+  /** AI 활용 지수 — 개인의 조직 타임존 일별 사용량 feature. */
+  getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
+  /** AI 활용 지수 — 익명 조직 집계를 만들기 위한 사용자별 일별 사용량 feature. */
+  getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */

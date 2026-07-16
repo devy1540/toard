@@ -18,7 +18,7 @@
 ![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[빠른 시작](#-빠른-시작) · [팀에 배포하기](#-팀에-배포하기) · [동작 방식](#-동작-방식) · [설계 문서](docs/ARCHITECTURE.md) · [배포 가이드](docs/DEPLOY.md) · [기여하기](CONTRIBUTING.md)
+[빠른 시작](#-빠른-시작) · [팀에 배포하기](#-팀에-배포하기) · [동작 방식](#-동작-방식) · [활용 지수 정책](docs/ai-utilization-policy.md) · [설계 문서](docs/ARCHITECTURE.md) · [배포 가이드](docs/DEPLOY.md) · [기여하기](CONTRIBUTING.md)
 
 </div>
 
@@ -29,6 +29,7 @@
 - **🔌 멀티 프로바이더** — Claude Code · Codex · Gemini · Qwen 등을 하나의 대시보드로 수렴
 - **🪶 경량 수집** — shim 이 로컬 세션 파일에서 사용량과 AI 도구 활동을 pull 수집(재시작·env 설정 불필요, 기기별 구분 자동) · 멱등 dedup 내장 · OTLP push 도 experimental 로 지원
 - **🧰 AI 도구 가시성** — MCP·스킬 활동과 기기별 플러그인·스킬·MCP 설치 현황을 메타데이터만으로 확인
+- **🧭 AI 활용 지수** — 개인은 자기 기준 3축 점수, 조직은 5명 이상 익명 집계만 제공 ([정책](docs/ai-utilization-policy.md) · [방법론](docs/ai-utilization-methodology.md))
 - **💰 정확한 비용** — LiteLLM 가격 기반 비용 엔진: per-million + tiered(200k) + 캐시/fast 요금, 일 단위 자동 동기화
 - **👥 조직 뷰** — 조직/팀 집계 · 리더보드 · 개인 대시보드 · 관리자 패널 · 초대 기반 셀프 온보딩
 - **🗄️ 확장 가능한 저장소** — 기본은 Postgres 단일, 중규모 이상은 ClickHouse 옵트인 (`StorageBackend` 추상화)

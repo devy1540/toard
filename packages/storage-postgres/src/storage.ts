@@ -33,8 +33,10 @@ import type {
   PricingRecoveryModelDiagnostic,
   UserUsage,
   UserInsightComparison,
+  UtilizationUsageDay,
+  UtilizationUsageQuery,
 } from "@toard/core";
-import { buildUserInsightComparison } from "@toard/core";
+import { buildUserInsightComparison, CACHE_SIGNAL_PROVIDER_KEYS } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
@@ -575,6 +577,50 @@ export class PostgresStorage implements StorageBackend {
     }));
   }
 
+  private async utilizationUsageQuery(
+    q: UtilizationUsageQuery,
+    userId?: string,
+  ): Promise<UtilizationUsageDay[]> {
+    const params: unknown[] = [q.from, q.to, q.timezone, [...CACHE_SIGNAL_PROVIDER_KEYS]];
+    const userClause = userId ? `AND user_id = $${params.push(userId)}` : "";
+    const result = await this.pool.query<{
+      user_id: string;
+      day: string;
+      sessions: string | number;
+      input: string | number;
+      cache_read: string | number;
+      cache_creation: string | number;
+      cache_signal_events: string | number;
+      cache_unsupported_events: string | number;
+    }>(
+      `SELECT user_id,
+              to_char((ts AT TIME ZONE $3::text)::date, 'YYYY-MM-DD') AS day,
+              COUNT(DISTINCT session_id) AS sessions,
+              COALESCE(SUM(input_tokens) FILTER (WHERE provider_key = ANY($4::text[])), 0) AS input,
+              COALESCE(SUM(cache_read_tokens) FILTER (WHERE provider_key = ANY($4::text[])), 0) AS cache_read,
+              COALESCE(SUM(cache_creation_tokens) FILTER (WHERE provider_key = ANY($4::text[])), 0) AS cache_creation,
+              COUNT(*) FILTER (WHERE provider_key = ANY($4::text[])) AS cache_signal_events,
+              COUNT(*) FILTER (WHERE NOT (provider_key = ANY($4::text[]))) AS cache_unsupported_events
+       FROM usage_events
+       WHERE ts >= $1 AND ts < $2
+         AND user_id IS NOT NULL
+         ${userClause}
+       GROUP BY user_id, day
+       ORDER BY day, user_id`,
+      params,
+    );
+    return result.rows.map((row) => ({
+      userId: String(row.user_id),
+      day: String(row.day),
+      sessions: n(row.sessions),
+      inputTokens: n(row.input),
+      cacheReadTokens: n(row.cache_read),
+      cacheCreationTokens: n(row.cache_creation),
+      cacheSignalEvents: n(row.cache_signal_events),
+      cacheUnsupportedEvents: n(row.cache_unsupported_events),
+    }));
+  }
+
   private async modelBreakdown(q: ScopedQuery): Promise<ModelBreakdown[]> {
     const { where, params } = this.periodWhere(q);
     const res = await this.pool.query(
@@ -783,6 +829,14 @@ export class PostgresStorage implements StorageBackend {
       costCoverage: costCoverage(r),
     }));
     return buildUserInsightComparison(aggregates, compositions);
+  }
+
+  getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q, userId);
+  }
+
+  getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q);
   }
 
   // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)

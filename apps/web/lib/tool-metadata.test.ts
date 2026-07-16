@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ToolActivityEvent } from "@toard/core";
-import { getOrgToolSummaryWithDb, insertToolActivityWithDb } from "./tool-metadata";
+import {
+  getOrgToolSummaryWithDb,
+  getUtilizationToolDaysWithDb,
+  insertToolActivityWithDb,
+} from "./tool-metadata";
 
 type Call = { sql: string; params?: unknown[] };
 
@@ -61,4 +65,52 @@ test("조직 도구 집계는 범주 숫자만 반환한다", async () => {
     assert.equal(json.includes(forbidden), false);
   }
   assert.doesNotMatch(db.calls[0]?.sql ?? "", /SELECT\s+(?:item_key|display_name|session_id)\b/i);
+});
+
+test("활용 지수 도구 집계는 일별 결과와 30분 이내 반복 실패만 반환한다", async () => {
+  const db = new RecordingDb([
+    {
+      user_id: "user-1",
+      day: "2026-07-10",
+      successes: "7",
+      failures: "3",
+      unknown: "2",
+      repeated_failures: "1",
+      session_tool_known_calls: "10",
+      tool_active_sessions: "2",
+      distinct_tools: "3",
+    },
+  ]);
+
+  const result = await getUtilizationToolDaysWithDb(
+    db,
+    { from: new Date("2026-07-01T00:00:00Z"), to: new Date("2026-07-11T00:00:00Z") },
+    "Asia/Seoul",
+    "user-1",
+  );
+
+  assert.match(db.calls[0]?.sql ?? "", /LAG\(outcome\)/);
+  assert.match(db.calls[0]?.sql ?? "", /INTERVAL '30 minutes'/);
+  assert.match(
+    db.calls[0]?.sql ?? "",
+    /PARTITION BY user_id, session_id, activity_kind, item_key/,
+  );
+  assert.match(db.calls[0]?.sql ?? "", /session_id IS NOT NULL/);
+  assert.deepEqual(db.calls[0]?.params, [
+    new Date("2026-07-01T00:00:00Z"),
+    new Date("2026-07-11T00:00:00Z"),
+    "Asia/Seoul",
+    "user-1",
+  ]);
+  assert.deepEqual(result[0], {
+    userId: "user-1",
+    day: "2026-07-10",
+    successes: 7,
+    failures: 3,
+    unknown: 2,
+    repeatedFailures: 1,
+    sessionToolKnownCalls: 10,
+    toolActiveSessions: 2,
+    distinctTools: 3,
+  });
 });

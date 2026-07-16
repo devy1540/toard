@@ -39,10 +39,13 @@ import type {
   PricingRecoveryModelDiagnostic,
   UserUsage,
   UserInsightComparison,
+  UtilizationUsageDay,
+  UtilizationUsageQuery,
 } from "@toard/core";
 import {
   addLocalCalendarDays,
   buildUserInsightComparison,
+  CACHE_SIGNAL_PROVIDER_KEYS,
   canonicalTimezoneId,
   firstInstantOfLocalDate,
   localDateKey,
@@ -2491,6 +2494,62 @@ export class ClickHouseStorage implements StorageBackend {
       cacheReadTokens: n(r.cache_read),
       cacheCreationTokens: n(r.cache_creation),
     }));
+  }
+
+  private async utilizationUsageQuery(
+    q: UtilizationUsageQuery,
+    userId?: string,
+  ): Promise<UtilizationUsageDay[]> {
+    const scoped: ScopedQuery = userId ? { ...q, userId } : q;
+    const timezone = safeTimezone(q.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(scoped, "day", timezone);
+    const dayExpr = this.sourceBucketExpr("day", source, timezone);
+    const params = {
+      ...source.params,
+      cacheProviders: [...CACHE_SIGNAL_PROVIDER_KEYS],
+    };
+    const rows = await this.queryJson<{
+      user_id: string;
+      day: string;
+      sessions?: string;
+      input?: string;
+      cache_read?: string;
+      cache_creation?: string;
+      cache_signal_events?: string;
+      cache_unsupported_events?: string;
+    }>(
+      `SELECT user_id,
+              ${dayExpr} AS day,
+              uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(input_tokens, provider_key IN {cacheProviders:Array(String)}) AS input,
+              sumIf(cache_read_tokens, provider_key IN {cacheProviders:Array(String)}) AS cache_read,
+              sumIf(cache_creation_tokens, provider_key IN {cacheProviders:Array(String)}) AS cache_creation,
+              sumIf(event_count, provider_key IN {cacheProviders:Array(String)}) AS cache_signal_events,
+              sumIf(event_count, provider_key NOT IN {cacheProviders:Array(String)}) AS cache_unsupported_events
+       FROM ${source.source}
+       WHERE user_id != ''
+       GROUP BY user_id, day
+       ORDER BY day, user_id`,
+      params,
+    );
+    return rows.map((row) => ({
+      userId: row.user_id,
+      day: row.day,
+      sessions: n(row.sessions),
+      inputTokens: n(row.input),
+      cacheReadTokens: n(row.cache_read),
+      cacheCreationTokens: n(row.cache_creation),
+      cacheSignalEvents: n(row.cache_signal_events),
+      cacheUnsupportedEvents: n(row.cache_unsupported_events),
+    }));
+  }
+
+  getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q, userId);
+  }
+
+  getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q);
   }
 
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {

@@ -330,7 +330,7 @@ test("insights page builds cache arguments from a stable period anchor", () => {
 test("insights page validates provider before reading the comparison cache", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   const providersIndex = page.indexOf("const providers = await getEnabledProviders()");
-  const comparisonIndex = page.indexOf("const comparison = await getCachedUserInsights(");
+  const comparisonIndex = page.indexOf("getCachedUserInsights(userId, pair, providerKey)");
 
   assert.notEqual(providersIndex, -1);
   assert.notEqual(comparisonIndex, -1);

@@ -14,9 +14,11 @@ const RAW_CREDENTIAL_NAME =
   /(?:^|_)(?:SECRET|PASSWORD|TOKEN|PRIVATE_KEY|CREDENTIALS?|ACCESS_KEY|CLIENT_KEY|API_KEY|ACCOUNT_KEY)(?:_|$)/i;
 const AWS_REGION = /^[a-z]{2}(?:-[a-z0-9]+)+-\d$/;
 const AWS_KMS_KEY_ARN =
-  /^arn:aws(?:-us-gov|-cn|-iso(?:-[bef])?)?:kms:([a-z0-9-]+):\d{12}:key\/[A-Za-z0-9][A-Za-z0-9-]*$/;
+  /^arn:(aws(?:-us-gov|-cn|-iso(?:-[bef])?)?):kms:([a-z0-9-]+):(\d{12}):key\/(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})$/;
 const GCP_KMS_KEY_NAME =
   /^projects\/[^/\s]+\/locations\/[^/\s]+\/keyRings\/[^/\s]+\/cryptoKeys\/[^/\s]+$/;
+const DNS_HOSTNAME =
+  /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 const AZURE_CREDENTIAL_MODES = new Set([
   "default",
   "managed-identity",
@@ -122,6 +124,51 @@ function parseUrl(value: string, variable: string): URL {
   }
 }
 
+function canonicalEndpointUrl(
+  value: string,
+  variable: string,
+  protocols: ReadonlySet<string>,
+): string {
+  if (value !== value.trim() || /\s/.test(value) || value.includes("?") || value.includes("#")) {
+    throw new Error(`${variable}은 credential, query, fragment, whitespace 없는 URL이어야 합니다`);
+  }
+  const url = parseUrl(value, variable);
+  if (
+    !protocols.has(url.protocol)
+    || url.username
+    || url.password
+  ) {
+    throw new Error(
+      `${variable}은 credential 없는 ${Array.from(protocols).join("/")} URL이어야 합니다`,
+    );
+  }
+  return url.href;
+}
+
+function canonicalDnsEndpoint(value: string, variable: string): string {
+  if (
+    value !== value.trim()
+    || /\s/.test(value)
+    || /[/?#@]/.test(value)
+    || value.includes("://")
+  ) {
+    throw new Error(`${variable}은 hostname[:port] 형식이어야 합니다`);
+  }
+  const match = /^([^:]+)(?::(\d{1,5}))?$/.exec(value);
+  const hostname = match?.[1]?.toLowerCase();
+  const port = match?.[2];
+  if (!hostname || !DNS_HOSTNAME.test(hostname)) {
+    throw new Error(`${variable}은 DNS hostname[:port] 형식이어야 합니다`);
+  }
+  if (port) {
+    const parsedPort = Number(port);
+    if (parsedPort < 1 || parsedPort > 65_535) {
+      throw new Error(`${variable} port는 1~65535여야 합니다`);
+    }
+  }
+  return port && port !== "443" ? `${hostname}:${Number(port)}` : hostname;
+}
+
 function parseLocalSettings(
   prefix: ProfilePrefix,
   env: KeyManagementEnvironment,
@@ -161,20 +208,26 @@ function parseAwsSettings(
   const keyArn = requiredSetting(prefix, settings, "AWS_KEY_ARN");
   const region = requiredSetting(prefix, settings, "AWS_REGION");
   const arnMatch = AWS_KMS_KEY_ARN.exec(keyArn);
-  if (!arnMatch || !AWS_REGION.test(arnMatch[1]!)) {
+  if (!arnMatch || !AWS_REGION.test(arnMatch[2]!)) {
     throw new Error(`${prefix}_AWS_KEY_ARN은 AWS KMS key ARN이어야 합니다`);
   }
   if (!AWS_REGION.test(region)) {
     throw new Error(`${prefix}_AWS_REGION은 유효한 AWS region이어야 합니다`);
   }
-  const endpoint = settings.AWS_ENDPOINT;
-  if (endpoint) {
-    const url = parseUrl(endpoint, `${prefix}_AWS_ENDPOINT`);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-      throw new Error(`${prefix}_AWS_ENDPOINT는 credential 없는 HTTP(S) URL이어야 합니다`);
-    }
+  if (arnMatch[2] !== region) {
+    throw new Error(`${prefix}_AWS_KEY_ARN region과 ${prefix}_AWS_REGION이 일치해야 합니다`);
   }
-  return settings;
+  const endpoint = settings.AWS_ENDPOINT;
+  return endpoint
+    ? Object.freeze({
+        ...settings,
+        AWS_ENDPOINT: canonicalEndpointUrl(
+          endpoint,
+          `${prefix}_AWS_ENDPOINT`,
+          new Set(["http:", "https:"]),
+        ),
+      })
+    : settings;
 }
 
 function parseGcpSettings(
@@ -191,7 +244,16 @@ function parseGcpSettings(
       `${prefix}_GCP_KEY_NAME은 projects/{project}/locations/{location}/keyRings/{keyRing}/cryptoKeys/{cryptoKey} 형식이어야 합니다`,
     );
   }
-  return settings;
+  const apiEndpoint = settings.GCP_API_ENDPOINT;
+  return apiEndpoint
+    ? Object.freeze({
+        ...settings,
+        GCP_API_ENDPOINT: canonicalDnsEndpoint(
+          apiEndpoint,
+          `${prefix}_GCP_API_ENDPOINT`,
+        ),
+      })
+    : settings;
 }
 
 function parseAzureSettings(
@@ -226,7 +288,10 @@ function parseAzureSettings(
   ) {
     throw new Error(`${keyIdVariable}는 full HTTPS Azure Key Vault key ID여야 합니다`);
   }
-  return settings;
+  return Object.freeze({
+    ...settings,
+    AZURE_KEY_ID: keyUrl.href,
+  });
 }
 
 function parseTransitSettings(
@@ -245,10 +310,11 @@ function parseTransitSettings(
   const settings = parseExactSettings(prefix, provider, allowedSettings, env);
   const addressVariable = `${prefix}_TRANSIT_ADDRESS`;
   const address = requiredSetting(prefix, settings, "TRANSIT_ADDRESS");
-  const addressUrl = parseUrl(address, addressVariable);
-  if (addressUrl.protocol !== "https:" || addressUrl.username || addressUrl.password) {
-    throw new Error(`${addressVariable}는 credential 없는 https URL이어야 합니다`);
-  }
+  const canonicalAddress = canonicalEndpointUrl(
+    address,
+    addressVariable,
+    new Set(["https:"]),
+  );
   requiredSetting(prefix, settings, "TRANSIT_MOUNT");
   requiredSetting(prefix, settings, "TRANSIT_KEY_NAME");
 
@@ -273,7 +339,10 @@ function parseTransitSettings(
       throw new Error(`${prefix}_${settingName}은 절대 경로여야 합니다`);
     }
   }
-  return settings;
+  return Object.freeze({
+    ...settings,
+    TRANSIT_ADDRESS: canonicalAddress,
+  });
 }
 
 function parseNonLocalSettings(
@@ -306,10 +375,37 @@ function parseProfile(
   return { slot, provider, settings };
 }
 
-function stableSettings(settings: Readonly<Record<string, string>>): string {
-  return JSON.stringify(
-    Object.entries(settings).sort(([left], [right]) => left.localeCompare(right)),
-  );
+function providerIdentity(profile: ProviderProfile): string {
+  const { provider, settings } = profile;
+  switch (provider) {
+    case "local":
+      // 같은 path만 확실한 duplicate다. 다른 path의 실제 bytes는 provider factory가 검증한다.
+      return JSON.stringify([provider, settings.LOCAL_KEK_FILE]);
+    case "aws-kms":
+      return JSON.stringify([
+        provider,
+        settings.AWS_KEY_ARN,
+        settings.AWS_REGION,
+        settings.AWS_ENDPOINT ?? null,
+      ]);
+    case "gcp-kms":
+      return JSON.stringify([
+        provider,
+        settings.GCP_KEY_NAME,
+        settings.GCP_API_ENDPOINT ?? null,
+      ]);
+    case "azure-key-vault":
+      return JSON.stringify([provider, settings.AZURE_KEY_ID]);
+    case "vault-transit":
+    case "openbao-transit":
+      return JSON.stringify([
+        provider,
+        settings.TRANSIT_ADDRESS,
+        settings.TRANSIT_MOUNT,
+        settings.TRANSIT_KEY_NAME,
+        settings.TRANSIT_NAMESPACE ?? null,
+      ]);
+  }
 }
 
 export function loadKeyManagementConfig(env: KeyManagementEnvironment): KeyManagementConfig {
@@ -325,8 +421,7 @@ export function loadKeyManagementConfig(env: KeyManagementEnvironment): KeyManag
   }
   if (
     migration
-    && migration.provider === active.provider
-    && stableSettings(migration.settings) === stableSettings(active.settings)
+    && providerIdentity(migration) === providerIdentity(active)
   ) {
     throw new Error("active와 migration provider fingerprint가 같을 수 없습니다");
   }

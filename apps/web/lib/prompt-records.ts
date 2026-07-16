@@ -60,9 +60,10 @@ export async function saveManagedPromptRecords(
   db?: PromptDb,
 ): Promise<{ inserted: number; deduped: number }> {
   if (records.length === 0) return { inserted: 0, deduped: 0 };
+  const snapshots = snapshotManagedPromptRecords(records);
 
   return runtime.userKeys.withActiveUserKey(userId, async (uck, keyVersion) => {
-    const encrypted = records.map((record) =>
+    const encrypted = snapshots.map((record) =>
       encryptManagedContent(
         record,
         uck,
@@ -73,8 +74,8 @@ export async function saveManagedPromptRecords(
 
     return runPromptContext(userId, db, async (tx) => {
       let inserted = 0;
-      for (let index = 0; index < records.length; index += 1) {
-        const record = records[index]!;
+      for (let index = 0; index < snapshots.length; index += 1) {
+        const record = snapshots[index]!;
         const enc = encrypted[index]!;
         const result = await tx.query(
           `INSERT INTO prompt_records
@@ -107,9 +108,44 @@ export async function saveManagedPromptRecords(
         );
         inserted += result.rowCount ?? 0;
       }
-      return { inserted, deduped: records.length - inserted };
+      return { inserted, deduped: snapshots.length - inserted };
     });
   });
+}
+
+function snapshotManagedPromptRecords(
+  records: PromptRecordWire[],
+): readonly Readonly<PromptRecordWire>[] {
+  try {
+    return Object.freeze(records.map((record) => {
+      if (
+        typeof record !== "object"
+        || record === null
+        || typeof record.dedupKey !== "string"
+        || (
+          record.sessionId !== null
+          && typeof record.sessionId !== "string"
+        )
+        || typeof record.providerKey !== "string"
+        || (record.turnRole !== "user" && record.turnRole !== "assistant")
+        || !(record.ts instanceof Date)
+        || !Number.isFinite(record.ts.getTime())
+        || typeof record.text !== "string"
+      ) {
+        throw new Error("INVALID_PROMPT_RECORD");
+      }
+      return Object.freeze({
+        dedupKey: record.dedupKey,
+        sessionId: record.sessionId,
+        providerKey: record.providerKey,
+        turnRole: record.turnRole,
+        ts: new Date(record.ts.getTime()),
+        text: record.text,
+      });
+    }));
+  } catch {
+    throw new Error("CONTENT_RECORD_SNAPSHOT_FAILED");
+  }
 }
 
 export class E2eePromptSaveError extends Error {

@@ -80,6 +80,13 @@ test("local profile은 raw KEK 없이 secret-file 경로 하나만 받는다", (
   });
   assert.equal(config.migration, null);
   assert.equal(config.cacheTtlMs, 1_800_000);
+
+  const transitional = loadKeyManagementConfig({
+    TOARD_KEY_ACTIVE_PROVIDER: "local",
+    TOARD_KEY_ACTIVE_LOCAL_KEK_FILE: "/run/secrets/kek",
+    TOARD_CONTENT_KEK_B64: Buffer.alloc(32, 7).toString("base64"),
+  });
+  assert.equal(transitional.active.settings.LOCAL_KEK_FILE, "/run/secrets/kek");
 });
 
 test("local duplicate는 같은 file path만 거부하고 다른 path의 byte fingerprint는 factory에 맡긴다", () => {

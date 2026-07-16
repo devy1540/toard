@@ -192,10 +192,7 @@ function parseLocalSettings(
       && name !== fileVariable
     ))
     .map(([name]) => name);
-  if (
-    configuredValue(env.TOARD_CONTENT_KEK_B64) !== undefined
-    || unexpectedProfileVariables.length > 0
-  ) {
+  if (unexpectedProfileVariables.length > 0) {
     throw new Error("local profile은 KEK file 하나만 허용하며 raw 환경변수를 받지 않습니다");
   }
 

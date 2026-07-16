@@ -16,6 +16,7 @@ const INVALID_SNAPSHOT_SKIP_AFTER_FAILURES = 2;
 const SOURCE_RETRY_BASE_MS = 60_000;
 const SOURCE_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_SOURCE = "litellm-git-history";
+const HISTORY_ALGORITHM_VERSION = 2;
 
 export type HistoricalPricingJobState =
   | "pending"
@@ -28,6 +29,7 @@ export type HistoricalPricingJobState =
 
 export type HistoricalPricingJob = {
   id: string;
+  algorithmVersion: number;
   state: HistoricalPricingJobState;
   rangeFrom: Date;
   rangeTo: Date;
@@ -55,6 +57,11 @@ export type HistoricalPricingSnapshot = {
 
 export interface HistoricalPricingRepository {
   getActive(): Promise<HistoricalPricingJob | null>;
+  findCompleted(input: {
+    rangeFrom: Date;
+    rangeTo: Date;
+    models: string[];
+  }): Promise<HistoricalPricingJob | null>;
   create(input: {
     rangeFrom: Date;
     rangeTo: Date;
@@ -145,6 +152,7 @@ export function historicalPricingStatusFromJob(
 
 type HistoricalPricingJobRow = {
   id: string;
+  algorithm_version: string | number;
   state: HistoricalPricingJobState;
   range_from: Date | string;
   range_to: Date | string;
@@ -191,6 +199,7 @@ function mapJob(row: HistoricalPricingJobRow): HistoricalPricingJob {
     : [];
   return {
     id: row.id,
+    algorithmVersion: Number(row.algorithm_version),
     state: row.state,
     rangeFrom: new Date(row.range_from),
     rangeTo: new Date(row.range_to),
@@ -292,6 +301,10 @@ export async function runHistoricalPricingStepWith(
   if (!job) {
     const input = jobInput(diagnostics, dependencies.timezone);
     if (!input) return { state: "no_evidence", nextAttemptAt: new Date(now.getTime() + SOURCE_RETRY_MAX_MS) };
+    const completed = await dependencies.repository.findCompleted(input);
+    if (completed) {
+      return { state: "no_evidence", nextAttemptAt: new Date(now.getTime() + SOURCE_RETRY_MAX_MS) };
+    }
     await dependencies.repository.create({ ...input, at: now });
     return { state: "listing", nextAttemptAt: now };
   }
@@ -414,7 +427,7 @@ function candidatePricing(row: OpenCandidateRow): ModelPricing {
   return value;
 }
 
-const JOB_FIELDS = `id, state, range_from, range_to, models, commit_refs, list_page,
+const JOB_FIELDS = `id, algorithm_version, state, range_from, range_to, models, commit_refs, list_page,
   next_commit_index, next_attempt_at, rate_limit_reset_at, consecutive_failures, last_error`;
 
 async function updatedJob(client: Pool | PoolClient, sql: string, params: unknown[]): Promise<HistoricalPricingJob> {
@@ -436,6 +449,24 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
     return result.rows[0] ? mapJob(result.rows[0]) : null;
   }
 
+  async findCompleted(input: {
+    rangeFrom: Date;
+    rangeTo: Date;
+    models: string[];
+  }): Promise<HistoricalPricingJob | null> {
+    const result = await this.pool.query<HistoricalPricingJobRow>(
+      `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
+       WHERE state = 'completed'
+         AND range_from = $1 AND range_to = $2
+         AND models @> $3::jsonb AND models <@ $3::jsonb
+         AND algorithm_version = $4
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [input.rangeFrom, input.rangeTo, JSON.stringify(input.models), HISTORY_ALGORITHM_VERSION],
+    );
+    return result.rows[0] ? mapJob(result.rows[0]) : null;
+  }
+
   async getStatus(): Promise<HistoricalPricingStatus> {
     const result = await this.pool.query<HistoricalPricingJobRow>(
       `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
@@ -448,11 +479,11 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
   async create(input: { rangeFrom: Date; rangeTo: Date; models: string[]; at: Date }): Promise<HistoricalPricingJob> {
     const result = await this.pool.query<HistoricalPricingJobRow>(
       `INSERT INTO pricing_history_jobs (
-         state, range_from, range_to, models, last_started_at, updated_at
-       ) VALUES ('pending', $1, $2, $3::jsonb, $4, $4)
+         algorithm_version, state, range_from, range_to, models, last_started_at, updated_at
+       ) VALUES ($5, 'pending', $1, $2, $3::jsonb, $4, $4)
        ON CONFLICT DO NOTHING
        RETURNING ${JOB_FIELDS}`,
-      [input.rangeFrom, input.rangeTo, JSON.stringify(input.models), input.at],
+      [input.rangeFrom, input.rangeTo, JSON.stringify(input.models), input.at, HISTORY_ALGORITHM_VERSION],
     );
     if (result.rows[0]) return mapJob(result.rows[0]);
     const active = await this.getActive();
@@ -497,6 +528,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
     job: HistoricalPricingJob,
     snapshot: HistoricalPricingSnapshot,
     open: Map<string, OpenCandidateRow>,
+    seen: Set<string>,
   ): Promise<void> {
     const committedAt = new Date(snapshot.ref.committedAt);
     if (!Number.isFinite(committedAt.getTime())) throw new Error("invalid pricing history commit time");
@@ -526,7 +558,9 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         }
         open.delete(model);
       }
-      if (!resolved || boundary >= job.rangeTo) continue;
+      // 모델이 가격표에 처음 등장하기 직전 사용량도 비워 두지 않고 첫 확인 가격으로 보정한다.
+      const effectiveAt = seen.has(model) ? boundary : job.rangeFrom;
+      if (!resolved || effectiveAt >= job.rangeTo) continue;
       const value = resolved.pricing;
       await client.query(
         `INSERT INTO pricing_history_candidates (
@@ -552,7 +586,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
           job.id,
           model,
           resolved.modelId,
-          boundary,
+          effectiveAt,
           value.inputPerM,
           value.outputPerM,
           value.cacheReadPerM ?? null,
@@ -567,7 +601,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
       open.set(model, {
         model_id: model,
         source_model_id: resolved.modelId,
-        effective_at: boundary,
+        effective_at: effectiveAt,
         input_price_per_mtok: value.inputPerM,
         output_price_per_mtok: value.outputPerM,
         cache_read_price_per_mtok: value.cacheReadPerM ?? null,
@@ -578,6 +612,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         source_commit_sha: snapshot.ref.sha,
         source_committed_at: committedAt,
       });
+      seen.add(model);
     }
   }
 
@@ -609,7 +644,12 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         [id],
       );
       const open = new Map(rows.rows.map((row) => [row.model_id, row]));
-      for (const snapshot of snapshots) await this.applySnapshot(client, job, snapshot, open);
+      const seenRows = await client.query<{ model_id: string }>(
+        `SELECT DISTINCT model_id FROM pricing_history_candidates WHERE job_id = $1`,
+        [id],
+      );
+      const seen = new Set(seenRows.rows.map((row) => row.model_id));
+      for (const snapshot of snapshots) await this.applySnapshot(client, job, snapshot, open, seen);
       const nextIndex = job.nextCommitIndex + snapshots.length;
       const finished = nextIndex === job.commitRefs.length;
       if (finished) {

@@ -16,6 +16,7 @@ const CONTEXT: KeyContext = {
   purpose: "prompt-history",
 };
 const UCK = Buffer.alloc(32, 0x4a);
+const CIPHERTEXT = "vault:v1:Y2lwaGVydGV4dA==";
 
 class RecordingTransitClient implements TransitClientLike {
   readonly address = "https://vault.example.com/";
@@ -33,7 +34,7 @@ class RecordingTransitClient implements TransitClientLike {
       aad: Buffer.from(aad),
     });
     this.decryptedPayload = Buffer.from(payload);
-    return "vault:v1:ciphertext";
+    return CIPHERTEXT;
   }
 
   async decrypt(ciphertext: string, aad: Buffer): Promise<Buffer> {
@@ -74,7 +75,7 @@ test("Vault/OpenBao provider는 68-byte payload와 canonical AAD를 사용하고
     provider: "vault-transit",
     keyRef: vaultClient.keyRef,
     fingerprint: vault.fingerprint,
-    ciphertext: Buffer.from("vault:v1:ciphertext"),
+    ciphertext: Buffer.from(CIPHERTEXT),
     metadata: {
       algorithm: "transit-aead",
       format: "vault-ciphertext-v1",
@@ -86,7 +87,7 @@ test("Vault/OpenBao provider는 68-byte payload와 canonical AAD를 사용하고
   assert.match(openbao.fingerprint, /^openbao-transit:[0-9a-f]{24}$/);
   assert.deepEqual(await vault.unwrapKey(vaultWrapped, CONTEXT), UCK);
   assert.deepEqual(vaultClient.decryptInputs[0], {
-    ciphertext: "vault:v1:ciphertext",
+    ciphertext: CIPHERTEXT,
     aad: canonicalKeyContext(CONTEXT),
   });
   assert.deepEqual(await vault.describeCredentialSource(), {
@@ -126,11 +127,37 @@ test("Transit provider는 malformed ciphertext/plaintext/context와 client 오�
     (error: Error) => error.message === "vault-transit:INVALID_CIPHERTEXT",
   );
 
-  client.encrypt = async () => " \r\n";
-  await assert.rejects(
-    provider.wrapKey(UCK, CONTEXT),
-    (error: Error) => error.message === "vault-transit:INVALID_CIPHERTEXT",
-  );
+  for (const ciphertext of [
+    " \r\n",
+    "ciphertext",
+    "vault:v0:YQ==",
+    "vault:v1:not_base64",
+    "vault:v1:YQ==\r\n",
+    `vault:v1:${"YQ==".repeat(4_097)}`,
+  ]) {
+    client.encrypt = async () => ciphertext;
+    await assert.rejects(
+      provider.wrapKey(UCK, CONTEXT),
+      (error: Error) => error.message === "vault-transit:INVALID_CIPHERTEXT",
+    );
+  }
+
+  client.encrypt = async () => CIPHERTEXT;
+  for (const ciphertext of [
+    "ciphertext",
+    "vault:v0:YQ==",
+    "vault:v1:not_base64",
+    "vault:v1:YQ==\r\n",
+    `vault:v1:${"YQ==".repeat(4_097)}`,
+  ]) {
+    await assert.rejects(
+      provider.unwrapKey({
+        ...wrapped,
+        ciphertext: Buffer.from(ciphertext),
+      }, CONTEXT),
+      (error: Error) => error.message === "vault-transit:INVALID_CIPHERTEXT",
+    );
+  }
 
   client.decryptedPayload = encodeUserKeyPayload(
     UCK,

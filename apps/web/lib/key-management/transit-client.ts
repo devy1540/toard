@@ -1,5 +1,12 @@
 import type { CredentialSourceSummary } from "./types";
 import type { TransitTokenSource } from "./transit-token-source";
+import {
+  canonicalTransitKeyName,
+  canonicalTransitMount,
+  isSafeTransitNamespace,
+  isSafeTransitToken,
+  isTransitCiphertext,
+} from "./transit-validation";
 
 type TransitErrorCode =
   | "AUTH_FAILED"
@@ -55,19 +62,6 @@ function canonicalAddress(address: string): string {
   return url.href;
 }
 
-function pathSegment(value: string): string {
-  if (
-    value === ""
-    || value !== value.trim()
-    || value === "."
-    || value === ".."
-    || /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new Error("TRANSIT_PATH_INVALID");
-  }
-  return encodeURIComponent(value);
-}
-
 function requestBase(address: string): string {
   return address.endsWith("/") ? address : `${address}/`;
 }
@@ -105,18 +99,14 @@ export class TransitClient implements TransitClientLike {
 
   constructor(input: TransitClientInput) {
     this.address = canonicalAddress(input.address);
-    this.encodedMount = pathSegment(input.mount);
-    this.encodedKeyName = pathSegment(input.keyName);
+    this.encodedMount = canonicalTransitMount(input.mount);
+    this.encodedKeyName = canonicalTransitKeyName(input.keyName);
     this.mount = input.mount;
     this.keyName = input.keyName;
     this.namespace = input.namespace;
     if (
       this.namespace !== undefined
-      && (
-        this.namespace === ""
-        || this.namespace !== this.namespace.trim()
-        || /[\r\n\u0000]/.test(this.namespace)
-      )
+      && !isSafeTransitNamespace(this.namespace)
     ) {
       throw new Error("TRANSIT_NAMESPACE_INVALID");
     }
@@ -142,7 +132,7 @@ export class TransitClient implements TransitClientLike {
       if (message === "TRANSIT_AUTH_TEMPORARY") throw transitError("TEMPORARY");
       throw transitError("AUTH_FAILED");
     }
-    if (!token.trim()) throw transitError("AUTH_FAILED");
+    if (!isSafeTransitToken(token)) throw transitError("AUTH_FAILED");
 
     const encodedBody = Buffer.from(JSON.stringify(body), "utf8");
     let response: Response;
@@ -199,8 +189,7 @@ export class TransitClient implements TransitClientLike {
     });
     if (
       typeof data.ciphertext !== "string"
-      || data.ciphertext.trim() === ""
-      || /[\r\n\u0000]/.test(data.ciphertext)
+      || !isTransitCiphertext(data.ciphertext)
     ) {
       throw transitError("RESPONSE_INVALID");
     }
@@ -209,8 +198,7 @@ export class TransitClient implements TransitClientLike {
 
   async decrypt(ciphertext: string, aad: Buffer): Promise<Buffer> {
     if (
-      ciphertext.trim() === ""
-      || /[\r\n\u0000]/.test(ciphertext)
+      !isTransitCiphertext(ciphertext)
     ) {
       throw transitError("RESPONSE_INVALID");
     }

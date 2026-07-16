@@ -41,6 +41,7 @@
 - `apps/web/lib/key-management/azure-key-vault-provider.ts`: Azure RSA-OAEP-256 wrap/unwrap adapter.
 - `apps/web/lib/key-management/transit-token-source.ts`: token file, Kubernetes, AppRole, static token auth.
 - `apps/web/lib/key-management/transit-client.ts`: TLS Transit encrypt/decrypt HTTP client.
+- `apps/web/lib/key-management/transit-validation.ts`: Transit header, canonical path, ciphertext 공통 경계 검증.
 - `apps/web/lib/key-management/vault-transit-provider.ts`: Vault provider wrapper.
 - `apps/web/lib/key-management/openbao-transit-provider.ts`: OpenBao provider wrapper.
 - `apps/web/lib/key-management/provider-factory.ts`: config profile → provider instance.
@@ -487,6 +488,10 @@ export class AppRoleTokenSource extends CachedLoginTokenSource {
 
 `CachedLoginTokenSource`는 `client_token`, `lease_duration`, `renewable`만 읽고 `expiresAt=now+lease*1000`을 계산한다. token은 로그나 error에 넣지 않는다. 만료 30초 전이면 같은 source의 동시 login을 single-flight로 합친다.
 
+`mount`는 `/`로 구분된 중첩 경로를 허용하되 각 세그먼트를 독립 검증·인코딩한다.
+빈 세그먼트, `.`, `..`, backslash, percent-encoded 입력, 제어문자와 whitespace는
+거부한다. `keyName`은 같은 검증을 적용한 단일 세그먼트만 허용한다.
+
 - [ ] **Step 5: Transit HTTP client와 provider를 구현한다**
 
 ```ts
@@ -531,6 +536,8 @@ export class TransitKeyManagementProvider implements KeyManagementProvider {
 ```
 
 Vault와 OpenBao class는 같은 base를 사용하지만 `name`을 각각 `vault-transit`, `openbao-transit`로 고정한다. decrypt 결과는 base64 plaintext를 decode하고 context payload를 검증한다.
+Transit ciphertext는 encrypt 응답과 unwrap 입력 모두
+`vault:v{positive integer}:{canonical base64}` 형식과 길이 상한을 통과해야 한다.
 
 - [ ] **Step 6: Transit tests와 typecheck를 통과시킨다**
 

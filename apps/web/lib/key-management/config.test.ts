@@ -286,6 +286,79 @@ test("provider별 exact 설정만 settings에 보존한다", () => {
   });
 });
 
+test("Transit config는 canonical nested mount와 안전한 key/namespace만 허용한다", () => {
+  const base = {
+    TOARD_KEY_ACTIVE_TRANSIT_ADDRESS: "https://vault.example.test",
+    TOARD_KEY_ACTIVE_TRANSIT_MOUNT: "team/transit",
+    TOARD_KEY_ACTIVE_TRANSIT_KEY_NAME: "toard-user-keys",
+    TOARD_KEY_ACTIVE_TRANSIT_AUTH_METHOD: "token-file",
+    TOARD_KEY_ACTIVE_TRANSIT_NAMESPACE: "team-a",
+    TOARD_KEY_ACTIVE_TRANSIT_TOKEN_FILE: "/run/secrets/vault-token",
+  };
+  assert.deepEqual(
+    activeConfig("vault-transit", base).active.settings,
+    {
+      TRANSIT_ADDRESS: "https://vault.example.test/",
+      TRANSIT_AUTH_METHOD: "token-file",
+      TRANSIT_KEY_NAME: "toard-user-keys",
+      TRANSIT_MOUNT: "team/transit",
+      TRANSIT_NAMESPACE: "team-a",
+      TRANSIT_TOKEN_FILE: "/run/secrets/vault-token",
+    },
+  );
+
+  for (const mount of [
+    "",
+    "team//transit",
+    "team/../transit",
+    "team/%2e%2e/transit",
+    "team\\transit",
+    " team/transit",
+    "team/\ttransit",
+  ]) {
+    assert.throws(
+      () => activeConfig("vault-transit", {
+        ...base,
+        TOARD_KEY_ACTIVE_TRANSIT_MOUNT: mount,
+      }),
+      /TRANSIT_MOUNT/,
+    );
+  }
+  for (const keyName of [
+    "",
+    ".",
+    "..",
+    "toard/user-keys",
+    "toard\\user-keys",
+    "%2e%2e",
+    " toard",
+    "toard\tkey",
+  ]) {
+    assert.throws(
+      () => activeConfig("vault-transit", {
+        ...base,
+        TOARD_KEY_ACTIVE_TRANSIT_KEY_NAME: keyName,
+      }),
+      /TRANSIT_KEY_NAME/,
+    );
+  }
+  for (const namespace of [
+    " team-a",
+    "team-a ",
+    "team\r\nx-injected: yes",
+    "team\u007fvalue",
+    "x".repeat(513),
+  ]) {
+    assert.throws(
+      () => activeConfig("vault-transit", {
+        ...base,
+        TOARD_KEY_ACTIVE_TRANSIT_NAMESPACE: namespace,
+      }),
+      /TRANSIT_NAMESPACE/,
+    );
+  }
+});
+
 test("unknown 또는 sibling provider 설정은 비어 있지 않으면 fail-closed한다", () => {
   const aws = {
     TOARD_KEY_ACTIVE_AWS_KEY_ARN: AWS_KEY_ARN,

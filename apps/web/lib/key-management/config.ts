@@ -1,4 +1,10 @@
 import { isAbsolute } from "node:path";
+import {
+  canonicalTransitKeyName,
+  canonicalTransitMount,
+  isSafeTransitIdentity,
+  isSafeTransitNamespace,
+} from "./transit-validation";
 import type { KeyProviderName } from "./types";
 
 const PROVIDER_NAMES = new Set<KeyProviderName>([
@@ -317,8 +323,22 @@ function parseTransitSettings(
     addressVariable,
     new Set(["https:"]),
   );
-  requiredSetting(prefix, settings, "TRANSIT_MOUNT");
-  requiredSetting(prefix, settings, "TRANSIT_KEY_NAME");
+  const mount = requiredSetting(prefix, settings, "TRANSIT_MOUNT");
+  const keyName = requiredSetting(prefix, settings, "TRANSIT_KEY_NAME");
+  try {
+    canonicalTransitMount(mount);
+  } catch {
+    throw new Error(`${prefix}_TRANSIT_MOUNT가 유효하지 않습니다`);
+  }
+  try {
+    canonicalTransitKeyName(keyName);
+  } catch {
+    throw new Error(`${prefix}_TRANSIT_KEY_NAME이 유효하지 않습니다`);
+  }
+  const namespace = settings.TRANSIT_NAMESPACE;
+  if (namespace !== undefined && !isSafeTransitNamespace(namespace)) {
+    throw new Error(`${prefix}_TRANSIT_NAMESPACE가 유효하지 않습니다`);
+  }
 
   const authMethodValue = requiredSetting(prefix, settings, "TRANSIT_AUTH_METHOD");
   if (!(authMethodValue in TRANSIT_AUTH_REQUIRED)) {
@@ -334,6 +354,10 @@ function parseTransitSettings(
         `${prefix}_${settingName}은 선택한 Transit auth method에서 허용되지 않습니다`,
       );
     }
+  }
+  const role = settings.TRANSIT_KUBERNETES_ROLE;
+  if (role !== undefined && !isSafeTransitIdentity(role)) {
+    throw new Error(`${prefix}_TRANSIT_KUBERNETES_ROLE이 유효하지 않습니다`);
   }
   for (const settingName of requiredAuthSettings) {
     const value = requiredSetting(prefix, settings, settingName);

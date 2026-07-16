@@ -10,6 +10,7 @@ import {
   encodeUserKeyPayload,
 } from "./context";
 import type { TransitClientLike } from "./transit-client";
+import { isTransitCiphertext } from "./transit-validation";
 import type {
   CredentialSourceSummary,
   KeyContext,
@@ -122,8 +123,7 @@ implements KeyManagementProvider {
       aad.fill(0);
     }
     if (
-      ciphertext.trim() === ""
-      || /[\r\n\u0000]/.test(ciphertext)
+      !isTransitCiphertext(ciphertext)
     ) {
       throw providerError(this.name, "INVALID_CIPHERTEXT");
     }
@@ -164,8 +164,7 @@ implements KeyManagementProvider {
       throw providerError(this.name, "INVALID_CIPHERTEXT");
     }
     if (
-      ciphertext.trim() === ""
-      || /[\r\n\u0000]/.test(ciphertext)
+      !isTransitCiphertext(ciphertext)
     ) {
       throw providerError(this.name, "INVALID_CIPHERTEXT");
     }

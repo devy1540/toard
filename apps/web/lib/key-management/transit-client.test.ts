@@ -5,6 +5,7 @@ import type { TransitTokenSource } from "./transit-token-source";
 
 const PAYLOAD = Buffer.alloc(68, 0x5a);
 const AAD = Buffer.from('{"userId":"user-a"}');
+const CIPHERTEXT = "vault:v1:Y2lwaGVydGV4dA==";
 
 type RecordedRequest = {
   url: string;
@@ -42,14 +43,14 @@ test("Transit client는 associated_data와 namespace를 encrypt/decrypt에 동�
       signal: init.signal ?? null,
     });
     if (requests.length === 1) {
-      return response({ data: { ciphertext: "vault:v1:ciphertext" } });
+      return response({ data: { ciphertext: CIPHERTEXT } });
     }
     return response({ data: { plaintext: PAYLOAD.toString("base64") } });
   };
   const client = new TransitClient({
     address: "https://vault.example.com",
     mount: "team/transit",
-    keyName: "toard/user-keys",
+    keyName: "toard-user-keys",
     namespace: "team-a",
     tokenSource: TOKEN_SOURCE,
     fetch,
@@ -57,13 +58,13 @@ test("Transit client는 associated_data와 namespace를 encrypt/decrypt에 동�
 
   const ciphertext = await client.encrypt(PAYLOAD, AAD);
   const plaintext = await client.decrypt(ciphertext, AAD);
-  assert.equal(ciphertext, "vault:v1:ciphertext");
+  assert.equal(ciphertext, CIPHERTEXT);
   assert.equal(
     requests[0]!.url,
-    "https://vault.example.com/v1/team%2Ftransit/encrypt/toard%2Fuser-keys",
+    "https://vault.example.com/v1/team/transit/encrypt/toard-user-keys",
   );
   assert.equal(requests[1]!.url,
-    "https://vault.example.com/v1/team%2Ftransit/decrypt/toard%2Fuser-keys");
+    "https://vault.example.com/v1/team/transit/decrypt/toard-user-keys");
   assert.deepEqual(requests.map((request) => request.body), [
     {
       plaintext: PAYLOAD.toString("base64"),
@@ -109,6 +110,13 @@ test("Transit client 직접 생성은 unsafe address와 빈 path segment를 거�
     [".", "toard"],
     ["transit", ".."],
     ["transit\nmount", "toard"],
+    ["team//transit", "toard"],
+    ["team/../transit", "toard"],
+    ["team/%2F/transit", "toard"],
+    ["team\\transit", "toard"],
+    ["transit", "toard/user-keys"],
+    ["transit", "toard\\user-keys"],
+    ["transit", "%2e%2e"],
   ] satisfies Array<[string, string]>) {
     assert.throws(
       () => new TransitClient({
@@ -119,6 +127,58 @@ test("Transit client 직접 생성은 unsafe address와 빈 path segment를 거�
       }),
       /TRANSIT_PATH_INVALID/,
     );
+  }
+});
+
+test("Transit client는 namespace와 token header를 fetch 전에 strict 검증한다", async () => {
+  for (const namespace of [
+    " team-a",
+    "team-a ",
+    "team\r\nx-injected: yes",
+    "team\u007fvalue",
+    "x".repeat(513),
+  ]) {
+    assert.throws(
+      () => new TransitClient({
+        address: "https://vault.example.com",
+        mount: "transit",
+        keyName: "toard",
+        namespace,
+        tokenSource: TOKEN_SOURCE,
+      }),
+      /TRANSIT_NAMESPACE_INVALID/,
+    );
+  }
+
+  for (const token of [
+    " token",
+    "token ",
+    "token\r\nx-injected: yes",
+    "token\u0000value",
+    "token\u007fvalue",
+    "x".repeat(4_097),
+  ]) {
+    let fetchCalls = 0;
+    const client = new TransitClient({
+      address: "https://vault.example.com",
+      mount: "transit",
+      keyName: "toard",
+      tokenSource: {
+        description: TOKEN_SOURCE.description,
+        async getToken() {
+          return token;
+        },
+      },
+      fetch: async () => {
+        fetchCalls += 1;
+        return response({});
+      },
+    });
+    await assert.rejects(
+      client.encrypt(PAYLOAD, AAD),
+      (error: Error) => error.message === "TRANSIT:AUTH_FAILED",
+    );
+    assert.equal(fetchCalls, 0);
   }
 });
 
@@ -158,6 +218,14 @@ test("Transit client는 HTTP status와 response shape를 비민감 고정 오류
     async () => response({}),
     async () => response({ data: { ciphertext: "" } }),
     async () => response({ data: { ciphertext: { secret } } }),
+    async () => response({ data: { ciphertext: "not-a-transit-ciphertext" } }),
+    async () => response({ data: { ciphertext: "vault:v0:YQ==" } }),
+    async () => response({ data: { ciphertext: "vault:v01:YQ==" } }),
+    async () => response({ data: { ciphertext: "vault:v1:not_base64" } }),
+    async () => response({ data: { ciphertext: "vault:v1:YQ==\r\n" } }),
+    async () => response({
+      data: { ciphertext: `vault:v1:${"YQ==".repeat(4_097)}` },
+    }),
   ] satisfies Array<typeof globalThis.fetch>) {
     const client = new TransitClient({
       address: "https://vault.example.com",
@@ -186,9 +254,33 @@ test("Transit client는 malformed base64 plaintext와 transport detail을 노출
     fetch: async () => response({ data: { plaintext: "@@@not-base64@@@" } }),
   });
   await assert.rejects(
-    malformed.decrypt("vault:v1:ciphertext", AAD),
+    malformed.decrypt(CIPHERTEXT, AAD),
     (error: Error) => error.message === "TRANSIT:RESPONSE_INVALID",
   );
+
+  for (const ciphertext of [
+    "ciphertext",
+    "vault:v0:YQ==",
+    "vault:v1:not_base64",
+    "vault:v1:YQ==\r\n",
+    `vault:v1:${"YQ==".repeat(4_097)}`,
+  ]) {
+    let fetchCalls = 0;
+    await assert.rejects(
+      new TransitClient({
+        address: "https://vault.example.com",
+        mount: "transit",
+        keyName: "toard",
+        tokenSource: TOKEN_SOURCE,
+        fetch: async () => {
+          fetchCalls += 1;
+          return response({});
+        },
+      }).decrypt(ciphertext, AAD),
+      (error: Error) => error.message === "TRANSIT:RESPONSE_INVALID",
+    );
+    assert.equal(fetchCalls, 0);
+  }
 
   const failed = new TransitClient({
     address: "https://vault.example.com",

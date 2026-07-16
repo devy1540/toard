@@ -1,5 +1,13 @@
 import { readFile as nodeReadFile } from "node:fs/promises";
 import { isAbsolute } from "node:path";
+import {
+  canonicalTransitMount,
+  isSafeTransitIdentity,
+  isSafeTransitNamespace,
+  isSafeTransitToken,
+  normalizeFileToken,
+  normalizeSecretValue,
+} from "./transit-validation";
 import type { CredentialSourceSummary } from "./types";
 
 type SecretFileReader = (path: string) => Promise<Buffer> | Buffer;
@@ -45,19 +53,6 @@ function canonicalAddress(address: string): string {
   return url.href;
 }
 
-function safePathSegment(value: string): string {
-  if (
-    value === ""
-    || value !== value.trim()
-    || value === "."
-    || value === ".."
-    || /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new Error("TRANSIT_PATH_INVALID");
-  }
-  return encodeURIComponent(value);
-}
-
 function requestBase(address: string): string {
   return address.endsWith("/") ? address : `${address}/`;
 }
@@ -68,15 +63,10 @@ function validateSecretFile(path: string): void {
   }
 }
 
-function secretString(secret: Buffer): string {
-  const value = secret.toString("utf8").trim();
-  if (!value) throw new Error("TRANSIT_TOKEN_INVALID");
-  return value;
-}
-
 async function readSecret(
   path: string,
   readFile: SecretFileReader,
+  kind: "token" | "secret",
 ): Promise<string> {
   let secret: Buffer;
   try {
@@ -88,7 +78,10 @@ async function readSecret(
     throw new Error("TRANSIT_SECRET_FILE_INVALID");
   }
   try {
-    return secretString(secret);
+    const value = secret.toString("utf8");
+    return kind === "token"
+      ? normalizeFileToken(value)
+      : normalizeSecretValue(value);
   } finally {
     secret.fill(0);
   }
@@ -158,19 +151,23 @@ async function loginTransit(
   const token = "client_token" in auth ? auth.client_token : undefined;
   const leaseDuration = "lease_duration" in auth ? auth.lease_duration : undefined;
   const renewable = "renewable" in auth ? auth.renewable : undefined;
+  const now = input.now();
   if (
     typeof token !== "string"
-    || token.trim() === ""
+    || !isSafeTransitToken(token)
     || typeof leaseDuration !== "number"
-    || !Number.isFinite(leaseDuration)
+    || !Number.isSafeInteger(leaseDuration)
     || leaseDuration <= 0
+    || !Number.isSafeInteger(now)
+    || !Number.isSafeInteger(leaseDuration * 1_000)
+    || !Number.isSafeInteger(now + (leaseDuration * 1_000))
     || (renewable !== undefined && typeof renewable !== "boolean")
   ) {
     throw new Error("TRANSIT_AUTH_RESPONSE_INVALID");
   }
   return {
     token,
-    expiresAt: input.now() + (leaseDuration * 1_000),
+    expiresAt: now + (leaseDuration * 1_000),
   };
 }
 
@@ -192,7 +189,7 @@ export class FileTokenSource implements TransitTokenSource {
   }
 
   getToken(): Promise<string> {
-    return readSecret(this.path, this.readFile);
+    return readSecret(this.path, this.readFile, "token");
   }
 }
 
@@ -210,15 +207,11 @@ abstract class CachedLoginTokenSource implements TransitTokenSource {
 
   protected constructor(input: LoginSourceInput) {
     this.address = canonicalAddress(input.address);
-    this.mount = safePathSegment(input.mount);
+    this.mount = canonicalTransitMount(input.mount);
     this.namespace = input.namespace;
     if (
       this.namespace !== undefined
-      && (
-        this.namespace === ""
-        || this.namespace !== this.namespace.trim()
-        || /[\r\n\u0000]/.test(this.namespace)
-      )
+      && !isSafeTransitNamespace(this.namespace)
     ) {
       throw new Error("TRANSIT_NAMESPACE_INVALID");
     }
@@ -277,9 +270,7 @@ export class KubernetesTokenSource extends CachedLoginTokenSource {
   constructor(input: KubernetesTokenSourceInput) {
     super(input);
     if (
-      input.role === ""
-      || input.role !== input.role.trim()
-      || /[\r\n\u0000]/.test(input.role)
+      !isSafeTransitIdentity(input.role)
     ) {
       throw new Error("TRANSIT_KUBERNETES_ROLE_INVALID");
     }
@@ -289,7 +280,7 @@ export class KubernetesTokenSource extends CachedLoginTokenSource {
   }
 
   protected async login(): Promise<LoginToken> {
-    const jwt = await readSecret(this.jwtFile, this.readFile);
+    const jwt = await readSecret(this.jwtFile, this.readFile, "secret");
     return this.loginRequest({ role: this.role, jwt });
   }
 }
@@ -316,8 +307,8 @@ export class AppRoleTokenSource extends CachedLoginTokenSource {
   }
 
   protected async login(): Promise<LoginToken> {
-    const roleId = await readSecret(this.roleIdFile, this.readFile);
-    const secretId = await readSecret(this.secretIdFile, this.readFile);
+    const roleId = await readSecret(this.roleIdFile, this.readFile, "secret");
+    const secretId = await readSecret(this.secretIdFile, this.readFile, "secret");
     return this.loginRequest({
       role_id: roleId,
       secret_id: secretId,

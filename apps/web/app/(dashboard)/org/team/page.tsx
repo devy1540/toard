@@ -1,6 +1,5 @@
 import { getTranslations } from "next-intl/server";
 import { redirect } from "next/navigation";
-import type { ReactNode } from "react";
 import type { LeaderRow, OverviewStats, ProviderBreakdown } from "@toard/core";
 import { DollarSign, Inbox, Layers3, Trophy, Users } from "lucide-react";
 import { TeamUsageChart } from "@/components/charts/team-usage-chart";
@@ -9,6 +8,8 @@ import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { MetricToggle, type ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
+import { SummaryTile } from "@/components/dashboard/summary-tile";
+import { SupportingMetric } from "@/components/dashboard/supporting-metric";
 import { TeamFilter } from "@/components/dashboard/team-filter";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -52,19 +53,6 @@ function teamUsageTitleKey(
 async function listTeams(): Promise<TeamOption[]> {
   const r = await getPool().query<TeamOption>("SELECT id::text AS id, name FROM teams ORDER BY name");
   return r.rows;
-}
-
-function SummaryTile({ label, value, sub, icon }: { label: string; value: string; sub?: string; icon?: ReactNode }) {
-  return (
-    <div className="border-border/70 min-w-0 border-l pl-3">
-      <div className="text-muted-foreground flex items-center gap-1.5 text-xs tracking-wide uppercase">
-        {icon}
-        {label}
-      </div>
-      <div className="mt-1 truncate text-xl font-medium tabular-nums">{value}</div>
-      {sub ? <div className="text-muted-foreground mt-0.5 truncate text-xs">{sub}</div> : null}
-    </div>
-  );
 }
 
 function TeamHero({
@@ -117,19 +105,6 @@ function TeamHero({
         </div>
       </div>
     </section>
-  );
-}
-
-function SupportingMetric({ label, value, sub, icon }: { label: string; value: string; sub: string; icon: ReactNode }) {
-  return (
-    <div className="border-border/80 bg-card min-w-0 rounded-xl border px-4 py-4 shadow-sm">
-      <div className="text-muted-foreground flex items-center gap-2 text-sm">
-        {icon}
-        <span className="truncate">{label}</span>
-      </div>
-      <div className="mt-2 truncate text-2xl font-bold tracking-tight tabular-nums">{value}</div>
-      <div className="text-muted-foreground mt-1 truncate text-xs">{sub}</div>
-    </div>
   );
 }
 

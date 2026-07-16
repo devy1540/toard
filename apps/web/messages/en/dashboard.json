@@ -165,6 +165,8 @@
     "privacyNote": "Only you can view this — application administrator screens and other users cannot access it.",
     "managedPrivacyNote": "The database and backups store ciphertext. Infrastructure operators who hold both application server and KMS permissions can decrypt it.",
     "legacyPrivacyNote": "Legacy server encryption · server operators can decrypt this content.",
+    "managedSourceLabel": "Server-managed history",
+    "e2eeSourceLabel": "Legacy E2EE history",
     "rolePrompt": "Prompt",
     "roleResponse": "Response",
     "metaSystem": "System message",

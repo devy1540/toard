@@ -104,6 +104,7 @@ function runtime(options: {
   failVersions?: ReadonlySet<number>;
   requestedVersions?: number[];
   calls?: { count: number };
+  concurrency?: { active: number; maxActive: number };
 } = {}): ManagedContentRuntime {
   return {
     installationId: INSTALLATION_ID,
@@ -117,14 +118,26 @@ function runtime(options: {
         options.calls && (options.calls.count += 1);
         options.requestedVersions?.push(keyVersion);
         assert.equal(userId, USER_ID);
-        if (options.failVersions?.has(keyVersion)) {
-          throw new Error(`KMS leaked detail for ${keyVersion}`);
+        if (options.concurrency) {
+          options.concurrency.active += 1;
+          options.concurrency.maxActive = Math.max(
+            options.concurrency.maxActive,
+            options.concurrency.active,
+          );
         }
-        const key = Buffer.from(UCK);
         try {
-          return await fn(key);
+          await new Promise((resolve) => setImmediate(resolve));
+          if (options.failVersions?.has(keyVersion)) {
+            throw new Error(`KMS leaked detail for ${keyVersion}`);
+          }
+          const key = Buffer.from(UCK);
+          try {
+            return await fn(key);
+          } finally {
+            key.fill(0);
+          }
         } finally {
-          key.fill(0);
+          if (options.concurrency) options.concurrency.active -= 1;
         }
       },
     },
@@ -420,6 +433,119 @@ test("legacy-only runtime decrypts server_v1 while managed-only leaves legacy tu
   assert.equal(managedOnly.session?.turns[0]?.text, "managed survives");
   assert.equal(managedOnly.session?.turns[1]?.text, "");
   assert.equal(managedOnly.session?.turns[1]?.contentUnavailable, true);
+});
+
+test("detail batches 500 managed rows by distinct key version with sequential KMS access", async () => {
+  const requestedVersions: number[] = [];
+  const calls = { count: 0 };
+  const concurrency = { active: 0, maxActive: 0 };
+  const rows = Array.from({ length: 500 }, (_, index) => {
+    const keyVersion = index < 250 ? 1 : 2;
+    return managedRow(prompt({
+      dedupKey: `batch-${index}`,
+      turnRole: index % 2 === 0 ? "user" : "assistant",
+      ts: new Date(FILTER.from.getTime() + index * 1_000),
+      text: `batch secret ${index}`,
+    }), keyVersion);
+  });
+
+  const result = await getMyHistorySession(
+    USER_ID,
+    "session-1",
+    deps(historyDb({ details: rows }), {
+      managedRuntime: runtime({ requestedVersions, calls, concurrency }),
+      legacyKek: null,
+    }),
+  );
+
+  assert.equal(result.session?.turns.length, 500);
+  assert.equal(result.session?.turns[0]?.text, "batch secret 0");
+  assert.equal(result.session?.turns[499]?.text, "batch secret 499");
+  assert.deepEqual(requestedVersions, [1, 2]);
+  assert.equal(calls.count, 2);
+  assert.equal(concurrency.maxActive, 1);
+});
+
+test("list batches same-version previews into one KMS lookup and preserves gkey mapping", async () => {
+  const requestedVersions: number[] = [];
+  const calls = { count: 0 };
+  const records = Array.from({ length: 20 }, (_, index) => prompt({
+    dedupKey: `preview-${index}`,
+    sessionId: `session-${index}`,
+    ts: new Date(FILTER.from.getTime() + index * 1_000),
+    text: `preview secret ${index}`,
+  }));
+  const groups = records.map((record) => ({
+    gkey: record.sessionId!,
+    is_session: true,
+    provider_key: record.providerKey,
+    turn_count: "1",
+    first_ts: record.ts,
+    latest_ts: record.ts,
+    total_groups: "20",
+    has_managed_content: true,
+    has_legacy_content: false,
+  }));
+  const previews = records.map((record) => ({
+    ...managedRow(record, 4),
+    gkey: record.sessionId!,
+  }));
+
+  const result = await getMyHistorySessions(
+    USER_ID,
+    FILTER,
+    0,
+    20,
+    deps(historyDb({ groups, previews }), {
+      managedRuntime: runtime({ requestedVersions, calls }),
+      legacyKek: null,
+    }),
+  );
+
+  assert.equal(result.sessions.length, 20);
+  assert.equal(result.sessions[0]?.preview, "preview secret 0");
+  assert.equal(result.sessions[19]?.preview, "preview secret 19");
+  assert.deepEqual(requestedVersions, [4]);
+  assert.equal(calls.count, 1);
+});
+
+test("malformed version avoids KMS and one version failure does not affect other versions or legacy", async () => {
+  const requestedVersions: number[] = [];
+  const calls = { count: 0 };
+  const invalid = {
+    ...managedRow(prompt({ dedupKey: "invalid-version", text: "invalid hidden" }), 1),
+    content_key_version: null,
+  };
+  const failed = managedRow(
+    prompt({ dedupKey: "failed-version", text: "failed hidden" }),
+    2,
+  );
+  const valid = managedRow(
+    prompt({ dedupKey: "valid-version", text: "valid visible" }),
+    3,
+  );
+  const legacy = legacyRow(
+    prompt({ dedupKey: "legacy-visible", text: "legacy visible" }),
+  );
+
+  const result = await getMyHistorySession(
+    USER_ID,
+    "session-1",
+    deps(historyDb({ details: [invalid, failed, valid, legacy] }), {
+      managedRuntime: runtime({
+        requestedVersions,
+        calls,
+        failVersions: new Set([2]),
+      }),
+    }),
+  );
+
+  assert.deepEqual(requestedVersions, [2, 3]);
+  assert.equal(calls.count, 2);
+  assert.equal(result.session?.turns[0]?.contentUnavailable, true);
+  assert.equal(result.session?.turns[1]?.contentUnavailable, true);
+  assert.equal(result.session?.turns[2]?.text, "valid visible");
+  assert.equal(result.session?.turns[3]?.text, "legacy visible");
 });
 
 test("detail query is bounded and selects managed AAD/wrapper metadata", async () => {

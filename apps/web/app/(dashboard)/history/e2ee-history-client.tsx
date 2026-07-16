@@ -68,6 +68,7 @@ export function E2eeHistoryClient({
   const filterQuery = useMemo(() => {
     const params = new URLSearchParams(queryString);
     params.delete("session");
+    params.delete("source");
     return params.toString();
   }, [queryString]);
   const [state, dispatch] = useReducer(reduceE2eeHistory, initialE2eeHistoryState);

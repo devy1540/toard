@@ -165,6 +165,8 @@
     "privacyNote": "나만 볼 수 있습니다 — 앱의 관리자 화면과 다른 사용자는 조회할 수 없습니다.",
     "managedPrivacyNote": "DB와 백업에는 암호문으로 저장됩니다. 앱 서버와 KMS 권한을 함께 가진 인프라 운영자는 복호화할 수 있습니다.",
     "legacyPrivacyNote": "기존 서버 암호화 · 서버 운영 권한으로 복호화할 수 있습니다.",
+    "managedSourceLabel": "서버 관리형 히스토리",
+    "e2eeSourceLabel": "기존 E2EE 히스토리",
     "rolePrompt": "프롬프트",
     "roleResponse": "응답",
     "metaSystem": "시스템 메시지",

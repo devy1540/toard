@@ -28,6 +28,8 @@ test("managed history wording states the actual application and infrastructure b
   assert.match(en.history.managedPrivacyNote ?? "", /database|backups/i);
   assert.match(en.history.managedPrivacyNote ?? "", /application server|KMS permissions/i);
   assert.match(en.history.contentUnavailable ?? "", /key management provider/i);
+  assert.match(en.history.managedSourceLabel ?? "", /server-managed history/i);
+  assert.match(en.history.e2eeSourceLabel ?? "", /E2EE history/i);
 });
 
 test("Korean and English history messages keep the same keys", () => {

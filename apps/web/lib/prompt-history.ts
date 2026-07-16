@@ -156,64 +156,94 @@ async function resolveHistoryDependencies(
   return { runtime, legacyKek, db: dependencies.db };
 }
 
-async function decryptHistoryRow(
-  row: HistoryCipherRow,
+async function decryptHistoryRows(
+  rows: readonly HistoryCipherRow[],
   userId: string,
   dependencies: ResolvedHistoryDependencies,
-): Promise<string | null> {
-  try {
+): Promise<Array<string | null>> {
+  const plaintexts = rows.map(() => null as string | null);
+  const managedByVersion = new Map<
+    number,
+    Array<{ index: number; row: HistoryCipherRow }>
+  >();
+
+  rows.forEach((row, index) => {
     if (row.encryption_scheme === "server_v1") {
-      if (!dependencies.legacyKek) return null;
-      return decryptContent(
-        {
-          keyVersion: row.key_version,
-          wrappedDek: row.wrapped_dek,
-          iv: row.iv,
-          ciphertext: row.ciphertext,
-          authTag: row.auth_tag,
-        },
-        dependencies.legacyKek,
-      );
+      if (!dependencies.legacyKek) return;
+      try {
+        plaintexts[index] = decryptContent(
+          {
+            keyVersion: row.key_version,
+            wrappedDek: row.wrapped_dek,
+            iv: row.iv,
+            ciphertext: row.ciphertext,
+            authTag: row.auth_tag,
+          },
+          dependencies.legacyKek,
+        );
+      } catch {
+        plaintexts[index] = null;
+      }
+      return;
     }
     if (
-      !dependencies.runtime
+      row.encryption_scheme !== "managed_v1"
+      || !dependencies.runtime
       || !Number.isSafeInteger(row.content_key_version)
       || (row.content_key_version ?? 0) < 1
       || row.aad_version !== 2
       || !Buffer.isBuffer(row.dek_wrap_iv)
       || !Buffer.isBuffer(row.dek_wrap_auth_tag)
     ) {
-      return null;
+      return;
     }
     const keyVersion = row.content_key_version!;
-    return await dependencies.runtime.userKeys.withUserKeyVersion(
-      userId,
-      keyVersion,
-      (uck) =>
-        decryptManagedContent(
-          {
-            encryptionScheme: "managed_v1",
-            contentKeyVersion: keyVersion,
-            aadVersion: 2,
-            wrappedDek: row.wrapped_dek,
-            dekWrapIv: row.dek_wrap_iv!,
-            dekWrapAuthTag: row.dek_wrap_auth_tag!,
-            iv: row.iv,
-            ciphertext: row.ciphertext,
-            authTag: row.auth_tag,
-            dedupKey: row.dedup_key,
-            providerKey: row.provider_key,
-            turnRole: row.turn_role,
-            ts: row.ts,
-          },
-          uck,
-          dependencies.runtime!.installationId,
-          userId,
-        ),
-    );
-  } catch {
-    return null;
+    const group = managedByVersion.get(keyVersion) ?? [];
+    group.push({ index, row });
+    managedByVersion.set(keyVersion, group);
+  });
+
+  // 한 페이지/세션에서 같은 UCK version은 한 번만 unwrap한다. 버전별 호출도
+  // 순차 실행하여 긴 세션이 KMS 동시 요청을 폭증시키지 않게 한다.
+  for (const [keyVersion, group] of managedByVersion) {
+    try {
+      await dependencies.runtime!.userKeys.withUserKeyVersion(
+        userId,
+        keyVersion,
+        (uck) => {
+          for (const { index, row } of group) {
+            try {
+              plaintexts[index] = decryptManagedContent(
+                {
+                  encryptionScheme: "managed_v1",
+                  contentKeyVersion: keyVersion,
+                  aadVersion: 2,
+                  wrappedDek: row.wrapped_dek,
+                  dekWrapIv: row.dek_wrap_iv!,
+                  dekWrapAuthTag: row.dek_wrap_auth_tag!,
+                  iv: row.iv,
+                  ciphertext: row.ciphertext,
+                  authTag: row.auth_tag,
+                  dedupKey: row.dedup_key,
+                  providerKey: row.provider_key,
+                  turnRole: row.turn_role,
+                  ts: row.ts,
+                },
+                uck,
+                dependencies.runtime!.installationId,
+                userId,
+              );
+            } catch {
+              plaintexts[index] = null;
+            }
+          }
+        },
+      );
+    } catch {
+      for (const { index } of group) plaintexts[index] = null;
+    }
   }
+  return plaintexts;
 }
 
 function filterConds(f: HistoryFilter, params: unknown[]): string[] {
@@ -323,11 +353,13 @@ export async function getMyHistorySessions(
       return { groups, previews: previewRes.rows as PreviewRow[] };
     });
 
-    const previewPairs = await Promise.all(
-      previews.map(async (row) => {
-        const text = await decryptHistoryRow(row, userId, resolved);
-        return [row.gkey, text ? toHistoryPreview(text) : ""] as const;
-      }),
+    const previewTexts = await decryptHistoryRows(previews, userId, resolved);
+    const previewPairs = previews.map(
+      (row, index) =>
+        [
+          row.gkey,
+          previewTexts[index] ? toHistoryPreview(previewTexts[index]!) : "",
+        ] as const,
     );
     const previewByKey = new Map(previewPairs);
     return {
@@ -394,8 +426,9 @@ export async function getMyHistorySession(
       };
     }
 
-    const turns = await Promise.all(rows.map(async (row) => {
-      const text = await decryptHistoryRow(row, userId, resolved);
+    const plaintexts = await decryptHistoryRows(rows, userId, resolved);
+    const turns = rows.map((row, index) => {
+      const text = plaintexts[index] ?? null;
       return {
         dedupKey: row.dedup_key,
         sessionId: row.session_id,
@@ -405,7 +438,7 @@ export async function getMyHistorySession(
         text: text ?? "",
         ...(text === null ? { contentUnavailable: true } : {}),
       };
-    }));
+    });
     const first = turns[0]!;
     return {
       enabled: true,

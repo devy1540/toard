@@ -62,29 +62,35 @@ export async function readBoundedJson(req: Request, maxBytes: number): Promise<u
   const reader = req.body.getReader();
   const chunks: Uint8Array[] = [];
   let totalBytes = 0;
+  let merged: Uint8Array | undefined;
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
-        await reader.cancel();
+        value.fill(0);
+        await reader.cancel().catch(() => undefined);
         throw new RangeError(`payload too large (max ${maxBytes} bytes)`);
       }
       chunks.push(value);
     }
+    merged = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    try {
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(merged));
+    } catch {
+      throw new SyntaxError("INVALID_JSON");
+    }
   } finally {
+    for (const chunk of chunks) chunk.fill(0);
+    merged?.fill(0);
     reader.releaseLock();
   }
-  const bytes = new Uint8Array(totalBytes);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  // JSON wire payload is UTF-8. Replacement decoding could turn malformed bytes into a
-  // different, apparently valid plaintext value, so reject malformed UTF-8 fail-closed.
-  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 export function toolIngestClientError(error: unknown): Response | null {

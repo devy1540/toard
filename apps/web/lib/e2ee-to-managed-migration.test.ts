@@ -8,6 +8,7 @@ import {
   getE2eeManagedMigrationPage,
   getE2eeManagedMigrationStatus,
   setE2eeManagedMigrationState,
+  e2eeManagedMigrationErrorCode,
   type E2eeMigrationDb,
 } from "./e2ee-to-managed-migration";
 
@@ -58,9 +59,18 @@ test("source digest는 canonical E2EE metadata/ciphertext 전체에 민감하고
   assert.notEqual(first, second);
   assert.equal(e2eeSourceDigest({ ...row(), session_id: null }), e2eeSourceDigest({ ...row(), session_id: null }));
   assert.throws(() => e2eeSourceDigest({ ...row(), wrapped_dek: Buffer.alloc(31) }), /E2EE_SOURCE_CORRUPT/);
+  assert.throws(() => e2eeSourceDigest({ ...row(), key_version: "3" }), /E2EE_SOURCE_CORRUPT/);
+  assert.throws(() => e2eeSourceDigest({ ...row(), ts: "2026-01-02T03:04:05.000Z" }), /E2EE_SOURCE_CORRUPT/);
   const hostile = { ...row() };
   Object.defineProperty(hostile, "ciphertext", { get() { throw new E2eeManagedMigrationError("private prompt"); } });
   assert.throws(() => e2eeSourceDigest(hostile), /^E2eeManagedMigrationError: E2EE_SOURCE_CORRUPT$/);
+});
+
+test("migration error classifier는 module brand 없는 prototype/Proxy 위조를 거부한다", () => {
+  const forged = Object.assign(Object.create(E2eeManagedMigrationError.prototype), { code: "MIGRATION_FAILED" });
+  assert.equal(e2eeManagedMigrationErrorCode(forged), null);
+  assert.equal(e2eeManagedMigrationErrorCode(new Proxy(forged, {})), null);
+  assert.equal(e2eeManagedMigrationErrorCode(new E2eeManagedMigrationError("MIGRATION_FAILED")), "MIGRATION_FAILED");
 });
 
 test("page JSON은 ciphertext가 여러 건이어도 4MiB 경계 안에서 자른다", async () => {

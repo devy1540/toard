@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   E2EE_MANAGED_MIGRATION_MAX_BODY_BYTES,
   MigrationContractError,
+  migrationContractErrorCode,
   parseE2eeManagedCommit,
   parseE2eeManagedLimit,
   parseE2eeManagedState,
@@ -23,7 +24,22 @@ test("commit parser는 exact JSON shape, 1~25건, 중복 없는 canonical id/dig
     assert.throws(() => parseE2eeManagedCommit({ items: [{ ...ITEM, sourceDigest }] }), MigrationContractError);
   }
   assert.throws(() => parseE2eeManagedCommit({ items: [ITEM], extra: true }), MigrationContractError);
+  for (const extra of [Symbol("secret"), "hidden"] as const) {
+    const raw = { items: [ITEM] } as Record<PropertyKey, unknown>;
+    Object.defineProperty(raw, extra, { value: "secret", enumerable: false });
+    assert.throws(() => parseE2eeManagedCommit(raw), /INVALID_MIGRATION_BATCH/);
+  }
+  const hiddenItem = { ...ITEM };
+  Object.defineProperty(hiddenItem, "text", { value: ITEM.text, enumerable: false });
+  assert.throws(() => parseE2eeManagedCommit({ items: [hiddenItem] }), /INVALID_MIGRATION_BATCH/);
   assert.throws(() => parseE2eeManagedCommit(Object.assign(Object.create({ polluted: true }), { items: [ITEM] })), MigrationContractError);
+});
+
+test("unbranded prototype forgery와 Proxy error는 allowlisted code여도 generic이다", () => {
+  const forged = Object.assign(Object.create(MigrationContractError.prototype), { code: "INVALID_MIGRATION_TEXT" });
+  const proxy = new Proxy(forged, {});
+  assert.equal(migrationContractErrorCode(forged), null);
+  assert.equal(migrationContractErrorCode(proxy), null);
 });
 
 test("text는 비어 있지 않은 1MiB 이하 well-formed UTF-8 문자열이고 오류에 평문을 싣지 않는다", () => {

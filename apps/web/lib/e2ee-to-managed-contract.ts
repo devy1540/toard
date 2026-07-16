@@ -7,10 +7,13 @@ export type E2eeManagedMigrationStateInput =
   | { action: "block"; confirmation: "KEY_UNAVAILABLE" }
   | { action: "resume" };
 
+const contractErrorBrand = new WeakMap<object, string>();
+
 export class MigrationContractError extends Error {
   constructor(readonly code: string) {
     super(code);
     this.name = "MigrationContractError";
+    contractErrorBrand.set(this, code);
   }
 }
 
@@ -23,10 +26,10 @@ const CONTRACT_CODES = new Set([
 
 export function migrationContractErrorCode(error: unknown): string | null {
   try {
-    if (!(error instanceof MigrationContractError)) return null;
-    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
-    return typeof descriptor?.value === "string" && CONTRACT_CODES.has(descriptor.value)
-      ? descriptor.value
+    if ((typeof error !== "object" && typeof error !== "function") || error === null) return null;
+    const code = contractErrorBrand.get(error);
+    return typeof code === "string" && CONTRACT_CODES.has(code)
+      ? code
       : null;
   } catch { return null; }
 }
@@ -34,10 +37,13 @@ export function migrationContractErrorCode(error: unknown): string | null {
 export function parseE2eeManagedCommit(value: unknown): E2eeManagedCommitItem[] {
   try {
     const root = exactPlainObject(value, ["items"]);
-    const items = ownData(root, "items");
-    if (!Array.isArray(items) || items.length < 1 || items.length > E2EE_MANAGED_MIGRATION_MAX_ITEMS) {
+    const rawItems = ownData(root, "items");
+    if (!Array.isArray(rawItems)) throw new MigrationContractError("MIGRATION_ITEMS_MUST_BE_1~25");
+    const itemCount = exactArrayLength(rawItems);
+    if (itemCount < 1 || itemCount > E2EE_MANAGED_MIGRATION_MAX_ITEMS) {
       throw new MigrationContractError("MIGRATION_ITEMS_MUST_BE_1~25");
     }
+    const items = exactArrayValues(rawItems, itemCount);
     const seen = new Set<string>();
     return items.map((raw) => {
       const input = exactPlainObject(raw, ["id", "sourceDigest", "text"]);
@@ -96,7 +102,9 @@ function exactPlainObject(
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new MigrationContractError("INVALID_MIGRATION_BATCH");
   }
-  const prototype = Object.getPrototypeOf(value);
+  let prototype: object | null;
+  try { prototype = Object.getPrototypeOf(value); }
+  catch { throw new MigrationContractError("INVALID_MIGRATION_BATCH"); }
   if (prototype !== Object.prototype && prototype !== null) {
     throw new MigrationContractError("INVALID_MIGRATION_BATCH");
   }
@@ -109,20 +117,60 @@ function exactPlainObject(
 }
 
 function exactKeys(input: Record<string, unknown>, allowed: readonly string[]): void {
-  const keys = Object.keys(input);
-  if (keys.some((key) => !allowed.includes(key))) throw new MigrationContractError("INVALID_MIGRATION_BATCH");
+  try {
+    const keys = Reflect.ownKeys(input);
+    for (const key of keys) {
+      if (typeof key !== "string" || !allowed.includes(key)) {
+        throw new Error();
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+        throw new Error();
+      }
+    }
+  } catch {
+    throw new MigrationContractError("INVALID_MIGRATION_BATCH");
+  }
 }
 
 function ownData(input: Record<string, unknown>, key: string): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(input, key);
-  if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(input, key);
+    if (descriptor && "value" in descriptor && descriptor.enumerable) return descriptor.value;
+  } catch { /* normalized below */ }
+  throw new MigrationContractError("INVALID_MIGRATION_BATCH");
+}
+
+function exactArrayLength(input: unknown[]): number {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(input, "length");
+    if (!descriptor || !("value" in descriptor) || typeof descriptor.value !== "number"
+      || !Number.isSafeInteger(descriptor.value) || descriptor.value < 0) throw new Error();
+    return descriptor.value;
+  } catch { throw new MigrationContractError("INVALID_MIGRATION_BATCH"); }
+}
+
+function exactArrayValues(input: unknown[], length: number): unknown[] {
+  const values: unknown[] = [];
+  try {
+    for (let index = 0; index < length; index += 1) {
+      const descriptor = Object.getOwnPropertyDescriptor(input, String(index));
+      if (!descriptor || !("value" in descriptor) || !descriptor.enumerable) throw new Error();
+      values.push(descriptor.value);
+    }
+    const keys = Reflect.ownKeys(input);
+    if (keys.some((key) => key !== "length" && (typeof key !== "string" || !/^(0|[1-9][0-9]*)$/.test(key)))) {
+      throw new Error();
+    }
+    return values;
+  } catch {
     throw new MigrationContractError("INVALID_MIGRATION_BATCH");
   }
-  return descriptor.value;
 }
 
 function hasOwn(input: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(input, key);
+  try { return Object.prototype.hasOwnProperty.call(input, key); }
+  catch { throw new MigrationContractError("INVALID_MIGRATION_BATCH"); }
 }
 
 function positiveDecimal(value: unknown): string {

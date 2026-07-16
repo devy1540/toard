@@ -3,7 +3,7 @@ import test from "node:test";
 import { POST as commitPost, postManagedMigrationCommit } from "./commit/route";
 import { GET as pageGet } from "./page/route";
 import { POST as statePost } from "./state/route";
-import { GET as statusGet } from "./status/route";
+import { GET as statusGet, getManagedMigrationStatusResponse } from "./status/route";
 import { E2eeManagedMigrationError } from "@/lib/e2ee-to-managed-migration";
 
 const USER = "11111111-1111-4111-8111-111111111111";
@@ -65,6 +65,26 @@ test("commit은 strict parser 뒤 runtime을 얻고 exception/plaintext 없이 s
   const branded = await postManagedMigrationCommit(new Request("http://localhost", { method: "POST", body: JSON.stringify({ items: [{ id: "1", sourceDigest: DIGEST, text: secret }] }) }),
     { ...base, commit: async () => { throw new E2eeManagedMigrationError(secret); } });
   assert.equal(branded.status, 503); assert.deepEqual(await branded.json(), { code: "MIGRATION_FAILED" });
+  for (const code of ["MIGRATION_FAILED", "MANAGED_ROUND_TRIP_FAILED", "E2EE_SOURCE_CORRUPT"] as const) {
+    const internal = await postManagedMigrationCommit(new Request("http://localhost", { method: "POST", body: JSON.stringify({ items: [{ id: "1", sourceDigest: DIGEST, text: secret }] }) }),
+      { ...base, commit: async () => { throw new E2eeManagedMigrationError(code); } });
+    assert.equal(internal.status, 503, code);
+    assert.deepEqual(await internal.json(), { code });
+  }
+});
+
+test("status DB failure와 session helper throw는 secret-free 503/no-store다", async () => {
+  const secret = "postgresql://secret";
+  for (const dependencies of [
+    { isAuthOpen: () => false, requireSession: async () => USER,
+      status: async () => { throw new E2eeManagedMigrationError("MIGRATION_FAILED"); } },
+    { isAuthOpen: () => false, requireSession: async () => { throw new Error(secret); },
+      status: async () => { throw new Error("unused"); } },
+  ]) {
+    const response = await getManagedMigrationStatusResponse(dependencies);
+    assert.equal(response.status, 503); assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal((await response.text()).includes(secret), false);
+  }
 });
 
 test("commit은 malformed UTF-8 JSON을 runtime 전에 거부한다", async () => {

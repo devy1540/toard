@@ -284,6 +284,14 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       )).rowCount,
       0,
     );
+    assert.deepEqual(
+      (await client.query("SELECT * FROM get_content_e2ee_migration_progress($1)", [userA])).rows,
+      [{ e2ee_records: "1", migrated_records: "0" }],
+    );
+    await assert.rejects(
+      client.query("SELECT * FROM get_content_e2ee_migration_progress($1)", [userB]),
+      (error: unknown) => (error as { code?: string }).code === "42501" && /user mismatch/.test(String(error)),
+    );
     await client.query("ROLLBACK");
 
     await client.query("BEGIN");
@@ -330,6 +338,7 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     await client.query("SET ROLE toard_app");
     await client.query("BEGIN");
     await client.query("SELECT set_config('app.current_user_id', $1, true)", [userB]);
+    await client.query("UPDATE content_accounts SET state='migrated' WHERE user_id=$1", [userB]);
     await client.query(
       `INSERT INTO prompt_records
          (dedup_key,user_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,
@@ -364,6 +373,10 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     assert.equal(repending.rows[0].completed_at, null);
     assert.deepEqual(repending.rows[0].started_at, completedBeforeLateSource.started_at);
     assert.ok(repending.rows[0].updated_at > completedBeforeLateSource.completed_at!);
+    assert.equal(
+      (await client.query("SELECT state FROM content_accounts WHERE user_id=$1", [userB])).rows[0].state,
+      "active",
+    );
     assert.equal((await migrationStatus(client)).e2ee_migration_pending, 2);
     assert.equal(
       (await client.query("SELECT COUNT(*)::int AS count FROM content_e2ee_migration_sources")).rows[0].count,
@@ -634,6 +647,20 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
     assert.equal(captureFunction.rowCount, 1);
     assert.match(captureFunction.rows[0].definition, /SECURITY DEFINER/i);
     assert.match(captureFunction.rows[0].definition, /SET search_path TO 'public', 'pg_temp'/i);
+
+    const progressFunction = await client.query<{ definition: string; app_execute: boolean; acl: string }>(`
+      SELECT pg_get_functiondef(p.oid) AS definition,
+             has_function_privilege('toard_app',p.oid,'EXECUTE') AS app_execute,
+             COALESCE(array_to_string(p.proacl, ','), '') AS acl
+      FROM pg_proc p
+      WHERE p.proname='get_content_e2ee_migration_progress'
+    `);
+    assert.equal(progressFunction.rowCount, 1);
+    assert.equal(progressFunction.rows[0].app_execute, true);
+    assert.match(progressFunction.rows[0].definition, /SECURITY DEFINER/i);
+    assert.match(progressFunction.rows[0].definition, /RETURNS TABLE\(e2ee_records bigint, migrated_records bigint\)/i);
+    assert.match(progressFunction.rows[0].definition, /SET search_path TO 'public', 'pg_temp'/i);
+    assert.doesNotMatch(progressFunction.rows[0].acl, /(?:^|,)=(?:X|X\/)/, "PUBLIC execute remains revoked");
 
     await assert.rejects(client.query(up), /already exists/);
     await client.query("UPDATE content_accounts SET state='migrated' WHERE user_id=$1", [userB]);

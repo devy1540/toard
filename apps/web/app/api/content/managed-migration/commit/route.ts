@@ -7,6 +7,7 @@ import {
 import {
   commitE2eeManagedBatch,
   e2eeManagedMigrationErrorCode,
+  e2eeManagedMigrationHttpStatus,
 } from "@/lib/e2ee-to-managed-migration";
 import {
   getManagedContentRuntime,
@@ -37,7 +38,9 @@ export async function postManagedMigrationCommit(
   dependencies: Dependencies,
 ): Promise<Response> {
   if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
-  const userId = await dependencies.requireSession();
+  let userId: string | null;
+  try { userId = await dependencies.requireSession(); }
+  catch { return problem(503, "MIGRATION_FAILED"); }
   if (!userId) return problem(401, "UNAUTHORIZED");
 
   let items;
@@ -58,10 +61,7 @@ export async function postManagedMigrationCommit(
   } catch (error) {
     const code = e2eeManagedMigrationErrorCode(error);
     if (!code) return problem(503, "MIGRATION_FAILED");
-    if (code === "MANAGED_KEY_UNAVAILABLE" || code === "MANAGED_KEY_INVALID") {
-      return problem(503, code);
-    }
-    return problem(409, code);
+    return problem(e2eeManagedMigrationHttpStatus(code), code);
   }
 }
 

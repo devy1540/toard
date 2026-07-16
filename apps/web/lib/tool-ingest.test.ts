@@ -86,3 +86,42 @@ test("bounded JSON reader는 stream이 상한을 넘는 즉시 취소한다", as
   assert.equal(cancelled, true);
   assert.ok(pulls < 10);
 });
+
+test("bounded JSON reader는 malformed UTF-8을 safe SyntaxError로 바꾸고 raw/merged bytes를 지운다", async () => {
+  const raw = new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]);
+  const filled: Uint8Array[] = [];
+  const originalFill = Uint8Array.prototype.fill;
+  Uint8Array.prototype.fill = function (...args: Parameters<Uint8Array["fill"]>) {
+    filled.push(this);
+    return originalFill.apply(this, args);
+  };
+  try {
+    await assert.rejects(
+      readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+        start(controller) { controller.enqueue(raw); controller.close(); },
+      }), duplex: "half" } as RequestInit), 1024),
+      (error: unknown) => error instanceof SyntaxError && error.message === "INVALID_JSON",
+    );
+  } finally { Uint8Array.prototype.fill = originalFill; }
+  assert.ok(filled.includes(raw));
+  assert.ok(filled.some((value) => value !== raw && value.byteLength === raw.byteLength));
+  assert.ok(raw.every((value) => value === 0));
+  assert.equal(toolIngestClientError(new SyntaxError("INVALID_JSON"))?.status, 400);
+});
+
+test("bounded JSON reader는 success와 overflow에서도 raw/current bytes를 지운다", async () => {
+  const success = new TextEncoder().encode('{"ok":true}');
+  const parsed = await readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+    start(controller) { controller.enqueue(success); controller.close(); },
+  }), duplex: "half" } as RequestInit), 1024);
+  assert.deepEqual(parsed, { ok: true });
+  assert.ok(success.every((value) => value === 0));
+
+  const first = new Uint8Array(4).fill(1);
+  const overflow = new Uint8Array(4).fill(2);
+  await assert.rejects(readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+    start(controller) { controller.enqueue(first); controller.enqueue(overflow); controller.close(); },
+  }), duplex: "half" } as RequestInit), 5), RangeError);
+  assert.ok(first.every((value) => value === 0));
+  assert.ok(overflow.every((value) => value === 0));
+});

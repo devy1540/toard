@@ -67,6 +67,34 @@ CREATE TRIGGER content_e2ee_migration_sources_no_truncate
 BEFORE TRUNCATE ON content_e2ee_migration_sources
 FOR EACH STATEMENT EXECUTE FUNCTION reject_content_e2ee_migration_source_mutation();
 
+CREATE FUNCTION get_content_e2ee_migration_progress(requested_user_id UUID)
+RETURNS TABLE(e2ee_records BIGINT, migrated_records BIGINT)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  context_user_id UUID;
+BEGIN
+  context_user_id := NULLIF(current_setting('app.current_user_id', true), '')::uuid;
+  IF context_user_id IS NULL OR context_user_id <> requested_user_id THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '42501',
+      MESSAGE = 'E2EE migration progress user mismatch';
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    COUNT(*) FILTER (WHERE record.encryption_scheme = 'e2ee_v1'),
+    COUNT(*) FILTER (WHERE record.encryption_scheme = 'managed_v1')
+  FROM content_e2ee_migration_sources marker
+  JOIN prompt_records record ON record.id = marker.prompt_record_id
+  WHERE record.user_id = requested_user_id;
+END;
+$$;
+
+REVOKE ALL PRIVILEGES ON FUNCTION get_content_e2ee_migration_progress(UUID) FROM PUBLIC;
+
 WITH active_accounts AS (
   SELECT
     account.user_id,
@@ -194,6 +222,10 @@ BEGIN
         ELSE content_e2ee_migrations.updated_at
       END;
 
+  UPDATE content_accounts
+     SET state = 'active', updated_at = clock_timestamp()
+   WHERE user_id = NEW.user_id AND state = 'migrated';
+
   RETURN NEW;
 END;
 $$;
@@ -208,6 +240,7 @@ DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app') THEN
     EXECUTE 'GRANT SELECT, INSERT, UPDATE ON content_e2ee_migrations TO toard_app';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION get_content_e2ee_migration_progress(UUID) TO toard_app';
     EXECUTE 'REVOKE DELETE ON content_e2ee_migrations FROM toard_app';
     EXECUTE 'REVOKE ALL PRIVILEGES ON content_e2ee_migration_sources FROM toard_app';
   END IF;
@@ -253,6 +286,7 @@ DROP POLICY IF EXISTS content_e2ee_migrations_owner_update ON content_e2ee_migra
 DROP TRIGGER IF EXISTS content_e2ee_migration_sources_immutable ON content_e2ee_migration_sources;
 DROP TRIGGER IF EXISTS content_e2ee_migration_sources_no_truncate ON content_e2ee_migration_sources;
 DROP FUNCTION IF EXISTS reject_content_e2ee_migration_source_mutation();
+DROP FUNCTION IF EXISTS get_content_e2ee_migration_progress(UUID);
 DROP TABLE IF EXISTS content_e2ee_migration_sources;
 DROP TABLE IF EXISTS content_e2ee_migrations;
 

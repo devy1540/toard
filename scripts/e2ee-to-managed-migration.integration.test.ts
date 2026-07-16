@@ -74,13 +74,19 @@ test("E2EE managed migration service enforces RLS, same-row replacement, atomic 
     await admin.query("CREATE ROLE toard_app NOLOGIN NOSUPERUSER NOBYPASSRLS");
     for (const sql of await migrationUps()) await admin.query(sql);
     await admin.query(`GRANT USAGE ON SCHEMA public TO toard_app;
-      GRANT SELECT,UPDATE ON prompt_records,content_accounts,content_e2ee_migrations TO toard_app;`);
+      GRANT SELECT,UPDATE ON prompt_records,content_accounts,content_e2ee_migrations TO toard_app;
+      GRANT SELECT ON content_key_wrappers TO toard_app;`);
 
     const userA = randomUUID(), userB = randomUUID(), ownerA = randomUUID(), ownerB = randomUUID();
     await admin.query("INSERT INTO users(id,email) VALUES($1,'e2ee-a@example.com'),($2,'e2ee-b@example.com')", [userA, userB]);
     await admin.query("INSERT INTO providers(key,display_name,service_name_patterns,collection_method) VALUES('codex','Codex',ARRAY['codex'],'logfile')");
     await admin.query(`INSERT INTO content_accounts(user_id,content_owner_id,state,recovery_confirmed_at)
       VALUES($1,$2,'active',now()),($3,$4,'active',now())`, [userA, ownerA, userB, ownerB]);
+    await admin.query(`INSERT INTO content_key_wrappers
+      (user_id,content_key_version,wrapper_type,wrapper_ref,kdf_version,public_salt_or_input,
+       nonce,auth_tag,encapsulated_key,wrapped_content_key)
+      VALUES($1,1,'recovery','recovery','hkdf-sha256-v1',$2,$3,$4,NULL,$5)`,
+      [userA, Buffer.alloc(32, 11), Buffer.alloc(12, 12), Buffer.alloc(16, 13), Buffer.alloc(32, 14)]);
     const firstId = await insertE2ee(admin, userA, ownerA, "first");
     await insertE2ee(admin, userB, ownerB, "other-user-a");
     await insertE2ee(admin, userB, ownerB, "other-user-b");
@@ -117,13 +123,39 @@ test("E2EE managed migration service enforces RLS, same-row replacement, atomic 
     assert.deepEqual((await admin.query("SELECT state FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows, [{ state: "complete" }]);
     assert.deepEqual((await admin.query("SELECT state FROM content_accounts WHERE user_id=$1", [userA])).rows, [{ state: "migrated" }]);
 
+    await admin.query(`INSERT INTO prompt_records
+      (dedup_key,user_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,ciphertext,auth_tag,
+       encryption_scheme,content_owner_id,content_key_version,dek_wrap_iv,dek_wrap_auth_tag,aad_version)
+      VALUES('unrelated-managed',$1,'codex','assistant',now(),4,$2,$3,$4,$5,
+             'managed_v1',NULL,4,$3,$5,2)`,
+      [userA, Buffer.alloc(32, 21), Buffer.alloc(12, 22), Buffer.from("unrelated"), Buffer.alloc(16, 23)]);
+    await app.query("SET ROLE toard_app");
+    assert.deepEqual(await getE2eeManagedMigrationStatus(userA, appDb).then(({ e2eeRecords, migratedRecords }) => ({ e2eeRecords, migratedRecords })),
+      { e2eeRecords: 0, migratedRecords: 1 });
+    await app.query("BEGIN");
+    await app.query("SELECT set_config('app.current_user_id',$1,true)", [userA]);
+    await assert.rejects(app.query("SELECT * FROM get_content_e2ee_migration_progress($1)", [userB]),
+      (error: unknown) => (error as { code?: string }).code === "42501" && /user mismatch/.test(String(error)));
+    await app.query("ROLLBACK");
+    await app.query("RESET ROLE");
+
     const lateId = await insertE2ee(admin, userA, ownerA, "late");
     assert.deepEqual((await admin.query("SELECT state,completed_at FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows, [{ state: "pending", completed_at: null }]);
+    assert.deepEqual((await admin.query("SELECT state,(recovery_confirmed_at IS NOT NULL) AS recovery_ready FROM content_accounts WHERE user_id=$1", [userA])).rows,
+      [{ state: "active", recovery_ready: true }]);
     await app.query("SET ROLE toard_app");
     const latePage = await getE2eeManagedMigrationPage(userA, 25, appDb);
     assert.deepEqual(latePage.records.map((record) => record.id), [lateId]);
-    assert.equal((await getE2eeManagedMigrationStatus(userA, appDb)).state, "pending");
+    assert.deepEqual(await getE2eeManagedMigrationStatus(userA, appDb).then(({ state, e2eeRecords, migratedRecords }) => ({ state, e2eeRecords, migratedRecords })),
+      { state: "pending", e2eeRecords: 1, migratedRecords: 1 });
+    await app.query("BEGIN");
+    await app.query("SELECT set_config('app.current_user_id',$1,true)", [userA]);
+    assert.equal((await app.query("SELECT id FROM content_key_wrappers WHERE user_id=$1 AND wrapper_type='recovery'", [userA])).rowCount, 1);
+    await app.query("ROLLBACK");
+    assert.deepEqual(await commitE2eeManagedBatch(userA, [{ id: lateId, sourceDigest: latePage.records[0]!.sourceDigest, text: "late plaintext" }], runtime(), appDb),
+      { migrated: 1, remaining: 0, complete: true });
     await app.query("RESET ROLE");
+    assert.deepEqual((await admin.query("SELECT state FROM content_accounts WHERE user_id=$1", [userA])).rows, [{ state: "migrated" }]);
   } finally {
     await app?.end().catch(() => undefined); await admin?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined); UCK.fill(0x62);

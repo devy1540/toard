@@ -27,10 +27,13 @@ export type E2eeManagedMigrationSource = {
   record: E2eePromptRecordWire;
 };
 
+const migrationErrorBrand = new WeakMap<object, string>();
+
 export class E2eeManagedMigrationError extends Error {
   constructor(readonly code: string) {
     super(code);
     this.name = "E2eeManagedMigrationError";
+    migrationErrorBrand.set(this, code);
   }
 }
 
@@ -45,12 +48,22 @@ const MIGRATION_CODES = new Set([
 
 export function e2eeManagedMigrationErrorCode(error: unknown): string | null {
   try {
-    if (!(error instanceof E2eeManagedMigrationError)) return null;
-    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
-    return typeof descriptor?.value === "string" && MIGRATION_CODES.has(descriptor.value)
-      ? descriptor.value
+    if ((typeof error !== "object" && typeof error !== "function") || error === null) return null;
+    const code = migrationErrorBrand.get(error);
+    return typeof code === "string" && MIGRATION_CODES.has(code)
+      ? code
       : null;
   } catch { return null; }
+}
+
+const MIGRATION_CONFLICT_CODES = new Set([
+  "MIGRATION_NOT_FOUND", "MIGRATION_NOT_RUNNABLE", "E2EE_SOURCE_CHANGED",
+  "MIGRATION_STATE_CHANGED", "CONTENT_ACCOUNT_STATE_CHANGED",
+]);
+
+export function e2eeManagedMigrationHttpStatus(code: string): 409 | 413 | 503 {
+  if (code === "MIGRATION_PAGE_TOO_LARGE") return 413;
+  return MIGRATION_CONFLICT_CODES.has(code) ? 409 : 503;
 }
 
 export async function getE2eeManagedMigrationStatus(userId: string, db?: E2eeMigrationDb) {
@@ -59,13 +72,11 @@ export async function getE2eeManagedMigrationStatus(userId: string, db?: E2eeMig
     const result = await tx.query(
       `SELECT migration.state, migration.started_at, migration.completed_at,
               migration.blocked_at, migration.blocked_reason,
-              COUNT(record.id) FILTER (WHERE record.encryption_scheme='e2ee_v1')::int AS e2ee_records,
-              COUNT(record.id) FILTER (WHERE record.encryption_scheme='managed_v1')::int AS migrated_records
+              progress.e2ee_records, progress.migrated_records
          FROM content_e2ee_migrations migration
-         LEFT JOIN prompt_records record ON record.user_id=migration.user_id
+         CROSS JOIN LATERAL get_content_e2ee_migration_progress(migration.user_id) progress
         WHERE migration.user_id=$1
-        GROUP BY migration.user_id, migration.state, migration.started_at,
-                 migration.completed_at, migration.blocked_at, migration.blocked_reason`,
+        `,
       [userId],
     );
     const row = result.rows[0];
@@ -375,10 +386,10 @@ function assertManagedKey(key: Buffer, version: number): void {
 function decimal(value: unknown): string { const out = typeof value === "bigint" ? value.toString() : text(value); if (!/^[1-9][0-9]*$/.test(out) || BigInt(out) > 9_223_372_036_854_775_807n) throw new Error(); return out; }
 function text(value: unknown): string { if (typeof value !== "string") throw new Error(); return value; }
 function boundedString(value: unknown, max: number): string { const out = text(value); if (!out || out.length > max) throw new Error(); return out; }
-function integer(value: unknown): number { const out = typeof value === "number" ? value : Number(value); if (!Number.isSafeInteger(out) || out < 1 || out > MAX_VERSION) throw new Error(); return out; }
+function integer(value: unknown): number { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > MAX_VERSION) throw new Error(); return value; }
 function bytes(value: unknown, min: number, max: number): Buffer { if (!Buffer.isBuffer(value) || value.length < min || value.length > max) throw new Error(); return value; }
 function role(value: unknown): "user" | "assistant" { if (value !== "user" && value !== "assistant") throw new Error(); return value; }
-function iso(value: unknown): string { const date = value instanceof Date ? new Date(Date.prototype.getTime.call(value)) : new Date(text(value)); try { return Date.prototype.toISOString.call(date); } catch { throw new Error(); } }
+function iso(value: unknown): string { if (typeof value !== "object" || value === null) throw new Error(); let milliseconds: number; try { milliseconds = Date.prototype.getTime.call(value); } catch { throw new Error(); } if (!Number.isFinite(milliseconds)) throw new Error(); return Date.prototype.toISOString.call(new Date(milliseconds)); }
 function nullableIso(value: unknown): string | null { return value == null ? null : iso(value); }
 function count(value: unknown): number { const out = typeof value === "number" ? value : Number(value ?? 0); if (!Number.isSafeInteger(out) || out < 0) throw new E2eeManagedMigrationError("MIGRATION_STATE_CORRUPT"); return out; }
 function migrationState(value: unknown): "pending" | "running" | "blocked" | "complete" { if (value === "pending" || value === "running" || value === "blocked" || value === "complete") return value; throw new E2eeManagedMigrationError("MIGRATION_STATE_CORRUPT"); }

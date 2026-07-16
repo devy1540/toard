@@ -287,9 +287,9 @@ TOARD_KEY_MIGRATION_PROVIDER=openbao-transit
 
 비민감 설정:
 
-- vault URL
-- key name
-- 선택적 key version
+- `/keys/{name}/{version}` 형태의 versioned full key ID
+
+key rotation은 active/migration profile 변경과 명시적 UCK rewrap으로 수행한다.
 
 인증은 Azure Identity SDK를 사용한다.
 

@@ -6,7 +6,6 @@ import {
 } from "./key-management/transit-validation";
 import type {
   KeyManagementProvider,
-  KeyProviderHealth,
   KeyProviderName,
 } from "./key-management/types";
 import type { ManagedContentRuntime } from "./managed-content-runtime";
@@ -136,10 +135,30 @@ async function expectedFingerprint(profile: ProviderProfile): Promise<string> {
   }
 }
 
-async function assertRuntimeMatches(
-  profile: ProviderProfile,
+type ProviderIdentitySnapshot = {
+  provider: KeyProviderName;
+  keyRef: string;
+  fingerprint: string;
+};
+
+function snapshotProviderIdentity(
   provider: KeyManagementProvider,
-): Promise<void> {
+): Record<keyof ProviderIdentitySnapshot, unknown> {
+  try {
+    return {
+      provider: provider.name,
+      keyRef: provider.keyRef,
+      fingerprint: provider.fingerprint,
+    };
+  } catch {
+    return fail("MANAGED_KEY_RUNTIME_MISMATCH");
+  }
+}
+
+async function validatedRuntimeIdentity(
+  profile: ProviderProfile,
+  snapshot: Record<keyof ProviderIdentitySnapshot, unknown>,
+): Promise<ProviderIdentitySnapshot> {
   let configuredKeyRef: string;
   let configuredFingerprint: string;
   try {
@@ -148,19 +167,25 @@ async function assertRuntimeMatches(
   } catch {
     return fail("MANAGED_KEY_RUNTIME_MISMATCH");
   }
-  const fingerprintPrefix = `${provider.name}:`;
+  const fingerprintPrefix = `${profile.provider}:`;
   if (
-    provider.name !== profile.provider
-    || provider.keyRef !== configuredKeyRef
-    || provider.fingerprint !== configuredFingerprint
-    || typeof provider.fingerprint !== "string"
-    || !provider.fingerprint.startsWith(fingerprintPrefix)
+    snapshot.provider !== profile.provider
+    || snapshot.keyRef !== configuredKeyRef
+    || snapshot.fingerprint !== configuredFingerprint
+    || typeof snapshot.keyRef !== "string"
+    || typeof snapshot.fingerprint !== "string"
+    || !snapshot.fingerprint.startsWith(fingerprintPrefix)
     || !/^[0-9a-f]{24}$/.test(
-      provider.fingerprint.slice(fingerprintPrefix.length),
+      snapshot.fingerprint.slice(fingerprintPrefix.length),
     )
   ) {
-    fail("MANAGED_KEY_RUNTIME_MISMATCH");
+    return fail("MANAGED_KEY_RUNTIME_MISMATCH");
   }
+  return {
+    provider: profile.provider,
+    keyRef: snapshot.keyRef,
+    fingerprint: snapshot.fingerprint,
+  };
 }
 
 function safeDateIso(value: unknown): string | null {
@@ -182,40 +207,66 @@ function safeDateIso(value: unknown): string | null {
   }
 }
 
-function checkedAtIso(health: KeyProviderHealth): string {
-  let iso: string | null;
-  try {
-    iso = safeDateIso(health.checkedAt);
-  } catch {
-    iso = null;
+type HealthSnapshot = {
+  status: unknown;
+  latencyMs: unknown;
+  checkedAt: unknown;
+  errorCode: unknown;
+};
+
+type ValidatedHealth = {
+  status: "healthy" | "unhealthy";
+  lastCheckAt: string;
+  errorCode: string | null;
+};
+
+function snapshotHealth(health: unknown): HealthSnapshot {
+  if (typeof health !== "object" || health === null) {
+    return fail("MANAGED_KEY_HEALTH_INVALID");
   }
+  try {
+    return {
+      status: Reflect.get(health, "status"),
+      latencyMs: Reflect.get(health, "latencyMs"),
+      checkedAt: Reflect.get(health, "checkedAt"),
+      errorCode: Reflect.get(health, "errorCode"),
+    };
+  } catch {
+    return fail("MANAGED_KEY_HEALTH_INVALID");
+  }
+}
+
+function validatedHealth(health: unknown): ValidatedHealth {
+  const snapshot = snapshotHealth(health);
+  const iso = safeDateIso(snapshot.checkedAt);
   if (
-    typeof health !== "object"
-    || health === null
-    || (health.status !== "healthy" && health.status !== "unhealthy")
-    || typeof health.latencyMs !== "number"
-    || !Number.isFinite(health.latencyMs)
-    || health.latencyMs < 0
+    (snapshot.status !== "healthy" && snapshot.status !== "unhealthy")
+    || typeof snapshot.latencyMs !== "number"
+    || !Number.isFinite(snapshot.latencyMs)
+    || snapshot.latencyMs < 0
     || iso === null
     || (
-      health.status === "healthy"
-      && "errorCode" in health
-      && health.errorCode !== undefined
+      snapshot.status === "healthy"
+      && snapshot.errorCode !== undefined
     )
   ) {
     return fail("MANAGED_KEY_HEALTH_INVALID");
+  }
+  if (snapshot.status === "healthy") {
+    return { status: "healthy", lastCheckAt: iso, errorCode: null };
   }
   if (
-    health.status === "unhealthy"
-    && (
-      typeof health.errorCode !== "string"
-      || health.errorCode.length === 0
-      || !/^[A-Z][A-Z0-9_]*$/.test(health.errorCode)
-    )
+    typeof snapshot.errorCode !== "string"
+    || snapshot.errorCode.length === 0
+    || !/^[A-Z][A-Z0-9_]*$/.test(snapshot.errorCode)
   ) {
     return fail("MANAGED_KEY_HEALTH_INVALID");
   }
-  return iso;
+  return {
+    status: "unhealthy",
+    lastCheckAt: iso,
+    errorCode: snapshot.errorCode,
+  };
 }
 
 export async function getContentEncryptionReadiness(
@@ -256,15 +307,15 @@ export async function getContentEncryptionReadiness(
   if (!runtime) fail("MANAGED_KEY_RUNTIME_MISSING");
 
   const provider = runtime.registry.active;
-  await assertRuntimeMatches(profile, provider);
-  const health = await runtime.health.check(provider);
-  const lastCheckAt = checkedAtIso(health);
+  const providerIdentity = await validatedRuntimeIdentity(
+    profile,
+    snapshotProviderIdentity(provider),
+  );
+  const health = validatedHealth(await runtime.health.check(provider));
   const identity = {
-    provider: provider.name,
-    keyRef: provider.keyRef,
-    fingerprint: provider.fingerprint,
+    ...providerIdentity,
     managedRecords,
-    lastCheckAt,
+    lastCheckAt: health.lastCheckAt,
   };
 
   if (health.status === "healthy") {
@@ -274,7 +325,10 @@ export async function getContentEncryptionReadiness(
       errorCode: null,
     };
   }
-  if (TRANSIENT_PROVIDER_CODES.has(health.errorCode)) {
+  if (
+    health.errorCode !== null
+    && TRANSIENT_PROVIDER_CODES.has(health.errorCode)
+  ) {
     return {
       status: "degraded",
       ...identity,

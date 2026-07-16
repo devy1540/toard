@@ -208,6 +208,57 @@ test("healthy는 active provider exact instance와 공개 식별자만 반환한
   assert.deepEqual(runtime.calls, [runtime.registry.active]);
 });
 
+test("provider identity 상태형 getter는 각 한 번만 읽고 snapshot만 DTO에 사용한다", async () => {
+  const reads = { name: 0, keyRef: 0, fingerprint: 0 };
+  const expectedFingerprint = awsKmsProviderFingerprint(
+    AWS_KEY_ARN,
+    "ap-northeast-2",
+  );
+  const provider = {
+    get name() {
+      reads.name += 1;
+      return reads.name === 1 ? "aws-kms" : "secret-runtime-detail";
+    },
+    get keyRef() {
+      reads.keyRef += 1;
+      return reads.keyRef === 1 ? AWS_KEY_ARN : "secret-runtime-detail";
+    },
+    get fingerprint() {
+      reads.fingerprint += 1;
+      return reads.fingerprint === 1
+        ? expectedFingerprint
+        : "secret-runtime-detail";
+    },
+    async wrapKey() {
+      throw new Error("unused");
+    },
+    async unwrapKey() {
+      throw new Error("unused");
+    },
+    async healthCheck() {
+      throw new Error("unused");
+    },
+    async describeCredentialSource() {
+      return { kind: "test", staticCredential: false };
+    },
+  } as unknown as KeyManagementProvider;
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  });
+  Object.defineProperty(runtime.registry, "active", { value: provider });
+
+  const status = await getContentEncryptionReadiness(
+    dbStatus(),
+    VALID_ENV,
+    runtime,
+  );
+  assert.equal(status.status, "healthy");
+  assert.deepEqual(reads, { name: 1, keyRef: 1, fingerprint: 1 });
+  assert.equal(JSON.stringify(status).includes("secret-runtime-detail"), false);
+});
+
 test("유효한 형식이어도 config canonical fingerprint와 다르면 health 전에 거부한다", async () => {
   const runtime = runtimeHealth({
     status: "healthy",
@@ -420,6 +471,45 @@ test("malformed health result는 fail-closed다", async () => {
       /MANAGED_KEY_HEALTH_INVALID/,
     );
   }
+});
+
+test("health 상태형 getter는 각 한 번만 읽고 snapshot만 분류와 DTO에 사용한다", async () => {
+  const reads = { status: 0, latencyMs: 0, checkedAt: 0, errorCode: 0 };
+  const health = {
+    get status() {
+      reads.status += 1;
+      return reads.status === 1 ? "unhealthy" : "secret-provider-detail";
+    },
+    get latencyMs() {
+      reads.latencyMs += 1;
+      return reads.latencyMs === 1 ? 1 : "secret-provider-detail";
+    },
+    get checkedAt() {
+      reads.checkedAt += 1;
+      return reads.checkedAt === 1
+        ? new Date("2026-07-17T01:02:03.000Z")
+        : "secret-provider-detail";
+    },
+    get errorCode() {
+      reads.errorCode += 1;
+      return reads.errorCode === 1 ? "TEMPORARY" : "secret-provider-detail";
+    },
+  };
+
+  const status = await getContentEncryptionReadiness(
+    dbStatus({ managed_records: "1" }),
+    VALID_ENV,
+    runtimeHealth(health),
+  );
+  assert.equal(status.status, "degraded");
+  assert.equal(status.errorCode, "TEMPORARY");
+  assert.deepEqual(reads, {
+    status: 1,
+    latencyMs: 1,
+    checkedAt: 1,
+    errorCode: 1,
+  });
+  assert.equal(JSON.stringify(status).includes("secret-provider-detail"), false);
 });
 
 test("checkedAt override, Date prototype spoof, Proxy는 secret을 ISO DTO에 노출하지 않고 fail-closed다", async () => {

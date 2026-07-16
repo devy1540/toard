@@ -82,7 +82,9 @@ export async function readBoundedJson(req: Request, maxBytes: number): Promise<u
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return JSON.parse(new TextDecoder().decode(bytes));
+  // JSON wire payload is UTF-8. Replacement decoding could turn malformed bytes into a
+  // different, apparently valid plaintext value, so reject malformed UTF-8 fail-closed.
+  return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
 }
 
 export function toolIngestClientError(error: unknown): Response | null {

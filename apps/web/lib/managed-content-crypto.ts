@@ -57,12 +57,13 @@ export function encryptManagedContent(
   let dek: Buffer | undefined;
   try {
     assertKey(uck);
-    assertAadInput({ installationId, userId, keyVersion, ...record });
+    const aadInput = managedContentAadInput(record, installationId, userId, keyVersion);
+    assertAadInput(aadInput);
     if (typeof record.text !== "string" || Buffer.byteLength(record.text, "utf8") === 0) {
       throw new Error("INVALID_PLAINTEXT");
     }
 
-    const aad = canonicalManagedContentAad({ installationId, userId, keyVersion, ...record });
+    const aad = canonicalManagedContentAad(aadInput);
     dek = crypto.randomBytes(KEY_BYTES);
     const iv = crypto.randomBytes(IV_BYTES);
     const dekWrapIv = crypto.randomBytes(IV_BYTES);
@@ -102,15 +103,13 @@ export function decryptManagedContent(
       throw new Error("INVALID_MANAGED_SCHEME");
     }
     assertKey(uck);
-    assertAadInput({
+    const aadInput = managedContentAadInput(
+      row,
       installationId,
       userId,
-      keyVersion: row.contentKeyVersion,
-      dedupKey: row.dedupKey,
-      providerKey: row.providerKey,
-      turnRole: row.turnRole,
-      ts: row.ts,
-    });
+      row.contentKeyVersion,
+    );
+    assertAadInput(aadInput);
     assertBufferLength(row.wrappedDek, KEY_BYTES);
     assertBufferLength(row.dekWrapIv, IV_BYTES);
     assertBufferLength(row.dekWrapAuthTag, TAG_BYTES);
@@ -120,15 +119,7 @@ export function decryptManagedContent(
       throw new Error("INVALID_CIPHERTEXT");
     }
 
-    const aad = canonicalManagedContentAad({
-      installationId,
-      userId,
-      keyVersion: row.contentKeyVersion,
-      dedupKey: row.dedupKey,
-      providerKey: row.providerKey,
-      turnRole: row.turnRole,
-      ts: row.ts,
-    });
+    const aad = canonicalManagedContentAad(aadInput);
     dek = decryptAesGcm(uck, row.dekWrapIv, aad, row.wrappedDek, row.dekWrapAuthTag);
     assertBufferLength(dek, KEY_BYTES);
     return decryptAesGcm(dek, row.iv, aad, row.ciphertext, row.authTag).toString("utf8");
@@ -168,6 +159,23 @@ function decryptAesGcm(
 
 function assertKey(key: Buffer): void {
   assertBufferLength(key, KEY_BYTES);
+}
+
+function managedContentAadInput(
+  record: Pick<PromptRecordWire, "dedupKey" | "providerKey" | "turnRole" | "ts">,
+  installationId: string,
+  userId: string,
+  keyVersion: number,
+): ManagedContentAadInput {
+  return {
+    installationId,
+    userId,
+    keyVersion,
+    dedupKey: record.dedupKey,
+    providerKey: record.providerKey,
+    turnRole: record.turnRole,
+    ts: record.ts,
+  };
 }
 
 function assertBufferLength(value: unknown, length: number): asserts value is Buffer {

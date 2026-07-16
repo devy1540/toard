@@ -82,6 +82,34 @@ test("managed record는 metadata와 사용자에 결합되고 nonce가 분리된
   assertDecryptFailed({ ...RECORD, ...encrypted }, UCK, INSTALLATION_ID, "other-user");
 });
 
+test("예상 밖 record 필드는 trusted AAD context와 반환 key version을 덮지 못한다", () => {
+  const attackerInstallationId = "attacker-installation";
+  const attackerUserId = "attacker-user";
+  const poisonedRecord = {
+    ...RECORD,
+    installationId: attackerInstallationId,
+    userId: attackerUserId,
+    keyVersion: 9,
+    contentKeyVersion: 9,
+    schema: "managed_v1",
+    aadVersion: 99,
+    sessionId: "attacker-session",
+  } as PromptRecordWire & Record<string, unknown>;
+
+  const encrypted = encryptManagedContent(poisonedRecord, UCK, INSTALLATION_ID, USER_ID, 3);
+  const row = { ...poisonedRecord, ...encrypted } as ManagedRow & Record<string, unknown>;
+
+  assert.equal(encrypted.contentKeyVersion, 3);
+  assert.equal(decryptManagedContent(row, UCK, INSTALLATION_ID, USER_ID), RECORD.text);
+  assertDecryptFailed(row, UCK, attackerInstallationId, attackerUserId);
+  assertDecryptFailed(
+    { ...row, contentKeyVersion: 9 },
+    UCK,
+    attackerInstallationId,
+    attackerUserId,
+  );
+});
+
 test("managed record는 모든 AAD metadata와 key version tamper를 거부한다", () => {
   const row = encryptedRow();
 

@@ -82,11 +82,14 @@
       "failed": "일시 오류 · 자동 재시도"
     },
     "recoveredEvents": "복구 완료",
+    "repricedLegacyEvents": "이전 가격 재계산 완료",
     "reconciledEvents": "중복 보정",
     "remainingEvents": "남은 미확정",
+    "remainingLegacyEvents": "남은 이전 가격 기준",
     "lastRepair": "마지막 자동 처리",
     "unresolvedModels": "해당 사용 날짜의 가격 이력이 확인되지 않은 모델",
     "unresolvedEvents": "{count}건",
+    "unresolvedEventBreakdown": "미확정 {unpriced}건 · 이전 가격 {legacy}건",
     "historyTitle": "과거 가격 이력 자동 확인",
     "historyStates": {
       "pending": "확인 준비",

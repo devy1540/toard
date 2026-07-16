@@ -92,6 +92,8 @@ test("migration 28은 기존 설치의 가격 자동 복구를 즉시 pending으
     assert.ok(initialized.rows[0]?.next_attempt_at);
     assert.equal(Number(initialized.rows[0]?.reconciled_events), 0);
 
+    await applyUpMigration(client, "1700000032_full_retention_legacy_pricing_recovery.sql");
+
     const exactGeneration = "2026-07-14 01:56:45.690911+00";
     await client.query(
       `UPDATE pricing_repair_status
@@ -113,7 +115,9 @@ test("migration 28은 기존 설치의 가격 자동 복구를 즉시 pending으
       processed: 100,
       recovered: 0,
       reconciled: 100,
+      repricedLegacy: 0,
       remaining: 9_833,
+      remainingLegacy: 0,
       unresolvedModels: [],
       adaptiveLimit: 125,
       loadState: "normal",

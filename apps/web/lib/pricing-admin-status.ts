@@ -17,7 +17,9 @@ export type PricingAdminStatus = {
     state: PricingRepairState;
     recoveredEvents: number;
     reconciledEvents: number;
+    repricedLegacyEvents: number;
     remainingUnpricedEvents: number;
+    remainingLegacyEvents: number;
     lastSucceededAt: string | null;
   };
   history: HistoricalPricingStatus;
@@ -38,7 +40,9 @@ export async function getPricingAdminStatus(): Promise<PricingAdminStatus> {
       state: repair.state,
       recoveredEvents: repair.recoveredEvents,
       reconciledEvents: repair.reconciledEvents,
+      repricedLegacyEvents: repair.repricedLegacyEvents,
       remainingUnpricedEvents: repair.remainingUnpricedEvents,
+      remainingLegacyEvents: repair.remainingLegacyEvents,
       lastSucceededAt: repair.lastSucceededAt?.toISOString() ?? null,
     },
     history,

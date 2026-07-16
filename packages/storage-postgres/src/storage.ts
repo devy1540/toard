@@ -12,7 +12,7 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
-  PricingRepairBatchResult,
+  PricingRecoveryBatchResult,
   PricingRepairRequest,
   PricingRepairResolver,
   ProviderBreakdown,
@@ -30,7 +30,7 @@ import type {
   UsageEventReconciliationResult,
   UsageReplayReconciliationRequest,
   UsageReplayReconciliationResult,
-  UnpricedUsageModelDiagnostic,
+  PricingRecoveryModelDiagnostic,
   UserUsage,
   UserInsightComparison,
   UtilizationUsageDay,
@@ -242,22 +242,27 @@ export class PostgresStorage implements StorageBackend {
     );
   }
 
-  async getUnpricedUsageModels(
+  async getPricingRecoveryModels(
     from: Date,
     to: Date,
     replaceRevisionIds: string[] = [],
-  ): Promise<UnpricedUsageModelDiagnostic[]> {
+  ): Promise<PricingRecoveryModelDiagnostic[]> {
     const result = await this.pool.query<{
       model: string | null;
       events: string | number;
+      unpriced_events: string | number;
+      legacy_events: string | number;
       first_at: Date;
       last_at: Date;
     }>(
-      `SELECT model, count(*) AS events, min(ts) AS first_at, max(ts) AS last_at
+      `SELECT model, count(*) AS events,
+              count(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              count(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events,
+              min(ts) AS first_at, max(ts) AS last_at
        FROM usage_events
        WHERE ts >= $1 AND ts < $2
          AND (
-           cost_status = 'unpriced'
+           cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id = ANY($3::uuid[])
          )
        GROUP BY model
@@ -267,6 +272,8 @@ export class PostgresStorage implements StorageBackend {
     return result.rows.map((row) => ({
       model: row.model,
       events: n(row.events),
+      unpricedEvents: n(row.unpriced_events),
+      legacyEvents: n(row.legacy_events),
       firstAt: row.first_at,
       lastAt: row.last_at,
     }));
@@ -411,12 +418,12 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
-  async repairUnpricedUsage(
+  async repairPricingUsage(
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
-  ): Promise<PricingRepairBatchResult> {
+  ): Promise<PricingRecoveryBatchResult> {
     if (request.models.length === 0 || request.limit <= 0) {
-      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+      return { scanned: 0, recovered: 0, repricedLegacy: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
     const client = await this.pool.connect();
@@ -434,18 +441,19 @@ export class PostgresStorage implements StorageBackend {
         cache_read_tokens: string | number;
         cache_creation_tokens: string | number;
         cost_usd: string | number;
+        cost_status: "priced" | "unpriced" | "legacy";
         log_adapter: string | null;
         host: string | null;
         local_day: string;
       }>(
         `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                cost_usd, log_adapter, host,
+                cost_usd, cost_status, log_adapter, host,
                 to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
          FROM usage_events
          WHERE ts >= $1 AND ts < $2
            AND (
-             cost_status = 'unpriced'
+             cost_status IN ('unpriced', 'legacy')
              OR pricing_revision_id = ANY($4::uuid[])
            )
            AND model = ANY($3::text[])
@@ -456,6 +464,7 @@ export class PostgresStorage implements StorageBackend {
       );
 
       let recovered = 0;
+      let repricedLegacy = 0;
       const days = new Set<string>();
       for (const row of selected.rows) {
         const resolved = resolver({
@@ -481,13 +490,14 @@ export class PostgresStorage implements StorageBackend {
                cost_status = 'priced'
            WHERE dedup_key = $1
              AND (
-               cost_status = 'unpriced'
+               cost_status IN ('unpriced', 'legacy')
                OR pricing_revision_id = ANY($4::uuid[])
              )`,
           [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
         );
         if (update.rowCount === 1) {
-          recovered += 1;
+          if (row.cost_status === "legacy") repricedLegacy += 1;
+          else if (row.cost_status === "unpriced") recovered += 1;
           days.add(row.local_day);
         }
       }
@@ -499,6 +509,7 @@ export class PostgresStorage implements StorageBackend {
       return {
         scanned: selected.rows.length,
         recovered,
+        repricedLegacy,
         affectedBuckets: [...days].sort().map((day) => new Date(`${day}T00:00:00.000Z`)),
         hasMore: selected.rows.length >= limit,
       };

@@ -18,7 +18,7 @@ import type {
   ModelBreakdown,
   OverviewStats,
   PeriodQuery,
-  PricingRepairBatchResult,
+  PricingRecoveryBatchResult,
   PricingRepairRequest,
   PricingRepairResolver,
   ProviderBreakdown,
@@ -36,7 +36,7 @@ import type {
   UsageEventReconciliationResult,
   UsageReplayReconciliationRequest,
   UsageReplayReconciliationResult,
-  UnpricedUsageModelDiagnostic,
+  PricingRecoveryModelDiagnostic,
   UserUsage,
   UserInsightComparison,
   UtilizationUsageDay,
@@ -1341,26 +1341,30 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: res.inserted, deduped: res.deduped };
   }
 
-  async getUnpricedUsageModels(
+  async getPricingRecoveryModels(
     from: Date,
     to: Date,
     replaceRevisionIds: string[] = [],
-  ): Promise<UnpricedUsageModelDiagnostic[]> {
+  ): Promise<PricingRecoveryModelDiagnostic[]> {
     const rows = await this.queryJson<{
       model: string | null;
       events: string | number;
+      unpriced_events: string | number;
+      legacy_events: string | number;
       first_at: string | Date;
       last_at: string | Date;
     }>(
       `SELECT nullIf(model, '') AS model,
               count() AS events,
+              countIf(cost_status = 'unpriced') AS unpriced_events,
+              countIf(cost_status = 'legacy') AS legacy_events,
               min(ts) AS first_at,
               max(ts) AS last_at
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
          AND (
-           cost_status = 'unpriced'
+           cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id IN {replace_revision_ids:Array(String)}
          )
        GROUP BY model
@@ -1370,6 +1374,8 @@ export class ClickHouseStorage implements StorageBackend {
     return rows.map((row) => ({
       model: row.model || null,
       events: n(row.events),
+      unpricedEvents: n(row.unpriced_events),
+      legacyEvents: n(row.legacy_events),
       firstAt: row.first_at instanceof Date ? row.first_at : chDate(row.first_at),
       lastAt: row.last_at instanceof Date ? row.last_at : chDate(row.last_at),
     }));
@@ -1570,12 +1576,12 @@ export class ClickHouseStorage implements StorageBackend {
     };
   }
 
-  async repairUnpricedUsage(
+  async repairPricingUsage(
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
-  ): Promise<PricingRepairBatchResult> {
+  ): Promise<PricingRecoveryBatchResult> {
     if (request.models.length === 0 || request.limit <= 0) {
-      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+      return { scanned: 0, recovered: 0, repricedLegacy: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
     const rows = await this.queryJson<PricingRepairClickHouseRow>(
@@ -1586,7 +1592,7 @@ export class ClickHouseStorage implements StorageBackend {
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
          AND (
-           cost_status = 'unpriced'
+           cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id IN {replace_revision_ids:Array(String)}
          )
          AND model IN {models:Array(String)}
@@ -1673,9 +1679,17 @@ export class ClickHouseStorage implements StorageBackend {
       });
     }
 
+    const originalStatus = new Map(candidates.map((candidate) => [candidate.dedup_key, candidate.cost_status]));
+    const repricedLegacy = replacements.filter(
+      (replacement) => originalStatus.get(replacement.dedup_key) === "legacy",
+    ).length;
+    const recovered = replacements.filter(
+      (replacement) => originalStatus.get(replacement.dedup_key) === "unpriced",
+    ).length;
     return {
       scanned: candidates.length,
-      recovered: replacements.length,
+      recovered,
+      repricedLegacy,
       affectedBuckets: this.dirty15mBuckets(replacements),
       hasMore: rows.length > limit,
     };

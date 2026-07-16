@@ -1,4 +1,3 @@
-import { USAGE_EVENT_LOGICAL_RETENTION_DAYS } from "@toard/core";
 import { resolvePricingEntry, type ModelPricing, type PricingMap } from "@toard/pricing";
 import type { Pool, PoolClient } from "pg";
 import { getPool } from "./db";
@@ -6,12 +5,14 @@ import { dayStartUtc, getOrgTimezone } from "./org-time";
 import { invalidatePricingCache, PRICING_CACHE_VERSION_SETTING_KEY } from "./pricing";
 import {
   GitHubPricingHistorySource,
+  PricingSnapshotInvalidError,
   PricingSourceRateLimitError,
   type PricingHistoryCommitRef,
 } from "./pricing-history-source";
 
 const MAX_MODELS_PER_JOB = 20;
 const MAX_SNAPSHOTS_PER_STEP = 4;
+const INVALID_SNAPSHOT_SKIP_AFTER_FAILURES = 2;
 const SOURCE_RETRY_BASE_MS = 60_000;
 const SOURCE_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_SOURCE = "litellm-git-history";
@@ -68,6 +69,7 @@ export interface HistoricalPricingRepository {
     at: Date,
   ): Promise<HistoricalPricingJob>;
   saveSnapshots(id: string, snapshots: HistoricalPricingSnapshot[], at: Date): Promise<HistoricalPricingJob>;
+  skipSnapshot(id: string, ref: PricingHistoryCommitRef, at: Date): Promise<HistoricalPricingJob>;
   promote(id: string, at: Date): Promise<{ insertedRevisions: number; evidenceFound: boolean }>;
   waitForSource(
     id: string,
@@ -220,7 +222,6 @@ function nextDate(date: string): string {
 
 function jobInput(
   diagnostics: HistoricalPricingDiagnostic[],
-  now: Date,
   timezone: string,
 ): { rangeFrom: Date; rangeTo: Date; models: string[] } | null {
   const usable = diagnostics
@@ -234,11 +235,8 @@ function jobInput(
   const selected = usable.filter((item) => models.includes(item.model));
   const firstAt = new Date(Math.min(...selected.map((item) => new Date(item.firstAt).getTime())));
   const lastAt = new Date(Math.max(...selected.map((item) => new Date(item.lastAt).getTime())));
-  const retentionAt = new Date(
-    now.getTime() - USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
-  );
   const rangeFrom = dayStartUtc(
-    localDate(firstAt < retentionAt ? retentionAt : firstAt, timezone),
+    localDate(firstAt, timezone),
     timezone,
   );
   const rangeTo = dayStartUtc(nextDate(localDate(lastAt, timezone)), timezone);
@@ -292,7 +290,7 @@ export async function runHistoricalPricingStepWith(
   const now = dependencies.now();
   let job = await dependencies.repository.getActive();
   if (!job) {
-    const input = jobInput(diagnostics, now, dependencies.timezone);
+    const input = jobInput(diagnostics, dependencies.timezone);
     if (!input) return { state: "no_evidence", nextAttemptAt: new Date(now.getTime() + SOURCE_RETRY_MAX_MS) };
     await dependencies.repository.create({ ...input, at: now });
     return { state: "listing", nextAttemptAt: now };
@@ -352,7 +350,17 @@ export async function runHistoricalPricingStepWith(
       }
       const snapshots: HistoricalPricingSnapshot[] = [];
       for (const ref of refs) {
-        snapshots.push({ ref, pricing: await dependencies.source.fetchSnapshot(ref.sha) });
+        try {
+          snapshots.push({ ref, pricing: await dependencies.source.fetchSnapshot(ref.sha) });
+        } catch (error) {
+          if (!(error instanceof PricingSnapshotInvalidError)) throw error;
+          if (job.consecutiveFailures < INVALID_SNAPSHOT_SKIP_AFTER_FAILURES) throw error;
+          if (snapshots.length > 0) {
+            job = await dependencies.repository.saveSnapshots(job.id, snapshots, now);
+          }
+          await dependencies.repository.skipSnapshot(job.id, ref, now);
+          return { state: "fetching", nextAttemptAt: now };
+        }
       }
       await dependencies.repository.saveSnapshots(job.id, snapshots, now);
       return { state: "fetching", nextAttemptAt: now };
@@ -637,6 +645,47 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
     }
   }
 
+  async skipSnapshot(
+    id: string,
+    ref: PricingHistoryCommitRef,
+    at: Date,
+  ): Promise<HistoricalPricingJob> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const locked = await client.query<HistoricalPricingJobRow>(
+        `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
+         WHERE id = $1 AND state = 'fetching'
+         FOR UPDATE`,
+        [id],
+      );
+      if (!locked.rows[0]) throw new Error("historical pricing job was superseded");
+      const job = mapJob(locked.rows[0]);
+      if (job.commitRefs[job.nextCommitIndex]?.sha !== ref.sha) {
+        throw new Error("historical pricing snapshot cursor mismatch");
+      }
+      const nextIndex = job.nextCommitIndex + 1;
+      const result = await client.query<HistoricalPricingJobRow>(
+        `UPDATE pricing_history_jobs
+         SET state = CASE WHEN $3 THEN 'promoting' ELSE 'fetching' END,
+             next_commit_index = $2, consecutive_failures = 0,
+             next_attempt_at = NULL, rate_limit_reset_at = NULL,
+             last_error = 'invalid pricing snapshot skipped', updated_at = $4
+         WHERE id = $1 AND state = 'fetching'
+         RETURNING ${JOB_FIELDS}`,
+        [id, nextIndex, nextIndex === job.commitRefs.length, at],
+      );
+      if (!result.rows[0]) throw new Error("historical pricing job update was superseded");
+      await client.query("COMMIT");
+      return mapJob(result.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async promote(id: string, at: Date): Promise<{ insertedRevisions: number; evidenceFound: boolean }> {
     const client = await this.pool.connect();
     try {
@@ -684,7 +733,9 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
           `UPDATE pricing_repair_status
            SET generation = $1, state = 'pending', target_to = $2,
                processed_events = 0, recovered_events = 0, reconciled_events = 0,
-               remaining_unpriced_events = 0, unresolved_models = '[]'::jsonb,
+               repriced_legacy_events = 0,
+               remaining_unpriced_events = 0, remaining_legacy_events = 0,
+               unresolved_models = '[]'::jsonb,
                eligible_since = $1, next_attempt_at = $1,
                consecutive_failures = 0, last_error = NULL, updated_at = $1
            WHERE singleton`,

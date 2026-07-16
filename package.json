@@ -13,7 +13,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test && pnpm test:migrations",
-    "test:migrations": "TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test scripts/pricing-revisions-migration.integration.test.ts scripts/pricing-auto-recovery-migration.integration.test.ts scripts/historical-pricing-migration.integration.test.ts scripts/rollup-coordinator-migration.integration.test.ts scripts/e2ee-content-migration.integration.test.ts scripts/e2ee-legacy-migration.integration.test.ts scripts/e2ee-legacy-retirement-migration.integration.test.ts",
+    "test:migrations": "TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test scripts/pricing-revisions-migration.integration.test.ts scripts/pricing-auto-recovery-migration.integration.test.ts scripts/historical-pricing-migration.integration.test.ts scripts/full-retention-legacy-pricing-migration.integration.test.ts scripts/rollup-coordinator-migration.integration.test.ts scripts/e2ee-content-migration.integration.test.ts scripts/e2ee-legacy-migration.integration.test.ts scripts/e2ee-legacy-retirement-migration.integration.test.ts",
     "lint": "pnpm -r lint",
     "db:up": "docker compose -f docker-compose.dev.yml up -d",
     "db:down": "docker compose -f docker-compose.dev.yml down",

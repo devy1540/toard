@@ -47,7 +47,6 @@ function SegmentedControl<T extends string>({
             key={itemValue}
             value={itemValue}
             data-slot="segmented-control-item"
-            aria-pressed={selected}
             disabled={disabled}
             className={cn(
               "focus-visible:border-ring focus-visible:ring-ring/50 inline-flex h-7 min-w-0 items-center justify-center gap-1.5 rounded-sm px-2.5 text-xs font-medium whitespace-nowrap shadow-none transition-[color,box-shadow] outline-none hover:bg-transparent hover:text-foreground focus-visible:ring-[3px] data-[state=on]:bg-muted data-[state=on]:text-foreground dark:data-[state=on]:bg-muted disabled:pointer-events-none disabled:opacity-50",

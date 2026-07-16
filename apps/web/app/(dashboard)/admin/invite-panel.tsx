@@ -97,7 +97,10 @@ export function InvitePanel({
       </form>
 
       {link ? (
-        <Alert className="block rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
+        <Alert
+          className="block rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm"
+          role={undefined}
+        >
           <p className="font-medium">{t("invites.linkHeading", { email: state.email ?? "" })}</p>
           <div className="mt-2 flex items-center gap-2">
             <code className="bg-muted overflow-x-auto rounded px-2 py-1 text-xs">{link}</code>

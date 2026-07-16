@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import { Field, FieldContent, FieldDescription, FieldTitle } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
@@ -24,10 +24,12 @@ export function SettingsRow({
   children: ReactNode;
 }) {
   const settingsLayout = layout === "settings";
+  const labelId = useId();
 
   return (
     <Field
       orientation={null}
+      aria-labelledby={labelId}
       className={cn(
         settingsLayout
           ? "grid min-w-0 gap-3 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-center"
@@ -37,9 +39,15 @@ export function SettingsRow({
       )}
     >
       <FieldContent className={cn("min-w-0 flex-none gap-0", !settingsLayout && "sm:w-52 sm:shrink-0")}>
-        <FieldTitle className={cn("w-auto leading-5", settingsLayout ? "font-semibold" : "font-medium")}>
-          {label}
-        </FieldTitle>
+        {settingsLayout ? (
+          <h2 id={labelId} className="text-sm font-semibold">
+            {label}
+          </h2>
+        ) : (
+          <FieldTitle id={labelId} className="w-auto leading-5 font-medium">
+            {label}
+          </FieldTitle>
+        )}
         {description ? (
           <FieldDescription
             className={cn(

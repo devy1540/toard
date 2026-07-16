@@ -1,9 +1,17 @@
 # 서버 관리형 다중 KMS 암호화 설계
 
-- 상태: 사용자 방향 승인 완료, 작성 명세 검토 대기
+- 상태: 작성 명세 승인 완료
 - 작성일: 2026-07-17
 - 대상: 프롬프트 본문 수집·열람, 암호화 공급자, 관리자 보안 상태, 기존 E2EE·legacy 데이터 전환
 - 대체 설계: `2026-07-17-e2ee-multi-device-connection-design.md`
+
+## 구현 계획
+
+1. [Managed Encryption Foundation](../plans/2026-07-17-managed-encryption-foundation.md)
+2. [Managed KMS Providers](../plans/2026-07-17-managed-kms-providers.md)
+3. [Managed Content Cutover](../plans/2026-07-17-managed-content-cutover.md)
+4. [Managed Content Migrations](../plans/2026-07-17-managed-content-migrations.md)
+5. [Managed Encryption Operations](../plans/2026-07-17-managed-encryption-operations.md)
 
 ## 1. 결정 요약
 
@@ -348,7 +356,8 @@ TLS 검증은 기본 강제한다. custom CA bundle은 secret file 경로로만 
 ### 10.2 KMS 권한
 
 - 앱 런타임 role: 선택한 설치 키의 wrap/unwrap만 허용
-- migration/seed role: KMS 권한 없음
+- schema migration/seed role: KMS 권한 없음
+- content-admin one-shot role: 기존 본문 또는 provider 전환 때만 앱과 같은 최소 wrap/unwrap 권한 사용
 - 운영자 개인 role: 기본 decrypt 권한 없음
 - key admin role: 키 정책·회전 가능, 평상시 decrypt 불가
 - break-glass decrypt가 필요하면 별도 시간 제한 역할과 외부 감사 절차로 운영하며 toard 기능으로 제공하지 않는다.
@@ -433,7 +442,7 @@ KMS 장애 시:
 예시:
 
 ```bash
-toard-admin encryption migrate \
+toard-admin encryption rewrap-provider \
   --from aws-kms \
   --to openbao-transit
 ```

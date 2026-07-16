@@ -415,6 +415,19 @@ test("team status exposes preview status in navigation and the page toolbar", ()
   assert.match(page, /statusBadge=\{\{ status: "preview", label: navT\("badge\.preview"\) \}\}/);
 });
 
+test("team overview uses a bounded hero and separated analysis sections", () => {
+  const page = source("app/(dashboard)/org/teams/page.tsx");
+
+  assert.match(page, /function TeamRankingHero/);
+  assert.match(page, /<section className="border-border\/80 bg-card rounded-xl border px-5 py-5">/);
+  assert.match(
+    page,
+    /<TeamRankingHero[\s\S]*totalCost=\{rankedCost\}[\s\S]*rankCount=\{rows\.length\}[\s\S]*totalSessions=\{rankedSessions\}/,
+  );
+  assert.match(page, /data-dashboard-ready="team-overview" className="space-y-6"/);
+  assert.doesNotMatch(page, /data-dashboard-ready="team-overview" className="contents"/);
+});
+
 test("insight comparison chart renders current and previous without animation", () => {
   const chart = source("components/charts/insight-comparison-chart.tsx");
   assert.match(chart, /dataKey="current"[\s\S]*isAnimationActive=\{false\}/);

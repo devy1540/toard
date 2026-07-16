@@ -1347,6 +1347,8 @@ export class ClickHouseStorage implements StorageBackend {
     replaceRevisionIds: string[] = [],
   ): Promise<PricingRecoveryModelDiagnostic[]> {
     const rows = await this.queryJson<{
+      provider_key: string;
+      log_adapter: string;
       model: string | null;
       events: string | number;
       unpriced_events: string | number;
@@ -1354,7 +1356,9 @@ export class ClickHouseStorage implements StorageBackend {
       first_at: string | Date;
       last_at: string | Date;
     }>(
-      `SELECT nullIf(model, '') AS model,
+      `SELECT provider_key,
+              nullIf(log_adapter, '') AS log_adapter,
+              nullIf(model, '') AS model,
               count() AS events,
               countIf(cost_status = 'unpriced') AS unpriced_events,
               countIf(cost_status = 'legacy') AS legacy_events,
@@ -1367,11 +1371,13 @@ export class ClickHouseStorage implements StorageBackend {
            cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id IN {replace_revision_ids:Array(String)}
          )
-       GROUP BY model
+       GROUP BY provider_key, log_adapter, model
        ORDER BY events DESC, model`,
       { from: chTs(from), to: chTs(to), replace_revision_ids: replaceRevisionIds },
     );
     return rows.map((row) => ({
+      providerKey: row.provider_key,
+      logAdapter: row.log_adapter || null,
       model: row.model || null,
       events: n(row.events),
       unpricedEvents: n(row.unpriced_events),
@@ -1580,7 +1586,7 @@ export class ClickHouseStorage implements StorageBackend {
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
   ): Promise<PricingRecoveryBatchResult> {
-    if (request.models.length === 0 || request.limit <= 0) {
+    if ((request.models.length === 0 && !request.includeCodexModelFallback) || request.limit <= 0) {
       return { scanned: 0, recovered: 0, repricedLegacy: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
@@ -1595,13 +1601,22 @@ export class ClickHouseStorage implements StorageBackend {
            cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id IN {replace_revision_ids:Array(String)}
          )
-         AND model IN {models:Array(String)}
+         AND (
+           model IN {models:Array(String)}
+           OR (
+             {include_codex_model_fallback:UInt8} = 1
+             AND provider_key = 'codex'
+             AND log_adapter = 'codex'
+             AND model = ''
+           )
+         )
        ORDER BY ts, dedup_key
        LIMIT {row_limit:UInt32}`,
       {
         from: chTs(request.from),
         to: chTs(request.to),
         models: request.models,
+        include_codex_model_fallback: request.includeCodexModelFallback ? 1 : 0,
         replace_revision_ids: request.replaceRevisionIds,
         row_limit: limit + 1,
       },

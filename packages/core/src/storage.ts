@@ -242,6 +242,8 @@ export interface SaveResult {
 }
 
 export interface PricingRecoveryModelDiagnostic {
+  providerKey: string;
+  logAdapter: string | null;
   model: string | null;
   events: number;
   unpricedEvents: number;
@@ -258,6 +260,8 @@ export interface PricingRepairRequest {
   from: Date;
   to: Date;
   models: string[];
+  /** 모델 메타데이터가 없던 초기 Codex 로그만 gpt-5 fallback으로 선택한다. */
+  includeCodexModelFallback?: boolean;
   /** 근거 없는 과거 revision으로 계산되어 authoritative revision으로 교체할 대상. */
   replaceRevisionIds: string[];
   limit: number;

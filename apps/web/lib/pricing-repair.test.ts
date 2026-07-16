@@ -176,6 +176,106 @@ test("가격 복구 worker는 90일 이전 legacy도 전체 보존 범위에서 
   assert.equal(invalidations, 1);
 });
 
+test("가격 복구 worker는 Codex 별칭과 모델 없는 과거 Codex 로그를 함께 보정한다", async () => {
+  let status = pendingStatus({ remainingUnpricedEvents: 0, remainingLegacyEvents: 2 });
+  let repairRequest: {
+    models: string[];
+    includeCodexModelFallback?: boolean;
+  } | undefined;
+  const repository: PricingRepairRepository = {
+    get: async () => status,
+    claim: async () => ({ ...status, state: "running", lastStartedAt: NOW }),
+    async markProgress(input) {
+      status = {
+        ...status,
+        state: input.state,
+        repricedLegacyEvents: status.repricedLegacyEvents + input.repricedLegacy,
+        remainingLegacyEvents: input.remainingLegacy,
+        unresolvedModels: input.unresolvedModels,
+        nextAttemptAt: input.nextAttemptAt,
+      };
+      return true;
+    },
+    async markFailed() {
+      throw new Error("unexpected failure");
+    },
+  };
+  const autoReviewAt = new Date("2026-07-10T00:00:00.000Z");
+  const missingModelAt = new Date("2025-09-10T00:00:00.000Z");
+  const storage = {
+    reconcileCodexReplayUsage: async () => ({
+      scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false,
+    }),
+    getPricingRecoveryModels: async () => [{
+      providerKey: "codex",
+      logAdapter: "codex",
+      model: "codex-auto-review",
+      events: 1,
+      unpricedEvents: 0,
+      legacyEvents: 1,
+      firstAt: autoReviewAt,
+      lastAt: autoReviewAt,
+    }, {
+      providerKey: "codex",
+      logAdapter: "codex",
+      model: null,
+      events: 1,
+      unpricedEvents: 0,
+      legacyEvents: 1,
+      firstAt: missingModelAt,
+      lastAt: missingModelAt,
+    }],
+    repairPricingUsage: async (
+      request: { models: string[]; includeCodexModelFallback?: boolean },
+      resolver: PricingRepairResolver,
+    ) => {
+      repairRequest = request;
+      const autoReview = resolver({
+        dedupKey: "auto-review", providerKey: "codex", userId: "user-1", sessionId: "session-1",
+        model: "codex-auto-review", ts: autoReviewAt, inputTokens: 1_000_000, outputTokens: 0,
+        cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, logAdapter: "codex",
+      });
+      const missingModel = resolver({
+        dedupKey: "missing-model", providerKey: "codex", userId: "user-1", sessionId: "session-2",
+        model: null, ts: missingModelAt, inputTokens: 1_000_000, outputTokens: 0,
+        cacheReadTokens: 0, cacheCreationTokens: 0, costUsd: 0, logAdapter: "codex",
+      });
+      assert.equal(autoReview?.pricingRevisionId, "gpt-5.5-revision");
+      assert.equal(missingModel?.pricingRevisionId, "gpt-5-revision");
+      return {
+        scanned: 2, recovered: 0, repricedLegacy: 2, affectedBuckets: [], hasMore: false,
+      };
+    },
+  } as unknown as StorageBackend;
+  const schedule: PricingSchedule = new Map([
+    ["gpt-5", [{
+      id: "gpt-5-revision",
+      modelId: "gpt-5",
+      effectiveAt: new Date("2025-08-07T00:00:00.000Z"),
+      pricing: { inputPerM: 2, outputPerM: 10 },
+    }]],
+    ["gpt-5.5", [{
+      id: "gpt-5.5-revision",
+      modelId: "gpt-5.5",
+      effectiveAt: new Date("2026-04-23T00:00:00.000Z"),
+      pricing: { inputPerM: 5, outputPerM: 25 },
+    }]],
+  ]);
+
+  assert.equal(await runPricingRepairTaskWith({
+    repository,
+    storage,
+    getSchedule: async () => schedule,
+    now: () => NOW,
+  }), "success");
+  assert.deepEqual(repairRequest?.models, ["codex-auto-review"]);
+  assert.equal(repairRequest?.includeCodexModelFallback, true);
+  assert.equal(status.state, "idle");
+  assert.equal(status.repricedLegacyEvents, 2);
+  assert.equal(status.remainingLegacyEvents, 0);
+  assert.deepEqual(status.unresolvedModels, []);
+});
+
 test("저장 revision으로 처리할 수 없는 과거 모델은 가격 이력 복구를 이어간다", async () => {
   let status = pendingStatus({ remainingUnpricedEvents: 2 });
   const repository: PricingRepairRepository = {

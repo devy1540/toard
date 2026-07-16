@@ -284,15 +284,22 @@ function localDate(value: Date, timezone: string): string {
   }).format(value);
 }
 
-function supportedModels(
+type SupportedPricingTargets = {
+  models: string[];
+  includeCodexModelFallback: boolean;
+};
+
+function supportedPricingTargets(
   diagnostics: Awaited<ReturnType<StorageBackend["getPricingRecoveryModels"]>>,
   schedule: PricingSchedule,
-): string[] {
+): SupportedPricingTargets {
   const models = new Set<string>();
+  let includeCodexModelFallback = false;
   for (const diagnostic of diagnostics) {
-    if (!diagnostic.model) continue;
     const probe = resolveCostAt({
       model: diagnostic.model,
+      providerKey: diagnostic.providerKey,
+      logAdapter: diagnostic.logAdapter,
       occurredAt: diagnostic.firstAt,
       schedule,
       mode: "calculate",
@@ -301,9 +308,13 @@ function supportedModels(
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
     });
-    if (probe.status === "priced") models.add(diagnostic.model);
+    if (probe.status !== "priced") continue;
+    if (diagnostic.model) models.add(diagnostic.model);
+    else if (diagnostic.providerKey === "codex" && diagnostic.logAdapter === "codex") {
+      includeCodexModelFallback = true;
+    }
   }
-  return [...models];
+  return { models: [...models], includeCodexModelFallback };
 }
 
 export function nextPricingRepairBatchLimit(
@@ -397,7 +408,7 @@ export async function runPricingRepairTaskWith(
       claimed.targetTo,
       replaceRevisionIds,
     );
-    const models = supportedModels(diagnostics, schedule);
+    const targets = supportedPricingTargets(diagnostics, schedule);
     let result = {
       scanned: 0,
       recovered: 0,
@@ -405,11 +416,12 @@ export async function runPricingRepairTaskWith(
       affectedBuckets: [] as Date[],
       hasMore: false,
     };
-    if (models.length > 0) {
+    if (targets.models.length > 0 || targets.includeCodexModelFallback) {
       result = await dependencies.storage.repairPricingUsage({
         from,
         to: claimed.targetTo,
-        models,
+        models: targets.models,
+        includeCodexModelFallback: targets.includeCodexModelFallback,
         replaceRevisionIds,
         limit: claimed.adaptiveLimit,
         generation: claimed.generation,
@@ -438,10 +450,16 @@ export async function runPricingRepairTaskWith(
       diagnostics.reduce((sum, item) => sum + item.events, 0) - result.recovered - result.repricedLegacy,
     );
     const remainingSupported = result.hasMore || result.scanned > result.recovered + result.repricedLegacy;
-    const resolvedModelSet = new Set(models);
+    const resolvedModelSet = new Set(targets.models);
     const remainingDiagnostics = !result.hasMore &&
         result.scanned === result.recovered + result.repricedLegacy
-      ? diagnostics.filter((item) => !item.model || !resolvedModelSet.has(item.model))
+      ? diagnostics.filter((item) => item.model
+        ? !resolvedModelSet.has(item.model)
+        : !(
+          targets.includeCodexModelFallback
+          && item.providerKey === "codex"
+          && item.logAdapter === "codex"
+        ))
       : diagnostics;
     const at = dependencies.now();
     const adaptive = nextPricingRepairBatchLimit(

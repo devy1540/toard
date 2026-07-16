@@ -10,9 +10,18 @@ type UserKeyCacheEntry = {
   expiresAt: number;
 };
 
+type InflightUserKeyLoad = {
+  generation: number;
+  promise: Promise<Buffer>;
+  waiters: number;
+  settled: boolean;
+  source?: Buffer;
+};
+
 export class UserKeyCache {
   private readonly entries = new Map<string, UserKeyCacheEntry>();
-  private readonly inflight = new Map<string, Promise<Buffer>>();
+  private readonly inflight = new Map<string, InflightUserKeyLoad>();
+  private readonly generations = new Map<string, number>();
   private readonly ttlMs: number;
   private readonly now: () => number;
 
@@ -26,45 +35,92 @@ export class UserKeyCache {
     loader: () => Promise<Buffer>,
     fn: (key: Buffer) => Promise<T> | T,
   ): Promise<T> {
-    const key = await this.load(cacheKey, loader);
-    return fn(key);
+    const workingKey = await this.loadWorkingCopy(cacheKey, loader);
+    try {
+      return await fn(workingKey);
+    } finally {
+      workingKey.fill(0);
+    }
   }
 
   evict(cacheKey: string): void {
+    const flight = this.inflight.get(cacheKey);
+    this.generations.set(cacheKey, this.generation(cacheKey) + 1);
     const entry = this.entries.get(cacheKey);
     entry?.key.fill(0);
     this.entries.delete(cacheKey);
+    this.inflight.delete(cacheKey);
+    if (!flight) this.generations.delete(cacheKey);
   }
 
-  private async load(cacheKey: string, loader: () => Promise<Buffer>): Promise<Buffer> {
+  private async loadWorkingCopy(
+    cacheKey: string,
+    loader: () => Promise<Buffer>,
+  ): Promise<Buffer> {
     const entry = this.entries.get(cacheKey);
     if (entry) {
-      if (entry.expiresAt > this.now()) return entry.key;
+      if (entry.expiresAt > this.now()) return Buffer.from(entry.key);
       this.evict(cacheKey);
     }
 
-    const current = this.inflight.get(cacheKey);
-    if (current) return current;
+    const flight = this.inflight.get(cacheKey) ?? this.startLoad(cacheKey, loader);
+    flight.waiters += 1;
+    try {
+      const source = await flight.promise;
+      return Buffer.from(source);
+    } finally {
+      flight.waiters -= 1;
+      this.cleanupLoad(cacheKey, flight);
+    }
+  }
 
-    const pending = (async () => {
-      const key = await loader();
-      if (!Buffer.isBuffer(key) || key.length !== USER_KEY_LENGTH) {
-        if (Buffer.isBuffer(key)) key.fill(0);
+  private startLoad(
+    cacheKey: string,
+    loader: () => Promise<Buffer>,
+  ): InflightUserKeyLoad {
+    const flight = {
+      generation: this.generation(cacheKey),
+      waiters: 0,
+      settled: false,
+    } as InflightUserKeyLoad;
+    flight.promise = (async () => {
+      const source = await loader();
+      if (!Buffer.isBuffer(source) || source.length !== USER_KEY_LENGTH) {
+        if (Buffer.isBuffer(source)) source.fill(0);
         throw new Error("USER_KEY_LENGTH_INVALID");
       }
-      this.entries.set(cacheKey, {
-        key,
-        expiresAt: this.now() + this.ttlMs,
-      });
-      return key;
-    })();
-    this.inflight.set(cacheKey, pending);
-    try {
-      return await pending;
-    } finally {
-      if (this.inflight.get(cacheKey) === pending) {
-        this.inflight.delete(cacheKey);
+      flight.source = source;
+      if (
+        flight.generation === this.generation(cacheKey)
+        && this.inflight.get(cacheKey) === flight
+      ) {
+        this.entries.set(cacheKey, {
+          key: Buffer.from(source),
+          expiresAt: this.now() + this.ttlMs,
+        });
       }
+      return source;
+    })().finally(() => {
+      flight.settled = true;
+      this.cleanupLoad(cacheKey, flight);
+    });
+    this.inflight.set(cacheKey, flight);
+    return flight;
+  }
+
+  private cleanupLoad(cacheKey: string, flight: InflightUserKeyLoad): void {
+    if (!flight.settled || flight.waiters !== 0) return;
+    flight.source?.fill(0);
+    flight.source = undefined;
+    if (this.inflight.get(cacheKey) === flight) {
+      this.inflight.delete(cacheKey);
     }
+    if (!this.entries.has(cacheKey) && !this.inflight.has(cacheKey)) {
+      this.generations.delete(cacheKey);
+    }
+  }
+
+  private generation(cacheKey: string): number {
+    return this.generations.get(cacheKey) ?? 0;
   }
 }

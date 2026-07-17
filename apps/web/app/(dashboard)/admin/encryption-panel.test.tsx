@@ -16,6 +16,13 @@ const STATUS: EncryptionAdminStatus = {
   fingerprint: "aws-kms:0123456789abcdef01234567",
   credentialSource: { kind: "aws-default-provider-chain", staticCredential: false },
   health: { status: "healthy", latencyMs: 12, checkedAt: new Date("2026-07-17T00:00:00.000Z") },
+  migrationTarget: {
+    provider: "gcp-kms",
+    keyRef: "projects/acme/locations/global/keyRings/toard/cryptoKeys/target",
+    fingerprint: "gcp-kms:222222222222222222222222",
+    credentialSource: { kind: "gcp-application-default", staticCredential: false },
+    health: { status: "healthy", latencyMs: 12, checkedAt: new Date("2026-07-17T00:00:00.000Z") },
+  },
   records: { serverV1: 4, e2eeV1: 5, managedV1: 6 },
   userKeys: { active: 7, pending: 8, retiring: 9 },
   migrations: { e2eePending: 10, e2eeBlocked: 11 },

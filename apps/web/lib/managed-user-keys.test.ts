@@ -30,6 +30,7 @@ class FakeDatabase implements ManagedUserKeyDatabase {
   readonly rows: ManagedUserKeyRow[] = [];
   insertError: Error | null = null;
   loseInsertRaceWith: ManagedUserKeyRow | null = null;
+  latestMigrationTarget: { provider: string; fingerprint: string } | null = null;
 
   async query<T extends Record<string, unknown>>(
     sql: string,
@@ -38,18 +39,33 @@ class FakeDatabase implements ManagedUserKeyDatabase {
     this.calls.push({ sql, params });
     const compact = sql.replace(/\s+/g, " ").trim();
 
+    if (/lock_managed_content_key_distribution/.test(compact)) {
+      return { rows: [] as T[], rowCount: 1 };
+    }
+
+    if (/FROM content_key_security_events/.test(compact)) {
+      return {
+        rows: (this.latestMigrationTarget ? [{
+          provider: this.latestMigrationTarget.provider,
+          providerFingerprint: this.latestMigrationTarget.fingerprint,
+        }] : []) as unknown as T[],
+        rowCount: this.latestMigrationTarget ? 1 : 0,
+      };
+    }
+
     if (/SELECT .* FROM managed_content_keys/.test(compact)) {
       const userId = String(params[0]);
-      const row = /state = 'active'/.test(compact)
-        ? this.rows.find((candidate) => candidate.userId === userId && candidate.state === "active")
-        : this.rows.find((candidate) => (
+      const candidates = /state = 'active'/.test(compact)
+        ? this.rows.filter((candidate) => candidate.userId === userId && candidate.state === "active")
+        : this.rows.filter((candidate) => (
           candidate.userId === userId
           && candidate.keyVersion === Number(params[1])
           && (candidate.state === "active" || candidate.state === "retiring")
         ));
+      const rows = /key_version = \$2/.test(compact) ? candidates : candidates.slice(0, 1);
       return {
-        rows: (row ? [row] : []) as unknown as T[],
-        rowCount: row ? 1 : 0,
+        rows: rows as unknown as T[],
+        rowCount: rows.length,
       };
     }
 
@@ -146,13 +162,14 @@ function createService(input: {
   ) => Promise<void>;
   recordCacheResult?: (event: CacheResultEvent) => Promise<void>;
   transactional?: boolean;
+  migrationProvider?: FakeProvider | null;
 }) {
   const db = input.db ?? new FakeDatabase();
   const provider = input.provider ?? new FakeProvider();
   const contexts: string[] = [];
   const service = new ManagedUserKeyService({
     installationId: INSTALLATION_ID,
-    registry: new KeyProviderRegistry(provider, null),
+    registry: new KeyProviderRegistry(provider, input.migrationProvider ?? null),
     cache: new UserKeyCache({
       ttlMs: 300_000,
       recordCacheResult: input.recordCacheResult,
@@ -239,6 +256,69 @@ test("버전 조회는 active와 retiring만 허용하고 pending은 사용하�
   assert.equal(provider.unwrapCalls, 1);
   const versionSql = db.calls.find((call) => call.params[1] === 2)!.sql;
   assert.match(versionSql, /state IN \('active', 'retiring'\)/);
+});
+
+test("같은 버전 read는 해석 가능한 active를 우선하고 active가 registry에 없을 때만 최신 retiring으로 fallback한다", async () => {
+  const active = new FakeProvider();
+  const target = new FakeProvider();
+  Object.defineProperties(target, {
+    keyRef: { value: "file:/run/secrets/target-kek" },
+    fingerprint: { value: "local:aaaaaaaaaaaaaaaaaaaaaaaa" },
+  });
+  const db = new FakeDatabase();
+  db.rows.push(
+    storedRow({ keyVersion: 7, state: "active", wrappedUserKey: Buffer.alloc(32, 0x11) }),
+    storedRow({
+      keyVersion: 7,
+      state: "retiring",
+      providerKeyRef: target.keyRef,
+      providerFingerprint: target.fingerprint,
+      wrappedUserKey: Buffer.alloc(32, 0x22),
+    }),
+  );
+  const { service, provider } = createService({ db, provider: active, migrationProvider: target });
+
+  assert.equal(await service.withUserKeyVersion(USER_ID, 7, (key) => key[0]), 0x11);
+  assert.equal(provider.unwrapCalls, 1);
+
+  db.rows[0] = storedRow({
+    keyVersion: 7,
+    state: "active",
+    providerFingerprint: "local:bbbbbbbbbbbbbbbbbbbbbbbb",
+  });
+  assert.equal(await service.withUserKeyVersion(USER_ID, 7, (key) => key[0]), 0x22);
+  assert.equal(target.unwrapCalls, 1);
+  const versionQuery = db.calls.find((call) => /key_version = \$2/.test(call.sql))!;
+  assert.match(versionQuery.sql, /ORDER BY[\s\S]*created_at[\s\S]*id/i);
+});
+
+test("새 UCK는 distribution lock 아래 마지막 durable migration target으로만 wrap하며 registry에 target이 없으면 old로 fallback하지 않는다", async () => {
+  const old = new FakeProvider();
+  const target = new FakeProvider();
+  Object.defineProperties(target, {
+    keyRef: { value: "file:/run/secrets/target-kek" },
+    fingerprint: { value: "local:aaaaaaaaaaaaaaaaaaaaaaaa" },
+  });
+  const db = new FakeDatabase();
+  db.latestMigrationTarget = { provider: target.name, fingerprint: target.fingerprint };
+  const { service } = createService({ db, provider: old, migrationProvider: target });
+
+  await service.withActiveUserKey(USER_ID, () => undefined);
+  assert.equal(old.wrapCalls, 0);
+  assert.equal(target.wrapCalls, 1);
+  const lock = db.calls.findIndex((call) => /lock_managed_content_key_distribution/.test(call.sql));
+  const fence = db.calls.findIndex((call) => /FROM content_key_security_events/.test(call.sql));
+  const insert = db.calls.findIndex((call) => /INSERT INTO managed_content_keys/.test(call.sql));
+  assert.ok(lock >= 0 && lock < fence && fence < insert);
+
+  const missingTargetDb = new FakeDatabase();
+  missingTargetDb.latestMigrationTarget = { provider: target.name, fingerprint: target.fingerprint };
+  const missingTarget = createService({ db: missingTargetDb, provider: old });
+  await assert.rejects(
+    missingTarget.service.withActiveUserKey(USER_ID, () => undefined),
+    /MANAGED_USER_KEY_MIGRATION_TARGET_MISSING/,
+  );
+  assert.equal(old.wrapCalls, 0);
 });
 
 test("active 생성 race의 loser는 생성 UCK를 폐기하고 DB winner wrapper를 다시 읽는다", async () => {

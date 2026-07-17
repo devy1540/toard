@@ -16,6 +16,10 @@ import {
   localProviderFingerprint,
   transitProviderFingerprint,
 } from "./key-management/provider-fingerprint";
+import {
+  parseManagedKeyDistribution,
+  type ManagedKeyDistributionEntry,
+} from "./managed-key-distribution";
 
 export type ContentEncryptionReadiness = {
   status: "disabled" | "healthy" | "degraded";
@@ -56,6 +60,14 @@ function parseManagedRecords(value: unknown): number {
     if (Number.isSafeInteger(parsed)) return parsed;
   }
   return fail("MANAGED_KEY_STATUS_INVALID");
+}
+
+function parseSnapshotCount(value: unknown): number {
+  try {
+    return parseManagedRecords(value);
+  } catch {
+    return fail("MANAGED_KEY_DISTRIBUTION_INVALID");
+  }
 }
 
 function hasPartialManagedProfile(env: ReadinessEnvironment): boolean {
@@ -269,18 +281,65 @@ function validatedHealth(health: unknown): ValidatedHealth {
   };
 }
 
+function validateDistributionSnapshot(
+  value: unknown,
+  counts: { active: number; pending: number; retiring: number },
+  runtime: ManagedContentRuntime,
+): void {
+  let distribution: ManagedKeyDistributionEntry[];
+  try {
+    distribution = parseManagedKeyDistribution(value);
+  } catch {
+    return fail("MANAGED_KEY_DISTRIBUTION_INVALID");
+  }
+  const totals = { active: 0, pending: 0, retiring: 0 };
+  for (const entry of distribution) {
+    const next = totals[entry.state] + entry.count;
+    if (!Number.isSafeInteger(next) || next < 0) {
+      return fail("MANAGED_KEY_DISTRIBUTION_INVALID");
+    }
+    totals[entry.state] = next;
+    if (entry.state !== "retiring" && !runtime.registry.resolveIdentity(
+      entry.provider,
+      entry.providerFingerprint,
+    )) {
+      return fail("MANAGED_KEY_DISTRIBUTION_UNRESOLVABLE");
+    }
+  }
+  if (
+    totals.active !== counts.active
+    || totals.pending !== counts.pending
+    || totals.retiring !== counts.retiring
+  ) {
+    return fail("MANAGED_KEY_DISTRIBUTION_INVALID");
+  }
+}
+
 export async function getContentEncryptionReadiness(
   db: ContentEncryptionReadinessDb,
   env: ReadinessEnvironment,
   runtime: ManagedContentRuntime | null,
 ): Promise<ContentEncryptionReadiness> {
   const result = await db.query(
-    `SELECT managed_records::text AS managed_records
+    `SELECT managed_records::text AS managed_records,
+            active_user_keys::text AS active_user_keys,
+            pending_user_keys::text AS pending_user_keys,
+            retiring_user_keys::text AS retiring_user_keys,
+            COALESCE((
+              SELECT jsonb_agg(jsonb_build_object(
+                'provider',distribution.provider,
+                'provider_fingerprint',distribution.provider_fingerprint,
+                'state',distribution.state,
+                'wrapper_count',distribution.wrapper_count::text
+              ) ORDER BY distribution.provider,distribution.provider_fingerprint,distribution.state)
+                FROM managed_content_key_distribution distribution
+            ),'[]'::jsonb) AS wrapper_distribution
        FROM content_encryption_status
       WHERE singleton=TRUE`,
   );
   if (result.rows.length !== 1) fail("MANAGED_KEY_STATUS_INVALID");
-  const managedRecords = parseManagedRecords(result.rows[0]?.managed_records);
+  const statusRow = result.rows[0];
+  const managedRecords = parseManagedRecords(statusRow?.managed_records);
 
   const activeProvider = env.TOARD_KEY_ACTIVE_PROVIDER?.trim();
   if (!activeProvider) {
@@ -305,6 +364,16 @@ export async function getContentEncryptionReadiness(
     return fail("MANAGED_KEY_CONFIG_INVALID");
   }
   if (!runtime) fail("MANAGED_KEY_RUNTIME_MISSING");
+
+  validateDistributionSnapshot(
+    statusRow?.wrapper_distribution,
+    {
+      active: parseSnapshotCount(statusRow?.active_user_keys),
+      pending: parseSnapshotCount(statusRow?.pending_user_keys),
+      retiring: parseSnapshotCount(statusRow?.retiring_user_keys),
+    },
+    runtime,
+  );
 
   const provider = runtime.registry.active;
   const providerIdentity = await validatedRuntimeIdentity(

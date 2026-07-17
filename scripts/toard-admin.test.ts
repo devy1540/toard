@@ -11,6 +11,12 @@ const OLD_FINGERPRINT = "local:111111111111111111111111";
 const TARGET_FINGERPRINT = "aws-kms:222222222222222222222222";
 const ROTATED_LOCAL_FINGERPRINT = "local:333333333333333333333333";
 
+const healthyCanary = {
+  async check() {
+    return { status: "healthy" as const, latencyMs: 1, checkedAt: new Date(0) };
+  },
+};
+
 function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependencies {
   let currentUser: string | null = null;
   const db = {
@@ -24,6 +30,7 @@ function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependenci
         ],
       }] };
       if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
+      if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
       if (/INSERT INTO content_key_security_events/i.test(sql)) return { rows: [], rowCount: 1 };
       if (sql.includes("FROM users")) return { rows: [{ id: USER_B }, { id: USER_A }] };
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
@@ -43,6 +50,7 @@ function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependenci
           active: { name: "local", fingerprint: OLD_FINGERPRINT },
           migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
         },
+        health: healthyCanary,
       } as ManagedContentRuntime;
     },
     async acquireDb(): Promise<AdminDbLease> { return { db, release() {} }; },
@@ -165,6 +173,7 @@ test("CLI acquires a fixed client lease for enumeration and each atomic user ope
     const db = {
       async query(sql: string, params: unknown[] = []) {
         if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+        if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
         if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
         if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
         if (/INSERT INTO content_key_security_events/i.test(sql)) return { rows: [], rowCount: 1 };
@@ -257,6 +266,7 @@ test("rewrap-provider requires an exact admin actor and records started before e
           active: { name: "local", fingerprint: OLD_FINGERPRINT },
           migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
         },
+        health: healthyCanary,
       } as ManagedContentRuntime;
       Object.defineProperty(current, "installationId", {
         get() {
@@ -313,6 +323,68 @@ test("rewrap-provider requires an exact admin actor and records started before e
   assert.doesNotMatch(result.stdout + result.stderr, new RegExp(USER_A));
 });
 
+test("rewrap-provider는 target canary 성공 뒤에만 lock 아래 started fence를 기록한다", async () => {
+  const calls: string[] = [];
+  let events = 0;
+  const result = await runCli([
+    "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+    "--actor-user-id", USER_A,
+  ], deps({
+    async runtime() {
+      return {
+        installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        registry: {
+          active: { name: "local", fingerprint: OLD_FINGERPRINT },
+          migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
+        },
+        health: {
+          async check() {
+            calls.push("canary");
+            return { status: "healthy" as const, latencyMs: 1, checkedAt: new Date(0) };
+          },
+        },
+      } as ManagedContentRuntime;
+    },
+    async acquireDb() {
+      return {
+        db: { async query(sql: string) {
+          if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") { calls.push(sql); return { rows: [] }; }
+          if (/lock_managed_content_key_distribution/i.test(sql)) { calls.push("lock"); return { rows: [{}] }; }
+          if (sql.startsWith("SELECT set_config")) { calls.push("actor"); return { rows: [] }; }
+          if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: true }] };
+          if (/INSERT INTO content_key_security_events/i.test(sql)) { events += 1; calls.push("started"); return { rows: [], rowCount: 1 }; }
+          if (/FROM users/i.test(sql)) return { rows: [] };
+          if (/FROM managed_content_key_distribution/i.test(sql)) return { rows: [{ wrapper_distribution: [] }] };
+          throw new Error(`unexpected query: ${sql}`);
+        } },
+        release() {},
+      };
+    },
+  }));
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.ok(calls.indexOf("canary") < calls.indexOf("lock"));
+  assert.ok(calls.indexOf("lock") < calls.indexOf("actor"));
+  assert.ok(calls.indexOf("actor") < calls.indexOf("started"));
+  assert.equal(events, 2);
+
+  const failedCanary = await runCli([
+    "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+    "--actor-user-id", USER_A,
+  ], deps({
+    async runtime() {
+      return {
+        installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        registry: {
+          active: { name: "local", fingerprint: OLD_FINGERPRINT },
+          migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
+        },
+        health: { async check() { return { status: "unhealthy" as const, latencyMs: 1, checkedAt: new Date(0), errorCode: "AUTH_FAILED" }; } },
+      } as ManagedContentRuntime;
+    },
+  }));
+  assert.equal(failedCanary.exitCode, 1);
+});
+
 test("non-admin, failure, interrupt, not-ready, and audit failure never record provider_migration_completed", async () => {
   async function scenario(options: {
     admin?: boolean;
@@ -334,6 +406,7 @@ test("non-admin, failure, interrupt, not-ready, and audit failure never record p
             active: { name: "local", fingerprint: OLD_FINGERPRINT },
             migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
           },
+          health: healthyCanary,
         } as ManagedContentRuntime;
       },
       async acquireDb() {
@@ -424,6 +497,7 @@ test("an interrupt observed during zero-user enumeration leaves started without 
     async acquireDb() {
       return { db: { async query(sql: string, params: unknown[] = []) {
         if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+        if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
         if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
         if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
         if (/INSERT INTO content_key_security_events/i.test(sql)) {
@@ -456,6 +530,7 @@ test("same-provider key-ref rotation is accepted only when runtime fingerprints 
           active: { name: "local", fingerprint: OLD_FINGERPRINT },
           migration: { name: "local", fingerprint: ROTATED_LOCAL_FINGERPRINT },
         },
+        health: healthyCanary,
       } as ManagedContentRuntime;
     },
     async acquireDb() {
@@ -493,6 +568,7 @@ test("same-provider key-ref rotation is accepted only when runtime fingerprints 
           active: { name: "local", fingerprint: OLD_FINGERPRINT },
           migration: { name: "local", fingerprint: OLD_FINGERPRINT },
         },
+        health: healthyCanary,
       } as ManagedContentRuntime;
     },
   }));

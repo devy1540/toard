@@ -272,6 +272,13 @@ async function rewrapProviders(
     || targetIdentity.providerFingerprint === oldIdentity.providerFingerprint
   ) return usage();
 
+  // 시작 audit은 새 writer의 durable fence다. 따라서 zero-wrapper migration도
+  // target의 wrap/unwrap canary가 healthy임을 먼저 확인해야 한다.
+  const targetHealth = await runtime.health.check(target);
+  if (targetHealth.status !== "healthy") {
+    throw new Error("PROVIDER_MIGRATION_TARGET_CANARY_FAILED");
+  }
+
   await withDbLease(deps, (db) => recordProviderMigrationEvent(
     "provider_migration_started", actorUserId, targetIdentity, appInstanceId, db,
   ));
@@ -385,6 +392,8 @@ async function recordProviderMigrationEvent(
   try {
     await db.query("BEGIN");
     began = true;
+    // 신규 UCK writer가 잡는 lock과 같은 transaction lock 뒤에 durable fence를 기록한다.
+    await db.query("SELECT lock_managed_content_key_distribution()");
     await setAndValidateAdminActor(actorUserId, db);
     await insertProviderMigrationEvent(eventType, actorUserId, target, appInstanceId, db);
     await db.query("COMMIT");

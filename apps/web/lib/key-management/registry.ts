@@ -43,4 +43,20 @@ export class KeyProviderRegistry {
     }
     return provider;
   }
+
+  /**
+   * durable migration fence는 key-ref 없이 provider/fingerprint만 저장한다.
+   * 따라서 writer는 이 제한된 identity로만 현재 registry의 provider를 찾는다.
+   */
+  resolveIdentity(
+    providerName: KeyManagementProvider["name"],
+    fingerprint: string,
+  ): KeyManagementProvider | null {
+    return this.providersByFingerprint
+      .get(fingerprint)
+      ?.find((candidate) => (
+        candidate.name === providerName
+        && candidate.fingerprint === fingerprint
+      )) ?? null;
+  }
 }

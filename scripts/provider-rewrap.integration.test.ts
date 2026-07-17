@@ -137,7 +137,9 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
     const { old, target } = providers();
     const evicted: string[] = [];
     const runtime: ManagedContentRuntime = {
-      installationId: INSTALLATION_ID, registry: new KeyProviderRegistry(old, target), health: null as never,
+      installationId: INSTALLATION_ID,
+      registry: new KeyProviderRegistry(old, target),
+      health: { async check() { return { status: "healthy" as const, latencyMs: 1, checkedAt: new Date() }; } } as never,
       userKeys: {
         async withActiveUserKey() { throw new Error("not used"); },
         async withUserKeyVersion() { throw new Error("not used"); },

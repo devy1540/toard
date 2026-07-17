@@ -48,6 +48,7 @@ function runtime(options: {
     name: "gcp-kms",
     keyRef: "projects/acme/locations/global/keyRings/toard/cryptoKeys/target",
     fingerprint: "gcp-kms:222222222222222222222222",
+    describeCredentialSource: async () => ({ kind: "gcp-application-default", staticCredential: false }),
   } : undefined;
   return {
     installationId: "00000000-0000-0000-0000-000000000001",
@@ -145,6 +146,17 @@ test("provider/fingerprint/state 분포와 old provider 제거 가능 여부를 
     pendingWrappers: 0,
     unexpectedActiveWrappers: 0,
     removalReady: true,
+  });
+  assert.deepEqual(status.migrationTarget, {
+    provider: "gcp-kms",
+    keyRef: "projects/acme/locations/global/keyRings/toard/cryptoKeys/target",
+    fingerprint: "gcp-kms:222222222222222222222222",
+    credentialSource: { kind: "gcp-application-default", staticCredential: false },
+    health: {
+      status: "healthy",
+      latencyMs: 12,
+      checkedAt: new Date("2026-07-17T00:00:00.000Z"),
+    },
   });
   assert.equal(db.calls.filter((call) => /content_encryption_status/i.test(call.sql)).length, 1);
   assert.match(db.calls.find((call) => /content_encryption_status/i.test(call.sql))!.sql, /managed_content_key_distribution/i);
@@ -371,6 +383,7 @@ test("disabled와 unhealthy를 거짓 healthy 또는 0 비용으로 표현하지
   assert.equal(disabled.enabled, false);
   assert.equal(disabled.provider, null);
   assert.equal(disabled.health, null);
+  assert.equal(disabled.migrationTarget, null);
   assert.equal(disabled.costEstimate, null);
 
   const unhealthy = await getEncryptionAdminStatus({

@@ -7,6 +7,9 @@ import { promisify } from "node:util";
 import { Client, Pool } from "pg";
 import type { ManagedContentRuntime } from "../apps/web/lib/managed-content-runtime";
 import { RewrapError } from "../apps/web/lib/provider-rewrap";
+import { ManagedUserKeyService } from "../apps/web/lib/managed-user-keys";
+import { UserKeyCache } from "../apps/web/lib/key-management/user-key-cache";
+import { KeyProviderRegistry } from "../apps/web/lib/key-management/registry";
 import type { KeyManagementProvider } from "../apps/web/lib/key-management/types";
 import { createPoolLeaseFactory, runCli } from "./toard-admin";
 
@@ -91,6 +94,7 @@ test("provider migration audit authenticates the DB admin actor and completes on
     const runtime = {
       installationId: INSTALLATION_ID,
       registry: { active: provider("local", OLD), migration: provider("aws-kms", TARGET) },
+      health: { async check() { return { status: "healthy" as const, latencyMs: 0, checkedAt: new Date() }; } },
     } as ManagedContentRuntime;
     const base = {
       runtime: async () => runtime,
@@ -199,6 +203,9 @@ test("provider migration audit authenticates the DB admin actor and completes on
       SELECT EXISTS(
         SELECT 1 FROM pg_locks
          WHERE locktype='advisory' AND granted AND objid=1700000039
+      ) AND EXISTS(
+        SELECT 1 FROM content_key_security_events
+         WHERE event_type='provider_migration_started'
       ) AS locked
     `)).rows[0].locked === true, "completion distribution advisory lock");
 
@@ -266,6 +273,99 @@ test("provider migration audit authenticates the DB admin actor and completes on
       { event_type: "provider_migration_started", provider: "local", provider_fingerprint: ROTATED_LOCAL },
       { event_type: "provider_migration_completed", provider: "local", provider_fingerprint: ROTATED_LOCAL },
     ]);
+
+    // writer가 start fence보다 먼저 same advisory lock을 얻으면 old insert를 commit한 뒤에만
+    // start가 기록되고, fence 뒤 target-only registry restart도 새 UCK를 target으로 만든다.
+    await admin.query("DELETE FROM managed_content_keys; DELETE FROM content_key_security_events");
+    const oldWriterUser = randomUUID();
+    const targetOnlyUser = randomUUID();
+    await admin.query(
+      "INSERT INTO users(id,email) VALUES($1,'fence-old@example.com'),($2,'fence-target@example.com')",
+      [oldWriterUser, targetOnlyUser],
+    );
+    runtime.registry = {
+      active: provider("local", OLD),
+      migration: provider("aws-kms", TARGET),
+    } as ManagedContentRuntime["registry"];
+    const writerLease = await pool.connect();
+    try {
+      await writerLease.query("BEGIN");
+      await writerLease.query("SELECT set_config('app.current_user_id',$1,true)", [oldWriterUser]);
+      await writerLease.query("SELECT lock_managed_content_key_distribution()");
+      const rewrappedUsers: string[] = [];
+      const starting = runCli(command(actor), {
+        ...base,
+        rewrapUser: async (userId) => {
+          rewrappedUsers.push(userId);
+          throw new RewrapError("REWRAP_FAILED");
+        },
+      });
+      await waitUntil(async () => (await admin!.query(`
+        SELECT EXISTS(
+          SELECT 1 FROM pg_locks
+           WHERE locktype='advisory' AND objid=1700000039 AND NOT granted
+        ) AS waiting
+      `)).rows[0].waiting === true, "started fence waiting behind old writer");
+      await writerLease.query(
+        `INSERT INTO managed_content_keys
+           (user_id,key_version,provider,provider_key_ref,provider_fingerprint,wrapped_user_key,wrapper_metadata,state)
+         VALUES($1,1,'local','local:old-writer',$2,$3,'{}','active')`,
+        [oldWriterUser, OLD, Buffer.alloc(32, 0x41)],
+      );
+      await writerLease.query("COMMIT");
+      const started = await starting;
+      assert.equal(started.exitCode, 1);
+      assert.ok(rewrappedUsers.includes(oldWriterUser));
+      assert.deepEqual((await admin.query(
+        "SELECT event_type,provider_fingerprint FROM content_key_security_events ORDER BY id",
+      )).rows, [{ event_type: "provider_migration_started", provider_fingerprint: TARGET }]);
+    } finally {
+      await writerLease.query("ROLLBACK").catch(() => undefined);
+      writerLease.release();
+    }
+
+    const targetOnly: KeyManagementProvider = {
+      name: "aws-kms",
+      keyRef: "aws:target-only",
+      fingerprint: TARGET,
+      async wrapKey(uck) {
+        return { provider: this.name, keyRef: this.keyRef, fingerprint: this.fingerprint,
+          ciphertext: Buffer.from(uck), metadata: { test: "target-only" } };
+      },
+      async unwrapKey(wrapped) { return Buffer.from(wrapped.ciphertext); },
+      async healthCheck() { return { status: "healthy", latencyMs: 0, checkedAt: new Date() }; },
+      async describeCredentialSource() { return { kind: "test", staticCredential: false }; },
+    };
+    const targetOnlyKeys = new ManagedUserKeyService({
+      installationId: INSTALLATION_ID,
+      registry: new KeyProviderRegistry(targetOnly, null),
+      cache: new UserKeyCache({ ttlMs: 60_000 }),
+      runInUserContext: async (userId, fn) => {
+        const client = await pool!.connect();
+        let began = false;
+        try {
+          await client.query("BEGIN");
+          began = true;
+          await client.query("SELECT set_config('app.current_user_id',$1,true)", [userId]);
+          const value = await fn(client);
+          await client.query("COMMIT");
+          return value;
+        } catch (error) {
+          if (began) await client.query("ROLLBACK").catch(() => undefined);
+          throw error;
+        } finally {
+          client.release();
+        }
+      },
+    });
+    await targetOnlyKeys.withActiveUserKey(targetOnlyUser, () => undefined);
+    assert.deepEqual((await admin.query(
+      "SELECT user_id::text,provider_fingerprint,state FROM managed_content_keys WHERE user_id IN ($1,$2) ORDER BY user_id",
+      [oldWriterUser, targetOnlyUser],
+    )).rows, [
+      { user_id: oldWriterUser, provider_fingerprint: OLD, state: "active" },
+      { user_id: targetOnlyUser, provider_fingerprint: TARGET, state: "active" },
+    ].sort((left, right) => left.user_id.localeCompare(right.user_id)));
   } finally {
     await pool?.end().catch(() => undefined);
     await admin?.end().catch(() => undefined);

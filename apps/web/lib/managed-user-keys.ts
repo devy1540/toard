@@ -141,6 +141,10 @@ export class ManagedUserKeyService {
 
   private async loadOrCreateActive(userId: string): Promise<ManagedUserKeyRow> {
     return this.runInUserContext(userId, async (db) => {
+      // start audit와 신규 wrapper insert는 같은 distribution lock으로 직렬화한다.
+      // active 조회를 lock 밖에서 하면 start와 insert 사이에 old wrapper가 생길 수 있다.
+      await db.query("SELECT lock_managed_content_key_distribution()");
+      const fence = await latestMigrationTarget(db);
       const current = await selectActiveUserKey(db, userId);
       if (current) return current;
 
@@ -150,7 +154,11 @@ export class ManagedUserKeyService {
           throw new Error("USER_KEY_LENGTH_INVALID");
         }
         const context = this.keyContext(userId, FIRST_KEY_VERSION);
-        const wrapped = await this.registry.active.wrapKey(generated, context);
+        const provider = fence
+          ? this.registry.resolveIdentity(fence.provider, fence.providerFingerprint)
+          : this.registry.active;
+        if (!provider) throw new Error("MANAGED_USER_KEY_MIGRATION_TARGET_MISSING");
+        const wrapped = await provider.wrapKey(generated, context);
         const row = rowFromWrapped(userId, FIRST_KEY_VERSION, wrapped);
         const inserted = await db.query(
           `INSERT INTO managed_content_keys
@@ -208,12 +216,23 @@ export class ManagedUserKeyService {
           WHERE user_id = $1
             AND key_version = $2
             AND state IN ('active', 'retiring')
-          LIMIT 1`,
+          ORDER BY CASE state WHEN 'active' THEN 0 ELSE 1 END ASC,
+                   created_at DESC,
+                   id DESC`,
         [userId, keyVersion],
       );
-      const row = result.rows[0];
-      if (!row) throw new Error("MANAGED_USER_KEY_NOT_FOUND");
-      return parseManagedUserKeyRow(row);
+      const rows = result.rows.map(parseManagedUserKeyRow);
+      const active = rows.find((row) => row.state === "active");
+      if (active) {
+        // active가 현재 registry에 존재하면 deterministic primary다. unwrap 실패는
+        // retiring fallback 사유가 아니므로 그대로 fail-closed 한다.
+        if (isResolvable(this.registry, active)) return active;
+      }
+      const retiring = rows.find((row) => (
+        row.state === "retiring" && isResolvable(this.registry, row)
+      ));
+      if (retiring) return retiring;
+      throw new Error("MANAGED_USER_KEY_NOT_FOUND");
     });
   }
 
@@ -224,6 +243,46 @@ export class ManagedUserKeyService {
       keyVersion,
       purpose: "prompt-history",
     };
+  }
+}
+
+type MigrationTarget = {
+  provider: KeyProviderName;
+  providerFingerprint: string;
+};
+
+async function latestMigrationTarget(
+  db: ManagedUserKeyDatabase,
+): Promise<MigrationTarget | null> {
+  const result = await db.query(
+    `SELECT provider, provider_fingerprint AS "providerFingerprint"
+       FROM content_key_security_events
+      WHERE event_type='provider_migration_started'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  const provider = requiredProvider(row.provider);
+  const providerFingerprint = requiredString(row.providerFingerprint);
+  if (!new RegExp(`^${provider}:[0-9a-f]{24}$`).test(providerFingerprint)) {
+    throw new Error("MANAGED_USER_KEY_MIGRATION_TARGET_INVALID");
+  }
+  return { provider, providerFingerprint };
+}
+
+function isResolvable(
+  registry: KeyProviderRegistry,
+  row: ManagedUserKeyRow,
+): boolean {
+  try {
+    registry.resolveWrappedKey(toWrappedUserKey(row));
+    return true;
+  } catch (error) {
+    if (error instanceof Error && error.message === "KEY_PROVIDER_NOT_REGISTERED") {
+      return false;
+    }
+    throw error;
   }
 }
 

@@ -73,6 +73,13 @@ export type EncryptionAdminStatus = {
   fingerprint: string | null;
   credentialSource: CredentialSourceSummary | null;
   health: KeyProviderHealth | null;
+  migrationTarget: {
+    provider: KeyProviderName;
+    keyRef: string;
+    fingerprint: string;
+    credentialSource: CredentialSourceSummary;
+    health: KeyProviderHealth;
+  } | null;
   records: { serverV1: number; e2eeV1: number; managedV1: number };
   userKeys: { active: number; pending: number; retiring: number };
   migrations: { e2eePending: number; e2eeBlocked: number };
@@ -529,6 +536,7 @@ export async function getEncryptionAdminStatus(
         fingerprint: null,
         credentialSource: null,
         health: null,
+        migrationTarget: null,
         records,
         userKeys,
         migrations,
@@ -544,9 +552,21 @@ export async function getEncryptionAdminStatus(
       throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
     }
     pricing = pricingFor(env, identity.provider);
-    const [source, health] = await Promise.all([
+    const [source, health, migrationTargetStatus] = await Promise.all([
       activeProvider.describeCredentialSource().then(credentialSource),
       runtime.health.check(activeProvider).then(healthStatus).catch(safeHealthFailure),
+      migrationProvider && migrationIdentity
+        ? Promise.all([
+            migrationProvider.describeCredentialSource().then(credentialSource),
+            runtime.health.check(migrationProvider).then(healthStatus).catch(safeHealthFailure),
+          ]).then(([credentialSource, targetHealth]) => ({
+            provider: migrationIdentity.provider,
+            keyRef: migrationIdentity.keyRef,
+            fingerprint: migrationIdentity.fingerprint,
+            credentialSource,
+            health: targetHealth,
+          }))
+        : Promise.resolve(null),
     ]);
 
     return {
@@ -556,6 +576,7 @@ export async function getEncryptionAdminStatus(
       fingerprint: identity.fingerprint,
       credentialSource: source,
       health,
+      migrationTarget: migrationTargetStatus,
       records,
       userKeys,
       migrations,

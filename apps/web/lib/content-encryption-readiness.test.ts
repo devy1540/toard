@@ -59,14 +59,28 @@ class ReadinessProvider implements KeyManagementProvider {
 }
 
 function dbStatus(
-  row: Record<string, unknown> | null = { managed_records: "0" },
+  row: Record<string, unknown> | null = {
+    managed_records: "0",
+    active_user_keys: "0",
+    pending_user_keys: "0",
+    retiring_user_keys: "0",
+    wrapper_distribution: [],
+  },
 ): ContentEncryptionReadinessDb & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
     async query(sql) {
       calls.push(sql);
-      return { rows: row === null ? [] : [row] };
+      const isExplicitMalformedObject = row !== null && Object.keys(row).length === 0;
+      return { rows: row === null ? [] : isExplicitMalformedObject ? [row] : [{
+        managed_records: "0",
+        active_user_keys: "0",
+        pending_user_keys: "0",
+        retiring_user_keys: "0",
+        wrapper_distribution: [],
+        ...row,
+      }] };
     },
   };
 }
@@ -206,6 +220,58 @@ test("healthy는 active provider exact instance와 공개 식별자만 반환한
     errorCode: null,
   });
   assert.deepEqual(runtime.calls, [runtime.registry.active]);
+});
+
+test("readiness는 active/pending distribution fingerprint가 현재 registry에서 해석될 때만 healthy이며 retiring old 제거는 허용한다", async () => {
+  const active = new ReadinessProvider();
+  const registry = new KeyProviderRegistry(active, null);
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  });
+  Object.defineProperty(runtime, "registry", { value: registry });
+  const activeFingerprint = active.fingerprint;
+
+  const status = await getContentEncryptionReadiness(dbStatus({
+    active_user_keys: "1",
+    pending_user_keys: "0",
+    retiring_user_keys: "1",
+    wrapper_distribution: [
+      { provider: "aws-kms", provider_fingerprint: activeFingerprint, state: "active", wrapper_count: "1" },
+      { provider: "local", provider_fingerprint: "local:111111111111111111111111", state: "retiring", wrapper_count: "1" },
+    ],
+  }), VALID_ENV, runtime);
+  assert.equal(status.status, "healthy");
+
+  await assert.rejects(
+    getContentEncryptionReadiness(dbStatus({
+      active_user_keys: "1",
+      pending_user_keys: "0",
+      retiring_user_keys: "0",
+      wrapper_distribution: [
+        { provider: "local", provider_fingerprint: "local:111111111111111111111111", state: "active", wrapper_count: "1" },
+      ],
+    }), VALID_ENV, runtime),
+    /MANAGED_KEY_DISTRIBUTION_UNRESOLVABLE/,
+  );
+});
+
+test("readiness는 aggregate와 malformed distribution snapshot 불일치를 generic not-ready로 닫는다", async () => {
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  });
+  for (const row of [
+    { active_user_keys: "2", wrapper_distribution: [{ provider: "aws-kms", provider_fingerprint: runtime.registry.active.fingerprint, state: "active", wrapper_count: "1" }] },
+    { active_user_keys: "1", wrapper_distribution: [{ provider: "aws-kms", provider_fingerprint: runtime.registry.active.fingerprint, state: "active", wrapper_count: "01" }] },
+  ]) {
+    await assert.rejects(
+      getContentEncryptionReadiness(dbStatus(row), VALID_ENV, runtime),
+      /MANAGED_KEY_DISTRIBUTION_INVALID/,
+    );
+  }
 });
 
 test("provider identity 상태형 getter는 각 한 번만 읽고 snapshot만 DTO에 사용한다", async () => {

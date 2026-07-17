@@ -32,14 +32,9 @@ const defaults: Dependencies = {
   commit: commitE2eeManagedBatch,
 };
 
-export async function POST(request: Request): Promise<Response> {
-  return postManagedMigrationCommit(request, defaults);
-}
-
-export async function postManagedMigrationCommit(
-  request: Request,
-  dependencies: Dependencies,
-): Promise<Response> {
+function createPost(overrides: Partial<Dependencies> = {}) {
+  const dependencies = { ...defaults, ...overrides };
+  return async function POST(request: Request): Promise<Response> {
   if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   let userId: string | null;
   try { userId = await dependencies.requireSession(); }
@@ -70,7 +65,10 @@ export async function postManagedMigrationCommit(
     if (!code) return problem(503, "MIGRATION_FAILED");
     return problem(e2eeManagedMigrationHttpStatus(code), code);
   }
+  };
 }
+
+export const POST = Object.assign(createPost(), { withDependencies: createPost });
 
 function problem(status: number, code: string): Response {
   return noStore(Response.json({ code }, { status }));

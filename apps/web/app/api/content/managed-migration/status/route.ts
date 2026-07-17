@@ -6,21 +6,6 @@ import {
   getE2eeManagedMigrationStatus,
 } from "@/lib/e2ee-to-managed-migration";
 
-export async function GET(): Promise<Response> {
-  return getManagedMigrationStatusForSession();
-}
-
-export function getManagedMigrationStatusForSession(
-  requireSession: StatusDependencies["requireSession"] = requireContentSession,
-): Promise<Response> {
-  return getManagedMigrationStatusResponse({
-    isAuthOpen: isContentAuthOpen,
-    requireSession,
-    capability: getLegacyE2eeCapability,
-    status: getE2eeManagedMigrationStatus,
-  });
-}
-
 type StatusDependencies = {
   isAuthOpen(): boolean;
   requireSession(): Promise<string | null>;
@@ -28,9 +13,16 @@ type StatusDependencies = {
   status(userId: string): Promise<unknown>;
 };
 
-export async function getManagedMigrationStatusResponse(
-  dependencies: StatusDependencies,
-): Promise<Response> {
+const defaults: StatusDependencies = {
+  isAuthOpen: isContentAuthOpen,
+  requireSession: requireContentSession,
+  capability: getLegacyE2eeCapability,
+  status: getE2eeManagedMigrationStatus,
+};
+
+function createGet(overrides: Partial<StatusDependencies> = {}) {
+  const dependencies = { ...defaults, ...overrides };
+  return async function GET(): Promise<Response> {
   if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   let userId: string | null;
   try { userId = await dependencies.requireSession(); }
@@ -45,7 +37,10 @@ export async function getManagedMigrationStatusResponse(
     const code = e2eeManagedMigrationErrorCode(error) ?? "MIGRATION_FAILED";
     return problem(e2eeManagedMigrationHttpStatus(code), code);
   }
+  };
 }
+
+export const GET = Object.assign(createGet(), { withDependencies: createGet });
 
 function problem(status: number, code: string): Response { return noStore(Response.json({ code }, { status })); }
 function noStore(response: Response): Response { response.headers.set("Cache-Control", "no-store"); return response; }

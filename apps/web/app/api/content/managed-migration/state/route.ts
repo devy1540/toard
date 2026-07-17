@@ -12,15 +12,6 @@ import {
 } from "@/lib/e2ee-to-managed-migration";
 import { readBoundedJson } from "@/lib/tool-ingest";
 
-export async function POST(request: Request): Promise<Response> {
-  return postManagedMigrationState(request, {
-    isAuthOpen: isContentAuthOpen,
-    requireSession: requireContentSession,
-    capability: getLegacyE2eeCapability,
-    state: setE2eeManagedMigrationState,
-  });
-}
-
 type Dependencies = {
   isAuthOpen(): boolean;
   requireSession(): Promise<string | null>;
@@ -28,7 +19,16 @@ type Dependencies = {
   state(userId: string, input: Parameters<typeof setE2eeManagedMigrationState>[1]): Promise<unknown>;
 };
 
-export async function postManagedMigrationState(request: Request, dependencies: Dependencies): Promise<Response> {
+const defaults: Dependencies = {
+  isAuthOpen: isContentAuthOpen,
+  requireSession: requireContentSession,
+  capability: getLegacyE2eeCapability,
+  state: setE2eeManagedMigrationState,
+};
+
+function createPost(overrides: Partial<Dependencies> = {}) {
+  const dependencies = { ...defaults, ...overrides };
+  return async function POST(request: Request): Promise<Response> {
   if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   let userId: string | null;
   try { userId = await dependencies.requireSession(); }
@@ -50,7 +50,10 @@ export async function postManagedMigrationState(request: Request, dependencies: 
     const code = e2eeManagedMigrationErrorCode(error) ?? "MIGRATION_FAILED";
     return problem(e2eeManagedMigrationHttpStatus(code), code);
   }
+  };
 }
+
+export const POST = Object.assign(createPost(), { withDependencies: createPost });
 
 function problem(status: number, code: string): Response { return noStore(Response.json({ code }, { status })); }
 function noStore(response: Response): Response { response.headers.set("Cache-Control", "no-store"); return response; }

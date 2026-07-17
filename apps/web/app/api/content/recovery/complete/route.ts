@@ -5,15 +5,6 @@ import {
 } from "@/lib/e2ee-legacy-gate";
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
 
-export async function POST(request: Request): Promise<Response> {
-  return postRecoveryComplete(request, {
-    isAuthOpen: isContentAuthOpen,
-    requireSession: requireContentSession,
-    capability: getLegacyE2eeCapability,
-    complete: registerRecoveredBrowser,
-  });
-}
-
 type Dependencies = {
   isAuthOpen(): boolean;
   requireSession(): Promise<string | null>;
@@ -21,7 +12,16 @@ type Dependencies = {
   complete(userId: string, input: unknown): Promise<unknown>;
 };
 
-export async function postRecoveryComplete(request: Request, dependencies: Dependencies): Promise<Response> {
+const defaults: Dependencies = {
+  isAuthOpen: isContentAuthOpen,
+  requireSession: requireContentSession,
+  capability: getLegacyE2eeCapability,
+  complete: registerRecoveredBrowser,
+};
+
+function createPost(overrides: Partial<Dependencies> = {}) {
+  const dependencies = { ...defaults, ...overrides };
+  return async function POST(request: Request): Promise<Response> {
   if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   let userId: string | null;
   try { userId = await dependencies.requireSession(); }
@@ -36,6 +36,9 @@ export async function postRecoveryComplete(request: Request, dependencies: Depen
     const code = error instanceof ContentAccountError ? error.code : "RECOVERY_COMPLETE_FAILED";
     return problem(code === "RECOVERY_COMPLETE_FAILED" ? 500 : 400, code);
   }
+  };
 }
+
+export const POST = Object.assign(createPost(), { withDependencies: createPost });
 function problem(status: number, code: string): Response { return noStore(Response.json({ code }, { status })); }
 function noStore(response: Response): Response { response.headers.set("Cache-Control", "no-store"); return response; }

@@ -5,21 +5,6 @@ import {
 } from "@/lib/e2ee-legacy-gate";
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
 
-export async function GET(): Promise<Response> {
-  return getRecoveryWrapperForSession();
-}
-
-export function getRecoveryWrapperForSession(
-  requireSession: Dependencies["requireSession"] = requireContentSession,
-): Promise<Response> {
-  return getRecoveryWrapperResponse({
-    isAuthOpen: isContentAuthOpen,
-    requireSession,
-    capability: getLegacyE2eeCapability,
-    getWrapper: getRecoveryWrapper,
-  });
-}
-
 type Dependencies = {
   isAuthOpen(): boolean;
   requireSession(): Promise<string | null>;
@@ -27,7 +12,16 @@ type Dependencies = {
   getWrapper(userId: string): Promise<unknown>;
 };
 
-export async function getRecoveryWrapperResponse(dependencies: Dependencies): Promise<Response> {
+const defaults: Dependencies = {
+  isAuthOpen: isContentAuthOpen,
+  requireSession: requireContentSession,
+  capability: getLegacyE2eeCapability,
+  getWrapper: getRecoveryWrapper,
+};
+
+function createGet(overrides: Partial<Dependencies> = {}) {
+  const dependencies = { ...defaults, ...overrides };
+  return async function GET(): Promise<Response> {
   if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   let userId: string | null;
   try { userId = await dependencies.requireSession(); }
@@ -42,6 +36,9 @@ export async function getRecoveryWrapperResponse(dependencies: Dependencies): Pr
     const code = error instanceof ContentAccountError ? error.code : "RECOVERY_WRAPPER_READ_FAILED";
     return problem(code === "RECOVERY_WRAPPER_READ_FAILED" ? 500 : 404, code);
   }
+  };
 }
+
+export const GET = Object.assign(createGet(), { withDependencies: createGet });
 function problem(status: number, code: string): Response { return noStore(Response.json({ code }, { status })); }
 function noStore(response: Response): Response { response.headers.set("Cache-Control", "no-store"); return response; }

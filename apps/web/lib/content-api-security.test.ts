@@ -6,8 +6,11 @@ import { GET as statusGet } from "../app/api/content/status/route";
 import { POST as setupPost } from "../app/api/v1/content/setup/route";
 import { POST as activatePost } from "../app/api/v1/content/activate/route";
 import { POST as approvalListPost } from "../app/api/v1/content/approval-requests/route";
-import { getRecoveryWrapperResponse } from "../app/api/content/recovery/wrapper/route";
-import { postRecoveryComplete } from "../app/api/content/recovery/complete/route";
+import { GET as recoveryWrapperGet } from "../app/api/content/recovery/wrapper/route";
+import { POST as recoveryCompletePost } from "../app/api/content/recovery/complete/route";
+
+const recoveryWrapper = (dependencies: Parameters<typeof recoveryWrapperGet.withDependencies>[0]) => recoveryWrapperGet.withDependencies(dependencies)();
+const recoveryComplete = (request: Request, dependencies: Parameters<typeof recoveryCompletePost.withDependencies>[0]) => recoveryCompletePost.withDependencies(dependencies)(request);
 
 test("open mode blocks E2EE content endpoints with no-store", async () => {
   const previous = process.env.AUTH_MODE;
@@ -140,7 +143,7 @@ test("recovery routes는 capability를 body/downstream 전에 검사하고 기�
   let downstream = 0;
   const request = new Request("http://localhost", { method: "POST", body: "{}" });
   Object.defineProperty(request, "json", { value: async () => { bodyReads += 1; return {}; } });
-  const disabled = await postRecoveryComplete(request, {
+  const disabled = await recoveryComplete(request, {
     isAuthOpen: () => false, requireSession: async () => "user",
     capability: async () => "disabled",
     complete: async () => { downstream += 1; return {} as never; },
@@ -151,13 +154,13 @@ test("recovery routes는 capability를 body/downstream 전에 검사하고 기�
   assert.equal(bodyReads, 0); assert.equal(downstream, 0);
 
   for (const capability of ["migration", "recovery"] as const) {
-    const wrapper = await getRecoveryWrapperResponse({
+    const wrapper = await recoveryWrapper({
       isAuthOpen: () => false, requireSession: async () => "user",
       capability: async () => capability,
       getWrapper: async () => ({ capability }) as never,
     });
     assert.equal(wrapper.status, 200); assert.deepEqual(await wrapper.json(), { capability });
-    const complete = await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+    const complete = await recoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
       isAuthOpen: () => false, requireSession: async () => "user",
       capability: async () => capability,
       complete: async () => ({ capability }) as never,
@@ -169,16 +172,16 @@ test("recovery routes는 capability를 body/downstream 전에 검사하고 기�
 test("recovery session/gate/downstream failures는 safe no-store 응답이다", async () => {
   const base = { isAuthOpen: () => false, requireSession: async () => "user", capability: async () => "migration" as const };
   const responses = [
-    await getRecoveryWrapperResponse({ ...base, requireSession: async () => { throw new Error("secret"); }, getWrapper: async () => ({} as never) }),
-    await getRecoveryWrapperResponse({ ...base, capability: async () => { throw new Error("secret"); }, getWrapper: async () => ({} as never) }),
-    await getRecoveryWrapperResponse({ ...base, getWrapper: async () => { throw new Error("secret"); } }),
-    await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+    await recoveryWrapper({ ...base, requireSession: async () => { throw new Error("secret"); }, getWrapper: async () => ({} as never) }),
+    await recoveryWrapper({ ...base, capability: async () => { throw new Error("secret"); }, getWrapper: async () => ({} as never) }),
+    await recoveryWrapper({ ...base, getWrapper: async () => { throw new Error("secret"); } }),
+    await recoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
       ...base, requireSession: async () => { throw new Error("secret"); }, complete: async () => ({} as never),
     }),
-    await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+    await recoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
       ...base, capability: async () => { throw new Error("secret"); }, complete: async () => ({} as never),
     }),
-    await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+    await recoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
       ...base, complete: async () => { throw new Error("secret"); },
     }),
   ];

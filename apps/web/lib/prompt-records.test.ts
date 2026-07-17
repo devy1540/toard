@@ -313,7 +313,7 @@ test("e2ee records are inserted byte-for-byte without server plaintext or KEK", 
   );
 });
 
-test("e2ee owner must be active and belong to the ingest-token user", async () => {
+test("e2ee owner는 active 또는 migrated이고 ingest-token user에 속해야 한다", async () => {
   const mismatch = createRecordingDb({ ownerUserId: "user-a", contentState: "active" });
   await assert.rejects(
     saveE2eePromptRecords("user-b", [VALID_E2EE_RECORD], mismatch),
@@ -323,5 +323,10 @@ test("e2ee owner must be active and belong to the ingest-token user", async () =
   await assert.rejects(
     saveE2eePromptRecords("user-1", [VALID_E2EE_RECORD], pending),
     /CONTENT_ACCOUNT_INACTIVE/,
+  );
+  const migrated = createRecordingDb({ contentState: "migrated" as never });
+  assert.deepEqual(
+    await saveE2eePromptRecords("user-1", [VALID_E2EE_RECORD], migrated),
+    { inserted: 1, deduped: 0 },
   );
 });

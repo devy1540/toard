@@ -4,6 +4,7 @@ import {
   type ManagedContentRuntime,
 } from "@/lib/managed-content-runtime";
 import { parsePromptBatch, PromptWireError } from "@/lib/prompt-wire";
+import { readBoundedJson } from "@/lib/tool-ingest";
 import {
   E2eePromptSaveError,
   saveE2eePromptRecords,
@@ -41,16 +42,14 @@ async function postPrompts(req: Request, deps: PromptsPostDeps): Promise<Respons
   const auth = await deps.authenticateIngestToken(req.headers.get("authorization"));
   if (!auth) return new Response("unauthorized", { status: 401 });
 
-  const text = await req.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
-    return new Response("payload too large (max 4MB)", { status: 413 });
-  }
-
   // 3. 와이어 계약 검증
   let batch;
   try {
-    batch = parsePromptBatch(JSON.parse(text));
+    batch = parsePromptBatch(await readBoundedJson(req, MAX_BODY_BYTES));
   } catch (e) {
+    if (e instanceof RangeError) {
+      return new Response("payload too large (max 4MB)", { status: 413 });
+    }
     const msg = e instanceof PromptWireError ? e.message : "본문이 유효한 JSON 이 아닙니다";
     return new Response(msg, { status: 400 });
   }

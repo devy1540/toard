@@ -252,19 +252,22 @@ export class AwsKmsProvider implements KeyManagementProvider {
       throw providerError(this.name, classifyAwsError(error));
     }
 
-    if (
-      !(output.Plaintext instanceof Uint8Array)
-      || output.Plaintext.length === 0
-    ) {
-      throw providerError(this.name, "EMPTY_PLAINTEXT");
-    }
-    const payload = Buffer.from(output.Plaintext);
+    const plaintext = output.Plaintext;
     try {
-      return decodeUserKeyPayload(payload, context);
-    } catch {
-      throw providerError(this.name, "INVALID_PLAINTEXT");
+      if (!(plaintext instanceof Uint8Array) || plaintext.length === 0) {
+        throw providerError(this.name, "EMPTY_PLAINTEXT");
+      }
+      let payload: Buffer | undefined;
+      try {
+        payload = Buffer.from(plaintext);
+        return decodeUserKeyPayload(payload, context);
+      } catch {
+        throw providerError(this.name, "INVALID_PLAINTEXT");
+      } finally {
+        payload?.fill(0);
+      }
     } finally {
-      payload.fill(0);
+      if (plaintext instanceof Uint8Array) plaintext.fill(0);
     }
   }
 

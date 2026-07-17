@@ -5,6 +5,7 @@ import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
 import { Client } from "pg";
+import { POST as promptsPost } from "../apps/web/app/api/v1/prompts/route";
 import { decryptManagedContent } from "../apps/web/lib/managed-content-crypto";
 import type { ManagedContentRuntime } from "../apps/web/lib/managed-content-runtime";
 import {
@@ -14,6 +15,7 @@ import {
   getE2eeManagedMigrationStatus,
   type E2eeMigrationDb,
 } from "../apps/web/lib/e2ee-to-managed-migration";
+import { saveE2eePromptRecords } from "../apps/web/lib/prompt-records";
 
 const execFileAsync = promisify(execFile);
 const UCK = Buffer.alloc(32, 0x62);
@@ -74,7 +76,7 @@ test("E2EE managed migration service enforces RLS, same-row replacement, atomic 
     await admin.query("CREATE ROLE toard_app NOLOGIN NOSUPERUSER NOBYPASSRLS");
     for (const sql of await migrationUps()) await admin.query(sql);
     await admin.query(`GRANT USAGE ON SCHEMA public TO toard_app;
-      GRANT SELECT,UPDATE ON prompt_records,content_accounts,content_e2ee_migrations TO toard_app;
+      GRANT SELECT,INSERT,UPDATE ON prompt_records,content_accounts,content_e2ee_migrations TO toard_app;
       GRANT SELECT ON content_key_wrappers TO toard_app;`);
 
     const userA = randomUUID(), userB = randomUUID(), ownerA = randomUUID(), ownerB = randomUUID();
@@ -139,11 +141,44 @@ test("E2EE managed migration service enforces RLS, same-row replacement, atomic 
     await app.query("ROLLBACK");
     await app.query("RESET ROLE");
 
-    const lateId = await insertE2ee(admin, userA, ownerA, "late");
+    await app.query("SET ROLE toard_app");
+    await app.query("BEGIN");
+    await app.query("SELECT set_config('app.current_user_id',$1,true)", [userA]);
+    const lateResponse = await promptsPost.withDependencies({
+      authenticateIngestToken: async () => ({ userId: userA, tokenId: "late-e2ee-token" }),
+      loadProviders: async () => [{ key: "codex" }] as never,
+      saveE2eePromptRecords: (userId, records) => saveE2eePromptRecords(userId, records, appDb),
+    })(new Request("http://localhost/api/v1/prompts", {
+      method: "POST",
+      headers: { authorization: "Bearer late-e2ee-token" },
+      body: JSON.stringify([{
+        schema: "e2ee_v1",
+        algorithm: "AES-256-GCM",
+        aadVersion: 1,
+        contentOwnerId: ownerA,
+        contentKeyVersion: 1,
+        dedupKey: "late-through-prompts-route",
+        sessionId: "session",
+        providerKey: "codex",
+        turnRole: "user",
+        ts: "2026-07-17T01:02:03.000Z",
+        wrappedDek: Buffer.alloc(32, 1).toString("base64url"),
+        dekWrapIv: Buffer.alloc(12, 4).toString("base64url"),
+        dekWrapAuthTag: Buffer.alloc(16, 5).toString("base64url"),
+        iv: Buffer.alloc(12, 2).toString("base64url"),
+        ciphertext: Buffer.from("late-route-ciphertext").toString("base64url"),
+        authTag: Buffer.alloc(16, 3).toString("base64url"),
+      }]),
+    }));
+    assert.equal(lateResponse.status, 200);
+    assert.deepEqual(await lateResponse.json(), { inserted: 1, deduped: 0 });
+    await app.query("COMMIT");
+    const lateId = (await admin.query<{ id: string }>(
+      "SELECT id::text FROM prompt_records WHERE dedup_key='late-through-prompts-route'",
+    )).rows[0]!.id;
     assert.deepEqual((await admin.query("SELECT state,completed_at FROM content_e2ee_migrations WHERE user_id=$1", [userA])).rows, [{ state: "pending", completed_at: null }]);
     assert.deepEqual((await admin.query("SELECT state,(recovery_confirmed_at IS NOT NULL) AS recovery_ready FROM content_accounts WHERE user_id=$1", [userA])).rows,
       [{ state: "active", recovery_ready: true }]);
-    await app.query("SET ROLE toard_app");
     const latePage = await getE2eeManagedMigrationPage(userA, 25, appDb);
     assert.deepEqual(latePage.records.map((record) => record.id), [lateId]);
     assert.deepEqual(await getE2eeManagedMigrationStatus(userA, appDb).then(({ state, e2eeRecords, migratedRecords }) => ({ state, e2eeRecords, migratedRecords })),

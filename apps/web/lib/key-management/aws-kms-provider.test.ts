@@ -193,6 +193,67 @@ test("AWS adapter는 비어 있거나 malformed인 SDK output을 비민감 오�
   }
 });
 
+test("AWS decrypt는 SDK Plaintext 원본을 성공, copy/decode 실패, alias에서 모두 zeroize한다", async () => {
+  const success = encodeUserKeyPayload(UCK, CONTEXT);
+  const successProvider = provider(new StubAwsClient(async (command) => (
+    command instanceof DecryptCommand
+      ? { Plaintext: success, $metadata: {} }
+      : { CiphertextBlob: Buffer.from("ciphertext"), $metadata: {} }
+  )));
+  const wrapped = {
+    provider: "aws-kms" as const,
+    keyRef: KEY_ARN,
+    fingerprint: successProvider.fingerprint,
+    ciphertext: Buffer.from("ciphertext"),
+    metadata: { algorithm: "SYMMETRIC_DEFAULT" },
+  };
+  assert.deepEqual(await successProvider.unwrapKey(wrapped, CONTEXT), UCK);
+  assert.equal(success.every((byte) => byte === 0), true);
+
+  const malformed = Buffer.alloc(67, 9);
+  const malformedProvider = provider(new StubAwsClient(async (command) => (
+    command instanceof DecryptCommand
+      ? { Plaintext: malformed, $metadata: {} }
+      : { CiphertextBlob: Buffer.from("ciphertext"), $metadata: {} }
+  )));
+  await assert.rejects(
+    malformedProvider.unwrapKey({ ...wrapped, fingerprint: malformedProvider.fingerprint }, CONTEXT),
+    /aws-kms:INVALID_PLAINTEXT/,
+  );
+  assert.equal(malformed.every((byte) => byte === 0), true);
+
+  const copyFailure = encodeUserKeyPayload(UCK, CONTEXT);
+  const copyFailureProvider = provider(new StubAwsClient(async (command) => (
+    command instanceof DecryptCommand
+      ? { Plaintext: copyFailure, $metadata: {} }
+      : { CiphertextBlob: Buffer.from("ciphertext"), $metadata: {} }
+  )));
+  const fromDescriptor = Object.getOwnPropertyDescriptor(Buffer, "from");
+  assert.ok(fromDescriptor);
+  Object.defineProperty(Buffer, "from", {
+    configurable: true,
+    value: () => { throw new Error("COPY_FAILED"); },
+  });
+  try {
+    await assert.rejects(
+      copyFailureProvider.unwrapKey({ ...wrapped, fingerprint: copyFailureProvider.fingerprint }, CONTEXT),
+      /aws-kms:INVALID_PLAINTEXT/,
+    );
+  } finally {
+    Object.defineProperty(Buffer, "from", fromDescriptor);
+  }
+  assert.equal(copyFailure.every((byte) => byte === 0), true);
+
+  const alias = encodeUserKeyPayload(UCK, CONTEXT);
+  const aliasProvider = provider(new StubAwsClient(async (command) => (
+    command instanceof DecryptCommand
+      ? { Plaintext: alias.subarray(0), $metadata: {} }
+      : { CiphertextBlob: Buffer.from("ciphertext"), $metadata: {} }
+  )));
+  await aliasProvider.unwrapKey({ ...wrapped, fingerprint: aliasProvider.fingerprint }, CONTEXT);
+  assert.equal(alias.every((byte) => byte === 0), true);
+});
+
 test("AWS adapter는 AWS exception의 secret, metadata, request id를 버린다", async () => {
   const secretAccessKey = "AKIAIOSFODNN7EXAMPLE";
   const payload = UCK.toString("base64");

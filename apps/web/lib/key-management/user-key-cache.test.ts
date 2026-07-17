@@ -264,3 +264,72 @@ test("cache never awaits a pending hook", async () => {
     timeout,
   ]), 9);
 });
+
+test("TTL scheduler는 재접근 없이 가장 이른 entry를 zeroize하고 unref 한다", async () => {
+  const clock = createClock();
+  const timers: Array<{ callback: () => void; delay: number; cleared: boolean; unrefCalls: number }> = [];
+  const cache = new UserKeyCache({
+    ttlMs: 10,
+    now: clock.now,
+    setTimeout: (callback, delay) => {
+      const timer = { callback, delay, cleared: false, unrefCalls: 0 };
+      timers.push(timer);
+      return { unref: () => { timer.unrefCalls += 1; } } as never;
+    },
+    clearTimeout: () => { timers[timers.length - 1]!.cleared = true; },
+  });
+  await cache.withKey("u:1", async () => Buffer.alloc(32, 7), async () => undefined);
+  const stored = (cache as unknown as { entries: Map<string, { key: Buffer }> }).entries.get("u:1")!.key;
+  assert.equal(timers.length, 1);
+  assert.equal(timers[0]!.delay, 10);
+  assert.equal(timers[0]!.unrefCalls, 1);
+  clock.advance(10);
+  timers[0]!.callback();
+  assert.equal(stored.every((byte) => byte === 0), true);
+  assert.equal((cache as unknown as { entries: Map<string, unknown> }).entries.has("u:1"), false);
+});
+
+test("bounded LRU capacity eviction과 clear는 buffer와 expiry timer를 zeroize한다", async () => {
+  const timers: Array<{ cleared: boolean }> = [];
+  const cache = new UserKeyCache({
+    ttlMs: 300_000,
+    capacity: 2,
+    setTimeout: () => {
+      const timer = { cleared: false };
+      timers.push(timer);
+      return { unref() {} } as never;
+    },
+    clearTimeout: () => { timers[timers.length - 1]!.cleared = true; },
+  });
+  await cache.withKey("a", async () => Buffer.alloc(32, 1), async () => undefined);
+  await cache.withKey("b", async () => Buffer.alloc(32, 2), async () => undefined);
+  await cache.withKey("a", async () => Buffer.alloc(32, 9), async () => undefined);
+  const evicted = (cache as unknown as { entries: Map<string, { key: Buffer }> }).entries.get("b")!.key;
+  await cache.withKey("c", async () => Buffer.alloc(32, 3), async () => undefined);
+  assert.equal(evicted.every((byte) => byte === 0), true);
+  assert.deepEqual([...((cache as unknown as { entries: Map<string, unknown> }).entries.keys())], ["a", "c"]);
+  const remaining = [...(cache as unknown as { entries: Map<string, { key: Buffer }> }).entries.values()].map(({ key }) => key);
+  cache.clear();
+  assert.equal(remaining.every((key) => key.every((byte) => byte === 0)), true);
+  assert.equal(timers.some((timer) => timer.cleared), true);
+});
+
+test("취소된 이전 expiry callback은 현재 단일 scheduler를 교체하지 않는다", async () => {
+  const clock = createClock();
+  const timers: Array<{ callback: () => void }> = [];
+  const cache = new UserKeyCache({
+    ttlMs: 10,
+    now: clock.now,
+    setTimeout: (callback) => {
+      const timer = { callback };
+      timers.push(timer);
+      return { unref() {} } as never;
+    },
+    clearTimeout: () => undefined,
+  });
+  await cache.withKey("a", async () => Buffer.alloc(32, 1), async () => undefined);
+  await cache.withKey("b", async () => Buffer.alloc(32, 2), async () => undefined);
+  assert.equal(timers.length, 2);
+  timers[0]!.callback();
+  assert.equal(timers.length, 2);
+});

@@ -4,6 +4,9 @@ import {
   type LegacyE2eeCapability,
 } from "@/lib/e2ee-legacy-gate";
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { readBoundedJson } from "@/lib/tool-ingest";
+
+const MAX_BODY_BYTES = 256 * 1024;
 
 type Dependencies = {
   isAuthOpen(): boolean;
@@ -31,7 +34,13 @@ function createPost(overrides: Partial<Dependencies> = {}) {
   try { capability = await dependencies.capability(userId); }
   catch { return problem(500, "E2EE_LEGACY_GATE_FAILED"); }
   if (capability === "disabled") return problem(410, "E2EE_SETUP_RETIRED");
-  try { return noStore(Response.json(await dependencies.complete(userId, await request.json()), { status: 201 })); }
+  let input: unknown;
+  try { input = await readBoundedJson(request, MAX_BODY_BYTES); }
+  catch (error) {
+    if (error instanceof RangeError) return problem(413, "PAYLOAD_TOO_LARGE");
+    return problem(400, "INVALID_JSON");
+  }
+  try { return noStore(Response.json(await dependencies.complete(userId, input), { status: 201 })); }
   catch (error) {
     const code = error instanceof ContentAccountError ? error.code : "RECOVERY_COMPLETE_FAILED";
     return problem(code === "RECOVERY_COMPLETE_FAILED" ? 500 : 400, code);

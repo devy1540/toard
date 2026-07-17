@@ -185,7 +185,7 @@ export async function saveE2eePromptRecords(
     if (!account || account.user_id !== userId) {
       throw new E2eePromptSaveError("CONTENT_OWNER_MISMATCH");
     }
-    if (account.state !== "active") {
+    if (account.state !== "active" && account.state !== "migrated") {
       throw new E2eePromptSaveError("CONTENT_ACCOUNT_INACTIVE");
     }
     if (account.active_key_version !== keyVersion) {

@@ -31,6 +31,38 @@ function request(body: unknown, authorization = "Bearer token"): Request {
   });
 }
 
+function streamingRequest(
+  chunks: readonly string[],
+  options: { contentLength?: string; authorization?: string } = {},
+): { request: Request; cancelled: () => boolean; reads: () => number } {
+  let index = 0;
+  let wasCancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index >= chunks.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(Buffer.from(chunks[index++]!));
+    },
+    cancel() { wasCancelled = true; },
+  });
+  const init: RequestInit & { duplex: "half" } = {
+    method: "POST",
+    headers: {
+      authorization: options.authorization ?? "Bearer token",
+      ...(options.contentLength ? { "content-length": options.contentLength } : {}),
+    },
+    body: stream,
+    duplex: "half",
+  };
+  return {
+    request: new Request("http://localhost/api/v1/prompts", init),
+    cancelled: () => wasCancelled,
+    reads: () => index,
+  };
+}
+
 function managedRuntime(): ManagedContentRuntime {
   return {
     installationId: "installation-1",
@@ -236,4 +268,38 @@ test("기존 인증, 4MB, invalid JSON 계약을 유지한다", async () => {
     body: "{",
   }));
   assert.equal(invalidJson.status, 400);
+});
+
+test("prompt route는 인증 뒤 oversized Content-Length를 본문 read 전에 413으로 거부한다", async () => {
+  const input = streamingRequest([JSON.stringify([plainRecord])], {
+    contentLength: String(4 * 1024 * 1024 + 1),
+  });
+  const response = await POST.withDependencies({ authenticateIngestToken: auth })(input.request);
+  assert.equal(response.status, 413);
+  assert.equal(input.request.bodyUsed, false);
+});
+
+test("prompt route는 chunked 4MiB 초과를 조기 cancel하고 exact boundary는 허용한다", async () => {
+  const oversized = streamingRequest(["[\"", "x".repeat(4 * 1024 * 1024), "\"]"]);
+  const oversizedResponse = await POST.withDependencies({ authenticateIngestToken: auth })(oversized.request);
+  assert.equal(oversizedResponse.status, 413);
+  assert.equal(oversized.request.bodyUsed, true);
+
+  const exactBody = " ".repeat(4 * 1024 * 1024 - 2) + "[]";
+  const exact = streamingRequest([exactBody]);
+  const exactResponse = await POST.withDependencies({ authenticateIngestToken: auth })(exact.request);
+  assert.equal(exactResponse.status, 200);
+  assert.deepEqual(await exactResponse.json(), { inserted: 0, deduped: 0 });
+});
+
+test("prompt route는 인증 전 본문을 읽지 않고 malformed JSON은 400으로 거부한다", async () => {
+  const unauthorized = streamingRequest(["{"], { authorization: "Bearer invalid" });
+  const unauthorizedResponse = await POST.withDependencies({
+    authenticateIngestToken: async () => null,
+  })(unauthorized.request);
+  assert.equal(unauthorizedResponse.status, 401);
+  assert.equal(unauthorized.request.bodyUsed, false);
+
+  const malformed = await POST.withDependencies({ authenticateIngestToken: auth })(request("{"));
+  assert.equal(malformed.status, 400);
 });

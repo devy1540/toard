@@ -223,8 +223,8 @@ test("migration 36 models owner-scoped E2EE migration state and safe rollback", 
       (await client.query(
         "SELECT has_table_privilege('toard_app','managed_content_keys','DELETE') AS ok",
       )).rows[0].ok,
-      true,
-      "test topology must reproduce bootstrap default ALL table privileges",
+      false,
+      "managed key wrappers must retain the bootstrap least-privilege boundary",
     );
     for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
       assert.equal(

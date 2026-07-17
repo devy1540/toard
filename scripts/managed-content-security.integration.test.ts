@@ -7,8 +7,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { Client } from "pg";
-import { getManagedMigrationStatusForSession } from "../apps/web/app/api/content/managed-migration/status/route";
-import { getRecoveryWrapperForSession } from "../apps/web/app/api/content/recovery/wrapper/route";
+import { GET as managedMigrationStatusGet } from "../apps/web/app/api/content/managed-migration/status/route";
+import { GET as recoveryWrapperGet } from "../apps/web/app/api/content/recovery/wrapper/route";
 import { closePool } from "../apps/web/lib/db";
 import { getLegacyE2eeCapability, legacyE2eeCapability } from "../apps/web/lib/e2ee-legacy-gate";
 import { LocalKeyManagementProvider } from "../apps/web/lib/key-management/local-provider";
@@ -160,11 +160,11 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
     assert.equal(await inUserContext(appPrompt, legacyUser, (db) => legacyE2eeCapability(legacyUser, db)), "recovery");
     const blockedBefore = await legacySecuritySnapshot(admin, legacyUser);
     assert.equal(await getLegacyE2eeCapability(legacyUser), "recovery");
-    const recoveryResponse = await getRecoveryWrapperForSession(async () => legacyUser);
+    const recoveryResponse = await recoveryWrapperGet.withDependencies({ requireSession: async () => legacyUser })();
     const recoveryBody = await recoveryResponse.json() as { code?: string; wrapper?: { wrapperType?: string } };
     assert.equal(recoveryResponse.status, 200, JSON.stringify(recoveryBody));
     assert.equal(recoveryBody.wrapper?.wrapperType, "recovery");
-    const statusResponse = await getManagedMigrationStatusForSession(async () => legacyUser);
+    const statusResponse = await managedMigrationStatusGet.withDependencies({ requireSession: async () => legacyUser })();
     assert.equal(statusResponse.status, 200);
     assert.equal((await statusResponse.json() as { state?: string }).state, "blocked");
     assert.equal(await legacySecuritySnapshot(admin, legacyUser), blockedBefore,

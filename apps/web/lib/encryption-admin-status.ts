@@ -54,6 +54,9 @@ export type CostEstimate = {
   asOf: string | null;
   /** Free tier, commitments, tax, and network charges are not deducted. */
   grossReference: true;
+  scope: "active-provider-only";
+  includedRequests: number;
+  excludedRequests: number;
 };
 
 export type EncryptionAdminStatus = {
@@ -159,15 +162,55 @@ function providerIdentity(provider: KeyManagementProvider): {
   return { provider: name, keyRef, fingerprint };
 }
 
+function exactOwnDataSnapshotVariants(
+  value: unknown,
+  expectedShapes: readonly (readonly string[])[],
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+  }
+  try {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) {
+      throw new Error("invalid prototype");
+    }
+    const keys = Reflect.ownKeys(value);
+    const expectedKeys = expectedShapes.find((shape) => (
+      keys.length === shape.length
+      && keys.every((key) => typeof key === "string" && shape.includes(key))
+    ));
+    if (!expectedKeys) throw new Error("invalid keys");
+    const snapshot: Record<string, unknown> = {};
+    for (const key of expectedKeys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !("value" in descriptor)) throw new Error("invalid descriptor");
+      snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+  }
+}
+
+function exactOwnDataSnapshot(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> {
+  return exactOwnDataSnapshotVariants(value, [expectedKeys]);
+}
+
 function credentialSource(value: CredentialSourceSummary): CredentialSourceSummary {
+  const snapshot = exactOwnDataSnapshot(value, ["kind", "staticCredential"]);
+  const kind = snapshot.kind;
+  const staticCredential = snapshot.staticCredential;
   if (
-    typeof value?.kind !== "string"
-    || !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(value.kind)
-    || typeof value.staticCredential !== "boolean"
+    typeof kind !== "string"
+    || !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(kind)
+    || typeof staticCredential !== "boolean"
   ) {
     throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
   }
-  return { kind: value.kind, staticCredential: value.staticCredential };
+  return { kind, staticCredential };
 }
 
 function safeHealthFailure(): KeyProviderHealth {
@@ -181,50 +224,90 @@ function safeHealthFailure(): KeyProviderHealth {
 
 function healthStatus(value: KeyProviderHealth): KeyProviderHealth {
   try {
-    const checkedAt = value.checkedAt;
+    const snapshot = exactOwnDataSnapshotVariants(value, [
+      ["status", "latencyMs", "checkedAt"],
+      ["status", "latencyMs", "checkedAt", "errorCode"],
+    ]);
+    const status = snapshot.status;
+    const hasErrorCode = Object.prototype.hasOwnProperty.call(snapshot, "errorCode");
     if (
-      (value.status !== "healthy" && value.status !== "unhealthy")
-      || typeof value.latencyMs !== "number"
-      || !Number.isFinite(value.latencyMs)
-      || value.latencyMs < 0
-      || !(checkedAt instanceof Date)
-      || !Number.isFinite(checkedAt.getTime())
+      (status === "healthy" && hasErrorCode)
+      || (status === "unhealthy" && !hasErrorCode)
     ) return safeHealthFailure();
-    if (value.status === "healthy") {
+    const latencyMs = snapshot.latencyMs;
+    const checkedAt = snapshot.checkedAt;
+    if (
+      (status !== "healthy" && status !== "unhealthy")
+      || typeof latencyMs !== "number"
+      || !Number.isFinite(latencyMs)
+      || latencyMs < 0
+      || typeof checkedAt !== "object"
+      || checkedAt === null
+      || Object.getPrototypeOf(checkedAt) !== Date.prototype
+    ) return safeHealthFailure();
+    const checkedAtEpoch = Date.prototype.getTime.call(checkedAt);
+    if (!Number.isFinite(checkedAtEpoch)) return safeHealthFailure();
+    if (status === "healthy") {
       return {
         status: "healthy",
-        latencyMs: value.latencyMs,
-        checkedAt: new Date(checkedAt.getTime()),
+        latencyMs,
+        checkedAt: new Date(checkedAtEpoch),
       };
     }
-    if (!HEALTH_ERROR_CODES.has(value.errorCode)) return safeHealthFailure();
+    const errorCode = snapshot.errorCode;
+    if (typeof errorCode !== "string" || !HEALTH_ERROR_CODES.has(errorCode)) {
+      return safeHealthFailure();
+    }
     return {
       status: "unhealthy",
-      latencyMs: value.latencyMs,
-      checkedAt: new Date(checkedAt.getTime()),
-      errorCode: value.errorCode,
+      latencyMs,
+      checkedAt: new Date(checkedAtEpoch),
+      errorCode,
     };
   } catch {
     return safeHealthFailure();
   }
 }
 
-function money(value: number): number {
-  return Number(value.toFixed(6));
+function finiteNonnegative(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("COST_ESTIMATE_INVALID");
+  }
+  return value;
 }
 
-function costEstimate(pricing: Pricing | null, requests: number): CostEstimate | null {
+function money(value: number): number {
+  const rounded = Number(finiteNonnegative(value).toFixed(6));
+  return finiteNonnegative(rounded);
+}
+
+function costEstimate(
+  pricing: Pricing | null,
+  includedRequests: number,
+  allProviderRequests: number,
+): CostEstimate | null {
   if (!pricing) return null;
-  const requestCost = money((requests / 10_000) * pricing.per10kUsd);
+  finiteNonnegative(includedRequests);
+  finiteNonnegative(allProviderRequests);
+  const excludedRequests = allProviderRequests - includedRequests;
+  if (!Number.isSafeInteger(excludedRequests) || excludedRequests < 0) {
+    throw new Error("COST_ESTIMATE_INVALID");
+  }
+  const requestUnits = finiteNonnegative(includedRequests / 10_000);
+  const requestCost = money(finiteNonnegative(requestUnits * pricing.per10kUsd));
   const monthlyKeyCost = money(pricing.monthlyKeyUsd);
+  const total = money(finiteNonnegative(requestCost + monthlyKeyCost));
   return {
     currency: "USD",
     requestCost,
     monthlyKeyCost,
-    total: money(requestCost + monthlyKeyCost),
+    total,
     source: pricing.source,
     asOf: pricing.asOf,
     grossReference: true,
+    scope: "active-provider-only",
+    includedRequests,
+    excludedRequests,
   };
 }
 
@@ -242,13 +325,34 @@ export async function getEncryptionAdminStatus(
       throw new Error("MANAGED_CONTENT_RUNTIME_UNAVAILABLE");
     }
 
-    const statusResult = await db.query(
-      `SELECT server_records,e2ee_records,managed_records,
-              active_user_keys,pending_user_keys,retiring_user_keys,
-              e2ee_migration_pending,e2ee_migration_blocked
-         FROM content_encryption_status
-        WHERE singleton=TRUE`,
-    );
+    const [statusResult, operationsResult, cacheResult] = await Promise.all([
+      db.query(
+        `SELECT server_records,e2ee_records,managed_records,
+                active_user_keys,pending_user_keys,retiring_user_keys,
+                e2ee_migration_pending,e2ee_migration_blocked
+           FROM content_encryption_status
+          WHERE singleton=TRUE`,
+      ),
+      db.query(
+        `SELECT operation,outcome,
+                SUM(operation_count)::text AS operation_count,
+                SUM(total_latency_ms)::text AS total_latency_ms
+           FROM content_key_operation_daily
+          WHERE day BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
+            AND cache_result='none'
+          GROUP BY operation,outcome
+          ORDER BY operation,outcome`,
+      ),
+      db.query(
+        `SELECT cache_result,
+                SUM(operation_count)::text AS operation_count
+           FROM content_key_operation_daily
+          WHERE day BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
+            AND cache_result<>'none'
+          GROUP BY cache_result
+          ORDER BY cache_result`,
+      ),
+    ]);
     const row = statusResult.rows[0];
     if (!row) throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
     const records = {
@@ -265,55 +369,6 @@ export async function getEncryptionAdminStatus(
       e2eePending: parseUnsignedCount(row.e2ee_migration_pending),
       e2eeBlocked: parseUnsignedCount(row.e2ee_migration_blocked),
     };
-
-    if (!runtime) {
-      return {
-        enabled: false,
-        provider: null,
-        keyRef: null,
-        fingerprint: null,
-        credentialSource: null,
-        health: null,
-        records,
-        userKeys,
-        migrations,
-        operations30d: [],
-        cache30d: { hit: 0, miss: 0, singleFlight: 0 },
-        costEstimate: null,
-      };
-    }
-
-    const identity = providerIdentity(runtime.registry.active);
-    pricing = pricingFor(env, identity.provider);
-    const [source, health, operationsResult, cacheResult] = await Promise.all([
-      runtime.registry.active.describeCredentialSource().then(credentialSource),
-      runtime.health.check(runtime.registry.active).then(healthStatus).catch(safeHealthFailure),
-      db.query(
-        `SELECT operation,outcome,
-                SUM(operation_count)::text AS operation_count,
-                SUM(total_latency_ms)::text AS total_latency_ms
-           FROM content_key_operation_daily
-          WHERE day >= CURRENT_DATE - INTERVAL '29 days'
-            AND provider=$1
-            AND provider_fingerprint=$2
-            AND cache_result='none'
-          GROUP BY operation,outcome
-          ORDER BY operation,outcome`,
-        [identity.provider, identity.fingerprint],
-      ),
-      db.query(
-        `SELECT cache_result,
-                SUM(operation_count)::text AS operation_count
-           FROM content_key_operation_daily
-          WHERE day >= CURRENT_DATE - INTERVAL '29 days'
-            AND provider=$1
-            AND provider_fingerprint=$2
-            AND cache_result<>'none'
-          GROUP BY cache_result
-          ORDER BY cache_result`,
-        [identity.provider, identity.fingerprint],
-      ),
-    ]);
 
     const operationAggregates = new Map<string, {
       operation: KeyOperation;
@@ -376,6 +431,43 @@ export async function getEncryptionAdminStatus(
         : Number((aggregate.totalLatencyMs / aggregate.count).toFixed(3)),
     }));
 
+    if (!runtime) {
+      return {
+        enabled: false,
+        provider: null,
+        keyRef: null,
+        fingerprint: null,
+        credentialSource: null,
+        health: null,
+        records,
+        userKeys,
+        migrations,
+        operations30d,
+        cache30d,
+        costEstimate: null,
+      };
+    }
+
+    const activeProvider = runtime.registry.active;
+    const identity = providerIdentity(activeProvider);
+    pricing = pricingFor(env, identity.provider);
+    const [source, health, activeCostResult] = await Promise.all([
+      activeProvider.describeCredentialSource().then(credentialSource),
+      runtime.health.check(activeProvider).then(healthStatus).catch(safeHealthFailure),
+      db.query(
+        `SELECT COALESCE(SUM(operation_count),0)::text AS active_operation_count
+           FROM content_key_operation_daily
+          WHERE day BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
+            AND provider=$1
+            AND provider_fingerprint=$2
+            AND cache_result='none'`,
+        [identity.provider, identity.fingerprint],
+      ),
+    ]);
+    const activeProviderCalls = parseUnsignedCount(
+      activeCostResult.rows[0]?.active_operation_count,
+    );
+
     return {
       enabled: true,
       provider: identity.provider,
@@ -388,7 +480,7 @@ export async function getEncryptionAdminStatus(
       migrations,
       operations30d,
       cache30d,
-      costEstimate: costEstimate(pricing, actualProviderCalls),
+      costEstimate: costEstimate(pricing, activeProviderCalls, actualProviderCalls),
     };
   } catch (error) {
     if (error instanceof Error && error.message === "KEY_COST_OVERRIDE_INVALID") throw error;

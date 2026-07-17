@@ -92,6 +92,12 @@ export function EncryptionPanel({ status }: { status: EncryptionAdminStatus | nu
                 : t("overridePricing")}
             </p>
             <p className="text-muted-foreground">{t("grossDisclaimer")}</p>
+            <p className="text-muted-foreground mt-2">
+              {t("costScope", {
+                included: status.costEstimate.includedRequests,
+                excluded: status.costEstimate.excludedRequests,
+              })}
+            </p>
           </>
         ) : (
           <p className="text-muted-foreground mt-2">{t("costUnavailable")}</p>

@@ -80,9 +80,9 @@
     "staticCredential": "정적 자격 증명",
     "ambientCredential": "워크로드 또는 기본 자격 증명",
     "staticCredentialWarning": "정적 자격 증명은 교체와 유출 대응 부담이 큽니다. 가능하면 workload identity를 사용하세요.",
-    "operations30d": "최근 30일 실제 KMS 호출",
+    "operations30d": "전체 provider 최근 30일 실제 호출",
     "count": "{count}건",
-    "cacheHitRate": "최근 30일 캐시 hit rate",
+    "cacheHitRate": "전체 provider 최근 30일 캐시 hit rate",
     "records": "암호화 scheme",
     "recordCounts": "server {serverV1} · E2EE {e2eeV1} · managed {managedV1}",
     "userKeys": "사용자 키",
@@ -94,6 +94,7 @@
     "referencePricing": "공개 참고 단가 기준일 {asOf}",
     "overridePricing": "운영자 지정 단가",
     "grossDisclaimer": "무료 구간, 약정 할인, 세금, 네트워크 비용을 차감하지 않은 gross 참고치입니다.",
+    "costScope": "현재 provider와 현재 키 기준입니다. 비용에 포함된 요청 {included}건 · migration 또는 이전 provider/키 요청 {excluded}건과 해당 키 비용은 제외됩니다.",
     "costUnavailable": "이 provider의 참고 단가가 없습니다. 운영자 단가 override를 설정하면 표시됩니다."
   },
   "system": {

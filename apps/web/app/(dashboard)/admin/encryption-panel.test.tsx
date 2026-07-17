@@ -29,6 +29,9 @@ const STATUS: EncryptionAdminStatus = {
     source: "reference",
     asOf: "2026-07-17",
     grossReference: true,
+    scope: "active-provider-only",
+    includedRequests: 20000,
+    excludedRequests: 0,
   },
 };
 
@@ -52,10 +55,14 @@ test("관리형 암호화 패널은 ko/en에서 상태와 gross reference 기준
   const enHtml = render("en");
 
   assert.match(koHtml, /AWS KMS|aws-kms/);
+  assert.match(koHtml, /전체 provider 최근 30일/);
+  assert.match(enHtml, /all providers in 30 days/i);
   assert.match(koHtml, /2026-07-17/);
   assert.match(koHtml, /무료 구간|세금/);
   assert.match(enHtml, /2026-07-17/);
   assert.match(enHtml, /free tier|tax/i);
+  assert.match(koHtml, /현재 키.*기준|이전 provider.*제외/);
+  assert.match(enHtml, /current key|previous provider.*excluded/i);
   assert.match(koHtml, /75\.0%/);
 });
 

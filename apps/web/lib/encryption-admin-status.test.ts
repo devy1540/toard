@@ -67,6 +67,15 @@ function database(operationRows: Array<Record<string, unknown>> = []) {
       calls.push({ sql, params });
       if (/FROM content_encryption_status/i.test(sql)) return { rows: [STATUS_ROW] };
       if (/FROM content_key_operation_daily/i.test(sql)) {
+        if (/active_operation_count/i.test(sql)) {
+          const [provider, fingerprint] = params;
+          const count = operationRows
+            .filter((row) => row.cache_result === "none")
+            .filter((row) => row.provider === undefined || row.provider === provider)
+            .filter((row) => row.provider_fingerprint === undefined || row.provider_fingerprint === fingerprint)
+            .reduce((sum, row) => sum + BigInt(row.operation_count as string), 0n);
+          return { rows: [{ active_operation_count: count.toString() }] };
+        }
         if (/cache_result\s*=\s*'none'/i.test(sql)) {
           return { rows: operationRows.filter((row) => row.cache_result === "none") };
         }
@@ -82,9 +91,10 @@ function database(operationRows: Array<Record<string, unknown>> = []) {
 
 test("실제 KMS 호출만 30일 비용에 포함하고 latency는 sum/count 가중 평균이다", async () => {
   const db = database([
-    { operation: "wrap", outcome: "success", cache_result: "none", operation_count: "10000", total_latency_ms: "100000" },
-    { operation: "wrap", outcome: "success", cache_result: "none", operation_count: "2", total_latency_ms: "1000" },
-    { operation: "unwrap", outcome: "throttled", cache_result: "none", operation_count: "9998", total_latency_ms: "29994" },
+    { provider: "aws-kms", operation: "wrap", outcome: "success", cache_result: "none", operation_count: "10000", total_latency_ms: "100000" },
+    { provider: "aws-kms", operation: "wrap", outcome: "success", cache_result: "none", operation_count: "2", total_latency_ms: "1000" },
+    { provider: "aws-kms", operation: "unwrap", outcome: "throttled", cache_result: "none", operation_count: "9998", total_latency_ms: "29994" },
+    { provider: "gcp-kms", operation: "wrap", outcome: "success", cache_result: "none", operation_count: "5000", total_latency_ms: "25000" },
     { operation: "unwrap", outcome: "success", cache_result: "hit", operation_count: "70000", total_latency_ms: "0" },
     { operation: "unwrap", outcome: "success", cache_result: "miss", operation_count: "5000", total_latency_ms: "0" },
     { operation: "unwrap", outcome: "success", cache_result: "single_flight", operation_count: "300", total_latency_ms: "0" },
@@ -97,7 +107,7 @@ test("실제 KMS 호출만 30일 비용에 포함하고 latency는 sum/count 가
   });
 
   assert.deepEqual(status.operations30d, [
-    { operation: "wrap", outcome: "success", count: 10002, averageLatencyMs: 10.098 },
+    { operation: "wrap", outcome: "success", count: 15002, averageLatencyMs: 8.399 },
     { operation: "unwrap", outcome: "throttled", count: 9998, averageLatencyMs: 3 },
   ]);
   assert.deepEqual(status.cache30d, { hit: 70000, miss: 5000, singleFlight: 300 });
@@ -109,14 +119,21 @@ test("실제 KMS 호출만 30일 비용에 포함하고 latency는 sum/count 가
     source: "reference",
     asOf: "2026-07-17",
     grossReference: true,
+    scope: "active-provider-only",
+    includedRequests: 20000,
+    excludedRequests: 5000,
   });
   const operationQueries = db.calls.filter((call) => /content_key_operation_daily/i.test(call.sql));
-  assert.equal(operationQueries.length, 2);
+  assert.equal(operationQueries.length, 3);
   const operationsQuery = operationQueries.find((call) => /cache_result\s*=\s*'none'/i.test(call.sql))!;
   const cacheQuery = operationQueries.find((call) => /cache_result\s*<>\s*'none'/i.test(call.sql))!;
-  assert.match(operationsQuery.sql, /day\s*>=\s*CURRENT_DATE\s*-\s*INTERVAL\s*'29 days'/i);
-  assert.deepEqual(operationsQuery.params, ["aws-kms", "aws-kms:0123456789abcdef01234567"]);
-  assert.deepEqual(cacheQuery.params, operationsQuery.params);
+  const costQuery = operationQueries.find((call) => /active_operation_count/i.test(call.sql))!;
+  for (const query of operationQueries) {
+    assert.match(query.sql, /day\s+BETWEEN\s+CURRENT_DATE\s*-\s*INTERVAL\s*'29 days'\s+AND\s+CURRENT_DATE/i);
+  }
+  assert.deepEqual(operationsQuery.params, []);
+  assert.deepEqual(cacheQuery.params, []);
+  assert.deepEqual(costQuery.params, ["aws-kms", "aws-kms:0123456789abcdef01234567"]);
 });
 
 test("operator override는 두 값 모두 명시된 0 이상 finite 숫자만 허용한다", async () => {
@@ -141,6 +158,9 @@ test("operator override는 두 값 모두 명시된 0 이상 finite 숫자만 �
     source: "operator-override",
     asOf: null,
     grossReference: true,
+    scope: "active-provider-only",
+    includedRequests: 20000,
+    excludedRequests: 0,
   });
 
   for (const env of [
@@ -158,6 +178,40 @@ test("operator override는 두 값 모두 명시된 0 이상 finite 숫자만 �
       /KEY_COST_OVERRIDE_INVALID/,
     );
   }
+});
+
+test("finite override의 비용 산술 overflow와 집계 overflow는 fail-closed다", async () => {
+  await assert.rejects(
+    getEncryptionAdminStatus({
+      env: {
+        TOARD_KEY_ACTIVE_PROVIDER: "aws-kms",
+        TOARD_KEY_COST_PER_10000_USD: "9".repeat(308),
+        TOARD_KEY_MONTHLY_KEY_COST_USD: "1",
+      },
+      db: database([
+        { operation: "wrap", outcome: "success", cache_result: "none", operation_count: "20000", total_latency_ms: "20" },
+      ]),
+      runtime: runtime(),
+    }),
+    /ENCRYPTION_ADMIN_STATUS_UNAVAILABLE/,
+  );
+
+  const hugeReference = await getEncryptionAdminStatus({
+    env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+    db: database([
+      {
+        operation: "wrap",
+        outcome: "success",
+        cache_result: "none",
+        operation_count: Number.MAX_SAFE_INTEGER.toString(),
+        total_latency_ms: Number.MAX_SAFE_INTEGER.toString(),
+      },
+    ]),
+    runtime: runtime(),
+  });
+  assert.ok(Number.isFinite(hugeReference.costEstimate?.requestCost));
+  assert.ok(Number.isFinite(hugeReference.costEstimate?.total));
+  assert.ok((hugeReference.costEstimate?.requestCost ?? -1) >= 0);
 });
 
 test("미지원 단가 provider는 override가 없으면 null이고 status JSON은 secret-free다", async () => {
@@ -220,6 +274,97 @@ test("health 검사 예외와 비정상 결과는 secret-free unhealthy로 축�
     assert.equal(status.health?.errorCode, "PROVIDER_HEALTH_UNAVAILABLE");
     assert.doesNotMatch(JSON.stringify(status), /health-secret|credential=/i);
   }
+});
+
+test("credential/health hostile getter, Proxy, extra, inherited 필드는 secret-free로 fail-closed다", async () => {
+  let healthReads = 0;
+  const healthGetter = Object.defineProperties({}, {
+    status: { enumerable: true, get: () => (++healthReads === 1 ? "healthy" : "client_secret=health") },
+    latencyMs: { enumerable: true, value: 1 },
+    checkedAt: { enumerable: true, value: new Date("2026-07-17T00:00:00.000Z") },
+  });
+  const healthExtra = {
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T00:00:00.000Z"),
+    token: "health-extra-secret",
+  };
+  const healthWrongShape = {
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T00:00:00.000Z"),
+    errorCode: "client_secret=wrong-shape",
+  };
+  const healthProxy = new Proxy({}, {
+    ownKeys() { throw new Error("client_secret=proxy-secret"); },
+    get() { throw new Error("token=proxy-secret"); },
+  });
+  for (const hostile of [healthGetter, healthExtra, healthWrongShape, healthProxy]) {
+    const current = runtime();
+    current.health.check = async () => hostile as never;
+    const status = await getEncryptionAdminStatus({
+      env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+      db: database(),
+      runtime: current,
+    });
+    assert.equal(status.health?.status, "unhealthy");
+    assert.equal(status.health?.errorCode, "PROVIDER_HEALTH_UNAVAILABLE");
+    assert.doesNotMatch(JSON.stringify(status), /client_secret|proxy-secret|health-extra-secret|token=/i);
+  }
+
+  let credentialReads = 0;
+  const credentialGetter = Object.defineProperties({}, {
+    kind: { enumerable: true, get: () => (++credentialReads === 1 ? "safe-kind" : "client_secret=credential") },
+    staticCredential: { enumerable: true, value: false },
+  });
+  const inherited = Object.create({
+    get kind() { return "client_secret=inherited"; },
+  });
+  Object.defineProperty(inherited, "staticCredential", { enumerable: true, value: false });
+  const credentialExtra = { kind: "safe-kind", staticCredential: false, token: "credential-extra-secret" };
+  const credentialProxy = new Proxy({}, {
+    ownKeys() { throw new Error("token=credential-proxy-secret"); },
+    getOwnPropertyDescriptor() { throw new Error("client_secret=credential-proxy-secret"); },
+  });
+  for (const hostile of [credentialGetter, inherited, credentialExtra, credentialProxy]) {
+    const current = runtime();
+    current.registry.active.describeCredentialSource = async () => hostile as never;
+    await assert.rejects(
+      getEncryptionAdminStatus({
+        env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+        db: database(),
+        runtime: current,
+      }),
+      (error: unknown) => {
+        assert.equal((error as Error).message, "ENCRYPTION_ADMIN_STATUS_UNAVAILABLE");
+        assert.doesNotMatch((error as Error).message, /client_secret|token|secret/i);
+        return true;
+      },
+    );
+  }
+});
+
+test("최근 30일 query는 미래 날짜를 제외하는 상한을 모두 가진다", async () => {
+  const base = database();
+  const db = {
+    calls: base.calls,
+    query: async (sql: string, params: unknown[] = []) => {
+      if (
+        /content_key_operation_daily/i.test(sql)
+        && !/BETWEEN\s+CURRENT_DATE\s*-\s*INTERVAL\s*'29 days'\s+AND\s+CURRENT_DATE/i.test(sql)
+      ) {
+        throw new Error("future row included");
+      }
+      return base.query(sql, params);
+    },
+  };
+  const status = await getEncryptionAdminStatus({
+    env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+    db,
+    runtime: runtime(),
+  });
+  assert.equal(status.operations30d.length, 0);
+  assert.equal(db.calls.filter((call) => /content_key_operation_daily/i.test(call.sql)).length, 3);
 });
 
 test("상태 DB 실패와 credential source 실패는 성공 상태로 축소하지 않는다", async () => {

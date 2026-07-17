@@ -10,8 +10,11 @@
 #     docker compose --profile clickhouse up -d
 name: toard
 
-x-db-url: &db-url
-  DATABASE_URL: postgres://${POSTGRES_USER:-toard}:${POSTGRES_PASSWORD:-toard}@postgres:5432/${POSTGRES_DB:-toard}
+x-migration-db-url: &migration-db-url
+  DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgres://${POSTGRES_USER:-toard}:${POSTGRES_PASSWORD:-toard}@postgres:5432/${POSTGRES_DB:-toard}}
+
+x-app-db-url: &app-db-url
+  DATABASE_URL: ${APP_DATABASE_URL:-postgres://${POSTGRES_USER:-toard}:${POSTGRES_PASSWORD:-toard}@postgres:5432/${POSTGRES_DB:-toard}}
 
 # 본문 암호화 provider 설정. 앱과 content-admin만 이 anchor를 사용한다.
 # credential 값 자체는 허용하지 않고 workload identity 또는 read-only file 경로만 전달한다.
@@ -102,7 +105,7 @@ services:
       target: migrator
     command: ["sh", "-c", "pnpm migrate && pnpm seed"]
     environment:
-      <<: *db-url
+      <<: *migration-db-url
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     depends_on:
@@ -117,7 +120,7 @@ services:
       context: .
       target: runner
     environment:
-      <<: [*db-url, *content-encryption-env]
+      <<: [*app-db-url, *content-encryption-env]
       AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET 필수 — openssl rand -base64 33 으로 생성해 env 또는 .env 로 전달}
       AUTH_TRUST_HOST: "true"
       AUTH_MODE: ${AUTH_MODE:-oauth}
@@ -177,7 +180,7 @@ services:
     profiles: ["content-admin"]
     command: ["encryption", "status"]
     environment:
-      <<: [*db-url, *content-encryption-env]
+      <<: [*app-db-url, *content-encryption-env]
     volumes:
       - ${TOARD_KEY_SECRET_DIR:-./secrets}:/run/toard-secrets:ro
     depends_on:
@@ -217,7 +220,7 @@ services:
     command: ["pnpm", "seed"]
     profiles: ["seed"]
     environment:
-      <<: *db-url
+      <<: *migration-db-url
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
       BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     depends_on:

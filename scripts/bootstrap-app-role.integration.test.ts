@@ -6,6 +6,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { Client } from "pg";
 import { getE2eeManagedMigrationStatus, type E2eeMigrationDb } from "../apps/web/lib/e2ee-to-managed-migration";
+import { assertManagedContentDatabaseRoleReady } from "../apps/web/lib/content-database-role-readiness";
 
 const execFileAsync = promisify(execFile);
 
@@ -45,6 +46,52 @@ async function bootstrap(container: string): Promise<void> {
 function db(client: Client): E2eeMigrationDb {
   return { async query(sql, params = []) { const result = await client.query(sql, params); return { rows: result.rows, rowCount: result.rowCount }; } };
 }
+
+const MANAGED_CONTENT_ENV = {
+  TOARD_KEY_ACTIVE_PROVIDER: "aws-kms",
+  TOARD_KEY_ACTIVE_AWS_KEY_ARN:
+    "arn:aws:kms:ap-northeast-2:123456789012:key/12345678-1234-1234-1234-123456789012",
+  TOARD_KEY_ACTIVE_AWS_REGION: "ap-northeast-2",
+};
+
+test("실제 PostgreSQL에서 managed content readiness는 app role만 허용한다", { timeout: 120_000 }, async () => {
+  const container = `toard-role-readiness-${randomUUID().slice(0, 6)}`;
+  let admin: Client | null = null;
+  try {
+    await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432", "postgres:16-alpine"]);
+    const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = stdout.trim().match(/:(\d+)$/)?.[1]; assert.ok(port);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+    await bootstrap(container);
+    admin = new Client({ connectionString }); await admin.connect();
+    await admin.query("CREATE ROLE toard_bypass_readiness NOLOGIN BYPASSRLS");
+
+    await assert.rejects(
+      assertManagedContentDatabaseRoleReady(admin, MANAGED_CONTENT_ENV),
+      /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
+    );
+
+    await admin.query("SET ROLE toard_app");
+    await assert.doesNotReject(
+      assertManagedContentDatabaseRoleReady(admin, MANAGED_CONTENT_ENV),
+    );
+    await admin.query("RESET ROLE");
+
+    await admin.query("SET ROLE toard_bypass_readiness");
+    await assert.rejects(
+      assertManagedContentDatabaseRoleReady(admin, MANAGED_CONTENT_ENV),
+      /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
+    );
+    await admin.query("RESET ROLE");
+  } finally {
+    await admin?.query("RESET ROLE").catch(() => undefined);
+    await admin?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});
 
 test("bootstrap script wraps every role and privilege mutation in one transaction", async () => {
   const sql = await readFile("scripts/bootstrap-app-role.sql", "utf8");

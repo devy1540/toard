@@ -140,11 +140,31 @@ UCK를 감싼 `managed_v1`으로 저장한다. provider env, workload identity/s
 
 **2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 단 **RLS 는 앱이 비-superuser 롤로 접속할 때만 강제**된다(superuser 는 우회). 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
 ```sh
-psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/bootstrap-app-role.sql   # 비밀번호는 따옴표 없이 원문
+# owner-only (0600) psql input file은 secret manager가 생성한다.
+# 이 파일에는 PSQL-quoted app_password 변수와 bootstrap script의 absolute \i 경로만 둔다.
+# 비밀번호를 terminal, shell env, process argv, repository에 넣지 않는다.
+psql "$ADMIN_DATABASE_URL" -f /secure/bootstrap-app-role.psql
 # 이후 앱:  DATABASE_URL=postgres://toard_app:<비밀번호>@host:5432/db
 # 마이그레이션·seed 는 계속 관리(슈퍼유저) 롤로.
 ```
 그리고 각 사용자가 shim 에서 `TOARD_SHIM_COLLECT_CONTENT=1` 로 opt-in 하면 본문이 쌓이고, 본인만 `/history` 에서 조회한다.
+
+Compose에서는 migration owner와 앱 role을 다음 순서로 분리한다. URL이나 비밀번호를 터미널 출력·이슈·CI artifact에 남기지 않는다.
+
+```sh
+# 1. owner 연결(MIGRATION_DATABASE_URL)로 schema를 먼저 준비한다.
+docker compose up -d postgres migrate
+
+# 2. 같은 owner 연결로 앱 role을 생성한다.
+# owner-only (0600) psql input file은 secret manager가 생성하며 PSQL-quoted app_password와
+# scripts/bootstrap-app-role.sql의 absolute \i 경로만 포함한다. 비밀번호를 argv로 전달하지 않는다.
+psql "$MIGRATION_DATABASE_URL" -f /secure/bootstrap-app-role.psql
+
+# 3. APP_DATABASE_URL은 toard_app role로, MIGRATION_DATABASE_URL은 owner로 유지한 뒤 앱을 시작/재시작한다.
+docker compose up -d app
+```
+
+관리형 본문을 켠 상태에서 `APP_DATABASE_URL`이 superuser 또는 `BYPASSRLS` role이면 `/api/ready`는 503을 반환한다. 관리형 본문을 사용하지 않는 기존 Compose 설치는 두 URL을 설정하지 않아도 기존 기본 연결로 동작한다.
 
 > 일반 관리자 UI와 타 사용자는 RLS 때문에 타 사용자 평문/행을 읽지 못한다. DB superuser는 ciphertext와
 > wrapper를 볼 수 있으나 DB dump만으로 평문을 복구할 수 없다. 다만 DB와 KMS/Transit/local KEK 권한을

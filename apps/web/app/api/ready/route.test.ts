@@ -61,6 +61,9 @@ function dependencies(
       assertLegacyContentKeyReady: async () => {
         calls.push("legacy");
       },
+      assertManagedContentDatabaseRoleReady: async () => {
+        calls.push("role");
+      },
       getManagedContentRuntime: async () => {
         calls.push("runtime");
         return null;
@@ -93,14 +96,49 @@ test("ready payload에 disabled contentEncryption을 추가하고 DB 확보 뒤 
 
   assert.equal(response.status, 200);
   assert.deepEqual((await response.json()).contentEncryption, DISABLED);
-  assert.deepEqual(calls.slice(0, 5), [
+  assert.deepEqual(calls.slice(0, 6), [
     "pool",
     "query:SELECT 1",
     "legacy",
+    "role",
     "runtime",
     "managed",
   ]);
   assert.equal(calls.includes("clickhouse"), false);
+});
+
+test("관리형 본문 role readiness 오류는 role/DB detail 없이 503으로 fail-closed한다", async () => {
+  const unsafeRoleDetail = "owner_role password=not-for-response";
+  const { calls, overrides } = dependencies();
+  const response = await GET.withDependencies({
+    ...overrides,
+    env: {
+      TOARD_KEY_ACTIVE_PROVIDER: "aws-kms",
+      TOARD_KEY_ACTIVE_AWS_KEY_ARN:
+        "arn:aws:kms:ap-northeast-2:123456789012:key/12345678-1234-1234-1234-123456789012",
+      TOARD_KEY_ACTIVE_AWS_REGION: "ap-northeast-2",
+    },
+    assertManagedContentDatabaseRoleReady: async () => {
+      calls.push("role");
+      throw new Error(`MANAGED_CONTENT_DATABASE_ROLE_UNSAFE ${unsafeRoleDetail}`);
+    },
+    getManagedContentRuntime: async () => {
+      calls.push("runtime");
+      return null;
+    },
+  })();
+  const text = await response.text();
+
+  assert.equal(response.status, 503);
+  assert.deepEqual(JSON.parse(text), { status: "not-ready" });
+  assert.equal(text.includes(unsafeRoleDetail), false);
+  assert.deepEqual(calls.slice(0, 4), [
+    "pool",
+    "query:SELECT 1",
+    "legacy",
+    "role",
+  ]);
+  assert.equal(calls.includes("runtime"), false);
 });
 
 test("temporary managed provider 장애는 degraded payload로 200을 유지한다", async () => {

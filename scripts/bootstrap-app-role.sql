@@ -5,17 +5,17 @@
 -- 이 스크립트로 전용 롤을 만들고, 이후 앱의 DATABASE_URL 만 이 롤로 바꾼다.
 -- 마이그레이션·seed 는 계속 관리(슈퍼유저) 롤로 실행한다.
 --
--- 실행 (마이그레이션을 소유한 관리 롤로) — 비밀번호는 따옴표 없이 원문으로 전달한다
--- (스크립트가 :'app_password' 로 자동 인용하므로 안쪽에 작은따옴표를 넣지 말 것):
---   psql "$ADMIN_DATABASE_URL" -v app_password="교체할-강력한-비밀번호" \
---        -f scripts/bootstrap-app-role.sql
+-- 실행 (마이그레이션을 소유한 관리 롤로): owner-only (0600) psql input file을 secret manager가 만들고,
+-- 그 파일에 PSQL-quoted app_password 변수와 이 파일의 absolute \i 경로만 둔다.
+-- 비밀번호를 terminal, shell env, process argv, repository에 넣지 않는다:
+--   psql "$ADMIN_DATABASE_URL" -f /secure/bootstrap-app-role.psql
 --   → 이후 앱: DATABASE_URL=postgres://toard_app:<비밀번호>@<host>:5432/<db>
 
 \set ON_ERROR_STOP on
 
 \if :{?app_password}
 \else
-  \echo '오류: app_password 변수가 필요합니다 (따옴표 없이 원문) —  -v app_password="강력한-비밀번호"  로 실행하세요'
+  \echo '오류: app_password 변수가 필요합니다 — owner-only (0600) psql input file에서 PSQL-quoted 값으로 \set 하세요'
   \quit
 \endif
 

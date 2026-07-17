@@ -111,6 +111,8 @@ credential 값 대신 workload identity 변수 또는 `TOARD_KEY_SECRET_DIR` 아
 `migrate`와 `seed`에는 encryption env/secret volume이 전달되지 않고, `content-admin`은 profile을 지정해
 실행할 때만 생기는 one-shot container다.
 
+관리형 본문을 활성화할 때는 `MIGRATION_DATABASE_URL`에 owner 연결을, `APP_DATABASE_URL`에 `toard_app` 연결을 둔다. 먼저 `docker compose up -d postgres migrate`로 owner migration을 끝내고, owner 연결로 `scripts/bootstrap-app-role.sql`을 실행한 뒤 앱을 시작하거나 재시작한다. 비밀번호는 shell env나 argv가 아닌 **owner-only (0600) psql input file**에 PSQL-quoted 변수와 bootstrap script의 absolute `\i` 경로로만 넣는다. `migrate`와 `seed`는 owner URL만 사용하며 KMS env/secret mount를 받지 않는다. 앱 또는 content-admin이 superuser/BYPASSRLS 연결이면 managed content readiness가 503으로 fail-closed한다. URL·비밀번호와 `docker compose config` 출력을 공유하지 않는다.
+
 ```bash
 # 전체 scheme/key 집계와 provider 전환 readiness
 docker compose --profile content-admin run --rm content-admin encryption status

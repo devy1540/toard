@@ -79,10 +79,27 @@ function composeConfig(): { services: Record<string, ComposeService> } {
     {
       cwd: ROOT,
       encoding: "utf8",
-      env: { ...process.env, AUTH_SECRET: "dummy", ...sentinelEnv },
+      env: {
+        ...process.env,
+        AUTH_SECRET: "dummy",
+        APP_DATABASE_URL: "postgres://app-user:dummy@postgres:5432/toard",
+        MIGRATION_DATABASE_URL: "postgres://migration-owner:dummy@postgres:5432/toard",
+        ...sentinelEnv,
+      },
     },
   )) as { services: Record<string, ComposeService> };
 }
+
+test("Compose는 app/content-admin과 migrate/seed의 DATABASE_URL을 분리한다", () => {
+  const services = composeConfig().services;
+  const appDatabaseUrl = "postgres://app-user:dummy@postgres:5432/toard";
+  const migrationDatabaseUrl = "postgres://migration-owner:dummy@postgres:5432/toard";
+
+  assert.equal(services.app?.environment?.DATABASE_URL, appDatabaseUrl);
+  assert.equal(services["content-admin"]?.environment?.DATABASE_URL, appDatabaseUrl);
+  assert.equal(services.migrate?.environment?.DATABASE_URL, migrationDatabaseUrl);
+  assert.equal(services.seed?.environment?.DATABASE_URL, migrationDatabaseUrl);
+});
 
 function parseYaml(path: string): unknown {
   const ruby = [
@@ -238,6 +255,19 @@ test("env example은 각 provider의 active/migration 설정을 secret 원문 �
     /TOARD_KEY_MIGRATION_AZURE_CREDENTIAL_MODE=workload-identity/,
   );
   assert.match(example, /docker compose config.*(?:공유|저장).*금지/s);
+});
+
+test("Compose bootstrap 문서는 app role 비밀번호를 process argv로 전달하지 않는다", () => {
+  const deploy = readFileSync(new URL("docs/DEPLOY.md", ROOT), "utf8");
+  const runbook = readFileSync(new URL("docs/content-encryption-runbook.md", ROOT), "utf8");
+  const bootstrap = readFileSync(new URL("scripts/bootstrap-app-role.sql", ROOT), "utf8");
+
+  assert.doesNotMatch(deploy, /-v\s+app_password=/);
+  assert.doesNotMatch(bootstrap, /-v\s+app_password=/);
+  assert.match(deploy, /owner-only.*0600.*psql input file/is);
+  assert.match(deploy, /-f\s+\/secure\/bootstrap-app-role\.psql/);
+  assert.match(runbook, /owner-only.*psql input file/is);
+  assert.match(bootstrap, /owner-only.*psql input file/is);
 });
 
 test("GHCR build matrix는 4 target × 2 platform의 8개 row를 정확히 매핑한다", () => {

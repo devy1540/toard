@@ -36,3 +36,10 @@
 - Independent review P1: `created_at`은 transaction 시작 시각이므로 lock 획득 순서와 역전될 수 있다. migration 40은 advisory lock 아래 직렬화된 `provider_migration_started.id DESC`만 canonical fence revision으로 사용한다.
 - PostgreSQL regression은 (a) 일반 writer가 active=old/migration=target registry에서 target wrapper를 만들고 audit row/actor는 보지 못함, (b) 먼저 BEGIN한 transaction이 나중에 lock을 얻어 더 높은 id target을 기록하면 subsequent writer가 그 target을 선택함을 검증한다.
 - Review-fix verification: focused unit 175개, 관련 PostgreSQL/CLI integration 26개, migration 40 SQL/RLS integration, release/Helm tests, workspace typecheck 모두 통과했다.
+
+## 2nd review fix
+
+- 실제 `NOSUPERUSER NOBYPASSRLS` migration owner에서 `FORCE RLS`가 SECURITY DEFINER function에도 적용되어, 기존 migration 40 fence SELECT가 0행을 반환함을 PostgreSQL integration으로 재현했다.
+- Migration 40은 `pg_catalog.pg_class.relowner`를 `pg_catalog.pg_get_userbyid`로 정확한 role name으로 바꾼 뒤 `current_user`와 일치할 때만 허용하는 `content_key_security_events_fence_owner_select` 정책을 추가했다. role membership이나 app role grant로 넓히지 않았고, app의 audit/actor 직접 조회는 계속 0행이다.
+- 같은 integration에서 schema, audit table, fence function을 모두 해당 non-superuser owner가 소유하게 하고, `toard_app` 함수 호출은 target identity를 받고 신규 writer는 target wrapper를 만든다는 것을 확인했다. Down migration은 fence function과 추가 policy를 함께 제거한다.
+- 2차 review verification: `test:migrations` 41개, 관련 web unit 175개, 전체 workspace typecheck가 모두 통과했다.

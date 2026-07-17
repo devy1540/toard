@@ -293,4 +293,3 @@ Dispatch an independent reviewer over the production-hardening diff, resolve eve
 - [ ] **Step 6: Record operational residuals without weakening completion**
 
 External AWS/GCP/Azure/Vault/OpenBao credentials are deployment-specific and are not fabricated. Require each deployment to observe the real admin health wrap/unwrap canary before enabling content collection. Production readiness may be declared only after the repository gates are green and this deployment-specific activation step is explicitly documented.
-

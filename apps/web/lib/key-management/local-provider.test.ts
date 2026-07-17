@@ -80,6 +80,19 @@ test("local provider는 절대 secret-file 경로의 정확히 32바이트만 �
   );
 });
 
+test("local provider는 secret-file 접근 실패를 안정적인 unavailable code로 정규화한다", () => {
+  const secret = "EACCES /run/secrets/private-kek AWS_SECRET_ACCESS_KEY=must-not-leak";
+  assert.throws(
+    () => new LocalKeyManagementProvider({
+      keyFile: "/run/secrets/private-kek",
+      readFile: () => { throw new Error(secret); },
+    }),
+    (error: unknown) => error instanceof Error
+      && error.message === "LOCAL_KEK_FILE_UNAVAILABLE"
+      && !error.message.includes(secret),
+  );
+});
+
 test("local provider는 wrapper identity와 ciphertext 변조를 fail-closed한다", async () => {
   const provider = new LocalKeyManagementProvider({
     keyFile: "/run/secrets/toard-local-kek",

@@ -4,6 +4,12 @@
 현재 신규 E2EE setup/activation은 폐기되었고, 기존 `e2ee_v1` ciphertext와 blocked migration은 삭제하지
 않은 채 recovery/migration API만 유지한다.
 
+recovery wrapper/complete와 managed migration status/page/state/commit은 로그인 사용자별 legacy capability를
+본문 파싱이나 하위 서비스 호출보다 먼저 확인한다. 기존 `e2ee_v1` 행이 있으면 `migration`, blocked migration이면
+`recovery`로 계속 처리한다. E2EE 계정이 없거나 계정만 있고 legacy 행이 없으면 `410 E2EE_SETUP_RETIRED`,
+capability 조회 자체가 실패하면 `500 E2EE_LEGACY_GATE_FAILED`와 `Cache-Control: no-store`로 닫힌다. 이 gate는
+기존 ciphertext, wrapper, migration state를 자동 삭제하거나 다시 암호화하지 않는다.
+
 ## 보안 경계
 
 - 본문은 레코드별 DEK로 암호화되고, 사용자별 UCK가 DEK를 감싼다. DB에는 본문 ciphertext와 KMS/Transit/
@@ -220,6 +226,8 @@ kubectl -n toard delete job toard-content-admin
 pnpm test:content-security
 ```
 
-이 검증은 E2EE/managed ciphertext와 wrapper가 실제 존재하는지, pg_dump에 known plaintext/raw UCK/KEK/cloud
-credential marker가 없는지, RLS가 타 사용자/admin session을 차단하는지, KEK file 권한이 없는 별도 process의
-복호화가 실패하는지, 권한 있는 app runtime의 복호화만 성공하는지를 확인한다.
+이 검증은 실제 관리형 저장·열람 서비스와 승인된 browser HPKE envelope 흐름으로 E2EE/managed ciphertext와
+wrapper가 존재하는지 확인한다. pg_dump와 실제 `toard-admin` 오류 출력에는 known plaintext/raw UCK/KEK/cloud
+credential marker의 raw·hex·base64·base64url 변형이 없어야 한다. 또한 RLS가 타 사용자/admin session을
+차단하는지, KEK mount가 없는 uid 65534 별도 process가 `LOCAL_KEK_FILE_UNAVAILABLE`로 실패하는지, 권한 있는
+별도 process와 app runtime의 복호화만 성공하는지를 확인한다.

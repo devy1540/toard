@@ -1,4 +1,5 @@
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { getLegacyE2eeCapability, type LegacyE2eeCapability } from "@/lib/e2ee-legacy-gate";
 import {
   E2EE_MANAGED_MIGRATION_MAX_BODY_BYTES,
   migrationContractErrorCode,
@@ -18,6 +19,7 @@ import { readBoundedJson } from "@/lib/tool-ingest";
 type Dependencies = {
   isAuthOpen: () => boolean;
   requireSession: () => Promise<string | null>;
+  capability: (userId: string) => Promise<LegacyE2eeCapability>;
   getRuntime: () => Promise<ManagedContentRuntime | null>;
   commit: typeof commitE2eeManagedBatch;
 };
@@ -25,6 +27,7 @@ type Dependencies = {
 const defaults: Dependencies = {
   isAuthOpen: isContentAuthOpen,
   requireSession: requireContentSession,
+  capability: getLegacyE2eeCapability,
   getRuntime: getManagedContentRuntime,
   commit: commitE2eeManagedBatch,
 };
@@ -42,6 +45,10 @@ export async function postManagedMigrationCommit(
   try { userId = await dependencies.requireSession(); }
   catch { return problem(503, "MIGRATION_FAILED"); }
   if (!userId) return problem(401, "UNAUTHORIZED");
+  let capability: LegacyE2eeCapability;
+  try { capability = await dependencies.capability(userId); }
+  catch { return problem(500, "E2EE_LEGACY_GATE_FAILED"); }
+  if (capability === "disabled") return problem(410, "E2EE_SETUP_RETIRED");
 
   let items;
   try {

@@ -6,6 +6,8 @@ import { GET as statusGet } from "../app/api/content/status/route";
 import { POST as setupPost } from "../app/api/v1/content/setup/route";
 import { POST as activatePost } from "../app/api/v1/content/activate/route";
 import { POST as approvalListPost } from "../app/api/v1/content/approval-requests/route";
+import { getRecoveryWrapperResponse } from "../app/api/content/recovery/wrapper/route";
+import { postRecoveryComplete } from "../app/api/content/recovery/complete/route";
 
 test("open mode blocks E2EE content endpoints with no-store", async () => {
   const previous = process.env.AUTH_MODE;
@@ -133,17 +135,55 @@ test("retired route 인증 helper 예외는 secret-free 500/no-store로 닫힌�
   }
 });
 
-test("기존 recovery와 managed migration route는 E2EE 잔여 데이터 처리를 위해 유지된다", () => {
-  const recoveryWrapper = readFileSync(new URL("../app/api/content/recovery/wrapper/route.ts", import.meta.url), "utf8");
-  const recoveryComplete = readFileSync(new URL("../app/api/content/recovery/complete/route.ts", import.meta.url), "utf8");
-  const migrationPage = readFileSync(new URL("../app/api/content/managed-migration/page/route.ts", import.meta.url), "utf8");
-  const migrationCommit = readFileSync(new URL("../app/api/content/managed-migration/commit/route.ts", import.meta.url), "utf8");
-  const migrationStatus = readFileSync(new URL("../app/api/content/managed-migration/status/route.ts", import.meta.url), "utf8");
-  const migrationState = readFileSync(new URL("../app/api/content/managed-migration/state/route.ts", import.meta.url), "utf8");
-  assert.match(recoveryWrapper, /getRecoveryWrapper/);
-  assert.match(recoveryComplete, /registerRecoveredBrowser/);
-  assert.match(migrationPage, /getE2eeManagedMigrationPage/);
-  assert.match(migrationCommit, /commitE2eeManagedBatch/);
-  assert.match(migrationStatus, /getE2eeManagedMigrationStatus/);
-  assert.match(migrationState, /setE2eeManagedMigrationState/);
+test("recovery routes는 capability를 body/downstream 전에 검사하고 기존 migration/recovery payload를 유지한다", async () => {
+  let bodyReads = 0;
+  let downstream = 0;
+  const request = new Request("http://localhost", { method: "POST", body: "{}" });
+  Object.defineProperty(request, "json", { value: async () => { bodyReads += 1; return {}; } });
+  const disabled = await postRecoveryComplete(request, {
+    isAuthOpen: () => false, requireSession: async () => "user",
+    capability: async () => "disabled",
+    complete: async () => { downstream += 1; return {} as never; },
+  });
+  assert.equal(disabled.status, 410);
+  assert.equal(disabled.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await disabled.json(), { code: "E2EE_SETUP_RETIRED" });
+  assert.equal(bodyReads, 0); assert.equal(downstream, 0);
+
+  for (const capability of ["migration", "recovery"] as const) {
+    const wrapper = await getRecoveryWrapperResponse({
+      isAuthOpen: () => false, requireSession: async () => "user",
+      capability: async () => capability,
+      getWrapper: async () => ({ capability }) as never,
+    });
+    assert.equal(wrapper.status, 200); assert.deepEqual(await wrapper.json(), { capability });
+    const complete = await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+      isAuthOpen: () => false, requireSession: async () => "user",
+      capability: async () => capability,
+      complete: async () => ({ capability }) as never,
+    });
+    assert.equal(complete.status, 201); assert.deepEqual(await complete.json(), { capability });
+  }
+});
+
+test("recovery session/gate/downstream failures는 safe no-store 응답이다", async () => {
+  const base = { isAuthOpen: () => false, requireSession: async () => "user", capability: async () => "migration" as const };
+  const responses = [
+    await getRecoveryWrapperResponse({ ...base, requireSession: async () => { throw new Error("secret"); }, getWrapper: async () => ({} as never) }),
+    await getRecoveryWrapperResponse({ ...base, capability: async () => { throw new Error("secret"); }, getWrapper: async () => ({} as never) }),
+    await getRecoveryWrapperResponse({ ...base, getWrapper: async () => { throw new Error("secret"); } }),
+    await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+      ...base, requireSession: async () => { throw new Error("secret"); }, complete: async () => ({} as never),
+    }),
+    await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+      ...base, capability: async () => { throw new Error("secret"); }, complete: async () => ({} as never),
+    }),
+    await postRecoveryComplete(new Request("http://localhost", { method: "POST", body: "{}" }), {
+      ...base, complete: async () => { throw new Error("secret"); },
+    }),
+  ];
+  assert.deepEqual(responses.map((response) => response.status), [500, 500, 500, 500, 500, 500]);
+  assert.deepEqual(await responses[1]!.json(), { code: "E2EE_LEGACY_GATE_FAILED" });
+  assert.deepEqual(await responses[4]!.json(), { code: "E2EE_LEGACY_GATE_FAILED" });
+  for (const response of responses) assert.equal(response.headers.get("cache-control"), "no-store");
 });

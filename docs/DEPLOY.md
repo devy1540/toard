@@ -148,6 +148,8 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 
 신규 E2EE setup/activation endpoint는 `410 E2EE_SETUP_RETIRED`로 차단된다. 기존 `e2ee_v1` 또는 blocked
 migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed migration API를 유지하며 자동 삭제는 하지 않는다.
+계정이 없거나 계정만 있고 legacy 행이 없는 사용자는 이 API도 body 처리 전에 410으로 종료한다. capability 조회
+오류는 `500 E2EE_LEGACY_GATE_FAILED`와 `Cache-Control: no-store`로 fail-closed한다.
 
 ## 무중단 배포 노트 (ADR-001)
 

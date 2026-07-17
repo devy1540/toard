@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { POST as commitPost, postManagedMigrationCommit } from "./commit/route";
-import { GET as pageGet } from "./page/route";
-import { POST as statePost } from "./state/route";
+import { GET as pageGet, getManagedMigrationPageResponse } from "./page/route";
+import { POST as statePost, postManagedMigrationState } from "./state/route";
 import { GET as statusGet, getManagedMigrationStatusResponse } from "./status/route";
 import { E2eeManagedMigrationError } from "@/lib/e2ee-to-managed-migration";
 
@@ -28,6 +28,7 @@ test("로그인 세션이 없으면 commit은 body/runtime 전에 401/no-store�
   let runtimeCalls = 0;
   const response = await postManagedMigrationCommit(new Request("http://localhost", { method: "POST" }), {
     isAuthOpen: () => false, requireSession: async () => null,
+    capability: async () => "migration",
     getRuntime: async () => { runtimeCalls += 1; return null; },
     commit: async () => { throw new Error("unused"); },
   });
@@ -39,6 +40,7 @@ test("commit은 4MiB Content-Length와 chunked overflow를 JSON parse/runtime �
   let runtimeCalls = 0;
   const dependencies = {
     isAuthOpen: () => false, requireSession: async () => USER,
+    capability: async () => "migration" as const,
     getRuntime: async () => { runtimeCalls += 1; return null; },
     commit: async () => { throw new Error("must not run"); },
   };
@@ -53,6 +55,7 @@ test("commit은 4MiB Content-Length와 chunked overflow를 JSON parse/runtime �
 test("commit은 strict parser 뒤 runtime을 얻고 exception/plaintext 없이 safe code만 반환한다", async () => {
   const secret = "do-not-echo-this"; let runtimeCalls = 0;
   const base = { isAuthOpen: () => false, requireSession: async () => USER,
+    capability: async () => "migration" as const,
     getRuntime: async () => { runtimeCalls += 1; return {} as never; } };
   const invalid = await postManagedMigrationCommit(new Request("http://localhost", { method: "POST", body: JSON.stringify({ items: [{ id: "1", sourceDigest: DIGEST, text: "" }] }) }),
     { ...base, commit: async () => { throw new Error("unused"); } });
@@ -77,8 +80,10 @@ test("status DB failure와 session helper throw는 secret-free 503/no-store다",
   const secret = "postgresql://secret";
   for (const dependencies of [
     { isAuthOpen: () => false, requireSession: async () => USER,
+      capability: async () => "migration" as const,
       status: async () => { throw new E2eeManagedMigrationError("MIGRATION_FAILED"); } },
     { isAuthOpen: () => false, requireSession: async () => { throw new Error(secret); },
+      capability: async () => "migration" as const,
       status: async () => { throw new Error("unused"); } },
   ]) {
     const response = await getManagedMigrationStatusResponse(dependencies);
@@ -87,6 +92,7 @@ test("status DB failure와 session helper throw는 secret-free 503/no-store다",
   }
   const missing = await getManagedMigrationStatusResponse({
     isAuthOpen: () => false, requireSession: async () => USER,
+    capability: async () => "migration",
     status: async () => { throw new E2eeManagedMigrationError("MIGRATION_NOT_FOUND"); },
   });
   assert.equal(missing.status, 409); assert.deepEqual(await missing.json(), { code: "MIGRATION_NOT_FOUND" });
@@ -98,9 +104,55 @@ test("commit은 malformed UTF-8 JSON을 runtime 전에 거부한다", async () =
     method: "POST", body: new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]),
   }), {
     isAuthOpen: () => false, requireSession: async () => USER,
+    capability: async () => "migration",
     getRuntime: async () => { runtimeCalls += 1; return null; },
     commit: async () => { throw new Error("unused"); },
   });
   assert.equal(response.status, 400); assert.equal(runtimeCalls, 0);
   assert.deepEqual(await response.json(), { code: "INVALID_JSON" });
+});
+
+test("managed migration 4 routes는 disabled에서 body/runtime/downstream 전에 410이다", async () => {
+  let bodyReads = 0; let downstream = 0;
+  const body = new Request("http://localhost", { method: "POST", body: "{}" });
+  Object.defineProperty(body, "text", { value: async () => { bodyReads += 1; return "{}"; } });
+  const common = { isAuthOpen: () => false, requireSession: async () => USER, capability: async () => "disabled" as const };
+  const responses = [
+    await getManagedMigrationStatusResponse({ ...common, status: async () => { downstream += 1; return {}; } }),
+    await getManagedMigrationPageResponse(new Request("http://localhost?limit=5"), { ...common, page: async () => { downstream += 1; return {} as never; } }),
+    await postManagedMigrationState(body, { ...common, state: async () => { downstream += 1; return {} as never; } }),
+    await postManagedMigrationCommit(body, { ...common, getRuntime: async () => { downstream += 1; return null; }, commit: async () => { downstream += 1; return {} as never; } }),
+  ];
+  for (const response of responses) {
+    assert.equal(response.status, 410); assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), { code: "E2EE_SETUP_RETIRED" });
+  }
+  assert.equal(bodyReads, 0); assert.equal(downstream, 0);
+});
+
+test("managed migration gate 실패는 500이고 migration/recovery는 기존 payload를 유지한다", async () => {
+  const common = {
+    isAuthOpen: () => false,
+    requireSession: async () => USER,
+    capability: async () => { throw new Error("secret"); },
+  };
+  const failed = [
+    await getManagedMigrationStatusResponse({ ...common, status: async () => ({}) }),
+    await getManagedMigrationPageResponse(new Request("http://localhost?limit=5"), { ...common, page: async () => ({}) }),
+    await postManagedMigrationState(new Request("http://localhost", { method: "POST", body: "{}" }), { ...common, state: async () => ({}) }),
+    await postManagedMigrationCommit(new Request("http://localhost", { method: "POST", body: "{}" }), {
+      ...common, getRuntime: async () => null, commit: async () => ({} as never),
+    }),
+  ];
+  for (const response of failed) {
+    assert.equal(response.status, 500); assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await response.json(), { code: "E2EE_LEGACY_GATE_FAILED" });
+  }
+  for (const capability of ["migration", "recovery"] as const) {
+    const response = await getManagedMigrationStatusResponse({
+      isAuthOpen: () => false, requireSession: async () => USER,
+      capability: async () => capability, status: async () => ({ capability }),
+    });
+    assert.equal(response.status, 200); assert.deepEqual(await response.json(), { capability });
+  }
 });

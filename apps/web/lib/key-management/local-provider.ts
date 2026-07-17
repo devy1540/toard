@@ -34,7 +34,12 @@ export class LocalKeyManagementProvider implements KeyManagementProvider {
     if (!isAbsolute(input.keyFile)) {
       throw new Error("LOCAL_KEK_FILE_PATH_MUST_BE_ABSOLUTE");
     }
-    const raw = (input.readFile ?? ((path) => readFileSync(path)))(input.keyFile);
+    let raw: Buffer;
+    try {
+      raw = (input.readFile ?? ((path) => readFileSync(path)))(input.keyFile);
+    } catch {
+      throw new Error("LOCAL_KEK_FILE_UNAVAILABLE");
+    }
     if (!Buffer.isBuffer(raw) || raw.length !== 32) {
       throw new Error("LOCAL_KEK_FILE_MUST_BE_32_BYTES");
     }

@@ -1,4 +1,5 @@
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { getLegacyE2eeCapability, type LegacyE2eeCapability } from "@/lib/e2ee-legacy-gate";
 import {
   e2eeManagedMigrationErrorCode,
   e2eeManagedMigrationHttpStatus,
@@ -9,6 +10,7 @@ export async function GET(): Promise<Response> {
   return getManagedMigrationStatusResponse({
     isAuthOpen: isContentAuthOpen,
     requireSession: requireContentSession,
+    capability: getLegacyE2eeCapability,
     status: getE2eeManagedMigrationStatus,
   });
 }
@@ -16,6 +18,7 @@ export async function GET(): Promise<Response> {
 type StatusDependencies = {
   isAuthOpen(): boolean;
   requireSession(): Promise<string | null>;
+  capability(userId: string): Promise<LegacyE2eeCapability>;
   status(userId: string): Promise<unknown>;
 };
 
@@ -27,6 +30,10 @@ export async function getManagedMigrationStatusResponse(
   try { userId = await dependencies.requireSession(); }
   catch { return problem(503, "MIGRATION_FAILED"); }
   if (!userId) return problem(401, "UNAUTHORIZED");
+  let capability: LegacyE2eeCapability;
+  try { capability = await dependencies.capability(userId); }
+  catch { return problem(500, "E2EE_LEGACY_GATE_FAILED"); }
+  if (capability === "disabled") return problem(410, "E2EE_SETUP_RETIRED");
   try { return noStore(Response.json(await dependencies.status(userId))); }
   catch (error) {
     const code = e2eeManagedMigrationErrorCode(error) ?? "MIGRATION_FAILED";

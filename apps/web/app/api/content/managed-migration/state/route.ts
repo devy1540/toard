@@ -1,4 +1,5 @@
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { getLegacyE2eeCapability, type LegacyE2eeCapability } from "@/lib/e2ee-legacy-gate";
 import {
   E2EE_MANAGED_MIGRATION_MAX_BODY_BYTES,
   migrationContractErrorCode,
@@ -12,11 +13,31 @@ import {
 import { readBoundedJson } from "@/lib/tool-ingest";
 
 export async function POST(request: Request): Promise<Response> {
-  if (isContentAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
+  return postManagedMigrationState(request, {
+    isAuthOpen: isContentAuthOpen,
+    requireSession: requireContentSession,
+    capability: getLegacyE2eeCapability,
+    state: setE2eeManagedMigrationState,
+  });
+}
+
+type Dependencies = {
+  isAuthOpen(): boolean;
+  requireSession(): Promise<string | null>;
+  capability(userId: string): Promise<LegacyE2eeCapability>;
+  state(userId: string, input: Parameters<typeof setE2eeManagedMigrationState>[1]): Promise<unknown>;
+};
+
+export async function postManagedMigrationState(request: Request, dependencies: Dependencies): Promise<Response> {
+  if (dependencies.isAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   let userId: string | null;
-  try { userId = await requireContentSession(); }
+  try { userId = await dependencies.requireSession(); }
   catch { return problem(503, "MIGRATION_FAILED"); }
   if (!userId) return problem(401, "UNAUTHORIZED");
+  let capability: LegacyE2eeCapability;
+  try { capability = await dependencies.capability(userId); }
+  catch { return problem(500, "E2EE_LEGACY_GATE_FAILED"); }
+  if (capability === "disabled") return problem(410, "E2EE_SETUP_RETIRED");
   let input;
   try {
     input = parseE2eeManagedState(await readBoundedJson(request, E2EE_MANAGED_MIGRATION_MAX_BODY_BYTES));
@@ -24,7 +45,7 @@ export async function POST(request: Request): Promise<Response> {
     if (error instanceof RangeError) return problem(413, "MIGRATION_PAYLOAD_TOO_LARGE");
     return problem(400, migrationContractErrorCode(error) ?? "INVALID_JSON");
   }
-  try { return noStore(Response.json(await setE2eeManagedMigrationState(userId, input))); }
+  try { return noStore(Response.json(await dependencies.state(userId, input))); }
   catch (error) {
     const code = e2eeManagedMigrationErrorCode(error) ?? "MIGRATION_FAILED";
     return problem(e2eeManagedMigrationHttpStatus(code), code);

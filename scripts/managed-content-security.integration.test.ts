@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { Client } from "pg";
-import { legacyE2eeCapability } from "../apps/web/lib/e2ee-legacy-gate";
+import { getManagedMigrationStatusForSession } from "../apps/web/app/api/content/managed-migration/status/route";
+import { getRecoveryWrapperForSession } from "../apps/web/app/api/content/recovery/wrapper/route";
+import { closePool } from "../apps/web/lib/db";
+import { getLegacyE2eeCapability, legacyE2eeCapability } from "../apps/web/lib/e2ee-legacy-gate";
 import { LocalKeyManagementProvider } from "../apps/web/lib/key-management/local-provider";
 import { ProviderHealthCache } from "../apps/web/lib/key-management/provider-health-cache";
 import { KeyProviderRegistry } from "../apps/web/lib/key-management/registry";
@@ -22,6 +25,7 @@ import { runCli, type AdminCliDependencies } from "./toard-admin";
 const execFileAsync = promisify(execFile);
 const PLAINTEXT = "TOARD_MANAGED_PLAINTEXT_CANARY_29e4";
 const CLOUD_CREDENTIAL_MARKER = "AWS_SECRET_ACCESS_KEY=TOARD_MUST_NOT_PERSIST_29e4";
+const CHILD_KEK_PATH = "/run/toard-secrets/local-kek";
 
 test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, 관리자, 무권한 process에 평문을 노출하지 않는다", { timeout: 180_000 }, async () => {
   const container = `toard-managed-security-${randomUUID().slice(0, 8)}`;
@@ -32,6 +36,8 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
   let admin: Client | null = null;
   let appKeys: Client | null = null;
   let appPrompt: Client | null = null;
+  const previousDatabaseUrl = process.env.DATABASE_URL;
+  const previousAuthMode = process.env.AUTH_MODE;
   const uck = randomBytes(32);
   const kek = randomBytes(32);
   try {
@@ -80,12 +86,18 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
     );
     const installationId = String((await admin.query("SELECT installation_id FROM installation_identity WHERE singleton=TRUE")).rows[0]!.installation_id);
     const appUrl = `postgresql://toard_app:integration-app-password@127.0.0.1:${port}/toard`;
+    await closePool();
+    process.env.DATABASE_URL = appUrl;
+    process.env.AUTH_MODE = "session";
     appKeys = new Client({ connectionString: appUrl });
     appPrompt = new Client({ connectionString: appUrl });
     await appKeys.connect();
     await appPrompt.connect();
 
-    const provider = new LocalKeyManagementProvider({ keyFile });
+    const provider = new LocalKeyManagementProvider({
+      keyFile: CHILD_KEK_PATH,
+      readFile: () => Buffer.from(kek),
+    });
     const registry = new KeyProviderRegistry(provider, null);
     const userKeys = new ManagedUserKeyService({
       installationId,
@@ -121,6 +133,13 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
       [accountOnlyUser],
     );
     await admin.query(
+      `INSERT INTO content_key_wrappers
+       (user_id,content_key_version,wrapper_type,wrapper_ref,kdf_version,
+        public_salt_or_input,nonce,auth_tag,wrapped_content_key)
+       VALUES($1,1,'recovery','recovery-v1','hkdf-sha256-v1',$2,$3,$4,$5)`,
+      [legacyUser, Buffer.alloc(32, 0x21), Buffer.alloc(12, 0x22), Buffer.alloc(16, 0x23), Buffer.alloc(32, 0x24)],
+    );
+    await admin.query(
       `INSERT INTO prompt_records
        (dedup_key,user_id,session_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,ciphertext,auth_tag,
         encryption_scheme,content_owner_id,content_key_version,dek_wrap_iv,dek_wrap_auth_tag,aad_version)
@@ -139,6 +158,17 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
       [legacyUser],
     );
     assert.equal(await inUserContext(appPrompt, legacyUser, (db) => legacyE2eeCapability(legacyUser, db)), "recovery");
+    const blockedBefore = await legacySecuritySnapshot(admin, legacyUser);
+    assert.equal(await getLegacyE2eeCapability(legacyUser), "recovery");
+    const recoveryResponse = await getRecoveryWrapperForSession(async () => legacyUser);
+    const recoveryBody = await recoveryResponse.json() as { code?: string; wrapper?: { wrapperType?: string } };
+    assert.equal(recoveryResponse.status, 200, JSON.stringify(recoveryBody));
+    assert.equal(recoveryBody.wrapper?.wrapperType, "recovery");
+    const statusResponse = await getManagedMigrationStatusForSession(async () => legacyUser);
+    assert.equal(statusResponse.status, 200);
+    assert.equal((await statusResponse.json() as { state?: string }).state, "blocked");
+    assert.equal(await legacySecuritySnapshot(admin, legacyUser), blockedBefore,
+      "actual recovery/status routes must not mutate blocked ciphertext or wrappers");
     assert.equal(await legacyCipherSnapshot(admin, legacyUser), legacyBefore, "capability gate는 기존 암호문을 변경하면 안 된다");
 
     const ownHistory = await inUserContext(appPrompt, userA, (db) => getMyHistorySession(
@@ -197,9 +227,14 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
       ciphertext: wrapperRow.wrapped_user_key as Buffer,
       metadata: wrapperRow.wrapper_metadata as Record<string, string>,
     };
-    const childEnv = {
+    const artifactEnv = {
       CONTEXT: JSON.stringify(context),
-      WRAPPED: JSON.stringify({ ...wrapped, ciphertext: wrapped.ciphertext.toString("base64") }),
+      WRAPPED: JSON.stringify({
+        provider: wrapped.provider,
+        fingerprint: wrapped.fingerprint,
+        ciphertext: wrapped.ciphertext.toString("base64"),
+        metadata: wrapped.metadata,
+      }),
       ROW: JSON.stringify({
         dedupKey: encryptedRow.dedup_key, providerKey: encryptedRow.provider_key, turnRole: encryptedRow.turn_role,
         ts: (encryptedRow.ts as Date).toISOString(), contentKeyVersion: encryptedRow.content_key_version,
@@ -209,26 +244,35 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
         iv: (encryptedRow.iv as Buffer).toString("base64"), ciphertext: (encryptedRow.ciphertext as Buffer).toString("base64"),
         authTag: (encryptedRow.auth_tag as Buffer).toString("base64"),
       }),
-      KEY_FILE: keyFile,
-      EXPECTED: PLAINTEXT,
     };
+    assert.deepEqual(Object.keys(artifactEnv).sort(), ["CONTEXT", "ROW", "WRAPPED"]);
+    assert.equal(JSON.stringify(artifactEnv).includes(CHILD_KEK_PATH), false);
+    assert.equal(JSON.stringify(artifactEnv).includes(keyFile), false);
+    assertNoCanaryVariants(JSON.stringify(artifactEnv), [PLAINTEXT, kek, CLOUD_CREDENTIAL_MARKER]);
     await execFileAsync("node_modules/.bin/esbuild", [
       "scripts/managed-content-decrypt-child.ts", "--bundle", "--platform=node", "--format=esm", `--outfile=${childBundle}`,
     ]);
     await chmod(childBundle, 0o644);
-    const dockerArgs = [
-      "run", "--rm", "-v", `${secretDirectory}:${secretDirectory}:ro`, "-v", `${childDirectory}:${childDirectory}:ro`,
-      ...Object.entries(childEnv).flatMap(([name, value]) => ["-e", `${name}=${value}`]),
+    const authorizedEnv = { ...artifactEnv };
+    const authorizedArgs = [
+      "run", "--rm",
+      "--mount", `type=bind,source=${keyFile},target=${CHILD_KEK_PATH},readonly`,
+      "-v", `${childDirectory}:${childDirectory}:ro`,
+      ...Object.entries(authorizedEnv).flatMap(([name, value]) => ["-e", `${name}=${value}`]),
       "node:24-bookworm-slim", "node", childBundle,
     ];
-    const authorized = await execFileAsync("docker", dockerArgs);
-    assert.equal(authorized.stdout.trim(), "DECRYPT_OK");
-    assertNoCanaryVariants(authorized.stderr, [PLAINTEXT, uck, kek, CLOUD_CREDENTIAL_MARKER]);
+    const authorized = await execFileAsync("docker", authorizedArgs);
+    const expectedDigest = `PLAINTEXT_SHA256:${createHash("sha256").update(PLAINTEXT, "utf8").digest("hex")}`;
+    assert.equal(authorized.stdout.trim(), expectedDigest);
+    assertNoCanaryVariants(`${JSON.stringify(authorizedEnv)}${authorized.stdout}${authorized.stderr}`, [PLAINTEXT, uck, kek, CLOUD_CREDENTIAL_MARKER]);
+    const unprivilegedEnv = { ...artifactEnv };
     const unprivilegedArgs = [
       "run", "--rm", "--user", "65534:65534", "-v", `${childDirectory}:${childDirectory}:ro`,
-      ...Object.entries(childEnv).flatMap(([name, value]) => ["-e", `${name}=${value}`]),
+      ...Object.entries(unprivilegedEnv).flatMap(([name, value]) => ["-e", `${name}=${value}`]),
       "node:24-bookworm-slim", "node", childBundle,
     ];
+    assert.deepEqual(Object.keys(unprivilegedEnv).sort(), ["CONTEXT", "ROW", "WRAPPED"]);
+    assertNoCanaryVariants(JSON.stringify(unprivilegedEnv), [PLAINTEXT, kek, CLOUD_CREDENTIAL_MARKER]);
     await assert.rejects(
       // KEK mount 자체를 부여하지 않은 uid 65534 process가 같은 production 경로를 실행한다.
       execFileAsync("docker", unprivilegedArgs),
@@ -245,6 +289,11 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
     kek.fill(0);
     await appPrompt?.end().catch(() => undefined);
     await appKeys?.end().catch(() => undefined);
+    await closePool().catch(() => undefined);
+    if (previousDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+    else process.env.DATABASE_URL = previousDatabaseUrl;
+    if (previousAuthMode === undefined) delete process.env.AUTH_MODE;
+    else process.env.AUTH_MODE = previousAuthMode;
     await admin?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
     await rm(secretDirectory, { recursive: true, force: true });
@@ -286,6 +335,30 @@ async function legacyCipherSnapshot(client: Client, userId: string): Promise<str
     [userId],
   );
   return JSON.stringify(result.rows);
+}
+
+async function legacySecuritySnapshot(client: Client, userId: string): Promise<string> {
+  const records = await client.query(
+    `SELECT id,dedup_key,encode(wrapped_dek,'hex') AS wrapped_dek,encode(iv,'hex') AS iv,
+            encode(ciphertext,'hex') AS ciphertext,encode(auth_tag,'hex') AS auth_tag,
+            encode(dek_wrap_iv,'hex') AS dek_wrap_iv,encode(dek_wrap_auth_tag,'hex') AS dek_wrap_auth_tag
+     FROM prompt_records WHERE user_id=$1 AND encryption_scheme='e2ee_v1' ORDER BY id`,
+    [userId],
+  );
+  const wrappers = await client.query(
+    `SELECT id,wrapper_type,wrapper_ref,content_key_version,kdf_version,
+            encode(public_salt_or_input,'hex') AS public_salt_or_input,encode(nonce,'hex') AS nonce,
+            encode(auth_tag,'hex') AS auth_tag,encode(encapsulated_key,'hex') AS encapsulated_key,
+            encode(wrapped_content_key,'hex') AS wrapped_content_key,revoked_at
+     FROM content_key_wrappers WHERE user_id=$1 ORDER BY id`,
+    [userId],
+  );
+  return JSON.stringify({
+    recordCount: records.rows.length,
+    recordHash: createHash("sha256").update(JSON.stringify(records.rows)).digest("hex"),
+    wrapperCount: wrappers.rows.length,
+    wrapperHash: createHash("sha256").update(JSON.stringify(wrappers.rows)).digest("hex"),
+  });
 }
 
 async function inUserContext<T>(client: Client, userId: string, fn: (db: Client) => Promise<T>): Promise<T> {

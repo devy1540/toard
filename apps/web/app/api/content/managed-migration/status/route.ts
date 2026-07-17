@@ -7,9 +7,15 @@ import {
 } from "@/lib/e2ee-to-managed-migration";
 
 export async function GET(): Promise<Response> {
+  return getManagedMigrationStatusForSession();
+}
+
+export function getManagedMigrationStatusForSession(
+  requireSession: StatusDependencies["requireSession"] = requireContentSession,
+): Promise<Response> {
   return getManagedMigrationStatusResponse({
     isAuthOpen: isContentAuthOpen,
-    requireSession: requireContentSession,
+    requireSession,
     capability: getLegacyE2eeCapability,
     status: getE2eeManagedMigrationStatus,
   });

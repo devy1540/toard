@@ -1,6 +1,9 @@
+import { createHash } from "node:crypto";
 import { LocalKeyManagementProvider } from "../apps/web/lib/key-management/local-provider";
 import { decryptManagedContent } from "../apps/web/lib/managed-content-crypto";
 import type { KeyContext, WrappedUserKey } from "../apps/web/lib/key-management/types";
+
+const LOCAL_KEK_FILE = "/run/toard-secrets/local-kek";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -10,10 +13,14 @@ function required(name: string): string {
 
 try {
   const context = JSON.parse(required("CONTEXT")) as KeyContext;
-  const rawWrapper = JSON.parse(required("WRAPPED")) as Omit<WrappedUserKey, "ciphertext"> & { ciphertext: string };
+  const rawWrapper = JSON.parse(required("WRAPPED")) as Omit<WrappedUserKey, "ciphertext" | "keyRef"> & { ciphertext: string };
   const rawRow = JSON.parse(required("ROW")) as Record<string, unknown>;
-  const provider = new LocalKeyManagementProvider({ keyFile: required("KEY_FILE") });
-  const uck = await provider.unwrapKey({ ...rawWrapper, ciphertext: Buffer.from(rawWrapper.ciphertext, "base64") }, context);
+  const provider = new LocalKeyManagementProvider({ keyFile: LOCAL_KEK_FILE });
+  const uck = await provider.unwrapKey({
+    ...rawWrapper,
+    keyRef: `file:${LOCAL_KEK_FILE}`,
+    ciphertext: Buffer.from(rawWrapper.ciphertext, "base64"),
+  }, context);
   try {
     const text = decryptManagedContent({
       encryptionScheme: "managed_v1",
@@ -30,8 +37,8 @@ try {
       turnRole: rawRow.turnRole as "user" | "assistant",
       ts: new Date(String(rawRow.ts)),
     }, uck, context.installationId, context.userId);
-    if (text !== required("EXPECTED")) throw new Error("CHILD_PLAINTEXT_MISMATCH");
-    process.stdout.write("DECRYPT_OK\n");
+    const digest = createHash("sha256").update(text, "utf8").digest("hex");
+    process.stdout.write(`PLAINTEXT_SHA256:${digest}\n`);
   } finally {
     uck.fill(0);
   }

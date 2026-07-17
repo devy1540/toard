@@ -6,9 +6,15 @@ import {
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
 
 export async function GET(): Promise<Response> {
+  return getRecoveryWrapperForSession();
+}
+
+export function getRecoveryWrapperForSession(
+  requireSession: Dependencies["requireSession"] = requireContentSession,
+): Promise<Response> {
   return getRecoveryWrapperResponse({
     isAuthOpen: isContentAuthOpen,
-    requireSession: requireContentSession,
+    requireSession,
     capability: getLegacyE2eeCapability,
     getWrapper: getRecoveryWrapper,
   });

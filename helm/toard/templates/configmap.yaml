@@ -16,3 +16,63 @@ data:
   CLICKHOUSE_URL: {{ .Values.config.clickhouseUrl | quote }}
   POSTGRES_USER: {{ .Values.postgres.auth.user | quote }}
   POSTGRES_DB: {{ .Values.postgres.auth.database | quote }}
+{{- if .Values.encryption.provider }}
+---
+# KMS 비민감 설정 전용. app/content-admin만 참조하고 migrate/seed는 참조하지 않는다.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "toard.fullname" . }}-encryption-config
+  labels:
+    {{- include "toard.labels" . | nindent 4 }}
+data:
+  {{- include "toard.encryptionProfileData" (dict "slot" "active" "provider" .Values.encryption.provider "profile" .Values.encryption.active) | nindent 2 }}
+  {{- with .Values.encryption.migration.provider }}
+  {{- include "toard.encryptionProfileData" (dict "slot" "migration" "provider" . "profile" $.Values.encryption.migration) | nindent 2 }}
+  {{- end }}
+  TOARD_USER_KEY_CACHE_TTL_SECONDS: {{ .Values.encryption.cacheTtlSeconds | quote }}
+  {{- $perCall := .Values.encryption.cost.per10000Usd }}
+  {{- $monthly := .Values.encryption.cost.monthlyKeyUsd }}
+  {{- if ne (empty $perCall) (empty $monthly) }}
+    {{- fail "encryption.cost.per10000Usd and monthlyKeyUsd must be configured together" }}
+  {{- end }}
+  {{- if not (empty $perCall) }}
+  TOARD_KEY_COST_PER_10000_USD: {{ $perCall | quote }}
+  TOARD_KEY_MONTHLY_KEY_COST_USD: {{ $monthly | quote }}
+  {{- end }}
+  {{- $identity := .Values.encryption.workloadIdentity }}
+  {{- $migrationProvider := default "" .Values.encryption.migration.provider }}
+  {{- $usesAws := or (eq .Values.encryption.provider "aws-kms") (eq $migrationProvider "aws-kms") }}
+  {{- $usesGcp := or (eq .Values.encryption.provider "gcp-kms") (eq $migrationProvider "gcp-kms") }}
+  {{- $usesAzure := or (eq .Values.encryption.provider "azure-key-vault") (eq $migrationProvider "azure-key-vault") }}
+  {{- $awsProfile := ternary .Values.encryption.active.aws .Values.encryption.migration.aws (eq .Values.encryption.provider "aws-kms") }}
+  {{- if $usesAws }}
+  AWS_REGION: {{ $awsProfile.region | quote }}
+  AWS_DEFAULT_REGION: {{ $awsProfile.region | quote }}
+  {{- with $identity.aws.roleArn }}
+  AWS_ROLE_ARN: {{ . | quote }}
+  {{- end }}
+  {{- with $identity.aws.roleSessionName }}
+  AWS_ROLE_SESSION_NAME: {{ . | quote }}
+  {{- end }}
+  {{- with $identity.aws.webIdentityTokenFile }}
+  AWS_WEB_IDENTITY_TOKEN_FILE: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if $usesGcp }}
+  {{- with $identity.gcp.applicationCredentials }}
+  GOOGLE_APPLICATION_CREDENTIALS: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if $usesAzure }}
+  {{- with $identity.azure.clientId }}
+  AZURE_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with $identity.azure.tenantId }}
+  AZURE_TENANT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with $identity.azure.federatedTokenFile }}
+  AZURE_FEDERATED_TOKEN_FILE: {{ . | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}

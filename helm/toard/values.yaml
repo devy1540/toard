@@ -12,6 +12,10 @@ image:
     repository: toard-migrate # docker build --target migrator
     tag: latest
     pullPolicy: IfNotPresent
+  contentAdmin:
+    repository: toard-content-admin # docker build --target content-admin
+    tag: latest
+    pullPolicy: IfNotPresent
 imagePullSecrets: []
 
 replicaCount: 2
@@ -65,6 +69,38 @@ postgres:
 migrate:
   enabled: true
   seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
+
+# 앱과 opt-in content-admin Job이 사용하는 Kubernetes ServiceAccount.
+# IRSA/GCP Workload Identity/Azure Workload Identity annotation은 여기에 둔다.
+# ServiceAccount 신원은 Pod 단위이므로 app Pod의 initContainer와도 공유된다.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  podLabels: {}
+
+# 본문 암호화 provider의 비민감 설정과 secret 파일 경로만 둔다.
+# token/key material 자체를 values에 넣지 않는다.
+encryption:
+  provider: "" # local | aws-kms | gcp-kms | azure-key-vault | vault-transit | openbao-transit
+  cacheTtlSeconds: 1800
+  active: {}
+  migration: {} # provider와 provider별 설정; 비어 있으면 migration provider 없음
+  workloadIdentity:
+    aws: {}
+    gcp: {}
+    azure: {}
+  cost:
+    per10000Usd: ""
+    monthlyKeyUsd: ""
+  # 기존 Kubernetes Secret의 key를 read-only 파일로 투영한다.
+  # item: {name, secretName, mountPath, items: [{key, path}]}
+  secretMounts: []
+
+# 명시적으로 enable할 때만 생성되는 one-shot Job. Helm hook이 아니다.
+contentAdmin:
+  enabled: false
+  command: ["encryption", "status"]
 
 service:
   type: ClusterIP

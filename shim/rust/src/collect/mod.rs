@@ -293,12 +293,13 @@ fn reconciliation_keys(
 /// env(TOARD_SHIM_COLLECT_CONTENT)가 명시되면 그 값이 우선하고, 미설정이면
 /// `~/.toard/credentials` 의 `collect_content` 플래그(install.sh 가 기록)를 따른다.
 /// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
-pub fn content_enabled() -> bool {
+#[cfg(test)]
+fn content_enabled() -> bool {
     content_collection_mode().is_enabled()
 }
 
-pub fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
-    use crate::credentials::ContentCollectionMode;
+#[cfg(test)]
+fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
     let stored = read_credentials().collect_content;
     let configured = std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok();
     resolve_content_collection_mode(stored, configured.as_deref())
@@ -856,13 +857,15 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             }
             if collect_content_for(
                 adapter.as_ref(),
-                &endpoint,
-                token.as_deref(),
-                &creds,
-                content_mode,
-                dry_run,
-                quiet,
-                since_ms,
+                &ContentCollectionContext {
+                    endpoint: &endpoint,
+                    token: token.as_deref(),
+                    credentials: &creds,
+                    content_mode,
+                    dry_run,
+                    quiet,
+                    since_ms,
+                },
             ) {
                 failed = true;
             }
@@ -927,16 +930,24 @@ fn endpoint_is_secure(endpoint: &str) -> bool {
 
 /// 한 어댑터의 본문 수집: 별도 커서(`{key}-content`)로 변한 파일만 재파싱 →
 /// 봉투 전 평문을 /v1/prompts 로 전송. 반환은 "실패 여부"(true 면 커서 미갱신·재시도).
-fn collect_content_for(
-    adapter: &dyn LogAdapter,
-    endpoint: &str,
-    token: Option<&str>,
-    credentials: &crate::credentials::Credentials,
+struct ContentCollectionContext<'a> {
+    endpoint: &'a str,
+    token: Option<&'a str>,
+    credentials: &'a crate::credentials::Credentials,
     content_mode: crate::credentials::ContentCollectionMode,
     dry_run: bool,
     quiet: bool,
     since_ms: i64,
-) -> bool {
+}
+
+fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentCollectionContext<'_>) -> bool {
+    let endpoint = context.endpoint;
+    let token = context.token;
+    let credentials = context.credentials;
+    let content_mode = context.content_mode;
+    let dry_run = context.dry_run;
+    let quiet = context.quiet;
+    let since_ms = context.since_ms;
     let key = adapter.key();
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
     let secure = endpoint_is_secure(endpoint);
@@ -1157,7 +1168,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 1);
         assert_eq!(value["dedupKeys"].as_array().unwrap().len(), 2);
-        assert!(body.find("session").is_none());
+        assert!(!body.contains("session"));
     }
 
     #[test]

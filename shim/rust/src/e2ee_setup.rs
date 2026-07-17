@@ -233,10 +233,7 @@ pub fn status() -> i32 {
         eprintln!("toard-shim: E2EE 키를 운영체제 보안 저장소에서 찾을 수 없습니다");
         return 1;
     }
-    println!(
-        "toard-shim: E2EE 활성 · 키 버전 {} · 기기 {}",
-        key_version, device_id
-    );
+    println!("toard-shim: E2EE 활성 · 키 버전 {key_version} · 기기 {device_id}");
     0
 }
 

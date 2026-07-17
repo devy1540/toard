@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ManagedContentRuntime } from "../apps/web/lib/managed-content-runtime";
+import { createManagedContentRuntimeForDatabase } from "../apps/web/lib/managed-content-runtime";
+import { assertManagedContentDatabaseRoleReady } from "../apps/web/lib/content-database-role-readiness";
 import { RewrapError } from "../apps/web/lib/provider-rewrap";
 import { ServerContentMigrationError } from "../apps/web/lib/server-content-migration";
 import { runCli, type AdminCliDependencies, type AdminDbLease } from "./toard-admin";
@@ -143,6 +145,70 @@ test("각 managed content-admin DB lease는 첫 query 전에 role readiness를 �
   assert.deepEqual(checkedLeases, Array.from({ length: acquired }, (_, index) => index + 1));
 });
 
+test("managed runtime은 command 시작의 guarded lease DB만 사용한다", async () => {
+  let leaseDb: object | null = null;
+  const command = deps({
+    async acquireDb() {
+      const db = {
+        async query(sql: string) {
+          if (sql.includes("content_encryption_status")) return { rows: [{
+            server_records: "0", e2ee_records: "0", managed_records: "0",
+            active_user_keys: "0", pending_user_keys: "0", retiring_user_keys: "0",
+            wrapper_distribution: [],
+          }] };
+          throw new Error(`unexpected query: ${sql}`);
+        },
+      };
+      leaseDb = db;
+      return { db, release() {} };
+    },
+    async assertManagedContentDatabaseRoleReady(db) {
+      assert.equal(db, leaseDb);
+    },
+    runtime: (async (db: unknown) => {
+      assert.equal(db, leaseDb, "runtime must receive the acquired guarded DB lease");
+      return {
+        installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        registry: { active: { name: "local", fingerprint: OLD_FINGERPRINT } },
+        health: healthyCanary,
+      } as ManagedContentRuntime;
+    }) as AdminCliDependencies["runtime"],
+  });
+
+  const result = await runCli(["encryption", "status"], command);
+  assert.equal(result.exitCode, 0, result.stderr);
+});
+
+test("managed-disabled CLI는 role metadata와 installation identity를 조회하지 않는다", async () => {
+  const sqls: string[] = [];
+  const command = deps({
+    async acquireDb() {
+      return {
+        db: {
+          async query(sql: string) {
+            sqls.push(sql);
+            if (sql.includes("content_encryption_status")) return { rows: [{
+              server_records: "0", e2ee_records: "0", managed_records: "0",
+              active_user_keys: "0", pending_user_keys: "0", retiring_user_keys: "0",
+              wrapper_distribution: [],
+            }] };
+            throw new Error(`unexpected query: ${sql}`);
+          },
+        },
+        release() {},
+      };
+    },
+    assertManagedContentDatabaseRoleReady: (db) =>
+      assertManagedContentDatabaseRoleReady(db, { NODE_ENV: "test" }),
+    runtime: (db) => createManagedContentRuntimeForDatabase(db, { NODE_ENV: "test" }),
+  });
+
+  const result = await runCli(["encryption", "status"], command);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(sqls.some((sql) => /FROM pg_roles/.test(sql)), false);
+  assert.equal(sqls.some((sql) => /installation_identity/.test(sql)), false);
+});
+
 test("CLI rejects unknown, duplicate, missing, and extra arguments with usage exit 2", async () => {
   const invalid = [
     ["encryption", "unknown"],
@@ -245,7 +311,7 @@ test("CLI acquires a fixed client lease for enumeration and each atomic user ope
     }),
   );
   assert.equal(result.exitCode, 1);
-  assert.equal(acquired, 4, "one audit lease, one enumeration lease, and one lease per eligible user");
+  assert.equal(acquired, 5, "one guarded runtime lease, one audit lease, one enumeration lease, and one lease per eligible user");
   assert.equal(released, acquired);
 });
 

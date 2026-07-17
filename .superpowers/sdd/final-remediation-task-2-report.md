@@ -54,3 +54,26 @@ DONE
 `pnpm --filter @toard/web typecheck`는 비대화형 환경에서 pnpm이 기존 modules directory
 제거 확인을 요구해 `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`로 중단됐다. 의존성 변경
 없이 동일 web tsconfig를 로컬 `tsc --noEmit`으로 실행해 typecheck를 완료했다.
+
+## 리뷰 수정 — guarded runtime lease (P1)
+
+- 원인: `toard-admin`이 `withDbLease` 밖에서 `deps.runtime()`을 먼저 호출했고, 기본
+  `getManagedContentRuntime`은 global pool로 `installation_identity`를 조회했다. 따라서
+  owner/BYPASSRLS guard보다 먼저 managed DB 접근이 가능했다.
+- 수정: CLI runtime dependency는 `runtime(db)`가 되었고, 기본 경로는
+  `createManagedContentRuntimeForDatabase(guardedLease)`다. 이 factory는 global pool 대신
+  전달된 lease의 `installation_identity` loader만 주입한다. status는 같은 첫 lease에서
+  runtime+snapshot을 수행하고, migrate는 runtime+enumeration을, rewrap은 target health 전에
+  guarded runtime lease를 확보한다.
+- 안전 계약: managed-disabled이면 guard와 runtime factory가 모두 metadata/identity SQL을
+  만들지 않는다. runtime config/identity/provider 초기화 오류는 기존의 고정된 CLI 오류
+  경계를 유지한다.
+- RED: guarded lease DB를 받아야 하는 runtime regression test가 기존 구현에서
+  `ADMIN_COMMAND_FAILED`로 실패했다.
+- GREEN: unit/role/runtime/CLI 및 bootstrap PostgreSQL tests 35 pass. 실제 PG test는 unsafe
+  role에서 runtime call 0 및 installation query 0, app role에서 첫 SQL `pg_roles` guard와
+  다음 SQL `installation_identity`를 확인했다. provider audit/rewrap 및 server migration
+  PostgreSQL integration 3 pass, web `tsc --noEmit` pass.
+- 환경 한계: `scripts/managed-content-security.integration.test.ts`의 별도 실행은 기존
+  `node_modules/.bin/esbuild` 부재로 bundle spawn 단계에서 중단됐다. 이 revision의 guard/runtime
+  tests와 TypeScript 검사는 통과했다.

@@ -322,6 +322,7 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
       {
         runtime: async () => runtime,
         acquireDb: createPoolLeaseFactory(operationalPool),
+        assertManagedContentDatabaseRoleReady: async () => {},
         loadLegacyKek: () => Buffer.alloc(32),
         migrateServerBatch: async () => { throw new Error("not used"); },
         rewrapUser: rewrapUserKey,
@@ -367,6 +368,7 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
       {
         runtime: async () => runtime,
         acquireDb: createPoolLeaseFactory(operationalPool),
+        assertManagedContentDatabaseRoleReady: async () => {},
         loadLegacyKek: () => Buffer.alloc(32),
         migrateServerBatch: async () => { throw new Error("not used"); },
         rewrapUser: rewrapUserKey,

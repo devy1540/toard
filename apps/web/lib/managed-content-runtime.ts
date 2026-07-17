@@ -30,18 +30,24 @@ export type RuntimeDependencies = {
   createHealth?: () => ProviderHealthCache;
 };
 
+export type InstallationIdentityDb = {
+  query(sql: string): Promise<{ rows: Array<{ installation_id?: unknown }> }>;
+};
+
+async function loadInstallationIdFromDb(db: InstallationIdentityDb): Promise<string> {
+  const result = await db.query(
+    "SELECT installation_id FROM installation_identity WHERE singleton=TRUE",
+  );
+  const installationId = result.rows[0]?.installation_id;
+  if (typeof installationId !== "string" || installationId.length === 0) {
+    throw new Error("INSTALLATION_IDENTITY_MISSING");
+  }
+  return installationId;
+}
+
 const defaultRuntimeDependencies: RuntimeDependencies = {
   env: process.env,
-  loadInstallationId: async () => {
-    const result = await getPool().query(
-      "SELECT installation_id FROM installation_identity WHERE singleton=TRUE",
-    );
-    const installationId = result.rows[0]?.installation_id;
-    if (typeof installationId !== "string" || installationId.length === 0) {
-      throw new Error("INSTALLATION_IDENTITY_MISSING");
-    }
-    return installationId;
-  },
+  loadInstallationId: () => loadInstallationIdFromDb(getPool()),
   createRegistry: (config) => createKeyProviderRegistry(config),
 };
 
@@ -94,6 +100,18 @@ export async function createManagedContentRuntime(
   } catch {
     throw new Error("MANAGED_CONTENT_RUNTIME_INIT_FAILED");
   }
+}
+
+// CLI처럼 role guard가 선행되어야 하는 caller는 공유 pool을 쓰지 않고 자신이 보유한 lease만 전달한다.
+export function createManagedContentRuntimeForDatabase(
+  db: InstallationIdentityDb,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Promise<ManagedContentRuntime | null> {
+  return createManagedContentRuntime({
+    ...defaultRuntimeDependencies,
+    env,
+    loadInstallationId: () => loadInstallationIdFromDb(db),
+  });
 }
 
 export function getManagedContentRuntime(

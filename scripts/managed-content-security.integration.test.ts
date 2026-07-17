@@ -305,6 +305,7 @@ function failingCliDependencies(overrides: Partial<AdminCliDependencies>): Admin
   return {
     runtime: async () => null,
     acquireDb: async () => { throw new Error("unused"); },
+    assertManagedContentDatabaseRoleReady: async () => {},
     loadLegacyKek: () => Buffer.alloc(32),
     migrateServerBatch: async () => ({ migrated: 0, remaining: 0 }),
     rewrapUser: async () => ({ state: "already-current" }),

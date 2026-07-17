@@ -356,6 +356,7 @@ test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120
       {
         runtime: async () => runtime(),
         acquireDb: createPoolLeaseFactory(operationalPool),
+        assertManagedContentDatabaseRoleReady: async () => {},
         loadLegacyKek: () => operationalKek,
         migrateServerBatch: migrateServerContentBatch,
         rewrapUser: async () => { throw new Error("not used"); },

@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import type { ManagedContentRuntime } from "../apps/web/lib/managed-content-runtime";
-import { getManagedContentRuntime } from "../apps/web/lib/managed-content-runtime";
+import { createManagedContentRuntimeForDatabase } from "../apps/web/lib/managed-content-runtime";
 import { closePool, getPool } from "../apps/web/lib/db";
 import { loadKek } from "../apps/web/lib/legacy-content-crypto";
 import {
@@ -46,7 +46,7 @@ const SAFE_REWRAP_CODES = new Set([
 ]);
 
 export type AdminCliDependencies = {
-  runtime(): Promise<ManagedContentRuntime | null>;
+  runtime(db: RewrapDb): Promise<ManagedContentRuntime | null>;
   acquireDb(): Promise<AdminDbLease>;
   assertManagedContentDatabaseRoleReady(db: RewrapDb): Promise<void>;
   loadLegacyKek(): Buffer;
@@ -78,7 +78,7 @@ type PoolConnector = {
 export type CliResult = { exitCode: 0 | 1 | 2; stdout: string; stderr: string };
 
 const defaultDependencies: AdminCliDependencies = {
-  runtime: getManagedContentRuntime,
+  runtime: createManagedContentRuntimeForDatabase,
   acquireDb: () => createPoolLeaseFactory(getPool())(),
   assertManagedContentDatabaseRoleReady,
   loadLegacyKek: loadKek,
@@ -151,8 +151,10 @@ type CliEncryptionSnapshot = {
 };
 
 async function encryptionStatus(deps: AdminCliDependencies): Promise<CliResult> {
-  const runtime = await deps.runtime();
-  const snapshot = await withDbLease(deps, (db) => loadCliEncryptionSnapshot(db, runtime));
+  const snapshot = await withDbLease(deps, async (db) => {
+    const runtime = await requireRuntimeForStatus(deps, db);
+    return loadCliEncryptionSnapshot(db, runtime);
+  });
   return { exitCode: 0, stdout: `${JSON.stringify(snapshot)}\n`, stderr: "" };
 }
 
@@ -207,14 +209,16 @@ async function loadCliEncryptionSnapshot(
 }
 
 async function migrateServer(batchSize: number, deps: AdminCliDependencies): Promise<CliResult> {
-  const runtime = await requireRuntime(deps);
+  const { runtime, users } = await withDbLease(deps, async (db) => ({
+    runtime: await requireRuntime(deps, db),
+    users: (await getServerContentMigrationUsers(db)).sort(),
+  }));
   let kek: Buffer | undefined;
   const failures: string[] = [];
   let migrated = 0;
   try {
     kek = deps.loadLegacyKek();
     if (!Buffer.isBuffer(kek) || kek.length !== 32) throw new Error("INVALID_KEK");
-    const users = (await withDbLease(deps, getServerContentMigrationUsers)).sort();
     let interrupted = false;
     for (const userId of users) {
       if (deps.signal?.aborted) { failures.push(`${userId} INTERRUPTED`); break; }
@@ -260,7 +264,7 @@ async function rewrapProviders(
   actorUserId: string,
   deps: AdminCliDependencies,
 ): Promise<CliResult> {
-  const runtime = await requireRuntime(deps);
+  const runtime = await withDbLease(deps, (db) => requireRuntime(deps, db));
   const target = runtime.registry.migration;
   const oldIdentity = providerIdentity(runtime.registry.active);
   const targetIdentity = target ? providerIdentity(target) : null;
@@ -445,10 +449,20 @@ function summary(label: string, succeeded: number, failures: string[]): CliResul
   };
 }
 
-async function requireRuntime(deps: AdminCliDependencies): Promise<ManagedContentRuntime> {
-  const runtime = await deps.runtime();
+async function requireRuntime(
+  deps: AdminCliDependencies,
+  db: RewrapDb,
+): Promise<ManagedContentRuntime> {
+  const runtime = await deps.runtime(db);
   if (!runtime) throw new Error("MANAGED_RUNTIME_MISSING");
   return runtime;
+}
+
+async function requireRuntimeForStatus(
+  deps: AdminCliDependencies,
+  db: RewrapDb,
+): Promise<ManagedContentRuntime | null> {
+  return deps.runtime(db);
 }
 
 function safeServerCode(error: unknown): string {

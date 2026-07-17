@@ -99,6 +99,7 @@ test("provider migration audit authenticates the DB admin actor and completes on
     const base = {
       runtime: async () => runtime,
       acquireDb: createPoolLeaseFactory(pool),
+      assertManagedContentDatabaseRoleReady: async () => {},
       loadLegacyKek: () => Buffer.alloc(32),
       migrateServerBatch: async () => { throw new Error("unused"); },
       close: async () => {},

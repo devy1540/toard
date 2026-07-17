@@ -7,6 +7,8 @@ import { promisify } from "node:util";
 import { Client } from "pg";
 import { getE2eeManagedMigrationStatus, type E2eeMigrationDb } from "../apps/web/lib/e2ee-to-managed-migration";
 import { assertManagedContentDatabaseRoleReady } from "../apps/web/lib/content-database-role-readiness";
+import { createManagedContentRuntimeForDatabase } from "../apps/web/lib/managed-content-runtime";
+import { runCli, type AdminCliDependencies, type AdminDbLease } from "./toard-admin";
 
 const execFileAsync = promisify(execFile);
 
@@ -86,6 +88,62 @@ test("실제 PostgreSQL에서 managed content readiness는 app role만 허용한
       /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
     );
     await admin.query("RESET ROLE");
+  } finally {
+    await admin?.query("RESET ROLE").catch(() => undefined);
+    await admin?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});
+
+test("실제 PostgreSQL CLI 기본 runtime 경로는 guard 뒤 lease에서만 installation identity를 읽는다", { timeout: 120_000 }, async () => {
+  const container = `toard-cli-runtime-guard-${randomUUID().slice(0, 6)}`;
+  let admin: Client | null = null;
+  try {
+    await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432", "postgres:16-alpine"]);
+    const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = stdout.trim().match(/:(\d+)$/)?.[1]; assert.ok(port);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+    await bootstrap(container);
+    admin = new Client({ connectionString }); await admin.connect();
+    for (const sql of await migrationUps()) await admin.query(sql);
+
+    const sqls: string[] = [];
+    let runtimeCalls = 0;
+    const leaseDb = {
+      async query(sql: string, params: unknown[] = []) {
+        sqls.push(sql);
+        return admin!.query(sql, params);
+      },
+    };
+    const dependencies: AdminCliDependencies = {
+      runtime(db) {
+        runtimeCalls += 1;
+        return createManagedContentRuntimeForDatabase(db, MANAGED_CONTENT_ENV);
+      },
+      async acquireDb(): Promise<AdminDbLease> { return { db: leaseDb, release() {} }; },
+      assertManagedContentDatabaseRoleReady: (db) =>
+        assertManagedContentDatabaseRoleReady(db, MANAGED_CONTENT_ENV),
+      loadLegacyKek: () => Buffer.alloc(32),
+      async migrateServerBatch() { throw new Error("unused"); },
+      async rewrapUser() { throw new Error("unused"); },
+      async close() {},
+    };
+
+    const unsafe = await runCli(["encryption", "status"], dependencies);
+    assert.deepEqual(unsafe, { exitCode: 1, stdout: "", stderr: "ADMIN_COMMAND_FAILED\n" });
+    assert.equal(runtimeCalls, 0);
+    assert.equal(sqls.some((sql) => sql.includes("installation_identity")), false);
+
+    sqls.length = 0;
+    await admin.query("SET ROLE toard_app");
+    const safe = await runCli(["encryption", "status"], dependencies);
+    assert.equal(safe.exitCode, 0, safe.stderr);
+    assert.equal(runtimeCalls, 1);
+    assert.match(sqls[0] ?? "", /FROM pg_roles/);
+    assert.match(sqls[1] ?? "", /installation_identity/);
   } finally {
     await admin?.query("RESET ROLE").catch(() => undefined);
     await admin?.end().catch(() => undefined);

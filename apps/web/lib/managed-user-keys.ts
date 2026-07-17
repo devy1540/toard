@@ -256,10 +256,7 @@ async function latestMigrationTarget(
 ): Promise<MigrationTarget | null> {
   const result = await db.query(
     `SELECT provider, provider_fingerprint AS "providerFingerprint"
-       FROM content_key_security_events
-      WHERE event_type='provider_migration_started'
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1`,
+       FROM latest_managed_content_write_fence()`,
   );
   const row = result.rows[0];
   if (!row) return null;

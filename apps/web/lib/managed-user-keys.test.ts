@@ -53,6 +53,16 @@ class FakeDatabase implements ManagedUserKeyDatabase {
       };
     }
 
+    if (/latest_managed_content_write_fence/.test(compact)) {
+      return {
+        rows: (this.latestMigrationTarget ? [{
+          provider: this.latestMigrationTarget.provider,
+          providerFingerprint: this.latestMigrationTarget.fingerprint,
+        }] : []) as unknown as T[],
+        rowCount: this.latestMigrationTarget ? 1 : 0,
+      };
+    }
+
     if (/SELECT .* FROM managed_content_keys/.test(compact)) {
       const userId = String(params[0]);
       const candidates = /state = 'active'/.test(compact)
@@ -307,9 +317,12 @@ test("새 UCK는 distribution lock 아래 마지막 durable migration target으�
   assert.equal(old.wrapCalls, 0);
   assert.equal(target.wrapCalls, 1);
   const lock = db.calls.findIndex((call) => /lock_managed_content_key_distribution/.test(call.sql));
-  const fence = db.calls.findIndex((call) => /FROM content_key_security_events/.test(call.sql));
+  const fence = db.calls.findIndex((call) => /latest_managed_content_write_fence/.test(call.sql));
   const insert = db.calls.findIndex((call) => /INSERT INTO managed_content_keys/.test(call.sql));
   assert.ok(lock >= 0 && lock < fence && fence < insert);
+  const fenceQuery = db.calls.find((call) => /latest_managed_content_write_fence/.test(call.sql));
+  assert.ok(fenceQuery);
+  assert.equal(db.calls.some((call) => /FROM content_key_security_events/.test(call.sql)), false);
 
   const missingTargetDb = new FakeDatabase();
   missingTargetDb.latestMigrationTarget = { provider: target.name, fingerprint: target.fingerprint };

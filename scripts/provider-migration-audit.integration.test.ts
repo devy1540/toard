@@ -278,10 +278,14 @@ test("provider migration audit authenticates the DB admin actor and completes on
     // start가 기록되고, fence 뒤 target-only registry restart도 새 UCK를 target으로 만든다.
     await admin.query("DELETE FROM managed_content_keys; DELETE FROM content_key_security_events");
     const oldWriterUser = randomUUID();
+    const fencedUser = randomUUID();
     const targetOnlyUser = randomUUID();
+    const laterFenceUser = randomUUID();
     await admin.query(
-      "INSERT INTO users(id,email) VALUES($1,'fence-old@example.com'),($2,'fence-target@example.com')",
-      [oldWriterUser, targetOnlyUser],
+      `INSERT INTO users(id,email) VALUES
+         ($1,'fence-old@example.com'),($2,'fence-general@example.com'),
+         ($3,'fence-target@example.com'),($4,'fence-later@example.com')`,
+      [oldWriterUser, fencedUser, targetOnlyUser, laterFenceUser],
     );
     runtime.registry = {
       active: provider("local", OLD),
@@ -336,9 +340,9 @@ test("provider migration audit authenticates the DB admin actor and completes on
       async healthCheck() { return { status: "healthy", latencyMs: 0, checkedAt: new Date() }; },
       async describeCredentialSource() { return { kind: "test", staticCredential: false }; },
     };
-    const targetOnlyKeys = new ManagedUserKeyService({
+    const createFencedWriter = (registry: KeyProviderRegistry) => new ManagedUserKeyService({
       installationId: INSTALLATION_ID,
-      registry: new KeyProviderRegistry(targetOnly, null),
+      registry,
       cache: new UserKeyCache({ ttlMs: 60_000 }),
       runInUserContext: async (userId, fn) => {
         const client = await pool!.connect();
@@ -358,13 +362,84 @@ test("provider migration audit authenticates the DB admin actor and completes on
         }
       },
     });
+    // 일반 content writer는 old active/migration target registry를 가진 채 fence를 읽지만,
+    // provider_migration audit 행이나 actor를 보지 못하고 target wrapper만 생성해야 한다.
+    const generalWriterKeys = createFencedWriter(new KeyProviderRegistry(provider("local", OLD), targetOnly));
+    await generalWriterKeys.withActiveUserKey(fencedUser, () => undefined);
+    const ordinaryReader = await pool.connect();
+    try {
+      await ordinaryReader.query("BEGIN");
+      await ordinaryReader.query("SELECT set_config('app.current_user_id',$1,true)", [fencedUser]);
+      assert.deepEqual((await ordinaryReader.query(
+        "SELECT provider,provider_fingerprint,actor_user_id FROM content_key_security_events WHERE event_type='provider_migration_started'",
+      )).rows, []);
+      await ordinaryReader.query("ROLLBACK");
+    } finally {
+      ordinaryReader.release();
+    }
+
+    const targetOnlyKeys = createFencedWriter(new KeyProviderRegistry(targetOnly, null));
     await targetOnlyKeys.withActiveUserKey(targetOnlyUser, () => undefined);
+
+    // 먼저 BEGIN한 transaction이 lock을 늦게 얻으면, 나중에 BEGIN했지만 먼저 lock을
+    // 얻은 transaction보다 높은 id fence를 기록한다. writer는 created_at가 아니라 id 최신을 따른다.
+    const earlyBegin = await pool.connect();
+    const earlyLockWinner = await pool.connect();
+    const TARGET_B = "gcp-kms:333333333333333333333333";
+    const targetB: KeyManagementProvider = {
+      name: "gcp-kms",
+      keyRef: "gcp:later-fence",
+      fingerprint: TARGET_B,
+      async wrapKey(uck) {
+        return { provider: this.name, keyRef: this.keyRef, fingerprint: this.fingerprint,
+          ciphertext: Buffer.from(uck), metadata: { test: "later-fence" } };
+      },
+      async unwrapKey(wrapped) { return Buffer.from(wrapped.ciphertext); },
+      async healthCheck() { return { status: "healthy", latencyMs: 0, checkedAt: new Date() }; },
+      async describeCredentialSource() { return { kind: "test", staticCredential: false }; },
+    };
+    try {
+      await earlyBegin.query("BEGIN");
+      await earlyBegin.query("SELECT set_config('app.current_user_id',$1,true)", [actor]);
+      await earlyLockWinner.query("BEGIN");
+      await earlyLockWinner.query("SELECT set_config('app.current_user_id',$1,true)", [actor]);
+      await earlyLockWinner.query("SELECT lock_managed_content_key_distribution()");
+      await earlyLockWinner.query(
+        `INSERT INTO content_key_security_events
+           (event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id)
+         VALUES('provider_migration_started',NULL,'aws-kms',$1,NULL,$2,'lock-winner-first')`,
+        [TARGET, actor],
+      );
+      await earlyLockWinner.query("COMMIT");
+      await earlyBegin.query("SELECT lock_managed_content_key_distribution()");
+      await earlyBegin.query(
+        `INSERT INTO content_key_security_events
+           (event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id)
+         VALUES('provider_migration_started',NULL,'gcp-kms',$1,NULL,$2,'begin-first-lock-later')`,
+        [TARGET_B, actor],
+      );
+      await earlyBegin.query("COMMIT");
+    } finally {
+      await earlyLockWinner.query("ROLLBACK").catch(() => undefined);
+      await earlyBegin.query("ROLLBACK").catch(() => undefined);
+      earlyLockWinner.release();
+      earlyBegin.release();
+    }
     assert.deepEqual((await admin.query(
-      "SELECT user_id::text,provider_fingerprint,state FROM managed_content_keys WHERE user_id IN ($1,$2) ORDER BY user_id",
-      [oldWriterUser, targetOnlyUser],
+      `SELECT provider_fingerprint FROM content_key_security_events
+        WHERE app_instance_id IN ('lock-winner-first','begin-first-lock-later')
+        ORDER BY id DESC`,
+    )).rows, [{ provider_fingerprint: TARGET_B }, { provider_fingerprint: TARGET }]);
+    await createFencedWriter(new KeyProviderRegistry(provider("local", OLD), targetB))
+      .withActiveUserKey(laterFenceUser, () => undefined);
+    assert.deepEqual((await admin.query(
+      "SELECT user_id::text,provider_fingerprint,state FROM managed_content_keys WHERE user_id IN ($1,$2,$3,$4) ORDER BY user_id",
+      [oldWriterUser, fencedUser, targetOnlyUser, laterFenceUser],
     )).rows, [
       { user_id: oldWriterUser, provider_fingerprint: OLD, state: "active" },
+      { user_id: fencedUser, provider_fingerprint: TARGET, state: "active" },
       { user_id: targetOnlyUser, provider_fingerprint: TARGET, state: "active" },
+      { user_id: laterFenceUser, provider_fingerprint: TARGET_B, state: "active" },
     ].sort((left, right) => left.user_id.localeCompare(right.user_id)));
   } finally {
     await pool?.end().catch(() => undefined);

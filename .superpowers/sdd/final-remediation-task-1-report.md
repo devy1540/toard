@@ -29,3 +29,10 @@
 
 - Shell-default pnpm is 11.9.0 while the repository pins pnpm 9.15.0. It attempts a frozen reinstall and rejects the lockfile override shape; verification commands use `npx --yes pnpm@9.15.0` to match the repository pin.
 - The target-only PostgreSQL regression uses an injected deterministic test provider. No cloud credential or real external KMS activation was created or used; production activation still requires the separately configured real target canary.
+
+## Review fix
+
+- Independent review P1: 일반 사용자 RLS transaction이 `content_key_security_events`를 직접 조회하면 provider migration audit policy 때문에 fence가 null이 되는 것을 확인했다. Migration 40은 fixed `search_path` SECURITY DEFINER `latest_managed_content_write_fence()`를 추가하고 provider/fingerprint 두 필드만 반환한다. PUBLIC execute를 revoke하고 `toard_app`만 execute할 수 있게 했으며, writer는 distribution lock 뒤 이 함수만 조회한다.
+- Independent review P1: `created_at`은 transaction 시작 시각이므로 lock 획득 순서와 역전될 수 있다. migration 40은 advisory lock 아래 직렬화된 `provider_migration_started.id DESC`만 canonical fence revision으로 사용한다.
+- PostgreSQL regression은 (a) 일반 writer가 active=old/migration=target registry에서 target wrapper를 만들고 audit row/actor는 보지 못함, (b) 먼저 BEGIN한 transaction이 나중에 lock을 얻어 더 높은 id target을 기록하면 subsequent writer가 그 target을 선택함을 검증한다.
+- Review-fix verification: focused unit 175개, 관련 PostgreSQL/CLI integration 26개, migration 40 SQL/RLS integration, release/Helm tests, workspace typecheck 모두 통과했다.

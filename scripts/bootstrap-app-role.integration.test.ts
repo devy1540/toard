@@ -248,6 +248,9 @@ for (const topology of ["role-before", "role-after"] as const) {
       assert.equal((await admin.query(
         "SELECT has_function_privilege('toard_app','lock_managed_content_key_distribution()','EXECUTE') AS ok",
       )).rows[0].ok, true);
+      assert.equal((await admin.query(
+        "SELECT has_function_privilege('toard_app','latest_managed_content_write_fence()','EXECUTE') AS ok",
+      )).rows[0].ok, true);
       const publicExecute = await admin.query<{ name: string; public_execute: boolean }>(`
         SELECT p.proname AS name,
                COALESCE(bool_or(acl.grantee=0 AND acl.privilege_type='EXECUTE'),false) AS public_execute
@@ -255,12 +258,13 @@ for (const topology of ["role-before", "role-after"] as const) {
         CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
         WHERE p.proname IN (
           'capture_content_e2ee_migration_source','get_content_e2ee_migration_progress',
-          'lock_managed_content_key_distribution'
+          'lock_managed_content_key_distribution','latest_managed_content_write_fence'
         )
         GROUP BY p.proname ORDER BY p.proname`);
       assert.deepEqual(publicExecute.rows, [
         { name: "capture_content_e2ee_migration_source", public_execute: false },
         { name: "get_content_e2ee_migration_progress", public_execute: false },
+        { name: "latest_managed_content_write_fence", public_execute: false },
         { name: "lock_managed_content_key_distribution", public_execute: false },
       ]);
 

@@ -17,6 +17,7 @@ import { ManagedUserKeyService } from "../apps/web/lib/managed-user-keys";
 const execFileAsync = promisify(execFile);
 const MIGRATION = "migrations/1700000037_content_key_operations.sql";
 const DISTRIBUTION_MIGRATION = "migrations/1700000039_managed_key_distribution.sql";
+const WRITE_FENCE_MIGRATION = "migrations/1700000040_managed_content_write_fence.sql";
 
 async function waitForPostgres(connectionString: string): Promise<void> {
   const deadline = Date.now() + 30_000;
@@ -67,6 +68,8 @@ test("KMS operation aggregate and security events are secret-free and least-priv
   const [up, down = ""] = migration.split("-- Down Migration");
   const distributionMigration = await readFile(DISTRIBUTION_MIGRATION, "utf8");
   const [distributionUp, distributionDown = ""] = distributionMigration.split("-- Down Migration");
+  const writeFenceMigration = await readFile(WRITE_FENCE_MIGRATION, "utf8");
+  const [writeFenceUp, writeFenceDown = ""] = writeFenceMigration.split("-- Down Migration");
   const container = `toard-key-operations-${randomUUID().slice(0, 8)}`;
   let root: Client | null = null;
   try {
@@ -90,6 +93,7 @@ test("KMS operation aggregate and security events are secret-free and least-priv
         for (const sql of baseUps) await admin.query(sql);
         await admin.query(up);
         await admin.query(distributionUp);
+        await admin.query(writeFenceUp);
         if (topology === "role-after") await bootstrap(container, database);
 
         const operationColumns = (await admin.query<{ column_name: string }>(`
@@ -343,6 +347,7 @@ test("KMS operation aggregate and security events are secret-free and least-priv
         await assert.rejects(admin.query(down), /rollback blocked/);
         await admin.query("DELETE FROM content_key_operation_daily");
         await admin.query("DELETE FROM content_key_security_events");
+        await admin.query(writeFenceDown);
         await admin.query(distributionDown);
         await admin.query(down);
         assert.equal((await admin.query("SELECT to_regclass('content_key_operation_daily') AS name")).rows[0].name, null);

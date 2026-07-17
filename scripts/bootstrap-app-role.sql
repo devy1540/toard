@@ -82,6 +82,11 @@ BEGIN
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.lock_managed_content_key_distribution() TO toard_app';
   END IF;
 
+  IF to_regprocedure('public.latest_managed_content_write_fence()') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.latest_managed_content_write_fence() FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.latest_managed_content_write_fence() TO toard_app';
+  END IF;
+
   IF to_regclass('public.deployment_release_completions') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.deployment_release_completions FROM toard_app';
     EXECUTE 'GRANT SELECT ON TABLE public.deployment_release_completions TO toard_app';

@@ -9,6 +9,9 @@
 .gitignore
 .github
 .claude
+.superpowers/
+.codex/
+outputs/
 **/.DS_Store
 
 # 시크릿·로그 (.env.example 은 유지해 문서 참조 가능)

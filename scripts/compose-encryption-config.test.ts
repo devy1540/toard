@@ -9,6 +9,8 @@ const COMPOSE_ENV = [
   "TOARD_KEY_MIGRATION_PROVIDER",
   "TOARD_USER_KEY_CACHE_TTL_SECONDS",
   "TOARD_CONTENT_KEK_B64",
+  "TOARD_KEY_COST_PER_10000_USD",
+  "TOARD_KEY_MONTHLY_KEY_COST_USD",
   ...["ACTIVE", "MIGRATION"].flatMap((slot) => [
     `TOARD_KEY_${slot}_LOCAL_KEK_FILE`,
     `TOARD_KEY_${slot}_AWS_KEY_ARN`,
@@ -192,6 +194,9 @@ test("Docker build context는 secret 파일을 제외하고 public env example�
     "**/*.pfx",
     "**/*.secret",
     "**/*credentials*.json",
+    ".superpowers/",
+    ".codex/",
+    "outputs/",
   ]) {
     assert.ok(ignoredLines.has(pattern), `${pattern} ignore 규칙이 필요합니다`);
   }
@@ -219,12 +224,30 @@ test("env example은 각 provider의 active/migration 설정을 secret 원문 �
     assert.doesNotMatch(example, new RegExp(`^#?\\s*${name}=`, "m"));
   }
   assert.doesNotMatch(example, /BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY/);
+  assert.match(example, /TOARD_KEY_COST_PER_10000_USD=0\.04/);
+  assert.match(example, /TOARD_KEY_MONTHLY_KEY_COST_USD=1\.25/);
+  assert.match(example, /두 값을.*함께/);
+  assert.match(example, /active provider/);
+  assert.match(example, /Azure.*Vault.*OpenBao.*local/s);
+  assert.match(
+    example,
+    /TOARD_KEY_ACTIVE_AZURE_CREDENTIAL_MODE=workload-identity/,
+  );
+  assert.match(
+    example,
+    /TOARD_KEY_MIGRATION_AZURE_CREDENTIAL_MODE=workload-identity/,
+  );
+  assert.match(example, /docker compose config.*(?:공유|저장).*금지/s);
 });
 
-test("GHCR build와 merge matrix는 네 이미지 target을 정확히 매핑한다", () => {
+test("GHCR build matrix는 4 target × 2 platform의 8개 row를 정확히 매핑한다", () => {
   const workflow = parseYaml(".github/workflows/docker-publish.yml") as {
     jobs: {
-      build: { strategy: { matrix: { target: string[]; include: Array<Record<string, string>> } } };
+      build: { strategy: { matrix: {
+        target: string[];
+        platform: string[];
+        include: Array<Record<string, string>>;
+      } } };
       merge: { strategy: { matrix: { include: Array<Record<string, string>> } } };
     };
   };
@@ -235,6 +258,36 @@ test("GHCR build와 merge matrix는 네 이미지 target을 정확히 매핑한�
     ["content-admin", "toard-content-admin"],
   ]);
   assert.deepEqual(new Set(workflow.jobs.build.strategy.matrix.target), new Set(expected.keys()));
+
+  const platforms = new Map([
+    ["linux/amd64", { runner: "ubuntu-latest", arch: "amd64" }],
+    ["linux/arm64", { runner: "ubuntu-24.04-arm", arch: "arm64" }],
+  ]);
+  assert.deepEqual(
+    new Set(workflow.jobs.build.strategy.matrix.platform),
+    new Set(platforms.keys()),
+  );
+  const expanded = workflow.jobs.build.strategy.matrix.target.flatMap((target) => (
+    workflow.jobs.build.strategy.matrix.platform.map((platform) => {
+      const targetValues = workflow.jobs.build.strategy.matrix.include.filter(
+        (item) => item.target === target && item.image,
+      );
+      const platformValues = workflow.jobs.build.strategy.matrix.include.filter(
+        (item) => item.platform === platform && item.runner && item.arch,
+      );
+      assert.equal(targetValues.length, 1, `${target} image mapping은 하나여야 합니다`);
+      assert.equal(platformValues.length, 1, `${platform} runner mapping은 하나여야 합니다`);
+      return { target, platform, ...targetValues[0], ...platformValues[0] };
+    })
+  ));
+  assert.equal(expanded.length, 8);
+  for (const row of expanded) {
+    assert.equal(row.image, expected.get(row.target));
+    assert.deepEqual(
+      { runner: row.runner, arch: row.arch },
+      platforms.get(row.platform),
+    );
+  }
 
   for (const matrix of [
     workflow.jobs.build.strategy.matrix.include,

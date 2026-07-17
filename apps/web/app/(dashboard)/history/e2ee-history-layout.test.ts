@@ -39,7 +39,15 @@ test("E2EE to managed migration replaces the legacy auto-worker and hides partia
   assert.doesNotMatch(clientSource, /runLegacyMigrationBatch|nextLegacyMigrationBatchLimit/);
   assert.match(clientSource, /createE2eeToManagedLoop/);
   assert.match(clientSource, /ManagedMigrationPanel/);
-  assert.match(clientSource, /onComplete:[\s\S]*lock\(false\)[\s\S]*router\.refresh\(\)/);
+  assert.match(clientSource, /completionActionRef\.current = \(\) => \{[\s\S]*lock\(false\)[\s\S]*router\.refresh\(\)/);
   assert.match(clientSource, /const migrationPanel = managedMigrationVisible[\s\S]*<ManagedMigrationPanel/);
   assert.match(clientSource, /if \(managedMigrationVisible\)[\s\S]*return \([\s\S]*\{migrationPanel\}/);
+});
+
+test("initial and loop completion use one ref-backed idempotent lifecycle boundary", () => {
+  assert.match(clientSource, /createE2eeMigrationCompletionBoundary/);
+  assert.match(clientSource, /completionBoundaryRef = useRef/);
+  assert.match(clientSource, /acceptInitialE2eeMigrationStatus\(completionBoundary/);
+  assert.match(clientSource, /resolveE2eeContentAccountState\(completionBoundary/);
+  assert.match(clientSource, /onComplete: \(\) => completionBoundary\.finish\(\)/);
 });

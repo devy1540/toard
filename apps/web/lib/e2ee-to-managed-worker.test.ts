@@ -6,7 +6,11 @@ import {
   E2EE_MANAGED_MIGRATION_MAX_BODY_BYTES,
 } from "./e2ee-to-managed-contract";
 import {
+  acceptInitialE2eeMigrationStatus,
+  createE2eeMigrationCompletionBoundary,
   createE2eeToManagedLoop,
+  isRecoverableE2eeMigrationConflict,
+  resolveE2eeContentAccountState,
   runE2eeToManagedBatch,
 } from "./e2ee-to-managed-worker";
 
@@ -25,6 +29,56 @@ async function source(text = "secret prompt", id = "1") {
   }, OWNER, 1);
   return { uck, value: { id, sourceDigest: DIGEST, record } };
 }
+
+function migrationStatus(
+  state: "pending" | "running" | "blocked" | "complete",
+  e2eeRecords = state === "complete" ? 0 : 1,
+) {
+  return {
+    state,
+    e2eeRecords,
+    migratedRecords: 1,
+    startedAt: null,
+    completedAt: state === "complete" ? "2026-07-17T00:00:00.000Z" : null,
+    blockedAt: null,
+    blockedReason: null,
+  } as const;
+}
+
+test("initial complete, loop complete, and migrated account share one completion boundary", () => {
+  let locks = 0;
+  let refreshes = 0;
+  const observed: string[] = [];
+  const boundary = createE2eeMigrationCompletionBoundary(() => {
+    locks += 1;
+    refreshes += 1;
+  });
+
+  acceptInitialE2eeMigrationStatus(boundary, migrationStatus("complete"), (status) => {
+    observed.push(status.state);
+  });
+  boundary.finish();
+  assert.equal(resolveE2eeContentAccountState(boundary, "migrated"), "complete");
+
+  assert.equal(locks, 1);
+  assert.equal(refreshes, 1);
+  assert.deepEqual(observed, []);
+});
+
+test("initial pending status is observed and active content state does not complete", () => {
+  let completions = 0;
+  const observed: string[] = [];
+  const boundary = createE2eeMigrationCompletionBoundary(() => { completions += 1; });
+
+  acceptInitialE2eeMigrationStatus(boundary, migrationStatus("pending"), (status) => {
+    observed.push(status.state);
+  });
+
+  assert.equal(resolveE2eeContentAccountState(boundary, "active"), "active");
+  assert.equal(resolveE2eeContentAccountState(boundary, "pending"), "inactive");
+  assert.equal(completions, 0);
+  assert.deepEqual(observed, ["pending"]);
+});
 
 test("worker decrypts locally and commits only id, sourceDigest, and plaintext", async () => {
   const { uck, value } = await source();
@@ -308,6 +362,191 @@ test("migration loop does not busy-poll a blocked or empty migration", async () 
     loop.dispose();
   }
 });
+
+test("recoverable conflicts match commit-side 409 state races only", () => {
+  for (const code of [
+    "MIGRATION_NOT_RUNNABLE",
+    "E2EE_SOURCE_CHANGED",
+    "MIGRATION_STATE_CHANGED",
+    "CONTENT_ACCOUNT_STATE_CHANGED",
+  ]) {
+    assert.equal(isRecoverableE2eeMigrationConflict(new Error(code)), true, code);
+  }
+  for (const code of [
+    "MIGRATION_NOT_FOUND",
+    "MANAGED_KEY_UNAVAILABLE",
+    "MIGRATION_FAILED",
+    "MIGRATION_PAGE_TOO_LARGE",
+  ]) {
+    assert.equal(isRecoverableE2eeMigrationConflict(new Error(code)), false, code);
+  }
+});
+
+test("stale commit conflict backs off, re-reads complete status, and finishes once", async () => {
+  const timers = fakeRetryTimers();
+  const { value } = await source();
+  let statusCalls = 0;
+  let commits = 0;
+  let completions = 0;
+  const errors: unknown[] = [];
+  const loop = createE2eeToManagedLoop({
+    copyUck: () => new Uint8Array(32),
+    decrypt: async () => new TextEncoder().encode("secret prompt"),
+    retryTimer: timers.api,
+    fetchJson: async (url, init) => {
+      if (url.endsWith("/status")) {
+        statusCalls += 1;
+        return migrationStatus(statusCalls === 1 ? "running" : "complete");
+      }
+      if (url.includes("/page")) return { records: [value] };
+      if (url.endsWith("/commit") && init?.method === "POST") {
+        commits += 1;
+        throw new Error("E2EE_SOURCE_CHANGED");
+      }
+      throw new Error(`unexpected request: ${url}`);
+    },
+    environment: alwaysRunnableEnvironment(),
+    onStatus: () => undefined,
+    onComplete: () => { completions += 1; },
+    onError: (error) => { errors.push(error); },
+  });
+
+  loop.start();
+  await waitFor(() => timers.pending.size === 1);
+  assert.deepEqual(timers.delays, [50]);
+  timers.fireNext();
+  await waitFor(() => completions === 1);
+  assert.equal(statusCalls, 2);
+  assert.equal(commits, 1);
+  assert.deepEqual(errors, []);
+  loop.dispose();
+});
+
+test("recoverable conflict fetches a fresh page and bounds exponential retries", async () => {
+  const timers = fakeRetryTimers();
+  const { value } = await source();
+  let statusCalls = 0;
+  let pageCalls = 0;
+  let commitCalls = 0;
+  let completions = 0;
+  const errors: string[] = [];
+  const loop = createE2eeToManagedLoop({
+    copyUck: () => new Uint8Array(32),
+    decrypt: async () => new TextEncoder().encode("secret prompt"),
+    retryTimer: timers.api,
+    fetchJson: async (url, init) => {
+      if (url.endsWith("/status")) {
+        statusCalls += 1;
+        return migrationStatus("pending");
+      }
+      if (url.includes("/page")) {
+        pageCalls += 1;
+        return { records: [{ ...value, id: String(pageCalls) }] };
+      }
+      if (url.endsWith("/commit") && init?.method === "POST") {
+        commitCalls += 1;
+        if (commitCalls <= 3) throw new Error("MIGRATION_NOT_RUNNABLE");
+        throw new Error("MIGRATION_NOT_RUNNABLE");
+      }
+      throw new Error(`unexpected request: ${url}`);
+    },
+    environment: alwaysRunnableEnvironment(),
+    onStatus: () => undefined,
+    onComplete: () => { completions += 1; },
+    onError: (error) => { errors.push(error instanceof Error ? error.message : "unknown"); },
+  });
+
+  loop.start();
+  for (const expectedDelay of [50, 100, 200]) {
+    await waitFor(() => timers.pending.size === 1);
+    assert.equal(timers.delays.at(-1), expectedDelay);
+    timers.fireNext();
+  }
+  await waitFor(() => errors.length === 1);
+  assert.equal(statusCalls, 4);
+  assert.equal(pageCalls, 4, "every retry fetches a fresh authoritative page");
+  assert.equal(commitCalls, 4);
+  assert.equal(completions, 0);
+  assert.deepEqual(errors, ["MIGRATION_NOT_RUNNABLE"]);
+  assert.deepEqual(timers.delays, [50, 100, 200]);
+  assert.equal(timers.pending.size, 0);
+  loop.dispose();
+});
+
+test("disposing a conflict retry clears its timer and late callbacks cannot request again", async () => {
+  const timers = fakeRetryTimers();
+  const { value } = await source();
+  let statusCalls = 0;
+  const loop = createE2eeToManagedLoop({
+    copyUck: () => new Uint8Array(32),
+    decrypt: async () => new TextEncoder().encode("secret prompt"),
+    retryTimer: timers.api,
+    fetchJson: async (url) => {
+      if (url.endsWith("/status")) {
+        statusCalls += 1;
+        return migrationStatus("pending");
+      }
+      if (url.includes("/page")) return { records: [value] };
+      throw new Error("E2EE_SOURCE_CHANGED");
+    },
+    environment: alwaysRunnableEnvironment(),
+    onStatus: () => undefined,
+    onComplete: () => undefined,
+    onError: () => undefined,
+  });
+
+  loop.start();
+  await waitFor(() => timers.pending.size === 1);
+  const lateCallback = timers.firstCallback();
+  loop.dispose();
+  assert.equal(timers.cleared, 1);
+  lateCallback();
+  await tick();
+  assert.equal(statusCalls, 1);
+});
+
+function alwaysRunnableEnvironment() {
+  return {
+    isVisible: () => true,
+    isOnline: () => true,
+    onVisibilityChange: () => () => undefined,
+    onOnline: () => () => undefined,
+  };
+}
+
+function fakeRetryTimers() {
+  let nextId = 1;
+  let cleared = 0;
+  const pending = new Map<number, () => void>();
+  const delays: number[] = [];
+  return {
+    api: {
+      set(callback: () => void, delayMs: number) {
+        const id = nextId++;
+        delays.push(delayMs);
+        pending.set(id, callback);
+        return id;
+      },
+      clear(handle: unknown) {
+        if (pending.delete(Number(handle))) cleared += 1;
+      },
+    },
+    pending,
+    delays,
+    get cleared() { return cleared; },
+    firstCallback() {
+      const callback = pending.values().next().value;
+      assert.ok(callback);
+      return callback;
+    },
+    fireNext() {
+      const entry = pending.entries().next().value as [number, () => void] | undefined;
+      assert.ok(entry);
+      pending.delete(entry[0]);
+      entry[1]();
+    },
+  };
+}
 
 async function tick(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));

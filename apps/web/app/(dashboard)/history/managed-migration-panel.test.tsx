@@ -33,6 +33,10 @@ test("migration panel shows progress without rendering partial history", () => {
   assert.match(html, /히스토리 보안 전환 중/);
   assert.match(html, /7/);
   assert.match(html, /3/);
+  assert.match(
+    html,
+    /role="progressbar"[^>]*aria-valuemin="0"[^>]*aria-valuemax="100"[^>]*aria-valuenow="70"/,
+  );
   assert.match(html, /암호문은 서버에 그대로 보존/);
   assert.doesNotMatch(html, /삭제/);
 });

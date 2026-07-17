@@ -68,7 +68,14 @@ export function ManagedMigrationPanel({
         </div>
 
         {!blocked ? (
-          <div className="space-y-2" aria-label={t("progressLabel", { migrated, remaining })}>
+          <div
+            className="space-y-2"
+            role="progressbar"
+            aria-label={t("progressLabel", { migrated, remaining })}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={percent}
+          >
             <div className="h-2 overflow-hidden rounded-full bg-muted">
               <div
                 className="h-full rounded-full bg-primary transition-[width]"

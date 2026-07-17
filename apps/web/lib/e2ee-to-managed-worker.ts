@@ -51,7 +51,68 @@ export type E2eeToManagedLoop = {
   dispose(): void;
 };
 
+export type E2eeMigrationRetryTimer = {
+  set(callback: () => void, delayMs: number): unknown;
+  clear(handle: unknown): void;
+};
+
+export type E2eeMigrationCompletionBoundary = {
+  finish(): boolean;
+};
+
+export function createE2eeMigrationCompletionBoundary(
+  onComplete: () => void,
+): E2eeMigrationCompletionBoundary {
+  let complete = false;
+  return {
+    finish() {
+      if (complete) return false;
+      complete = true;
+      onComplete();
+      return true;
+    },
+  };
+}
+
+export function acceptInitialE2eeMigrationStatus(
+  boundary: E2eeMigrationCompletionBoundary,
+  status: E2eeManagedMigrationStatus,
+  onIncomplete: (status: E2eeManagedMigrationStatus) => void,
+): void {
+  if (status.state === "complete") {
+    boundary.finish();
+    return;
+  }
+  onIncomplete(status);
+}
+
+export function resolveE2eeContentAccountState(
+  boundary: E2eeMigrationCompletionBoundary,
+  state: "off" | "pending" | "active" | "migrated",
+): "active" | "inactive" | "complete" {
+  if (state === "migrated") {
+    boundary.finish();
+    return "complete";
+  }
+  return state === "active" ? "active" : "inactive";
+}
+
 const EMPTY_BODY_BYTES = new TextEncoder().encode('{"items":[]}').byteLength;
+const MAX_CONFLICT_RETRIES = 3;
+const RECOVERABLE_CONFLICT_CODES = new Set([
+  "MIGRATION_NOT_RUNNABLE",
+  "E2EE_SOURCE_CHANGED",
+  "MIGRATION_STATE_CHANGED",
+  "CONTENT_ACCOUNT_STATE_CHANGED",
+]);
+
+export function isRecoverableE2eeMigrationConflict(error: unknown): boolean {
+  try {
+    return error instanceof Error && RECOVERABLE_CONFLICT_CODES.has(error.message);
+  } catch {
+    return false;
+  }
+}
 
 export async function runE2eeToManagedBatch(
   input: E2eeToManagedWorkerInput,
@@ -106,17 +167,23 @@ export function createE2eeToManagedLoop(input: {
   onComplete(): void;
   onError(error: unknown): void;
   decrypt?: E2eeToManagedWorkerInput["decrypt"];
+  retryTimer?: E2eeMigrationRetryTimer;
 }): E2eeToManagedLoop {
   const controller = new AbortController();
+  const retryTimer = input.retryTimer ?? defaultRetryTimer();
   let started = false;
   let disposed = false;
   let running = false;
   let complete = false;
+  let conflictRetries = 0;
+  let retryScheduled = false;
+  let retryHandle: unknown;
   let removeVisibility: (() => void) | null = null;
   let removeOnline: (() => void) | null = null;
 
   const runnable = () => !disposed
     && !complete
+    && !retryScheduled
     && input.environment.isVisible()
     && input.environment.isOnline();
 
@@ -124,6 +191,18 @@ export function createE2eeToManagedLoop(input: {
     if (complete || disposed) return;
     complete = true;
     input.onComplete();
+  };
+
+  const scheduleConflictRetry = () => {
+    conflictRetries += 1;
+    const delayMs = 50 * (2 ** (conflictRetries - 1));
+    retryScheduled = true;
+    retryHandle = retryTimer.set(() => {
+      if (!retryScheduled) return;
+      retryScheduled = false;
+      retryHandle = undefined;
+      if (!disposed && !complete) schedule();
+    }, delayMs);
   };
 
   const schedule = () => {
@@ -154,13 +233,24 @@ export function createE2eeToManagedLoop(input: {
 
     const uck = input.copyUck();
     try {
-      const result = await runE2eeToManagedBatch({
-        uck,
-        signal: controller.signal,
-        fetchJson: input.fetchJson,
-        decrypt: input.decrypt,
-      });
+      let result: E2eeToManagedWorkerResult;
+      try {
+        result = await runE2eeToManagedBatch({
+          uck,
+          signal: controller.signal,
+          fetchJson: input.fetchJson,
+          decrypt: input.decrypt,
+        });
+      } catch (error) {
+        if (isRecoverableE2eeMigrationConflict(error)
+          && conflictRetries < MAX_CONFLICT_RETRIES) {
+          scheduleConflictRetry();
+          return false;
+        }
+        throw error;
+      }
       if (disposed) return false;
+      conflictRetries = 0;
       input.onStatus({
         ...status,
         state: result.complete ? "complete" : "running",
@@ -189,10 +279,22 @@ export function createE2eeToManagedLoop(input: {
       if (disposed) return;
       disposed = true;
       controller.abort();
+      if (retryScheduled) {
+        retryScheduled = false;
+        retryTimer.clear(retryHandle);
+        retryHandle = undefined;
+      }
       removeVisibility?.();
       removeOnline?.();
       removeVisibility = null;
       removeOnline = null;
     },
+  };
+}
+
+function defaultRetryTimer(): E2eeMigrationRetryTimer {
+  return {
+    set: (callback, delayMs) => setTimeout(callback, delayMs),
+    clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   };
 }

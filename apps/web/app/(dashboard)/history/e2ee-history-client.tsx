@@ -21,7 +21,11 @@ import {
 import { contentKeyVault } from "@/lib/content-key-vault";
 import { unlockApprovedBrowser } from "@/lib/content-auto-unlock";
 import {
+  acceptInitialE2eeMigrationStatus,
+  createE2eeMigrationCompletionBoundary,
   createE2eeToManagedLoop,
+  resolveE2eeContentAccountState,
+  type E2eeMigrationCompletionBoundary,
   type E2eeManagedMigrationStatus,
 } from "@/lib/e2ee-to-managed-worker";
 import {
@@ -90,6 +94,8 @@ export function E2eeHistoryClient({
   const [managedMigrationError, setManagedMigrationError] = useState<string | null>(null);
   const pendingKey = useRef<CryptoKeyPair | null>(null);
   const manuallyLocked = useRef(false);
+  const completionActionRef = useRef<() => void>(() => undefined);
+  const completionBoundaryRef = useRef<E2eeMigrationCompletionBoundary | null>(null);
 
   const lock = useCallback((manual = true) => {
     manuallyLocked.current = manual;
@@ -99,6 +105,17 @@ export function E2eeHistoryClient({
     setDetail(null);
     dispatch({ type: "lock" });
   }, []);
+
+  completionActionRef.current = () => {
+    lock(false);
+    router.refresh();
+  };
+  if (completionBoundaryRef.current === null) {
+    completionBoundaryRef.current = createE2eeMigrationCompletionBoundary(
+      () => completionActionRef.current(),
+    );
+  }
+  const completionBoundary = completionBoundaryRef.current;
 
   const unlock = useCallback((uck: Uint8Array) => {
     contentKeyVault.unlock(uck);
@@ -125,9 +142,13 @@ export function E2eeHistoryClient({
     let cancelled = false;
     void (async () => {
       try {
-        const status = await fetchJson<{ state: "off" | "pending" | "active" }>("/api/content/status");
+        const status = await fetchJson<{ state: "off" | "pending" | "active" | "migrated" }>(
+          "/api/content/status",
+        );
         if (cancelled) return;
-        if (status.state !== "active") {
+        const resolution = resolveE2eeContentAccountState(completionBoundary, status.state);
+        if (resolution === "complete") return;
+        if (resolution !== "active") {
           dispatch({ type: "fatal", error: "E2EE_NOT_ACTIVE" });
           return;
         }
@@ -143,13 +164,15 @@ export function E2eeHistoryClient({
       }
     })();
     return () => { cancelled = true; };
-  }, [unlockLocal]);
+  }, [completionBoundary, unlockLocal]);
 
   useEffect(() => {
     let cancelled = false;
     void fetchJson<E2eeManagedMigrationStatus>("/api/content/managed-migration/status")
       .then((status) => {
-        if (!cancelled) setManagedMigration(status);
+        if (!cancelled) {
+          acceptInitialE2eeMigrationStatus(completionBoundary, status, setManagedMigration);
+        }
       })
       .catch((error) => {
         if (cancelled) return;
@@ -161,7 +184,7 @@ export function E2eeHistoryClient({
         if (!cancelled) setManagedMigrationLoaded(true);
       });
     return () => { cancelled = true; };
-  }, []);
+  }, [completionBoundary]);
 
   const managedMigrationRunnable = managedMigration?.state === "pending"
     || managedMigration?.state === "running";
@@ -190,15 +213,12 @@ export function E2eeHistoryClient({
         setManagedMigration(status);
         setManagedMigrationError(null);
       },
-      onComplete: () => {
-        lock(false);
-        router.refresh();
-      },
+      onComplete: () => completionBoundary.finish(),
       onError: (error) => setManagedMigrationError(errorCode(error)),
     });
     loop.start();
     return () => loop.dispose();
-  }, [lock, managedMigrationRunnable, router, state.kind]);
+  }, [completionBoundary, managedMigrationRunnable, state.kind]);
 
   useEffect(() => {
     if (state.kind !== "unlocked" || !managedMigrationLoaded || managedMigrationVisible

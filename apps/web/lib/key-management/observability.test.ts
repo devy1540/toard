@@ -3,7 +3,9 @@ import test from "node:test";
 import {
   ObservedKeyManagementProvider,
   recordKeyOperation,
+  recordKeySecurityEvent,
   type KeyOperationEvent,
+  type KeySecurityEvent,
 } from "./observability";
 import { providerError } from "./provider-error";
 import type {
@@ -171,6 +173,12 @@ test("provider identity is captured once and rejects noncanonical fingerprints",
   assert.equal(observed.fingerprint, "aws-kms:0123456789abcdef01234567");
   assert.equal(observed.fingerprint, "aws-kms:0123456789abcdef01234567");
   assert.equal(reads, 1);
+  for (const property of ["name", "keyRef", "fingerprint"] as const) {
+    const descriptor = Object.getOwnPropertyDescriptor(observed, property);
+    assert.equal(descriptor?.writable, false, property);
+    assert.equal(descriptor?.configurable, false, property);
+    assert.throws(() => { (observed as unknown as Record<string, unknown>)[property] = "mutated"; }, TypeError);
+  }
 
   assert.throws(
     () => new ObservedKeyManagementProvider({
@@ -188,6 +196,32 @@ test("provider identity is captured once and rejects noncanonical fingerprints",
       && error.message === "KEY_OPERATION_IDENTITY_INVALID"
       && !error.message.includes("secret"),
   );
+});
+
+test("crypto and health never await a pending recorder and preserve the original error object", async () => {
+  const never = new Promise<void>(() => undefined);
+  const inner = innerProvider();
+  const original = providerError(inner.name, "TEMPORARY");
+  const provider = new ObservedKeyManagementProvider(inner, {
+    recorder: { record: () => never },
+  });
+  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("TIMED_OUT")), 50));
+
+  assert.equal((await Promise.race([provider.wrapKey(UCK, CONTEXT), timeout])).provider, "aws-kms");
+  assert.equal((await Promise.race([provider.healthCheck(), timeout])).status, "healthy");
+  inner.unwrapKey = async () => { throw original; };
+  await assert.rejects(
+    Promise.race([provider.unwrapKey({
+      provider: inner.name, keyRef: inner.keyRef, fingerprint: inner.fingerprint,
+      ciphertext: Buffer.alloc(32), metadata: {},
+    }, CONTEXT), timeout]),
+    (error) => error === original,
+  );
+
+  const syncThrow = new ObservedKeyManagementProvider(innerProvider(), {
+    recorder: { record: (() => { throw new Error("sync metrics secret"); }) as never },
+  });
+  assert.equal((await syncThrow.wrapKey(UCK, CONTEXT)).provider, "aws-kms");
 });
 
 test("hostile local error and clock cannot mask the original crypto result", async () => {
@@ -289,4 +323,65 @@ test("aggregate writer masks hostile event traps before touching the database", 
       && !error.message.includes("secret"),
   );
   assert.equal(calls, 0);
+});
+
+test("provider calls use cache_result none while cache lookup rows stay non-none", async () => {
+  const params: Array<readonly unknown[]> = [];
+  const db = { async query(_sql: string, values: readonly unknown[]) { params.push(values); } };
+  const provider = new ObservedKeyManagementProvider(innerProvider(), {
+    recorder: { async record(event) { await recordKeyOperation(event, db); } },
+  });
+  await provider.wrapKey(UCK, CONTEXT);
+  await recordKeyOperation({
+    provider: "aws-kms",
+    fingerprint: "aws-kms:0123456789abcdef01234567",
+    operation: "unwrap",
+    outcome: "success",
+    cacheResult: "hit",
+    latencyMs: 0,
+  }, db);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(params[0]?.[4], "none", "actual KMS call row");
+  assert.equal(params[1]?.[4], "hit", "cache lookup row");
+});
+
+test("security audit uses an exact secret-free DTO and parameterized insert", async () => {
+  const calls: Array<{ sql: string; params: readonly unknown[] }> = [];
+  const db = { async query(sql: string, params: readonly unknown[]) { calls.push({ sql, params }); } };
+  const event: KeySecurityEvent = {
+    eventType: "user_key_created",
+    userId: CONTEXT.userId,
+    provider: "aws-kms",
+    providerFingerprint: "aws-kms:0123456789abcdef01234567",
+    keyVersion: 1,
+    actorUserId: null,
+    appInstanceId: CONTEXT.installationId,
+  };
+  await recordKeySecurityEvent(event, db);
+  assert.match(calls[0]!.sql, /INSERT INTO content_key_security_events/);
+  assert.equal(calls[0]!.sql.includes(CONTEXT.userId), false);
+  assert.deepEqual(calls[0]!.params, [
+    "user_key_created", CONTEXT.userId, "aws-kms",
+    "aws-kms:0123456789abcdef01234567", 1, null, CONTEXT.installationId,
+  ]);
+  assert.equal(calls[0]!.params.some((value) => Buffer.isBuffer(value)), false);
+
+  for (const invalid of [
+    { ...event, appInstanceId: "fallback-without-installation-row" },
+    { ...event, uck: Buffer.alloc(32) },
+    { ...event, providerFingerprint: "aws-kms:https://host/?credential=secret" },
+    { ...event, eventType: "provider_migration_started", userId: null, keyVersion: null, actorUserId: null },
+    { ...event, eventType: "provider_migration_completed", userId: null, keyVersion: null, actorUserId: CONTEXT.userId },
+  ]) {
+    const shouldBeValidAdminEvent = invalid.eventType === "provider_migration_completed";
+    if (shouldBeValidAdminEvent) {
+      await recordKeySecurityEvent(invalid as KeySecurityEvent, db);
+    } else {
+      await assert.rejects(
+        recordKeySecurityEvent(invalid as KeySecurityEvent, db),
+        /KEY_SECURITY_EVENT_INVALID/,
+      );
+    }
+  }
+  assert.equal(calls.length, 2, "only user event and explicit-actor admin event reach SQL");
 });

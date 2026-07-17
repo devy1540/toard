@@ -14,6 +14,8 @@ import {
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const INSTALLATION_ID = "019f7250-dc4d-78fd-98e8-a5465d0f5b69";
 const UCK = Buffer.alloc(32, 0x21);
+const OLD_FINGERPRINT = "local:111111111111111111111111";
+const TARGET_FINGERPRINT = "aws-kms:222222222222222222222222";
 
 function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string, calls: string[]) {
   let unwrapResult = Buffer.from(UCK);
@@ -78,7 +80,7 @@ function activeRow() {
     keyVersion: 3,
     provider: "local",
     providerKeyRef: "local:old",
-    providerFingerprint: "local:old-fingerprint",
+    providerFingerprint: OLD_FINGERPRINT,
     wrappedUserKey: Buffer.alloc(48, 0x33),
     wrapperMetadata: { version: "1" },
     contextVersion: 1,
@@ -113,7 +115,7 @@ function canaryRow() {
   };
 }
 
-function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?: boolean; targetRetiring?: boolean; noCanary?: boolean; failAt?: "insert" | "retire" | "activate" } = {}) {
+function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?: boolean; targetRetiring?: boolean; noCanary?: boolean; failAt?: "insert" | "retire" | "activate" | "audit" } = {}) {
   let active = activeRow();
   let pending: Record<string, unknown> | null = null;
   let snapshot: { active: typeof active; pending: Record<string, unknown> | null } | null = null;
@@ -136,7 +138,7 @@ function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?:
         return { rows: [] };
       }
       if (sql.includes("FROM managed_content_keys") && sql.includes("state='active'") && sql.includes("FOR UPDATE")) {
-        if (options.changeBeforeLock) active = { ...active, providerFingerprint: "local:changed" };
+        if (options.changeBeforeLock) active = { ...active, providerFingerprint: "local:333333333333333333333333" };
         if (options.changeContextBeforeLock) active = { ...active, contextVersion: 2 };
         return { rows: [active] };
       }
@@ -160,11 +162,15 @@ function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?:
           id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
           provider: "aws-kms",
           providerKeyRef: "arn:new",
-          providerFingerprint: "aws:new-fingerprint",
+          providerFingerprint: TARGET_FINGERPRINT,
           wrappedUserKey: Buffer.alloc(48, 0x44),
           state: "active",
         };
         pending = null;
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.startsWith("INSERT INTO content_key_security_events")) {
+        if (options.failAt === "audit") throw new Error("contains audit database secret");
         return { rows: [], rowCount: 1 };
       }
       throw new Error(`unexpected query: ${sql}`);
@@ -174,8 +180,8 @@ function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?:
 }
 
 function runtime(calls: string[], evicted: string[]) {
-  const oldProvider = provider("local", "local:old-fingerprint", "local:old", calls);
-  const target = provider("aws-kms", "aws:new-fingerprint", "arn:new", calls);
+  const oldProvider = provider("local", OLD_FINGERPRINT, "local:old", calls);
+  const target = provider("aws-kms", TARGET_FINGERPRINT, "arn:new", calls);
   const value: ManagedContentRuntime = {
     installationId: INSTALLATION_ID,
     registry: new KeyProviderRegistry(oldProvider, target),
@@ -204,7 +210,19 @@ test("rewrap verifies wrapper and managed canary before atomic promotion", async
   assert.match(db.calls.find((call) => call.sql.includes("FOR UPDATE"))!.sql, /state='active'.*FOR UPDATE/s);
   assert.equal(db.calls.some((call) => call.sql.includes("FROM prompt_records") && call.sql.includes("managed_v1")), true);
   assert.equal(db.calls.some((call) => call.params.some((param) => param === "secret canary")), false);
-  assert.deepEqual(evicted, [`${USER_ID}:3:local:old-fingerprint`]);
+  assert.deepEqual(evicted, [`${USER_ID}:3:${OLD_FINGERPRINT}`]);
+  const audit = db.calls.find((call) => call.sql.startsWith("INSERT INTO content_key_security_events"))!;
+  assert.deepEqual(audit.params, [
+    "user_key_rewrapped", USER_ID, "aws-kms", TARGET_FINGERPRINT, 3, null, INSTALLATION_ID,
+  ]);
+  assert.equal(audit.params.some((value) => Buffer.isBuffer(value)), false);
+  const auditIndex = db.calls.indexOf(audit);
+  const activationIndex = db.calls.findIndex((call) => (
+    call.sql.startsWith("UPDATE managed_content_keys") && call.sql.includes("state='active'")
+  ));
+  const commitAfterAudit = db.calls.findIndex((call, index) => index > auditIndex && call.sql === "COMMIT");
+  assert.ok(activationIndex < auditIndex);
+  assert.ok(auditIndex < commitAfterAudit);
   assert.equal(oldProvider.unwrapResult.every((byte) => byte === 0), true, "old provider output ownership transfers and is zeroized");
   assert.equal(target.unwrapResult.every((byte) => byte === 0), true, "verification output ownership transfers and is zeroized");
   assert.equal(target.seenWrapInputs[0]!.every((byte) => byte === 0), true, "temporary wrap input is zeroized");
@@ -227,6 +245,7 @@ test("mismatch, concurrent change, and transaction failure keep the old active a
     { failAt: "insert" as const },
     { failAt: "retire" as const },
     { failAt: "activate" as const },
+    { failAt: "audit" as const },
   ]) {
     const calls: string[] = [], evicted: string[] = [];
     const { value } = runtime(calls, evicted);
@@ -328,7 +347,7 @@ test("missing migration provider, missing canary, and already-current are fail-s
   assert.deepEqual(canaryEvicted, []);
 
   const currentDb = fakeDb();
-  const target = provider("aws-kms", "local:old-fingerprint", "local:old", []);
+  const target = provider("aws-kms", OLD_FINGERPRINT, "local:old", []);
   value.registry = { active: oldProvider, migration: target, resolveWrappedKey: () => oldProvider } as never;
   delete value.userKeys.evict;
   assert.deepEqual(await rewrapUserKey(USER_ID, value, currentDb), { state: "already-current" });
@@ -353,7 +372,7 @@ test("provider enumeration reads only users globally and checks exact wrapper in
   };
 
   assert.deepEqual(
-    await getProviderRewrapUsers("local", "local:old-fingerprint", db),
+    await getProviderRewrapUsers("local", OLD_FINGERPRINT, db),
     [USER_ID],
   );
   assert.match(calls[0]!.sql, /SELECT id::text AS id FROM users ORDER BY id ASC/);

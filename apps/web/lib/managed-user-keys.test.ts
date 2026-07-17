@@ -9,6 +9,7 @@ import type {
   WrappedUserKey,
 } from "./key-management/types";
 import { UserKeyCache } from "./key-management/user-key-cache";
+import type { CacheResultEvent, KeySecurityEvent } from "./key-management/observability";
 import {
   ManagedUserKeyService,
   type ManagedUserKeyDatabase,
@@ -17,6 +18,7 @@ import {
 
 const INSTALLATION_ID = "018f47d0-4d47-7b04-950b-7d18a86e1b43";
 const USER_ID = "01900000-0000-7000-8000-000000000001";
+const FINGERPRINT = "local:0123456789abcdef01234567";
 
 type DbCall = {
   sql: string;
@@ -72,6 +74,10 @@ class FakeDatabase implements ManagedUserKeyDatabase {
       return { rows: [], rowCount: 1 };
     }
 
+    if (/INSERT INTO content_key_security_events/.test(compact)) {
+      return { rows: [], rowCount: 1 };
+    }
+
     throw new Error(`UNEXPECTED_QUERY: ${compact}`);
   }
 }
@@ -79,7 +85,7 @@ class FakeDatabase implements ManagedUserKeyDatabase {
 class FakeProvider implements KeyManagementProvider {
   readonly name = "local" as const;
   readonly keyRef = "file:/run/secrets/toard-kek";
-  readonly fingerprint = "local:test-provider";
+  readonly fingerprint = FINGERPRINT;
   readonly wrapContexts: KeyContext[] = [];
   readonly unwrapContexts: KeyContext[] = [];
   wrapCalls = 0;
@@ -122,7 +128,7 @@ function storedRow(
     keyVersion: 1,
     provider: "local",
     providerKeyRef: "file:/run/secrets/toard-kek",
-    providerFingerprint: "local:test-provider",
+    providerFingerprint: FINGERPRINT,
     wrappedUserKey: Buffer.alloc(32, 7),
     wrapperMetadata: { format: "test-v1" },
     state: "active",
@@ -134,6 +140,12 @@ function createService(input: {
   db?: FakeDatabase;
   provider?: FakeProvider;
   generatedKey?: Buffer;
+  recordSecurityEvent?: (
+    event: KeySecurityEvent,
+    db: ManagedUserKeyDatabase,
+  ) => Promise<void>;
+  recordCacheResult?: (event: CacheResultEvent) => Promise<void>;
+  transactional?: boolean;
 }) {
   const db = input.db ?? new FakeDatabase();
   const provider = input.provider ?? new FakeProvider();
@@ -141,12 +153,22 @@ function createService(input: {
   const service = new ManagedUserKeyService({
     installationId: INSTALLATION_ID,
     registry: new KeyProviderRegistry(provider, null),
-    cache: new UserKeyCache({ ttlMs: 300_000 }),
+    cache: new UserKeyCache({
+      ttlMs: 300_000,
+      recordCacheResult: input.recordCacheResult,
+    }),
     runInUserContext: async (userId, fn) => {
       contexts.push(userId);
-      return fn(db);
+      const before = db.rows.map((row) => ({ ...row, wrappedUserKey: Buffer.from(row.wrappedUserKey) }));
+      try {
+        return await fn(db);
+      } catch (error) {
+        if (input.transactional) db.rows.splice(0, db.rows.length, ...before);
+        throw error;
+      }
     },
     randomBytes: () => input.generatedKey ?? Buffer.alloc(32, 9),
+    recordSecurityEvent: input.recordSecurityEvent,
   });
   return { service, db, provider, contexts };
 }
@@ -237,6 +259,64 @@ test("active 생성 race의 loser는 생성 UCK를 폐기하고 DB winner wrappe
   );
 });
 
+test("새 active row의 동일 transaction에서만 exact user_key_created audit을 기록한다", async () => {
+  const events: KeySecurityEvent[] = [];
+  const databases: ManagedUserKeyDatabase[] = [];
+  const fixture = createService({
+    recordSecurityEvent: async (event, db) => { events.push(event); databases.push(db); },
+  });
+  await fixture.service.withActiveUserKey(USER_ID, async () => undefined);
+  await fixture.service.withActiveUserKey(USER_ID, async () => undefined);
+  assert.deepEqual(events, [{
+    eventType: "user_key_created",
+    userId: USER_ID,
+    provider: "local",
+    providerFingerprint: FINGERPRINT,
+    keyVersion: 1,
+    actorUserId: null,
+    appInstanceId: INSTALLATION_ID,
+  }]);
+  assert.equal(databases[0], fixture.db);
+  assert.equal(JSON.stringify(events).includes("wrapped"), false);
+
+  const raceDb = new FakeDatabase();
+  raceDb.loseInsertRaceWith = storedRow({ wrappedUserKey: Buffer.alloc(32, 0x22) });
+  const raceEvents: KeySecurityEvent[] = [];
+  const race = createService({
+    db: raceDb,
+    recordSecurityEvent: async (event) => { raceEvents.push(event); },
+  });
+  await race.service.withActiveUserKey(USER_ID, async () => undefined);
+  assert.deepEqual(raceEvents, []);
+});
+
+test("user_key_created audit failure rolls back the newly inserted wrapper", async () => {
+  const fixture = createService({
+    transactional: true,
+    recordSecurityEvent: async () => { throw new Error("audit database secret"); },
+  });
+  await assert.rejects(
+    fixture.service.withActiveUserKey(USER_ID, async () => undefined),
+    /audit database secret/,
+  );
+  assert.deepEqual(fixture.db.rows, []);
+});
+
+test("unregistered DB wrapper fails before cache observation", async () => {
+  const db = new FakeDatabase();
+  db.rows.push(storedRow({ providerFingerprint: "local:bbbbbbbbbbbbbbbbbbbbbbbb" }));
+  const events: CacheResultEvent[] = [];
+  const { service } = createService({
+    db,
+    recordCacheResult: async (event) => { events.push(event); },
+  });
+  await assert.rejects(
+    service.withActiveUserKey(USER_ID, async () => undefined),
+    /KEY_PROVIDER_NOT_REGISTERED/,
+  );
+  assert.deepEqual(events, []);
+});
+
 test("wrap 또는 INSERT 실패 경로에서도 생성 UCK를 zeroize한다", async () => {
   const wrapKey = Buffer.alloc(32, 0x33);
   const wrapProvider = new FakeProvider();
@@ -284,7 +364,7 @@ test("provider 전환 cache eviction은 정확한 installation/user/version/fing
   await service.withActiveUserKey(USER_ID, async () => undefined);
   assert.equal(provider.unwrapCalls, 1);
 
-  service.evict(USER_ID, 1, "local:test-provider");
+  service.evict(USER_ID, 1, FINGERPRINT);
   await service.withActiveUserKey(USER_ID, async () => undefined);
   assert.equal(provider.unwrapCalls, 2);
 });

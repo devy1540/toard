@@ -77,7 +77,7 @@ export class UserKeyCache {
     const entry = this.entries.get(cacheKey);
     if (entry) {
       if (entry.expiresAt > this.now()) {
-        await this.observe(observation, "hit");
+        this.observe(observation, "hit");
         return Buffer.from(entry.key);
       }
       this.evict(cacheKey);
@@ -87,7 +87,7 @@ export class UserKeyCache {
     const flight = existingFlight ?? this.startLoad(cacheKey, loader);
     flight.waiters += 1;
     try {
-      await this.observe(observation, existingFlight ? "single_flight" : "miss");
+      this.observe(observation, existingFlight ? "single_flight" : "miss");
       const source = await flight.promise;
       return Buffer.from(source);
     } finally {
@@ -146,10 +146,10 @@ export class UserKeyCache {
     return this.generations.get(cacheKey) ?? 0;
   }
 
-  private async observe(
+  private observe(
     identity: CacheObservationIdentity | undefined,
     cacheResult: CacheResultEvent["cacheResult"],
-  ): Promise<void> {
+  ): void {
     if (!this.recordResult || !identity) return;
     try {
       const provider = identity.provider;
@@ -163,12 +163,12 @@ export class UserKeyCache {
         || !new RegExp(`^${provider}:[0-9a-f]{24}$`).test(fingerprint)
         || !["wrap", "unwrap", "health"].includes(operation)
       ) return;
-      await this.recordResult(Object.freeze({
+      void Promise.resolve(this.recordResult(Object.freeze({
         provider,
         fingerprint,
         operation,
         cacheResult,
-      }));
+      }))).catch(() => undefined);
     } catch {
       // Cache metrics must never affect key availability or cache lifecycle.
     }

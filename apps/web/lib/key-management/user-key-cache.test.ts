@@ -248,3 +248,19 @@ test("cache hook failure does not break key access, TTL, or eviction", async () 
   assert.equal(await cache.withKey("secret-cache-key", loader, async (key) => key[0], SAFE_IDENTITY), 3);
   assert.equal(loads, 3);
 });
+
+test("cache never awaits a pending hook", async () => {
+  const cache = new UserKeyCache({
+    ttlMs: 300_000,
+    recordCacheResult: () => new Promise<void>(() => undefined),
+  });
+  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("TIMED_OUT")), 50));
+  assert.equal(await Promise.race([
+    cache.withKey("secret-cache-key", async () => Buffer.alloc(32, 9), async (key) => key[0], SAFE_IDENTITY),
+    timeout,
+  ]), 9);
+  assert.equal(await Promise.race([
+    cache.withKey("secret-cache-key", async () => Buffer.alloc(32, 8), async (key) => key[0], SAFE_IDENTITY),
+    timeout,
+  ]), 9);
+});

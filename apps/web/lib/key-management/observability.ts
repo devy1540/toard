@@ -23,6 +23,7 @@ export type KeyOperationEvent = Readonly<{
   fingerprint: string;
   operation: KeyOperation;
   outcome: KeyOperationOutcome;
+  /** Provider calls omit this and are stored as `none`; KMS cost queries must filter `cache_result='none'`. */
   cacheResult?: KeyCacheResult;
   latencyMs: number;
 }>;
@@ -31,6 +32,7 @@ export type CacheResultEvent = Readonly<{
   provider: KeyProviderName;
   fingerprint: string;
   operation: KeyOperation;
+  /** Lookup-only row. These non-none outcomes are request/cache diagnostics, not billable KMS calls. */
   cacheResult: Exclude<KeyCacheResult, "none">;
 }>;
 
@@ -38,8 +40,37 @@ export type KeyOperationRecorder = {
   record(event: KeyOperationEvent): Promise<void>;
 };
 
+export type KeySecurityEventType =
+  | "user_key_created"
+  | "user_key_rewrapped"
+  | "provider_migration_started"
+  | "provider_migration_completed"
+  | "e2ee_migration_blocked"
+  | "e2ee_migration_resumed";
+
+// provider_migration_* requires an explicit authenticated admin actor in RLS.
+// The current non-interactive toard-admin CLI has no actor identity, so it deliberately
+// does not emit these global events; the provider switch/rollback commands in Ops Tasks 4/5
+// must supply the actor when they connect lifecycle start/completion.
+
+/** Exact, secret-free audit DTO. Nulls are intentional and shape-dependent. */
+export type KeySecurityEvent = Readonly<{
+  eventType: KeySecurityEventType;
+  userId: string | null;
+  provider: KeyProviderName | null;
+  providerFingerprint: string | null;
+  keyVersion: number | null;
+  actorUserId: string | null;
+  appInstanceId: string;
+}>;
+
+export type KeySecurityEventRecorder = (
+  event: KeySecurityEvent,
+  db: KeyOperationDatabase,
+) => Promise<void>;
+
 export type KeyOperationDatabase = {
-  query(sql: string, params: readonly unknown[]): Promise<unknown>;
+  query(sql: string, params: unknown[]): Promise<unknown>;
 };
 
 const PROVIDERS = new Set<KeyProviderName>([
@@ -85,6 +116,7 @@ const INVALID_CODES = new Set([
   "RESPONSE_INVALID",
 ]);
 const MAX_LATENCY_MS = 86_400_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 const defaultRecorder: KeyOperationRecorder = Object.freeze({
   record: recordKeyOperation,
@@ -141,21 +173,21 @@ function outcomeFromCode(code: string | null): KeyOperationOutcome {
   return "unavailable";
 }
 
-async function ignoreRecorderFailure(
+function dispatchRecorder(
   recorder: KeyOperationRecorder,
   event: KeyOperationEvent,
-): Promise<void> {
+): void {
   try {
-    await recorder.record(Object.freeze(event));
+    void Promise.resolve(recorder.record(Object.freeze(event))).catch(() => undefined);
   } catch {
     // Observability is fail-open relative to the cryptographic operation.
   }
 }
 
 export class ObservedKeyManagementProvider implements KeyManagementProvider {
-  readonly name: KeyProviderName;
-  readonly keyRef: string;
-  readonly fingerprint: string;
+  readonly name!: KeyProviderName;
+  readonly keyRef!: string;
+  readonly fingerprint!: string;
   private readonly inner: KeyManagementProvider;
   private readonly recorder: KeyOperationRecorder;
   private readonly now: () => number;
@@ -190,9 +222,11 @@ export class ObservedKeyManagementProvider implements KeyManagementProvider {
     } catch {
       throw new Error("KEY_OPERATION_IDENTITY_INVALID");
     }
-    this.name = name;
-    this.keyRef = keyRef;
-    this.fingerprint = fingerprint;
+    Object.defineProperties(this, {
+      name: { value: name, enumerable: true, writable: false, configurable: false },
+      keyRef: { value: keyRef, enumerable: true, writable: false, configurable: false },
+      fingerprint: { value: fingerprint, enumerable: true, writable: false, configurable: false },
+    });
     this.inner = inner;
     this.recorder = options.recorder ?? defaultRecorder;
     this.now = options.now ?? Date.now;
@@ -210,7 +244,7 @@ export class ObservedKeyManagementProvider implements KeyManagementProvider {
     const startedAt = safeNow(this.now);
     try {
       const result = await this.inner.healthCheck();
-      await ignoreRecorderFailure(this.recorder, {
+      dispatchRecorder(this.recorder, {
         provider: this.name,
         fingerprint: this.fingerprint,
         operation: "health",
@@ -221,7 +255,7 @@ export class ObservedKeyManagementProvider implements KeyManagementProvider {
       });
       return result;
     } catch (error) {
-      await ignoreRecorderFailure(this.recorder, {
+      dispatchRecorder(this.recorder, {
         provider: this.name,
         fingerprint: this.fingerprint,
         operation: "health",
@@ -240,7 +274,7 @@ export class ObservedKeyManagementProvider implements KeyManagementProvider {
     const startedAt = safeNow(this.now);
     try {
       const result = await run();
-      await ignoreRecorderFailure(this.recorder, {
+      dispatchRecorder(this.recorder, {
         provider: this.name,
         fingerprint: this.fingerprint,
         operation,
@@ -249,7 +283,7 @@ export class ObservedKeyManagementProvider implements KeyManagementProvider {
       });
       return result;
     } catch (error) {
-      await ignoreRecorderFailure(this.recorder, {
+      dispatchRecorder(this.recorder, {
         provider: this.name,
         fingerprint: this.fingerprint,
         operation,
@@ -348,4 +382,103 @@ export async function recordCacheResult(event: CacheResultEvent): Promise<void> 
     cacheResult: event.cacheResult,
     latencyMs: 0,
   });
+}
+
+function snapshotSecurityEvent(event: KeySecurityEvent): KeySecurityEvent {
+  try {
+    const expectedKeys = [
+      "eventType", "userId", "provider", "providerFingerprint",
+      "keyVersion", "actorUserId", "appInstanceId",
+    ];
+    const keys = Reflect.ownKeys(event);
+    if (
+      keys.length !== expectedKeys.length
+      || keys.some((key) => typeof key !== "string" || !expectedKeys.includes(key))
+    ) throw new Error("invalid");
+    const values = Object.fromEntries(keys.map((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(event, key);
+      if (!descriptor || !("value" in descriptor)) throw new Error("invalid");
+      return [key, descriptor.value];
+    })) as Record<string, unknown>;
+    const eventType = values.eventType;
+    const userId = values.userId;
+    const provider = values.provider;
+    const providerFingerprint = values.providerFingerprint;
+    const keyVersion = values.keyVersion;
+    const actorUserId = values.actorUserId;
+    const appInstanceId = values.appInstanceId;
+    if (
+      typeof eventType !== "string"
+      || ![
+        "user_key_created", "user_key_rewrapped",
+        "provider_migration_started", "provider_migration_completed",
+        "e2ee_migration_blocked", "e2ee_migration_resumed",
+      ].includes(eventType)
+      || typeof appInstanceId !== "string"
+      || !UUID.test(appInstanceId)
+    ) throw new Error("invalid");
+
+    const userKeyEvent = eventType === "user_key_created" || eventType === "user_key_rewrapped";
+    const providerMigrationEvent = eventType === "provider_migration_started"
+      || eventType === "provider_migration_completed";
+    const e2eeEvent = eventType === "e2ee_migration_blocked" || eventType === "e2ee_migration_resumed";
+    if (userKeyEvent) {
+      if (
+        typeof userId !== "string" || !UUID.test(userId)
+        || !validProvider(provider)
+        || !validFingerprint(provider, providerFingerprint)
+        || !Number.isSafeInteger(keyVersion) || (keyVersion as number) < 1 || (keyVersion as number) > 32_767
+        || actorUserId !== null
+      ) throw new Error("invalid");
+    } else if (providerMigrationEvent) {
+      if (
+        userId !== null
+        || !validProvider(provider)
+        || !validFingerprint(provider, providerFingerprint)
+        || keyVersion !== null
+        || typeof actorUserId !== "string" || !UUID.test(actorUserId)
+      ) throw new Error("invalid");
+    } else if (e2eeEvent) {
+      if (
+        typeof userId !== "string" || !UUID.test(userId)
+        || provider !== null || providerFingerprint !== null || keyVersion !== null || actorUserId !== null
+      ) throw new Error("invalid");
+    }
+    return Object.freeze({
+      eventType: eventType as KeySecurityEventType,
+      userId: userId as string | null,
+      provider: provider as KeyProviderName | null,
+      providerFingerprint: providerFingerprint as string | null,
+      keyVersion: keyVersion as number | null,
+      actorUserId: actorUserId as string | null,
+      appInstanceId,
+    });
+  } catch {
+    throw new Error("KEY_SECURITY_EVENT_INVALID");
+  }
+}
+
+export async function recordKeySecurityEvent(
+  event: KeySecurityEvent,
+  db: KeyOperationDatabase = getPool(),
+): Promise<void> {
+  const snapshot = snapshotSecurityEvent(event);
+  try {
+    await db.query(
+      `INSERT INTO content_key_security_events
+         (event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id)
+       VALUES($1,$2,$3,$4,$5,$6,$7)`,
+      [
+        snapshot.eventType,
+        snapshot.userId,
+        snapshot.provider,
+        snapshot.providerFingerprint,
+        snapshot.keyVersion,
+        snapshot.actorUserId,
+        snapshot.appInstanceId,
+      ],
+    );
+  } catch {
+    throw new Error("KEY_SECURITY_EVENT_RECORD_FAILED");
+  }
 }

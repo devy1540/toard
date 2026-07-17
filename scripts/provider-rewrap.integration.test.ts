@@ -15,6 +15,8 @@ import { createPoolLeaseFactory, runCli } from "./toard-admin";
 const execFileAsync = promisify(execFile);
 const INSTALLATION_ID = "019f7250-dc4d-78fd-98e8-a5465d0f5b69";
 const UCK = Buffer.alloc(32, 0x56);
+const OLD_FINGERPRINT = "local:111111111111111111111111";
+const TARGET_FINGERPRINT = "aws-kms:222222222222222222222222";
 
 async function waitForPostgres(connectionString: string): Promise<void> {
   const deadline = Date.now() + 30_000;
@@ -42,7 +44,7 @@ async function migrations(): Promise<string[]> {
 
 function providers(): { old: KeyManagementProvider; target: KeyManagementProvider } {
   const old: KeyManagementProvider = {
-    name: "local", keyRef: "local:old", fingerprint: "local:old-fingerprint",
+    name: "local", keyRef: "local:old", fingerprint: OLD_FINGERPRINT,
     async wrapKey(): Promise<WrappedUserKey> {
       return { provider: this.name, keyRef: this.keyRef, fingerprint: this.fingerprint,
         ciphertext: Buffer.alloc(64, 0x64), metadata: { version: "2" } };
@@ -53,7 +55,7 @@ function providers(): { old: KeyManagementProvider; target: KeyManagementProvide
   };
   const target: KeyManagementProvider = {
     name: "aws-kms", keyRef: "arn:aws:kms:ap-northeast-2:123456789012:key/11111111-1111-4111-8111-111111111111",
-    fingerprint: "aws:new-fingerprint",
+    fingerprint: TARGET_FINGERPRINT,
     async wrapKey(): Promise<WrappedUserKey> {
       return { provider: this.name, keyRef: this.keyRef, fingerprint: this.fingerprint,
         ciphertext: Buffer.alloc(64, 0x65), metadata: { algorithm: "SYMMETRIC_DEFAULT" } };
@@ -91,8 +93,8 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
     await admin.query(
       `INSERT INTO managed_content_keys
         (user_id,key_version,provider,provider_key_ref,provider_fingerprint,wrapped_user_key,wrapper_metadata,state)
-       VALUES($1,3,'local','local:old','local:old-fingerprint',$2,'{"version":"1"}','active')`,
-      [userId, Buffer.alloc(48, 0x33)],
+       VALUES($1,3,'local','local:old',$3,$2,'{"version":"1"}','active')`,
+      [userId, Buffer.alloc(48, 0x33), OLD_FINGERPRINT],
     );
     const record = { dedupKey: "rewrap-canary", sessionId: "rewrap-session", providerKey: "codex",
       turnRole: "user" as const, ts: new Date("2026-07-17T01:02:03.000Z"), text: "managed canary" };
@@ -125,7 +127,7 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
       }
     } };
     assert.deepEqual(
-      await getProviderRewrapUsers("local", "local:old-fingerprint", db),
+      await getProviderRewrapUsers("local", OLD_FINGERPRINT, db),
       [userId],
     );
     const { old, target } = providers();
@@ -153,10 +155,22 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
       "SELECT provider,provider_fingerprint,state FROM managed_content_keys WHERE user_id=$1 ORDER BY state",
       [userId],
     )).rows, [
-      { provider: "aws-kms", provider_fingerprint: "aws:new-fingerprint", state: "active" },
-      { provider: "local", provider_fingerprint: "local:old-fingerprint", state: "retiring" },
+      { provider: "aws-kms", provider_fingerprint: TARGET_FINGERPRINT, state: "active" },
+      { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "retiring" },
     ]);
-    assert.deepEqual(evicted, [`${userId}:3:local:old-fingerprint`]);
+    assert.deepEqual(evicted, [`${userId}:3:${OLD_FINGERPRINT}`]);
+    assert.deepEqual((await admin.query(
+      `SELECT event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id
+         FROM content_key_security_events WHERE user_id=$1 ORDER BY id`, [userId],
+    )).rows, [{
+      event_type: "user_key_rewrapped",
+      user_id: userId,
+      provider: "aws-kms",
+      provider_fingerprint: TARGET_FINGERPRINT,
+      key_version: 3,
+      actor_user_id: null,
+      app_instance_id: INSTALLATION_ID,
+    }]);
 
     await app.query("SET ROLE toard_app");
     runtime.registry = new KeyProviderRegistry(target, old);
@@ -166,13 +180,85 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
       "SELECT provider,provider_fingerprint,state FROM managed_content_keys WHERE user_id=$1 ORDER BY state",
       [userId],
     )).rows, [
-      { provider: "local", provider_fingerprint: "local:old-fingerprint", state: "active" },
-      { provider: "aws-kms", provider_fingerprint: "aws:new-fingerprint", state: "retiring" },
+      { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "active" },
+      { provider: "aws-kms", provider_fingerprint: TARGET_FINGERPRINT, state: "retiring" },
     ]);
     assert.deepEqual((await admin.query(
       "SELECT encode(wrapped_dek,'hex') AS wrapped,encode(ciphertext,'hex') AS body FROM prompt_records WHERE user_id=$1",
       [userId],
     )).rows[0], before);
+
+    const auditFailingUser = randomUUID();
+    await admin.query(
+      "INSERT INTO users(id,email) VALUES($1,'provider-rewrap-audit-fail@example.com')",
+      [auditFailingUser],
+    );
+    await admin.query(
+      `INSERT INTO managed_content_keys
+        (user_id,key_version,provider,provider_key_ref,provider_fingerprint,wrapped_user_key,wrapper_metadata,state)
+       VALUES($1,3,'local','local:old',$3,$2,'{"version":"1"}','active')`,
+      [auditFailingUser, Buffer.alloc(48, 0x33), OLD_FINGERPRINT],
+    );
+    const auditFailingRecord = {
+      ...record,
+      dedupKey: "rewrap-audit-failing-canary",
+      sessionId: "audit-failing-session",
+    };
+    const auditFailingEncrypted = encryptManagedContent(
+      auditFailingRecord,
+      UCK,
+      INSTALLATION_ID,
+      auditFailingUser,
+      3,
+    );
+    await admin.query(
+      `INSERT INTO prompt_records
+        (dedup_key,user_id,session_id,provider_key,turn_role,ts,key_version,wrapped_dek,iv,ciphertext,auth_tag,
+         encryption_scheme,content_owner_id,content_key_version,dek_wrap_iv,dek_wrap_auth_tag,aad_version)
+       VALUES($1,$2,$3,$4,$5,$6,3,$7,$8,$9,$10,'managed_v1',NULL,3,$11,$12,2)`,
+      [
+        auditFailingRecord.dedupKey, auditFailingUser, auditFailingRecord.sessionId,
+        auditFailingRecord.providerKey, auditFailingRecord.turnRole, auditFailingRecord.ts,
+        auditFailingEncrypted.wrappedDek, auditFailingEncrypted.iv,
+        auditFailingEncrypted.ciphertext, auditFailingEncrypted.authTag,
+        auditFailingEncrypted.dekWrapIv, auditFailingEncrypted.dekWrapAuthTag,
+      ],
+    );
+    await admin.query(`
+      CREATE FUNCTION fail_selected_key_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.user_id='${auditFailingUser}'::uuid AND NEW.event_type='user_key_rewrapped' THEN
+          RAISE EXCEPTION 'forced audit failure';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER fail_selected_key_audit_trigger BEFORE INSERT ON content_key_security_events
+      FOR EACH ROW EXECUTE FUNCTION fail_selected_key_audit();
+    `);
+    runtime.registry = new KeyProviderRegistry(old, target);
+    const evictionsBeforeAuditFailure = evicted.length;
+    await app.query("SET ROLE toard_app");
+    await assert.rejects(
+      rewrapUserKey(auditFailingUser, runtime, db),
+      (error: unknown) => (error as Error).message === "REWRAP_FAILED",
+    );
+    await app.query("RESET ROLE");
+    assert.deepEqual((await admin.query(
+      "SELECT provider,state FROM managed_content_keys WHERE user_id=$1 ORDER BY state",
+      [auditFailingUser],
+    )).rows, [{ provider: "local", state: "active" }]);
+    assert.equal((await admin.query(
+      "SELECT COUNT(*)::int AS count FROM content_key_security_events WHERE user_id=$1",
+      [auditFailingUser],
+    )).rows[0].count, 0);
+    assert.equal(evicted.length, evictionsBeforeAuditFailure);
+    await admin.query(`
+      DROP TRIGGER fail_selected_key_audit_trigger ON content_key_security_events;
+      DROP FUNCTION fail_selected_key_audit();
+    `);
+    await admin.query("DELETE FROM prompt_records WHERE user_id=$1", [auditFailingUser]);
+    await admin.query("DELETE FROM managed_content_keys WHERE user_id=$1", [auditFailingUser]);
+    await admin.query("DELETE FROM users WHERE id=$1", [auditFailingUser]);
 
     const failingUser = randomUUID();
     const noWrapperUser = randomUUID();
@@ -185,8 +271,8 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
     await admin.query(
       `INSERT INTO managed_content_keys
         (user_id,key_version,provider,provider_key_ref,provider_fingerprint,wrapped_user_key,wrapper_metadata,state)
-       VALUES($1,3,'local','local:old','local:old-fingerprint',$2,'{"version":"1"}','active')`,
-      [failingUser, Buffer.alloc(48, 0x33)],
+       VALUES($1,3,'local','local:old',$3,$2,'{"version":"1"}','active')`,
+      [failingUser, Buffer.alloc(48, 0x33), OLD_FINGERPRINT],
     );
     const failingRecord = { ...record, dedupKey: "rewrap-failing-canary", sessionId: "failing-session" };
     const failingEncrypted = encryptManagedContent(failingRecord, UCK, INSTALLATION_ID, failingUser, 3);

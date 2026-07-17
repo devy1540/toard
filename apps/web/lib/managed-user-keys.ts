@@ -7,6 +7,10 @@ import type {
   WrappedUserKey,
 } from "./key-management/types";
 import { UserKeyCache } from "./key-management/user-key-cache";
+import {
+  recordKeySecurityEvent,
+  type KeySecurityEvent,
+} from "./key-management/observability";
 import { withUserContext } from "./rls";
 
 const USER_KEY_LENGTH = 32;
@@ -45,6 +49,10 @@ type ManagedUserKeyServiceOptions = {
   cache: UserKeyCache;
   runInUserContext?: RunInUserContext;
   randomBytes?: (size: number) => Buffer;
+  recordSecurityEvent?: (
+    event: KeySecurityEvent,
+    db: ManagedUserKeyDatabase,
+  ) => Promise<void>;
 };
 
 const PROVIDER_NAMES = new Set<KeyProviderName>([
@@ -65,6 +73,7 @@ export class ManagedUserKeyService {
   private readonly cache: UserKeyCache;
   private readonly runInUserContext: RunInUserContext;
   private readonly generateRandomBytes: (size: number) => Buffer;
+  private readonly recordSecurityEvent: NonNullable<ManagedUserKeyServiceOptions["recordSecurityEvent"]>;
 
   constructor(options: ManagedUserKeyServiceOptions) {
     this.installationId = options.installationId;
@@ -72,6 +81,7 @@ export class ManagedUserKeyService {
     this.cache = options.cache;
     this.runInUserContext = options.runInUserContext ?? defaultRunInUserContext;
     this.generateRandomBytes = options.randomBytes ?? randomBytes;
+    this.recordSecurityEvent = options.recordSecurityEvent ?? recordKeySecurityEvent;
   }
 
   async withActiveUserKey<T>(
@@ -107,23 +117,23 @@ export class ManagedUserKeyService {
     fn: (key: Buffer) => Promise<T> | T,
   ): Promise<T> {
     const context = this.keyContext(userId, row.keyVersion);
+    const wrapped = toWrappedUserKey(row);
+    const provider = this.registry.resolveWrappedKey(wrapped);
+    const providerName = provider.name;
+    const providerFingerprint = provider.fingerprint;
     const cacheKey = [
       this.installationId,
       userId,
       row.keyVersion,
-      row.providerFingerprint,
+      providerFingerprint,
     ].join(":");
     return this.cache.withKey(
       cacheKey,
-      async () => {
-        const wrapped = toWrappedUserKey(row);
-        const provider = this.registry.resolveWrappedKey(wrapped);
-        return provider.unwrapKey(wrapped, context);
-      },
+      async () => provider.unwrapKey(wrapped, context),
       fn,
       {
-        provider: row.provider,
-        fingerprint: row.providerFingerprint,
+        provider: providerName,
+        fingerprint: providerFingerprint,
         operation: "unwrap",
       },
     );
@@ -158,7 +168,18 @@ export class ManagedUserKeyService {
             JSON.stringify(row.wrapperMetadata),
           ],
         );
-        if (inserted.rowCount === 1) return row;
+        if (inserted.rowCount === 1) {
+          await this.recordSecurityEvent({
+            eventType: "user_key_created",
+            userId,
+            provider: row.provider,
+            providerFingerprint: row.providerFingerprint,
+            keyVersion: row.keyVersion,
+            actorUserId: null,
+            appInstanceId: this.installationId,
+          }, db);
+          return row;
+        }
 
         const winner = await selectActiveUserKey(db, userId);
         if (!winner) throw new Error("MANAGED_USER_KEY_CREATE_RACE_LOST");

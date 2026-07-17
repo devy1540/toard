@@ -5,7 +5,14 @@ import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
 import { Client } from "pg";
-import { recordKeyOperation } from "../apps/web/lib/key-management/observability";
+import {
+  recordKeyOperation,
+  recordKeySecurityEvent,
+} from "../apps/web/lib/key-management/observability";
+import { KeyProviderRegistry } from "../apps/web/lib/key-management/registry";
+import type { KeyManagementProvider } from "../apps/web/lib/key-management/types";
+import { UserKeyCache } from "../apps/web/lib/key-management/user-key-cache";
+import { ManagedUserKeyService } from "../apps/web/lib/managed-user-keys";
 
 const execFileAsync = promisify(execFile);
 const MIGRATION = "migrations/1700000037_content_key_operations.sql";
@@ -158,18 +165,143 @@ test("KMS operation aggregate and security events are secret-free and least-priv
           FROM content_key_operation_daily
           WHERE provider='local' AND operation='unwrap' AND cache_result='miss'`)).rows,
         [{ operation_count: 2, total_latency_ms: 8 }]);
-        await app.query(`
-          INSERT INTO content_key_security_events
-            (event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id)
-          VALUES('user_key_created',$1,'local','local:abcdefabcdefabcdefabcdef',1,$1,'019f7250-dc4d-78fd-98e8-a5465d0f5b69')`,
-        [userA]);
+        await recordKeySecurityEvent({
+          eventType: "user_key_created",
+          userId: userA,
+          provider: "local",
+          providerFingerprint: "local:abcdefabcdefabcdefabcdef",
+          keyVersion: 1,
+          actorUserId: null,
+          appInstanceId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        }, app);
         assert.equal((await app.query("SELECT id FROM content_key_security_events")).rowCount, 1);
         await assert.rejects(
-          app.query(`INSERT INTO content_key_security_events(event_type,user_id,actor_user_id,app_instance_id)
-                     VALUES('user_key_created',$1,$1,'app')`, [userB]),
+          app.query(`INSERT INTO content_key_security_events
+                       (event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id)
+                     VALUES('user_key_created',$1,'local','local:abcdefabcdefabcdefabcdef',1,NULL,
+                            '019f7250-dc4d-78fd-98e8-a5465d0f5b69')`, [userB]),
           /row-level security policy/,
         );
         await app.query("ROLLBACK");
+
+        await app.query("BEGIN");
+        await app.query("SELECT set_config('app.current_user_id',$1,true)", [userA]);
+        await assert.rejects(
+          recordKeySecurityEvent({
+            eventType: "provider_migration_started",
+            userId: null,
+            provider: "aws-kms",
+            providerFingerprint: "aws-kms:111111111111111111111111",
+            keyVersion: null,
+            actorUserId: userA,
+            appInstanceId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+          }, app),
+          /KEY_SECURITY_EVENT_RECORD_FAILED/,
+        );
+        await app.query("ROLLBACK");
+
+        await admin.query("UPDATE users SET role='admin' WHERE id=$1", [userB]);
+        await app.query("BEGIN");
+        await app.query("SELECT set_config('app.current_user_id',$1,true)", [userB]);
+        await recordKeySecurityEvent({
+          eventType: "provider_migration_completed",
+          userId: null,
+          provider: "aws-kms",
+          providerFingerprint: "aws-kms:111111111111111111111111",
+          keyVersion: null,
+          actorUserId: userB,
+          appInstanceId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        }, app);
+        await app.query("COMMIT");
+        assert.deepEqual((await admin.query(`
+          SELECT event_type,user_id,actor_user_id
+          FROM content_key_security_events WHERE event_type LIKE 'provider_migration_%'`)).rows, [{
+          event_type: "provider_migration_completed",
+          user_id: null,
+          actor_user_id: userB,
+        }]);
+
+        const managedUser = randomUUID();
+        const auditFailingManagedUser = randomUUID();
+        await admin.query(
+          `INSERT INTO users(id,email) VALUES
+             ($1,'ops-managed@example.com'),
+             ($2,'ops-managed-audit-fail@example.com')`,
+          [managedUser, auditFailingManagedUser],
+        );
+        const managedProvider: KeyManagementProvider = {
+          name: "local",
+          keyRef: "file:/integration/local-kek",
+          fingerprint: "local:999999999999999999999999",
+          async wrapKey() {
+            return {
+              provider: this.name,
+              keyRef: this.keyRef,
+              fingerprint: this.fingerprint,
+              ciphertext: Buffer.alloc(64, 0x44),
+              metadata: { format: "integration" },
+            };
+          },
+          async unwrapKey() { return Buffer.alloc(32, 0x55); },
+          async healthCheck() { return { status: "healthy", latencyMs: 1, checkedAt: new Date() }; },
+          async describeCredentialSource() { return { kind: "integration", staticCredential: false }; },
+        };
+        const managedService = new ManagedUserKeyService({
+          installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+          registry: new KeyProviderRegistry(managedProvider, null),
+          cache: new UserKeyCache({ ttlMs: 60_000 }),
+          runInUserContext: async (userId, fn) => {
+            await app!.query("BEGIN");
+            try {
+              await app!.query("SELECT set_config('app.current_user_id',$1,true)", [userId]);
+              const value = await fn(app!);
+              await app!.query("COMMIT");
+              return value;
+            } catch (error) {
+              await app!.query("ROLLBACK");
+              throw error;
+            }
+          },
+        });
+        await managedService.withActiveUserKey(managedUser, async () => undefined);
+        await managedService.withActiveUserKey(managedUser, async () => undefined);
+        assert.equal((await admin.query(
+          "SELECT COUNT(*)::int AS count FROM managed_content_keys WHERE user_id=$1 AND state='active'",
+          [managedUser],
+        )).rows[0].count, 1);
+        assert.deepEqual((await admin.query(`
+          SELECT event_type,user_id,provider,provider_fingerprint,key_version,actor_user_id,app_instance_id
+          FROM content_key_security_events WHERE user_id=$1`, [managedUser])).rows, [{
+          event_type: "user_key_created",
+          user_id: managedUser,
+          provider: "local",
+          provider_fingerprint: "local:999999999999999999999999",
+          key_version: 1,
+          actor_user_id: null,
+          app_instance_id: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        }]);
+
+        await admin.query(`
+          CREATE FUNCTION fail_managed_key_audit() RETURNS trigger LANGUAGE plpgsql AS $$
+          BEGIN
+            IF NEW.user_id='${auditFailingManagedUser}'::uuid THEN
+              RAISE EXCEPTION 'forced managed audit failure';
+            END IF;
+            RETURN NEW;
+          END $$;
+          CREATE TRIGGER fail_managed_key_audit_trigger BEFORE INSERT ON content_key_security_events
+          FOR EACH ROW EXECUTE FUNCTION fail_managed_key_audit();
+        `);
+        await assert.rejects(
+          managedService.withActiveUserKey(auditFailingManagedUser, async () => undefined),
+          /KEY_SECURITY_EVENT_RECORD_FAILED/,
+        );
+        assert.equal((await admin.query(
+          "SELECT COUNT(*)::int AS count FROM managed_content_keys WHERE user_id=$1",
+          [auditFailingManagedUser],
+        )).rows[0].count, 0);
+        await admin.query("DROP TRIGGER fail_managed_key_audit_trigger ON content_key_security_events");
+        await admin.query("DROP FUNCTION fail_managed_key_audit()");
 
         await admin.query(`INSERT INTO content_key_operation_daily
           (day,provider,provider_fingerprint,operation,outcome,cache_result,operation_count,total_latency_ms)
@@ -206,6 +338,7 @@ test("KMS operation aggregate and security events are secret-free and least-priv
           VALUES(CURRENT_DATE,'local','local:abcdefabcdefabcdefabcdef','wrap','success','none',1,1)`);
         await assert.rejects(admin.query(down), /rollback blocked/);
         await admin.query("DELETE FROM content_key_operation_daily");
+        await admin.query("DELETE FROM content_key_security_events");
         await admin.query(down);
         assert.equal((await admin.query("SELECT to_regclass('content_key_operation_daily') AS name")).rows[0].name, null);
       } finally {

@@ -53,6 +53,29 @@ CREATE TABLE content_key_security_events (
       AND char_length(provider_fingerprint) <= 128
       AND provider_fingerprint ~ ('^' || provider || ':[0-9a-f]{24}$')
     )
+  ),
+  CONSTRAINT content_key_security_events_shape_check CHECK (
+    (
+      event_type IN ('user_key_created', 'user_key_rewrapped')
+      AND user_id IS NOT NULL
+      AND provider IS NOT NULL
+      AND key_version IS NOT NULL
+      AND actor_user_id IS NULL
+    )
+    OR (
+      event_type IN ('provider_migration_started', 'provider_migration_completed')
+      AND user_id IS NULL
+      AND provider IS NOT NULL
+      AND key_version IS NULL
+      AND actor_user_id IS NOT NULL
+    )
+    OR (
+      event_type IN ('e2ee_migration_blocked', 'e2ee_migration_resumed')
+      AND user_id IS NOT NULL
+      AND provider IS NULL
+      AND key_version IS NULL
+      AND actor_user_id IS NULL
+    )
   )
 );
 
@@ -65,15 +88,37 @@ ALTER TABLE content_key_security_events FORCE ROW LEVEL SECURITY;
 CREATE POLICY content_key_security_events_owner_select
   ON content_key_security_events
   FOR SELECT USING (
-    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
-    OR actor_user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+    (
+      event_type NOT IN ('provider_migration_started', 'provider_migration_completed')
+      AND user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+    )
+    OR (
+      event_type IN ('provider_migration_started', 'provider_migration_completed')
+      AND actor_user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+      AND EXISTS (
+        SELECT 1 FROM users
+        WHERE id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+          AND role = 'admin'
+      )
+    )
   );
 
 CREATE POLICY content_key_security_events_owner_insert
   ON content_key_security_events
   FOR INSERT WITH CHECK (
-    user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
-    OR actor_user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+    (
+      event_type NOT IN ('provider_migration_started', 'provider_migration_completed')
+      AND user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+    )
+    OR (
+      event_type IN ('provider_migration_started', 'provider_migration_completed')
+      AND actor_user_id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+      AND EXISTS (
+        SELECT 1 FROM users
+        WHERE id = NULLIF(current_setting('app.current_user_id', true), '')::uuid
+          AND role = 'admin'
+      )
+    )
   );
 
 DO $$

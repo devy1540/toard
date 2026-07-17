@@ -4,6 +4,7 @@ import { decryptManagedContent } from "./managed-content-crypto";
 import type { ManagedContentRuntime } from "./managed-content-runtime";
 import type { ManagedUserKeyRow } from "./managed-user-keys";
 import type { KeyContext, KeyProviderName, WrappedUserKey } from "./key-management/types";
+import { recordKeySecurityEvent } from "./key-management/observability";
 import { withUserContext } from "./rls";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -87,7 +88,13 @@ export async function rewrapUserKey(
     await runUserTransaction(userId, db, async (tx) => {
       await verifyManagedCanary(userId, active.keyVersion, uck!, runtime.installationId, tx);
     });
-    await runUserTransaction(userId, db, (tx) => promotePendingWrapper(userId, active, validatedPending, tx));
+    await runUserTransaction(userId, db, (tx) => promotePendingWrapper(
+      userId,
+      active,
+      validatedPending,
+      runtime.installationId,
+      tx,
+    ));
     evictOldCacheKey(userId, active.keyVersion, active.providerFingerprint);
     return { state: "migrated" };
   } catch (error) {
@@ -202,6 +209,7 @@ async function promotePendingWrapper(
   userId: string,
   snapshot: ActiveWrapperSnapshot,
   pending: WrappedUserKey,
+  appInstanceId: string,
   db: RewrapDb,
 ): Promise<void> {
   const lockedResult = await db.query(
@@ -250,6 +258,15 @@ async function promotePendingWrapper(
     [userId, snapshot.keyVersion, pending.fingerprint],
   );
   if (activated.rowCount !== 1) throw new RewrapError("PENDING_WRAPPER_CONFLICT");
+  await recordKeySecurityEvent({
+    eventType: "user_key_rewrapped",
+    userId,
+    provider: pending.provider,
+    providerFingerprint: pending.fingerprint,
+    keyVersion: snapshot.keyVersion,
+    actorUserId: null,
+    appInstanceId,
+  }, db);
 }
 
 async function runUserTransaction<T>(

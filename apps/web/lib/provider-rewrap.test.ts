@@ -5,6 +5,7 @@ import type { ManagedContentRuntime } from "./managed-content-runtime";
 import { KeyProviderRegistry } from "./key-management/registry";
 import type { KeyContext, KeyManagementProvider, WrappedUserKey } from "./key-management/types";
 import {
+  getProviderRewrapUsers,
   rewrapErrorCode,
   rewrapUserKey,
   type RewrapDb,
@@ -18,7 +19,15 @@ function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string
   let unwrapResult = Buffer.from(UCK);
   const seenWrapInputs: Buffer[] = [];
   let mutateUnwrapInput = false;
-  const value: KeyManagementProvider & { unwrapResult: Buffer; seenWrapInputs: Buffer[]; mutateUnwrapInput: boolean } = {
+  let plaintextWrapper: "alias" | "copy" | null = null;
+  const wrappedOutputs: Buffer[] = [];
+  const value: KeyManagementProvider & {
+    unwrapResult: Buffer;
+    seenWrapInputs: Buffer[];
+    wrappedOutputs: Buffer[];
+    mutateUnwrapInput: boolean;
+    plaintextWrapper: "alias" | "copy" | null;
+  } = {
     name,
     fingerprint,
     keyRef,
@@ -27,10 +36,19 @@ function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string
     set unwrapResult(next) { unwrapResult = next; },
     get mutateUnwrapInput() { return mutateUnwrapInput; },
     set mutateUnwrapInput(next) { mutateUnwrapInput = next; },
+    get plaintextWrapper() { return plaintextWrapper; },
+    set plaintextWrapper(next) { plaintextWrapper = next; },
+    wrappedOutputs,
     async wrapKey(key: Buffer, _context: KeyContext): Promise<WrappedUserKey> {
       calls.push(`${name}.wrap`);
       seenWrapInputs.push(key);
-      return { provider: name, fingerprint, keyRef, ciphertext: Buffer.alloc(48, 0x44), metadata: { version: "1" } };
+      const ciphertext = plaintextWrapper === "alias"
+        ? key
+        : plaintextWrapper === "copy"
+          ? Buffer.from(key)
+          : Buffer.alloc(48, 0x44);
+      wrappedOutputs.push(ciphertext);
+      return { provider: name, fingerprint, keyRef, ciphertext, metadata: { version: "1" } };
     },
     async unwrapKey(wrapped: WrappedUserKey, _context: KeyContext): Promise<Buffer> {
       calls.push(`${name}.unwrap`);
@@ -95,7 +113,7 @@ function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?:
     active: () => active,
     pending: () => pending,
     async query(sql, params = []) {
-      calls.push({ sql, params });
+      calls.push({ sql, params: params.map((value) => Buffer.isBuffer(value) ? Buffer.from(value) : value) });
       if (sql === "BEGIN") {
         snapshot = { active: { ...active, wrappedUserKey: Buffer.from(active.wrappedUserKey) }, pending: pending ? { ...pending } : null };
         return { rows: [] };
@@ -233,6 +251,26 @@ test("provider input ownership is isolated so unwrap mutation cannot corrupt the
   assert.equal((insert.params[5] as Buffer).every((byte) => byte === 0x44), true);
 });
 
+test("target provider plaintext UCK wrapper fails before unwrap, DB promotion, or cache eviction and zeroizes every owned copy", async () => {
+  for (const mode of ["alias", "copy"] as const) {
+    const calls: string[] = [], evicted: string[] = [];
+    const { value, oldProvider, target } = runtime(calls, evicted);
+    target.plaintextWrapper = mode;
+    const db = fakeDb();
+    await assert.rejects(
+      rewrapUserKey(USER_ID, value, db),
+      hasCode("PENDING_WRAPPER_PLAINTEXT"),
+    );
+    assert.deepEqual(calls, ["local.unwrap", "aws-kms.wrap"]);
+    assert.equal(db.calls.some((call) => call.sql.startsWith("INSERT INTO managed_content_keys")), false);
+    assert.equal(db.active().state, "active");
+    assert.deepEqual(evicted, []);
+    assert.equal(oldProvider.unwrapResult.every((byte) => byte === 0), true);
+    assert.equal(target.seenWrapInputs[0]!.every((byte) => byte === 0), true);
+    assert.equal(target.wrappedOutputs[0]!.every((byte) => byte === 0), true);
+  }
+});
+
 test("missing migration provider, missing canary, and already-current are fail-safe", async () => {
   const calls: string[] = [], evicted: string[] = [];
   const { value, oldProvider } = runtime(calls, evicted);
@@ -252,4 +290,35 @@ test("missing migration provider, missing canary, and already-current are fail-s
   value.registry = { active: oldProvider, migration: target, resolveWrappedKey: () => oldProvider } as never;
   delete value.userKeys.evict;
   assert.deepEqual(await rewrapUserKey(USER_ID, value, currentDb), { state: "already-current" });
+});
+
+test("provider enumeration reads only users globally and checks exact wrapper inside deduplicated user transactions", async () => {
+  const userC = "33333333-3333-4333-8333-333333333333";
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  let currentUser: string | null = null;
+  const db: RewrapDb = {
+    async query(sql, params = []) {
+      calls.push({ sql, params });
+      if (sql.includes("FROM users")) return { rows: [{ id: userC }, { id: USER_ID }, { id: userC }] };
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+      if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
+      if (sql.includes("SELECT EXISTS") && sql.includes("managed_content_keys")) {
+        assert.equal(params[0], currentUser);
+        return { rows: [{ eligible: currentUser === USER_ID }] };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    },
+  };
+
+  assert.deepEqual(
+    await getProviderRewrapUsers("local", "local:old-fingerprint", db),
+    [USER_ID],
+  );
+  assert.match(calls[0]!.sql, /SELECT id::text AS id FROM users ORDER BY id ASC/);
+  assert.equal(calls[0]!.sql.includes("managed_content_keys"), false);
+  assert.equal(calls.filter((call) => call.sql === "BEGIN").length, 2);
+  assert.deepEqual(
+    calls.filter((call) => call.sql.startsWith("SELECT set_config")).map((call) => call.params[0]),
+    [USER_ID, userC],
+  );
 });

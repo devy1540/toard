@@ -109,26 +109,37 @@ export async function migrateServerContentBatch(
 }
 
 /**
- * content-admin 전용 전역 열거 경로다. 사용자 RLS context를 설정하지 않으며,
- * 이 함수에 넘기는 DB 연결은 배포 계층에서 별도 content-admin role로 제한해야 한다.
+ * RLS 대상이 아닌 users.id만 전역 열거하고, server_v1 존재 여부는 같은 고정
+ * client의 사용자별 transaction에서 app.current_user_id를 설정한 뒤 확인한다.
  */
 export async function getServerContentMigrationUsers(
   db: ServerMigrationDb,
 ): Promise<string[]> {
   try {
-    const result = await db.query(
-      `SELECT DISTINCT user_id
-         FROM prompt_records
-        WHERE encryption_scheme='server_v1'
-        ORDER BY user_id ASC`,
-    );
-    return result.rows.map((row) => {
-      if (typeof row.user_id !== "string") {
-        throw new ServerContentMigrationError("LEGACY_SOURCE_CORRUPT");
-      }
-      assertUserId(row.user_id);
-      return row.user_id;
-    });
+    const result = await db.query("SELECT id::text AS id FROM users ORDER BY id ASC");
+    const userIds = [...new Set(result.rows.map((row) => {
+      if (typeof row.id !== "string") throw new ServerContentMigrationError("INVALID_USER_ID");
+      assertUserId(row.id);
+      return row.id;
+    }))].sort();
+    const eligible: string[] = [];
+    for (const userId of userIds) {
+      const hasServerRows = await runUserTransaction(userId, db, async (tx) => {
+        const check = await tx.query(
+          `SELECT EXISTS(
+             SELECT 1 FROM prompt_records
+              WHERE user_id=$1 AND encryption_scheme='server_v1'
+           ) AS eligible`,
+          [userId],
+        );
+        if (typeof check.rows[0]?.eligible !== "boolean") {
+          throw new ServerContentMigrationError("SERVER_CONTENT_USER_ENUMERATION_FAILED");
+        }
+        return check.rows[0].eligible;
+      });
+      if (hasServerRows) eligible.push(userId);
+    }
+    return eligible;
   } catch (error) {
     if (error instanceof ServerContentMigrationError) throw error;
     throw new ServerContentMigrationError("SERVER_CONTENT_USER_ENUMERATION_FAILED");

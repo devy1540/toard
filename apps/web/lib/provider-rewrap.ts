@@ -48,6 +48,7 @@ export async function rewrapUserKey(
   let verified: Buffer | undefined;
   let oldWrappedInput: WrappedUserKey | undefined;
   let verificationWrapped: WrappedUserKey | undefined;
+  let pending: WrappedUserKey | undefined;
   let providerPendingCiphertext: Buffer | undefined;
   try {
     const active = await runUserTransaction(userId, db, (tx) => loadActiveWrapper(userId, tx));
@@ -69,8 +70,15 @@ export async function rewrapUserKey(
     providerPendingCiphertext = Buffer.isBuffer(providerPending.ciphertext)
       ? providerPending.ciphertext
       : undefined;
-    const pending = validatePending(providerPending, target);
-    verificationWrapped = cloneWrapped(pending);
+    const validatedPending = validatePending(providerPending, target);
+    pending = validatedPending;
+    if (
+      validatedPending.ciphertext.length === uck.length
+      && timingSafeEqual(validatedPending.ciphertext, uck)
+    ) {
+      throw new RewrapError("PENDING_WRAPPER_PLAINTEXT");
+    }
+    verificationWrapped = cloneWrapped(validatedPending);
     verified = await target.unwrapKey(verificationWrapped, context);
     assertKey(verified, "PENDING_WRAPPER_INVALID");
     if (!timingSafeEqual(uck, verified)) {
@@ -80,7 +88,7 @@ export async function rewrapUserKey(
     await runUserTransaction(userId, db, async (tx) => {
       await verifyManagedCanary(userId, active.keyVersion, uck!, runtime.installationId, tx);
     });
-    await runUserTransaction(userId, db, (tx) => promotePendingWrapper(userId, active, pending, tx));
+    await runUserTransaction(userId, db, (tx) => promotePendingWrapper(userId, active, validatedPending, tx));
     evictOldCacheKey(userId, active.keyVersion, active.providerFingerprint);
     return { state: "migrated" };
   } catch (error) {
@@ -92,6 +100,7 @@ export async function rewrapUserKey(
       verificationWrapped?.ciphertext,
       oldWrappedInput?.ciphertext,
       providerPendingCiphertext,
+      pending?.ciphertext,
     ]);
   }
 }
@@ -103,18 +112,30 @@ export async function getProviderRewrapUsers(
 ): Promise<string[]> {
   if (!PROVIDERS.has(provider) || !fingerprint) throw new RewrapError("INVALID_PROVIDER_FILTER");
   try {
-    const result = await db.query(
-      `SELECT user_id
-         FROM managed_content_keys
-        WHERE state='active' AND provider=$1 AND provider_fingerprint=$2
-        ORDER BY user_id ASC`,
-      [provider, fingerprint],
-    );
-    return result.rows.map((row) => {
-      const userId = requiredString(row.user_id);
+    const result = await db.query("SELECT id::text AS id FROM users ORDER BY id ASC");
+    const userIds = [...new Set(result.rows.map((row) => {
+      const userId = requiredString(row.id);
       assertUserId(userId);
       return userId;
-    });
+    }))].sort();
+    const eligible: string[] = [];
+    for (const userId of userIds) {
+      const hasWrapper = await runUserTransaction(userId, db, async (tx) => {
+        const check = await tx.query(
+          `SELECT EXISTS(
+             SELECT 1 FROM managed_content_keys
+              WHERE user_id=$1 AND state='active' AND provider=$2 AND provider_fingerprint=$3
+           ) AS eligible`,
+          [userId, provider, fingerprint],
+        );
+        if (typeof check.rows[0]?.eligible !== "boolean") {
+          throw new RewrapError("REWRAP_USER_ENUMERATION_FAILED");
+        }
+        return check.rows[0].eligible;
+      });
+      if (hasWrapper) eligible.push(userId);
+    }
+    return eligible;
   } catch (error) {
     if (rewrapErrorCode(error)) throw error;
     throw new RewrapError("REWRAP_USER_ENUMERATION_FAILED");

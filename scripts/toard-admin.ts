@@ -31,12 +31,13 @@ const SAFE_REWRAP_CODES = new Set([
   "CACHE_EVICTION_UNAVAILABLE", "INVALID_PROVIDER_FILTER", "INVALID_USER_ID",
   "MANAGED_CANARY_INVALID", "MANAGED_CANARY_MISSING", "MIGRATION_PROVIDER_MISSING",
   "PENDING_WRAPPER_CONFLICT", "PENDING_WRAPPER_INVALID", "PENDING_WRAPPER_MISMATCH",
+  "PENDING_WRAPPER_PLAINTEXT",
   "REWRAP_FAILED", "REWRAP_ROW_INVALID", "REWRAP_USER_ENUMERATION_FAILED",
 ]);
 
 export type AdminCliDependencies = {
   runtime(): Promise<ManagedContentRuntime | null>;
-  db: RewrapDb;
+  acquireDb(): Promise<AdminDbLease>;
   loadLegacyKek(): Buffer;
   migrateServerBatch(
     userId: string,
@@ -54,11 +55,20 @@ export type AdminCliDependencies = {
   signal?: AbortSignal;
 };
 
+export type AdminDbLease = {
+  db: RewrapDb;
+  release(): void | Promise<void>;
+};
+
+type PoolConnector = {
+  connect(): Promise<RewrapDb & { release(): void }>;
+};
+
 export type CliResult = { exitCode: 0 | 1 | 2; stdout: string; stderr: string };
 
 const defaultDependencies: AdminCliDependencies = {
   runtime: getManagedContentRuntime,
-  db: { query: (sql, params) => getPool().query(sql, params) },
+  acquireDb: () => createPoolLeaseFactory(getPool())(),
   loadLegacyKek: loadKek,
   migrateServerBatch: migrateServerContentBatch,
   rewrapUser: rewrapUserKey,
@@ -74,7 +84,7 @@ export async function runCli(
   try {
     switch (parsed.command) {
       case "status":
-        return await status(deps.db);
+        return await withDbLease(deps, status);
       case "migrate-server":
         return await migrateServer(parsed.batchSize, deps);
       case "rewrap-provider":
@@ -142,18 +152,25 @@ async function migrateServer(batchSize: number, deps: AdminCliDependencies): Pro
   try {
     kek = deps.loadLegacyKek();
     if (!Buffer.isBuffer(kek) || kek.length !== 32) throw new Error("INVALID_KEK");
-    const users = (await getServerContentMigrationUsers(deps.db)).sort();
+    const users = (await withDbLease(deps, getServerContentMigrationUsers)).sort();
+    let interrupted = false;
     for (const userId of users) {
       if (deps.signal?.aborted) { failures.push(`${userId} INTERRUPTED`); break; }
       try {
         let previousRemaining: number | null = null;
         for (;;) {
-          const result = await deps.migrateServerBatch(userId, batchSize, runtime, kek, deps.db);
+          const result = await withDbLease(deps, (db) =>
+            deps.migrateServerBatch(userId, batchSize, runtime, kek!, db));
           if (
             !Number.isSafeInteger(result.migrated) || result.migrated < 0
             || !Number.isSafeInteger(result.remaining) || result.remaining < 0
           ) throw new Error("INVALID_MIGRATION_RESULT");
           migrated += result.migrated;
+          if (deps.signal?.aborted) {
+            failures.push(`${userId} INTERRUPTED`);
+            interrupted = true;
+            break;
+          }
           if (result.remaining === 0) break;
           if (
             result.migrated === 0
@@ -167,6 +184,7 @@ async function migrateServer(batchSize: number, deps: AdminCliDependencies): Pro
       } catch (error) {
         failures.push(`${userId} ${safeServerCode(error)}`);
       }
+      if (interrupted) break;
     }
   } finally {
     kek?.fill(0);
@@ -187,13 +205,16 @@ async function rewrapProviders(
     || target.name !== to
   ) return usage();
 
-  const users = await getProviderRewrapUsers(from, runtime.registry.active.fingerprint, deps.db);
+  const users = await withDbLease(
+    deps,
+    (db) => getProviderRewrapUsers(from, runtime.registry.active.fingerprint, db),
+  );
   const failures: string[] = [];
   let migrated = 0;
   for (const userId of users) {
     if (deps.signal?.aborted) { failures.push(`${userId} INTERRUPTED`); break; }
     try {
-      const result = await deps.rewrapUser(userId, runtime, deps.db);
+      const result = await withDbLease(deps, (db) => deps.rewrapUser(userId, runtime, db));
       if (result.state === "migrated") migrated += 1;
     } catch (error) {
       const code = rewrapErrorCode(error);
@@ -235,6 +256,33 @@ function count(value: unknown): number {
 
 function usage(): CliResult {
   return { exitCode: 2, stdout: "", stderr: `${USAGE}\n` };
+}
+
+export function createPoolLeaseFactory(pool: PoolConnector): AdminCliDependencies["acquireDb"] {
+  return async () => {
+    const client = await pool.connect();
+    let released = false;
+    return {
+      db: client,
+      release() {
+        if (released) return;
+        released = true;
+        client.release();
+      },
+    };
+  };
+}
+
+async function withDbLease<T>(
+  deps: Pick<AdminCliDependencies, "acquireDb">,
+  fn: (db: RewrapDb) => Promise<T>,
+): Promise<T> {
+  const lease = await deps.acquireDb();
+  try {
+    return await fn(lease.db);
+  } finally {
+    await lease.release();
+  }
 }
 
 async function main(): Promise<void> {

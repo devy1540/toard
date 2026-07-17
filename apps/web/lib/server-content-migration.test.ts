@@ -112,11 +112,13 @@ function fakeDb(initialRows: StoredRow[], options: { sourceChangedId?: string } 
         snapshot = undefined;
         return { rows: [] };
       }
-      if (sql.includes("SELECT DISTINCT user_id")) {
-        const users = [...new Set(rows
-          .filter((row) => row.encryption_scheme === "server_v1")
-          .map((row) => String(row.user_id)))].sort();
-        return { rows: users.map((user_id) => ({ user_id })) };
+      if (sql.includes("FROM users")) {
+        const users = [...new Set(rows.map((row) => String(row.user_id)))].sort().reverse();
+        return { rows: [...users, ...users].map((id) => ({ id })) };
+      }
+      if (sql.includes("SELECT EXISTS") && sql.includes("prompt_records")) {
+        const [userId] = params;
+        return { rows: [{ eligible: rows.some((row) => row.user_id === userId && row.encryption_scheme === "server_v1") }] };
       }
       if (sql.includes("FOR UPDATE SKIP LOCKED")) {
         const [userId, limit] = params as [string, number];
@@ -358,18 +360,24 @@ test("canonical digest is type/length delimited and metadata-sensitive", () => {
   assert.notDeepEqual(serverSourceDigest(base), serverSourceDigest({ ...base, text: "secret\u0000" }));
 });
 
-test("content-admin user enumeration is explicit, stable, and does not create a user context", async () => {
+test("content-admin enumerates only users globally and checks server rows inside fixed-client user transactions", async () => {
   const db = fakeDb([
     legacyRow("47", "a", { user_id: USER_B }),
     legacyRow("48", "b", { user_id: USER_A }),
     legacyRow("49", "c", { user_id: USER_B }),
   ]);
   assert.deepEqual(await getServerContentMigrationUsers(db), [USER_A, USER_B]);
-  assert.equal(db.calls.length, 1);
-  assert.match(db.calls[0]!.sql, /SELECT DISTINCT user_id/);
-  assert.match(db.calls[0]!.sql, /WHERE encryption_scheme='server_v1'/);
-  assert.match(db.calls[0]!.sql, /ORDER BY user_id ASC/);
-  assert.doesNotMatch(db.calls[0]!.sql, /set_config/);
+  assert.match(db.calls[0]!.sql, /SELECT id::text AS id FROM users ORDER BY id ASC/);
+  assert.equal(db.calls[0]!.sql.includes("prompt_records"), false);
+  assert.equal(db.calls.filter((call) => call.sql === "BEGIN").length, 2);
+  assert.equal(db.calls.filter((call) => call.sql === "COMMIT").length, 2);
+  assert.deepEqual(
+    db.calls.filter((call) => call.sql.startsWith("SELECT set_config")).map((call) => call.params[0]),
+    [USER_A, USER_B],
+  );
+  const eligibility = db.calls.filter((call) => call.sql.includes("SELECT EXISTS"));
+  assert.equal(eligibility.length, 2);
+  assert.equal(eligibility.every((call) => call.sql.includes("user_id=$1")), true);
 });
 
 test("no SQL, error, or return value contains plaintext, KEK, UCK, or digest", async () => {

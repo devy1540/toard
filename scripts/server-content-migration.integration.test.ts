@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
-import { Client } from "pg";
+import { Client, Pool } from "pg";
 import { encryptContent } from "../apps/web/lib/legacy-content-crypto";
 import { decryptManagedContent } from "../apps/web/lib/managed-content-crypto";
 import type { ManagedContentRuntime } from "../apps/web/lib/managed-content-runtime";
@@ -14,6 +14,7 @@ import {
   ServerContentMigrationError,
   type ServerMigrationDb,
 } from "../apps/web/lib/server-content-migration";
+import { createPoolLeaseFactory, runCli } from "./toard-admin";
 
 const execFileAsync = promisify(execFile);
 const LEGACY_KEK = Buffer.alloc(32, 0x31);
@@ -119,6 +120,7 @@ async function resetRole(client: Client): Promise<void> {
 test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120_000 }, async () => {
   const container = `toard-server-content-${randomUUID().slice(0, 8)}`;
   let admin: Client | null = null;
+  let operationalPool: Pool | null = null;
   const clients: Client[] = [];
 
   try {
@@ -137,7 +139,7 @@ test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120
 
     admin = new Client({ connectionString });
     await admin.connect();
-    await admin.query("CREATE ROLE toard_app NOLOGIN NOSUPERUSER NOBYPASSRLS");
+    await admin.query("CREATE ROLE toard_app LOGIN PASSWORD 'integration-app-password' NOSUPERUSER NOBYPASSRLS");
     for (const migration of await allMigrationUps()) {
       await admin.query(migration.sql).catch((error: unknown) => {
         throw new Error(`failed migration ${migration.name}`, { cause: error });
@@ -146,6 +148,7 @@ test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120
     await admin.query(`
       GRANT USAGE ON SCHEMA public TO toard_app;
       GRANT SELECT, UPDATE ON prompt_records TO toard_app;
+      GRANT SELECT ON users TO toard_app;
     `);
 
     const users = [randomUUID(), randomUUID(), randomUUID(), randomUUID()];
@@ -183,7 +186,17 @@ test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120
       await insertLegacy(admin, userD, `concurrent-${index}`, `concurrent ${index}`);
     }
 
-    assert.deepEqual(await getServerContentMigrationUsers(admin), [...users].sort());
+    const nonTargetUser = randomUUID();
+    await admin.query("INSERT INTO users(id,email) VALUES($1,'server-migrate-none@example.com')", [nonTargetUser]);
+    const enumerator = new Client({ connectionString });
+    clients.push(enumerator);
+    await enumerator.connect();
+    await setAppRole(enumerator);
+    assert.deepEqual(await getServerContentMigrationUsers(enumerator), [...users].sort());
+    await assert.rejects(
+      enumerator.query("SELECT id FROM prompt_records"),
+      (error: unknown) => (error as { code?: string }).code === "22P02",
+    );
 
     const policy = await admin.query<{ qual: string; with_check: string }>(`
       SELECT pg_get_expr(polqual, polrelid) AS qual,
@@ -239,11 +252,9 @@ test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120
     assert.equal(
       decryptManagedContent({
         dedupKey: migrated.dedup_key as string,
-        sessionId: migrated.session_id as string | null,
         providerKey: migrated.provider_key as string,
         turnRole: migrated.turn_role as "user" | "assistant",
         ts: migrated.ts as Date,
-        text: "not-used",
         encryptionScheme: "managed_v1",
         contentKeyVersion: migrated.content_key_version as number,
         aadVersion: 2,
@@ -322,7 +333,46 @@ test("server_v1 batches migrate atomically under exact user RLS", { timeout: 120
          FROM content_encryption_status WHERE singleton=TRUE`,
     );
     assert.deepEqual(status.rows[0], { server_records: 4, managed_records: 30 });
+
+    await admin.query("DELETE FROM prompt_records WHERE encryption_scheme='server_v1'");
+    await admin.query(`
+      CREATE TABLE server_migration_pid_audit(user_id uuid NOT NULL, backend_pid int NOT NULL);
+      CREATE FUNCTION audit_server_migration_pid() RETURNS trigger LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+      BEGIN
+        INSERT INTO server_migration_pid_audit(user_id,backend_pid) VALUES(NEW.user_id,pg_backend_pid());
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER audit_server_migration_pid_trigger AFTER UPDATE OF encryption_scheme ON prompt_records
+      FOR EACH ROW EXECUTE FUNCTION audit_server_migration_pid();
+    `);
+    await insertLegacy(admin, nonTargetUser, "operational-fixed-client", "operational legacy");
+    operationalPool = new Pool({
+      connectionString: `postgresql://toard_app:integration-app-password@127.0.0.1:${port}/toard`,
+      max: 2,
+    });
+    const operationalKek = Buffer.from(LEGACY_KEK);
+    const operational = await runCli(
+      ["encryption", "migrate-server", "--batch-size", "25"],
+      {
+        runtime: async () => runtime(),
+        acquireDb: createPoolLeaseFactory(operationalPool),
+        loadLegacyKek: () => operationalKek,
+        migrateServerBatch: migrateServerContentBatch,
+        rewrapUser: async () => { throw new Error("not used"); },
+        close: async () => operationalPool?.end(),
+      },
+    );
+    assert.equal(operational.exitCode, 0);
+    assert.match(operational.stdout, /migrated=1 failed=0/);
+    assert.equal(operationalKek.every((byte) => byte === 0), true);
+    assert.deepEqual((await admin.query(
+      "SELECT COUNT(DISTINCT backend_pid)::int AS pids,COUNT(*)::int AS events FROM server_migration_pid_audit WHERE user_id=$1",
+      [nonTargetUser],
+    )).rows, [{ pids: 1, events: 1 }]);
+    assert.equal(operationalPool.waitingCount, 0);
+    assert.equal(operationalPool.idleCount, operationalPool.totalCount);
   } finally {
+    await operationalPool?.end().catch(() => undefined);
     for (const client of clients) await client.end().catch(() => undefined);
     await admin?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);

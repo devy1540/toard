@@ -114,6 +114,34 @@ test("bootstrap script wraps every role and privilege mutation in one transactio
   assert.equal(sql.indexOf("COMMIT;", commit + 1), -1);
 });
 
+test("bootstrap 재실행은 변조된 app role의 superuser와 BYPASSRLS 권한을 복구한다", { timeout: 120_000 }, async () => {
+  const container = `toard-bootstrap-role-repair-${randomUUID().slice(0, 6)}`;
+  let admin: Client | null = null;
+  try {
+    await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432", "postgres:16-alpine"]);
+    const { stdout } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = stdout.trim().match(/:(\d+)$/)?.[1]; assert.ok(port);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+    admin = new Client({ connectionString }); await admin.connect();
+    await admin.query("CREATE ROLE toard_app SUPERUSER BYPASSRLS NOLOGIN");
+
+    await bootstrap(container);
+
+    const result = await admin.query(
+      "SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname='toard_app'",
+    );
+    assert.deepEqual(result.rows, [
+      { rolsuper: false, rolbypassrls: false, rolcanlogin: true },
+    ]);
+  } finally {
+    await admin?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});
+
 test("bootstrap privilege replacement is atomic to concurrent sessions", { timeout: 120_000 }, async () => {
   const container = `toard-bootstrap-atomic-${randomUUID().slice(0, 6)}`;
   let writer: Client | null = null; let observer: Client | null = null;

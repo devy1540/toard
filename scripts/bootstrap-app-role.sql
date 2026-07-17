@@ -26,8 +26,8 @@ SELECT format('CREATE ROLE toard_app LOGIN PASSWORD %L', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app')
 \gexec
 
--- 재실행 시 비밀번호 갱신도 반영
-ALTER ROLE toard_app LOGIN PASSWORD :'app_password';
+-- 재실행 시 로그인·비밀번호와 RLS 강제 role attribute를 함께 복구
+ALTER ROLE toard_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD :'app_password';
 
 -- 2) 스키마 + 현재 객체 권한
 GRANT USAGE ON SCHEMA public TO toard_app;

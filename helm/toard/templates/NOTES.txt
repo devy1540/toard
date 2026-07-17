@@ -25,10 +25,12 @@ toard 가 배포되었습니다. (release: {{ .Release.Name }}, ns: {{ .Release.
 4) schema migration:
 {{- if .Values.migrate.enabled }}
    일반 Job {{ include "toard.migrationJobName" . }} 이 Release.Revision마다 새 이름으로 실행됩니다.
+   Job은 migrate → baseline seed → exact release completion marker 순서로 성공해야 완료됩니다.
    완료 대기: kubectl wait -n {{ .Release.Namespace }} --for=condition=complete --timeout=10m job/{{ include "toard.migrationJobName" . }}
    install/upgrade 명령 자체도 기다리게 하려면 --wait --wait-for-jobs 를 함께 사용하세요.
-   이 옵션이 없어도 app의 /api/ready는 schema 부재·migration 실패 시 503을 반환해 traffic을 차단합니다.
+   이 옵션이 없어도 app의 /api/ready는 자신의 revision/token/schema completion marker가 없으면 503입니다.
    RollingUpdate maxUnavailable=0 이므로 upgrade 중 기존 ready replica는 새 replica가 준비될 때까지 유지됩니다.
+   release token은 인증 credential이 아닌 correlation nonce이며 dedicated Kubernetes Secret에서만 참조됩니다.
 {{- else }}
    migrate.enabled=false — operator가 호환 schema를 먼저 적용해야 합니다.
 {{- end }}

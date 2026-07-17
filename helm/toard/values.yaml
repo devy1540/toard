@@ -65,12 +65,16 @@ postgres:
     limits:
       memory: 1Gi
 
-# 마이그레이션 — release revision별 일반 Job. 앱 readiness는 완료 전 traffic을 차단한다.
+# 마이그레이션 — release revision별 일반 Job. migrate+seed+exact completion marker 전에는 새 app이 not-ready다.
 migrate:
   enabled: true
   seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
   backoffLimit: 4
   ttlSecondsAfterFinished: 86400
+  # 앱이 toard_app(SELECT-only marker)일 때 migration owner DATABASE_URL을 별도 Secret key로 지정한다.
+  databaseSecret:
+    name: "" # 비우면 secrets.existingSecret/chart-managed Secret과 DATABASE_URL key 사용
+    key: DATABASE_URL
   serviceAccount:
     create: true
     name: ""

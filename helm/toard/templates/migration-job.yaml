@@ -1,6 +1,6 @@
 {{- if .Values.migrate.enabled }}
 # release revision마다 새 이름으로 실행되는 일반 Job이다. Helm hook이 아니며,
-# app readiness가 schema 적용 전/실패 시 traffic을 차단한다.
+# app readiness가 migrate+seed 뒤 exact release marker 생성 전/실패 시 traffic을 차단한다.
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -36,13 +36,24 @@ spec:
         - name: migrate
           image: "{{ .Values.image.migrate.repository }}:{{ .Values.image.migrate.tag }}"
           imagePullPolicy: {{ .Values.image.migrate.pullPolicy }}
-          command: ["sh", "-c", "pnpm migrate && pnpm seed"]
+          command: ["sh", "-c", "pnpm migrate && pnpm seed && pnpm mark:deployment-release"]
           env:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "toard.secretName" . }}
-                  key: DATABASE_URL
+                  name: {{ include "toard.migrationDatabaseSecretName" . }}
+                  key: {{ .Values.migrate.databaseSecret.key }}
+            - name: TOARD_DEPLOYMENT_ID
+              value: {{ include "toard.deploymentId" . | quote }}
+            - name: TOARD_RELEASE_REVISION
+              value: {{ .Release.Revision | quote }}
+            - name: TOARD_RELEASE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.releaseReadinessSecretName" . }}
+                  key: token
+            - name: TOARD_EXPECTED_SCHEMA_VERSION
+              value: {{ include "toard.expectedSchemaVersion" . | quote }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

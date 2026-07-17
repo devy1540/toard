@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { LATEST_SCHEMA_VERSION } from "@toard/core";
 import {
   getContentEncryptionReadiness,
   type ContentEncryptionReadiness,
@@ -30,6 +31,14 @@ const DEGRADED: ContentEncryptionReadiness = {
   managedRecords: 2,
   lastCheckAt: "2026-07-17T01:02:03.000Z",
   errorCode: "TEMPORARY",
+};
+
+const RELEASE_TOKEN = "C".repeat(48);
+const RELEASE_ENV = {
+  TOARD_DEPLOYMENT_ID: "toard/toard",
+  TOARD_RELEASE_REVISION: "4",
+  TOARD_RELEASE_TOKEN: RELEASE_TOKEN,
+  TOARD_EXPECTED_SCHEMA_VERSION: String(LATEST_SCHEMA_VERSION),
 };
 
 function dependencies(
@@ -243,4 +252,58 @@ test("기존 ClickHouse ping, rollup fallback, historical pricing payload 계약
     minimumVersion: "0.15.16",
     compatible: true,
   });
+});
+
+test("Helm env가 설정되면 exact completion marker 전에는 503이고 일치한 뒤에만 200이다", async () => {
+  for (const marker of ["missing", "wrong", "correct"] as const) {
+    const { overrides } = dependencies();
+    const response = await GET.withDependencies({
+      ...overrides,
+      env: RELEASE_ENV,
+      getPool: () => ({
+        async query(sql: string, params?: unknown[]) {
+          if (/deployment_release_completions/.test(sql)) {
+            assert.equal(params?.length, 4);
+            const exact = params?.[2] === RELEASE_TOKEN;
+            return { rows: marker === "correct" && exact ? [{ ok: 1 }] : [] };
+          }
+          return { rows: [] };
+        },
+      }),
+    })();
+    assert.equal(response.status, marker === "correct" ? 200 : 503);
+    assert.equal((await response.text()).includes(RELEASE_TOKEN), false);
+  }
+});
+
+test("partial release env와 marker query 오류는 detail 없이 503이다", async () => {
+  const cases = [
+    {
+      env: { TOARD_DEPLOYMENT_ID: "toard/toard" },
+      getPool: dependencies().overrides.getPool,
+    },
+    {
+      env: RELEASE_ENV,
+      getPool: () => ({
+        async query(sql: string) {
+          if (/deployment_release_completions/.test(sql)) {
+            throw new Error(`relation missing ${RELEASE_TOKEN}`);
+          }
+          return { rows: [] };
+        },
+      }),
+    },
+  ];
+  for (const releaseCase of cases) {
+    const { overrides } = dependencies();
+    const response = await GET.withDependencies({
+      ...overrides,
+      env: releaseCase.env,
+      getPool: releaseCase.getPool,
+    })();
+    const text = await response.text();
+    assert.equal(response.status, 503);
+    assert.deepEqual(JSON.parse(text), { status: "not-ready" });
+    assert.equal(text.includes(RELEASE_TOKEN), false);
+  }
 });

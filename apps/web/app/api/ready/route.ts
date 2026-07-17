@@ -20,6 +20,7 @@ import {
   getManagedContentRuntime,
   type ManagedContentRuntime,
 } from "../../../lib/managed-content-runtime";
+import { assertDeploymentReleaseReady } from "../../../lib/deployment-release-readiness";
 
 // Readiness: 실제 요청 처리에 필요한 DB 연결 가능할 때만 200 (아니면 503 → 트래픽 차단). K8s readinessProbe 용.
 export const dynamic = "force-dynamic";
@@ -35,6 +36,7 @@ type ReadyEnvironment = Record<string, string | undefined>;
 type ReadyDependencies = {
   env: ReadyEnvironment;
   getPool(): ReadyDb;
+  assertDeploymentReleaseReady(db: ReadyDb, env: ReadyEnvironment): Promise<void>;
   assertLegacyContentKeyReady(
     db: ReadyDb,
     env: ReadyEnvironment,
@@ -56,6 +58,7 @@ type ReadyDependencies = {
 const defaultReadyDependencies: ReadyDependencies = {
   env: process.env,
   getPool,
+  assertDeploymentReleaseReady,
   assertLegacyContentKeyReady,
   getManagedContentRuntime,
   getContentEncryptionReadiness,
@@ -71,6 +74,7 @@ function createGet(overrides: Partial<ReadyDependencies> = {}) {
       const pool = dependencies.getPool();
       const env = dependencies.env;
       await pool.query("SELECT 1");
+      await dependencies.assertDeploymentReleaseReady(pool, env);
       await dependencies.assertLegacyContentKeyReady(pool, env);
       const runtime = await dependencies.getManagedContentRuntime();
       const contentEncryption =

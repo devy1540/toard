@@ -71,6 +71,11 @@ BEGIN
     EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE public.content_key_security_events_id_seq FROM toard_app';
     EXECUTE 'GRANT USAGE ON SEQUENCE public.content_key_security_events_id_seq TO toard_app';
   END IF;
+
+  IF to_regclass('public.deployment_release_completions') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.deployment_release_completions FROM toard_app';
+    EXECUTE 'GRANT SELECT ON TABLE public.deployment_release_completions TO toard_app';
+  END IF;
 END $$;
 
 -- 3) 이후 마이그레이션이 만드는 객체에도 자동 적용

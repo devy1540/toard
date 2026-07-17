@@ -18,6 +18,8 @@ spec:
       app.kubernetes.io/component: app
   template:
     metadata:
+      annotations:
+        toard.dev/release-revision: {{ .Release.Revision | quote }}
       labels:
         {{- include "toard.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: app
@@ -48,6 +50,20 @@ spec:
             - configMapRef:
                 name: {{ include "toard.fullname" . }}-encryption-config
             {{- end }}
+          {{- if .Values.migrate.enabled }}
+          env:
+            - name: TOARD_DEPLOYMENT_ID
+              value: {{ include "toard.deploymentId" . | quote }}
+            - name: TOARD_RELEASE_REVISION
+              value: {{ .Release.Revision | quote }}
+            - name: TOARD_RELEASE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.releaseReadinessSecretName" . }}
+                  key: token
+            - name: TOARD_EXPECTED_SCHEMA_VERSION
+              value: {{ include "toard.expectedSchemaVersion" . | quote }}
+          {{- end }}
           {{- with .Values.encryption.secretMounts }}
           volumeMounts:
             {{- range . }}

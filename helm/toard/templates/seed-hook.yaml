@@ -41,8 +41,8 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "toard.secretName" . }}
-                  key: DATABASE_URL
+                  name: {{ include "toard.migrationDatabaseSecretName" . }}
+                  key: {{ .Values.migrate.databaseSecret.key }}
             - name: BOOTSTRAP_ADMIN_EMAIL
               valueFrom:
                 secretKeyRef:

@@ -74,6 +74,7 @@ FROM deps AS migrator
 ENV HOME=/tmp
 COPY migrations/ ./migrations/
 COPY scripts/ ./scripts/
+COPY packages/core/ ./packages/core/
 CMD ["pnpm", "migrate"]
 
 # ---- content-admin: 암호화 상태·전환 one-shot 관리 도구 ----

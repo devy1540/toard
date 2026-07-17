@@ -12,11 +12,30 @@
 {{- end -}}
 {{- end -}}
 
+{{/* migration/seed owner DB Secret. 빈 name은 기존 설치 호환 기본 Secret을 사용한다. */}}
+{{- define "toard.migrationDatabaseSecretName" -}}
+{{- default (include "toard.secretName" .) .Values.migrate.databaseSecret.name -}}
+{{- end -}}
+
 {{/* revision suffix를 보존해 completed Job immutable-name 충돌을 피한다. */}}
 {{- define "toard.migrationJobName" -}}
 {{- $suffix := printf "-migrate-%d" .Release.Revision -}}
 {{- $maxBaseLength := sub 63 (len $suffix) | int -}}
 {{- printf "%s%s" (include "toard.fullname" . | trunc $maxBaseLength | trimSuffix "-") $suffix -}}
+{{- end -}}
+
+{{/* release마다 새 opaque readiness nonce를 담는 dedicated Secret 이름 */}}
+{{- define "toard.releaseReadinessSecretName" -}}
+{{- $suffix := printf "-release-readiness-%d" .Release.Revision -}}
+{{- $maxBaseLength := sub 63 (len $suffix) | int -}}
+{{- printf "%s%s" (include "toard.fullname" . | trunc $maxBaseLength | trimSuffix "-") $suffix -}}
+{{- end -}}
+
+{{/* packages/core/src/deployment-release.ts와 Helm render test가 drift를 차단한다. */}}
+{{- define "toard.expectedSchemaVersion" -}}1700000038{{- end -}}
+
+{{- define "toard.deploymentId" -}}
+{{- printf "%s/%s" .Release.Namespace .Release.Name -}}
 {{- end -}}
 
 {{/* app/content-admin에서 사용할 ServiceAccount 이름 */}}

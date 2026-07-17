@@ -101,9 +101,17 @@ helm install toard ./helm/toard \
 - `postgres.enabled=false` + `secrets.databaseUrl=...` → 외부 DB.
 - `migrate.seedOnInstall=true` + `secrets.bootstrapAdmin.*` → 최초 설치 시 providers·admin 시드(post-install 훅).
 - `ingress.enabled=true --set ingress.host=toard.corp.com` → Ingress.
-- 설치·업그레이드마다 release revision이 붙은 일반 migration Job이 스키마와 baseline seed를 멱등 적용한다.
-  완료까지 Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 사용한다. Job이 끝나기 전이나 실패한 동안에는
-  `/api/ready`가 503을 반환해 새 앱 파드가 트래픽을 받지 않는다. 완료된 Job은 TTL 이후 정리된다.
+- 설치·업그레이드마다 release revision이 붙은 일반 migration Job이 `migrate → baseline seed → completion marker`
+  순서로 실행된다. `/api/ready`는 새 파드의 deployment id·revision·token·expected schema와 정확히 일치하는
+  DB marker가 생기기 전까지 503이다. 따라서 migrate/seed/marker 중 하나라도 실패하면 새 파드는 트래픽을
+  받지 않고, `maxUnavailable=0`인 기존 파드는 자신의 과거 marker로 계속 ready다. 완료된 Job은 TTL 뒤
+  정리하지만 과거 DB marker는 즉시 삭제하지 않는다. Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 쓴다.
+- release token은 인증 credential이 아닌 rollout correlation nonce지만 Secret으로 취급한다. 값은 revision별
+  dedicated Kubernetes Secret에만 있고 Deployment/Job은 `secretKeyRef`로 참조한다. 앱 API·UI·로그에는
+  출력하지 않는다. 단 Kubernetes Secret 또는 Helm Secret manifest를 읽을 권한이 있는 운영자는 볼 수 있다.
+- 앱 `DATABASE_URL`을 `toard_app`처럼 marker table SELECT-only 롤로 운영하면 migration/seed/marker Job에는
+  owner 연결을 별도 Secret으로 주입한다: `migrate.databaseSecret.name`과 `migrate.databaseSecret.key`.
+  비우면 호환성을 위해 앱과 같은 `DATABASE_URL`을 사용하므로 그 연결은 migration owner여야 한다.
 
 ## 본문 수집 활성화 (선택 — 프롬프트/응답 저장)
 

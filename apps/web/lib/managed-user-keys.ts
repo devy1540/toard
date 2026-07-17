@@ -91,6 +91,16 @@ export class ManagedUserKeyService {
     return this.withRowKey(userId, row, fn);
   }
 
+  /** provider rewrap 성공 뒤 정확한 이전 wrapper cache 항목만 제거한다. */
+  evict(userId: string, keyVersion: number, providerFingerprint: string): void {
+    this.cache.evict([
+      this.installationId,
+      userId,
+      keyVersion,
+      providerFingerprint,
+    ].join(":"));
+  }
+
   private async withRowKey<T>(
     userId: string,
     row: ManagedUserKeyRow,

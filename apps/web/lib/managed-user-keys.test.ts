@@ -273,3 +273,18 @@ test("생성 UCK가 32바이트가 아니면 provider 호출 전에 거부하고
   assert.equal(provider.wrapCalls, 0);
   assert.equal(generatedKey.every((byte) => byte === 0), true);
 });
+
+test("provider 전환 cache eviction은 정확한 installation/user/version/fingerprint 항목만 제거한다", async () => {
+  const db = new FakeDatabase();
+  db.rows.push(storedRow());
+  const { service, provider } = createService({ db });
+
+  await service.withActiveUserKey(USER_ID, async () => undefined);
+  service.evict(USER_ID, 1, "local:other-provider");
+  await service.withActiveUserKey(USER_ID, async () => undefined);
+  assert.equal(provider.unwrapCalls, 1);
+
+  service.evict(USER_ID, 1, "local:test-provider");
+  await service.withActiveUserKey(USER_ID, async () => undefined);
+  assert.equal(provider.unwrapCalls, 2);
+});

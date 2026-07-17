@@ -12,7 +12,7 @@ export type ManagedContentRuntime = {
   userKeys: Pick<
     ManagedUserKeyService,
     "withActiveUserKey" | "withUserKeyVersion"
-  >;
+  > & { evict?: ManagedUserKeyService["evict"] };
   health: ProviderHealthCache;
 };
 

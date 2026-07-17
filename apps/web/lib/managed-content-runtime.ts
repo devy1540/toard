@@ -2,6 +2,7 @@ import { getPool } from "./db";
 import { loadKeyManagementConfig, type KeyManagementConfig } from "./key-management/config";
 import { createKeyProviderRegistry } from "./key-management/provider-factory";
 import { ProviderHealthCache } from "./key-management/provider-health-cache";
+import { recordCacheResult } from "./key-management/observability";
 import { KeyProviderRegistry } from "./key-management/registry";
 import { UserKeyCache } from "./key-management/user-key-cache";
 import { ManagedUserKeyService } from "./managed-user-keys";
@@ -78,7 +79,10 @@ export async function createManagedContentRuntime(
   try {
     const installationId = await dependencies.loadInstallationId();
     const registry = dependencies.createRegistry(config);
-    const cache = (dependencies.createCache ?? ((ttlMs) => new UserKeyCache({ ttlMs })))(
+    const cache = (dependencies.createCache ?? ((ttlMs) => new UserKeyCache({
+      ttlMs,
+      recordCacheResult,
+    })))(
       config.cacheTtlMs,
     );
     const userKeys = (

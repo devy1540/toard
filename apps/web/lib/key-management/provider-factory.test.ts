@@ -263,3 +263,33 @@ test("registry factory는 active와 migration을 정확히 resolve한다", () =>
     metadata: {},
   }), registry.active);
 });
+
+test("registry factory는 active와 migration provider를 각각 정확히 한 번 관찰한다", async () => {
+  const events: unknown[] = [];
+  const config = {
+    active: PROFILES[1]!,
+    migration: { ...PROFILES[2]!, slot: "migration" as const },
+    cacheTtlMs: 1_800_000,
+  };
+  const registry = createKeyProviderRegistry(config, {
+    ...dependencies(),
+    operationRecorder: { async record(event) { events.push(event); } },
+    now: (() => { let current = 0; return () => ++current; })(),
+  });
+
+  assert.equal(registry.active.name, "aws-kms");
+  assert.equal(registry.migration?.name, "gcp-kms");
+  await registry.active.healthCheck();
+  await registry.migration!.healthCheck();
+  assert.equal(events.length, 2);
+  assert.deepEqual(events.map((event) => (event as { provider: string }).provider), [
+    "aws-kms", "gcp-kms",
+  ]);
+  assert.equal(registry.resolveWrappedKey({
+    provider: registry.active.name,
+    keyRef: registry.active.keyRef,
+    fingerprint: registry.active.fingerprint,
+    ciphertext: Buffer.alloc(1),
+    metadata: {},
+  }), registry.active);
+});

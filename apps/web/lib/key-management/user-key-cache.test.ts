@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { UserKeyCache } from "./user-key-cache";
 
+const SAFE_IDENTITY = Object.freeze({
+  provider: "local" as const,
+  fingerprint: "local:abcdefabcdefabcdefabcdef",
+  operation: "unwrap" as const,
+});
+
 function createClock(start = 0) {
   let current = start;
   return {
@@ -198,4 +204,47 @@ test("명시적 eviction은 cache key를 zeroize하고 다음 호출을 reload�
   assert.equal(cached!.every((byte) => byte === 0), true);
   assert.equal(await cache.withKey("u:1", load, async (key) => key[0]), 2);
   assert.equal(loads, 2);
+});
+
+test("cache hook은 miss, single-flight, hit만 안전한 provider identity와 기록한다", async () => {
+  const pending = deferred<Buffer>();
+  const events: unknown[] = [];
+  const cache = new UserKeyCache({
+    ttlMs: 300_000,
+    recordCacheResult: async (event) => { events.push(event); },
+  });
+  const loader = async () => pending.promise;
+  const first = cache.withKey("installation:user:version:fingerprint", loader, async (key) => key[0], SAFE_IDENTITY);
+  const second = cache.withKey("installation:user:version:fingerprint", loader, async (key) => key[0], SAFE_IDENTITY);
+  pending.resolve(Buffer.alloc(32, 7));
+  assert.deepEqual(await Promise.all([first, second]), [7, 7]);
+  assert.equal(await cache.withKey("installation:user:version:fingerprint", loader, async (key) => key[0], SAFE_IDENTITY), 7);
+
+  assert.deepEqual(events, [
+    { ...SAFE_IDENTITY, cacheResult: "miss" },
+    { ...SAFE_IDENTITY, cacheResult: "single_flight" },
+    { ...SAFE_IDENTITY, cacheResult: "hit" },
+  ]);
+  const serialized = JSON.stringify(events);
+  assert.equal(serialized.includes("installation:user"), false);
+  assert.equal(serialized.includes("Buffer"), false);
+});
+
+test("cache hook failure does not break key access, TTL, or eviction", async () => {
+  const clock = createClock();
+  let loads = 0;
+  const cache = new UserKeyCache({
+    ttlMs: 10,
+    now: clock.now,
+    recordCacheResult: async () => { throw new Error("metrics failed"); },
+  });
+  const loader = async () => Buffer.alloc(32, ++loads);
+
+  assert.equal(await cache.withKey("secret-cache-key", loader, async (key) => key[0], SAFE_IDENTITY), 1);
+  assert.equal(await cache.withKey("secret-cache-key", loader, async (key) => key[0], SAFE_IDENTITY), 1);
+  clock.advance(11);
+  assert.equal(await cache.withKey("secret-cache-key", loader, async (key) => key[0], SAFE_IDENTITY), 2);
+  cache.evict("secret-cache-key");
+  assert.equal(await cache.withKey("secret-cache-key", loader, async (key) => key[0], SAFE_IDENTITY), 3);
+  assert.equal(loads, 3);
 });

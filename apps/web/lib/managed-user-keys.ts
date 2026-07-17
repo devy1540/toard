@@ -121,6 +121,11 @@ export class ManagedUserKeyService {
         return provider.unwrapKey(wrapped, context);
       },
       fn,
+      {
+        provider: row.provider,
+        fingerprint: row.providerFingerprint,
+        operation: "unwrap",
+      },
     );
   }
 

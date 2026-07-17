@@ -55,6 +55,22 @@ BEGIN
   IF to_regprocedure('public.capture_content_e2ee_migration_source()') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.capture_content_e2ee_migration_source() FROM PUBLIC';
   END IF;
+
+  IF to_regclass('public.content_key_operation_daily') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.content_key_operation_daily FROM toard_app';
+    EXECUTE 'GRANT SELECT, INSERT ON TABLE public.content_key_operation_daily TO toard_app';
+    EXECUTE 'GRANT UPDATE (operation_count, total_latency_ms) ON TABLE public.content_key_operation_daily TO toard_app';
+  END IF;
+
+  IF to_regclass('public.content_key_security_events') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.content_key_security_events FROM toard_app';
+    EXECUTE 'GRANT SELECT, INSERT ON TABLE public.content_key_security_events TO toard_app';
+  END IF;
+
+  IF to_regclass('public.content_key_security_events_id_seq') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON SEQUENCE public.content_key_security_events_id_seq FROM toard_app';
+    EXECUTE 'GRANT USAGE ON SEQUENCE public.content_key_security_events_id_seq TO toard_app';
+  END IF;
 END $$;
 
 -- 3) 이후 마이그레이션이 만드는 객체에도 자동 적용

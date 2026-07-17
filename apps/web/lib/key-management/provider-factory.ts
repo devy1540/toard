@@ -14,6 +14,10 @@ import {
   type GcpKmsClient,
 } from "./gcp-kms-provider";
 import { LocalKeyManagementProvider } from "./local-provider";
+import {
+  ObservedKeyManagementProvider,
+  type KeyOperationRecorder,
+} from "./observability";
 import { OpenBaoTransitProvider } from "./openbao-transit-provider";
 import { KeyProviderRegistry } from "./registry";
 import { TransitClient } from "./transit-client";
@@ -37,6 +41,7 @@ export type KeyProviderFactoryDependencies = {
   azureCryptoClient?: AzureCryptographyClient;
   azureEnv?: NodeJS.ProcessEnv;
   nodeEnv?: string;
+  operationRecorder?: KeyOperationRecorder;
 };
 
 function required(
@@ -186,7 +191,13 @@ export function createKeyProvider(
   dependencies: KeyProviderFactoryDependencies = {},
 ): KeyManagementProvider {
   try {
-    return createValidatedKeyProvider(profile, dependencies);
+    return new ObservedKeyManagementProvider(
+      createValidatedKeyProvider(profile, dependencies),
+      {
+        recorder: dependencies.operationRecorder,
+        now: dependencies.now,
+      },
+    );
   } catch {
     throw new Error("KEY_PROVIDER_CONSTRUCTION_FAILED");
   }

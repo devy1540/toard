@@ -58,6 +58,8 @@ export type E2eeMigrationRetryTimer = {
 
 export type E2eeMigrationCompletionBoundary = {
   finish(): boolean;
+  isComplete(): boolean;
+  unlock(uck: Uint8Array, onUnlock: (uck: Uint8Array) => void): boolean;
 };
 
 export function createE2eeMigrationCompletionBoundary(
@@ -71,6 +73,18 @@ export function createE2eeMigrationCompletionBoundary(
       onComplete();
       return true;
     },
+    isComplete() {
+      return complete;
+    },
+    unlock(uck, onUnlock) {
+      try {
+        if (complete) return false;
+        onUnlock(uck);
+        return true;
+      } finally {
+        uck.fill(0);
+      }
+    },
   };
 }
 
@@ -79,6 +93,7 @@ export function acceptInitialE2eeMigrationStatus(
   status: E2eeManagedMigrationStatus,
   onIncomplete: (status: E2eeManagedMigrationStatus) => void,
 ): void {
+  if (boundary.isComplete()) return;
   if (status.state === "complete") {
     boundary.finish();
     return;
@@ -90,6 +105,7 @@ export function resolveE2eeContentAccountState(
   boundary: E2eeMigrationCompletionBoundary,
   state: "off" | "pending" | "active" | "migrated",
 ): "active" | "inactive" | "complete" {
+  if (boundary.isComplete()) return "complete";
   if (state === "migrated") {
     boundary.finish();
     return "complete";
@@ -243,7 +259,9 @@ export function createE2eeToManagedLoop(input: {
         });
       } catch (error) {
         if (isRecoverableE2eeMigrationConflict(error)
-          && conflictRetries < MAX_CONFLICT_RETRIES) {
+          && conflictRetries < MAX_CONFLICT_RETRIES
+          && !disposed
+          && !controller.signal.aborted) {
           scheduleConflictRetry();
           return false;
         }

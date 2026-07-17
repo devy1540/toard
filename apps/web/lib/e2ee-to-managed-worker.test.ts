@@ -13,6 +13,7 @@ import {
   resolveE2eeContentAccountState,
   runE2eeToManagedBatch,
 } from "./e2ee-to-managed-worker";
+import { unlockApprovedBrowser } from "./content-auto-unlock";
 
 const OWNER = "018f47d0-4d47-7b04-950b-7d18a86e1b43";
 const DIGEST = createHash("sha256").update("source").digest("base64url");
@@ -60,9 +61,96 @@ test("initial complete, loop complete, and migrated account share one completion
   boundary.finish();
   assert.equal(resolveE2eeContentAccountState(boundary, "migrated"), "complete");
 
+  assert.equal(boundary.isComplete(), true);
   assert.equal(locks, 1);
   assert.equal(refreshes, 1);
   assert.deepEqual(observed, []);
+});
+
+test("completion gate rejects late migration statuses and content states", () => {
+  const observed: string[] = [];
+  const boundary = createE2eeMigrationCompletionBoundary(() => undefined);
+  boundary.finish();
+
+  for (const state of ["pending", "running", "blocked"] as const) {
+    acceptInitialE2eeMigrationStatus(boundary, migrationStatus(state), (status) => {
+      observed.push(status.state);
+    });
+  }
+  for (const state of ["active", "off", "pending"] as const) {
+    assert.equal(resolveE2eeContentAccountState(boundary, state), "complete", state);
+  }
+
+  assert.deepEqual(observed, []);
+});
+
+test("in-flight approved-browser unlock cannot repopulate the vault after completion", async () => {
+  const envelope = deferred<Uint8Array<ArrayBuffer>>();
+  const sourceUck = new Uint8Array(32).fill(7);
+  let unlockCalls = 0;
+  let dispatches = 0;
+  let locks = 0;
+  let refreshes = 0;
+  let envelopeStarted = false;
+  const boundary = createE2eeMigrationCompletionBoundary(() => {
+    locks += 1;
+    refreshes += 1;
+  });
+  assert.equal(resolveE2eeContentAccountState(boundary, "active"), "active");
+  const unlockPromise = unlockApprovedBrowser({
+    loadDevice: async () => ({
+      id: "active",
+      serverDeviceId: "device-1",
+      keyPair: {} as CryptoKeyPair,
+    }),
+    loadWrapper: async () => ({
+      wrapperType: "device",
+      wrapperRef: "device-1",
+      contentKeyVersion: 1,
+      kdfVersion: "hpke-p256-v1",
+      publicSaltOrInput: null,
+      nonce: null,
+      authTag: null,
+      encapsulatedKey: "encapsulated",
+      wrappedContentKey: "ciphertext",
+    }),
+    openEnvelope: async () => {
+      envelopeStarted = true;
+      return envelope.promise;
+    },
+  });
+
+  await waitFor(() => envelopeStarted);
+  boundary.finish();
+  assert.equal(locks, 1);
+  assert.equal(refreshes, 1);
+  envelope.resolve(sourceUck);
+  const result = await unlockPromise;
+  assert.ok(result);
+
+  const accepted = boundary.unlock(result.uck, () => {
+    unlockCalls += 1;
+    dispatches += 1;
+  });
+
+  assert.equal(accepted, false);
+  assert.equal(unlockCalls, 0);
+  assert.equal(dispatches, 0);
+  assert.deepEqual([...sourceUck], new Array(32).fill(0));
+});
+
+test("completion gate unlocks synchronously and zeroizes caller UCK on the normal path", () => {
+  const sourceUck = new Uint8Array(32).fill(9);
+  const copied: number[][] = [];
+  const boundary = createE2eeMigrationCompletionBoundary(() => undefined);
+
+  const accepted = boundary.unlock(sourceUck, (uck) => {
+    copied.push([...uck]);
+  });
+
+  assert.equal(accepted, true);
+  assert.deepEqual(copied, [new Array(32).fill(9)]);
+  assert.deepEqual([...sourceUck], new Array(32).fill(0));
 });
 
 test("initial pending status is observed and active content state does not complete", () => {
@@ -505,6 +593,42 @@ test("disposing a conflict retry clears its timer and late callbacks cannot requ
   assert.equal(statusCalls, 1);
 });
 
+test("dispose before a late recoverable commit rejection cannot schedule a retry", async () => {
+  const timers = fakeRetryTimers();
+  const { value } = await source();
+  const commit = deferred<unknown>();
+  const ownedUck = new Uint8Array(32).fill(5);
+  let requests = 0;
+  let commitStarted = false;
+  const loop = createE2eeToManagedLoop({
+    copyUck: () => ownedUck,
+    decrypt: async () => new TextEncoder().encode("secret prompt"),
+    retryTimer: timers.api,
+    fetchJson: async (url) => {
+      requests += 1;
+      if (url.endsWith("/status")) return migrationStatus("running");
+      if (url.includes("/page")) return { records: [value] };
+      commitStarted = true;
+      return commit.promise;
+    },
+    environment: alwaysRunnableEnvironment(),
+    onStatus: () => undefined,
+    onComplete: () => undefined,
+    onError: () => undefined,
+  });
+
+  loop.start();
+  await waitFor(() => commitStarted);
+  loop.dispose();
+  commit.reject(new Error("E2EE_SOURCE_CHANGED"));
+  await tick();
+
+  assert.equal(timers.delays.length, 0);
+  assert.equal(timers.pending.size, 0);
+  assert.equal(requests, 3);
+  assert.deepEqual([...ownedUck], new Array(32).fill(0));
+});
+
 function alwaysRunnableEnvironment() {
   return {
     isVisible: () => true,
@@ -546,6 +670,16 @@ function fakeRetryTimers() {
       entry[1]();
     },
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 async function tick(): Promise<void> {

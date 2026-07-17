@@ -118,10 +118,11 @@ export function E2eeHistoryClient({
   const completionBoundary = completionBoundaryRef.current;
 
   const unlock = useCallback((uck: Uint8Array) => {
-    contentKeyVault.unlock(uck);
-    uck.fill(0);
-    dispatch({ type: "uck-unwrapped" });
-  }, []);
+    return completionBoundary.unlock(uck, (acceptedUck) => {
+      contentKeyVault.unlock(acceptedUck);
+      dispatch({ type: "uck-unwrapped" });
+    });
+  }, [completionBoundary]);
 
   const unlockLocal = useCallback(async () => {
     const result = await unlockApprovedBrowser({
@@ -131,12 +132,16 @@ export function E2eeHistoryClient({
       ),
       openEnvelope: openDeviceEnvelope,
     });
-    setHasLocalDevice(result !== null);
-    if (!result) return false;
+    if (!result) {
+      if (!completionBoundary.isComplete()) setHasLocalDevice(false);
+      return false;
+    }
+    const accepted = unlock(result.uck);
+    if (!accepted) return false;
+    setHasLocalDevice(true);
     manuallyLocked.current = false;
-    unlock(result.uck);
     return true;
-  }, [unlock]);
+  }, [completionBoundary, unlock]);
 
   useEffect(() => {
     let cancelled = false;
@@ -152,11 +157,11 @@ export function E2eeHistoryClient({
           dispatch({ type: "fatal", error: "E2EE_NOT_ACTIVE" });
           return;
         }
-        if (!await unlockLocal()) {
+        if (!await unlockLocal() && !completionBoundary.isComplete()) {
           dispatch({ type: "status", hasLocalKey: false, hasPasskeyWrapper: false });
         }
       } catch (error) {
-        if (!cancelled) {
+        if (!cancelled && !completionBoundary.isComplete()) {
           const hasLocalKey = await contentKeyVault.loadDevice().then(Boolean).catch(() => false);
           dispatch({ type: "status", hasLocalKey: false, hasPasskeyWrapper: false });
           if (hasLocalKey) contentKeyVault.lock();
@@ -175,13 +180,13 @@ export function E2eeHistoryClient({
         }
       })
       .catch((error) => {
-        if (cancelled) return;
+        if (cancelled || completionBoundary.isComplete()) return;
         const code = errorCode(error);
         if (code === "MIGRATION_NOT_FOUND") setManagedMigration(null);
         else setManagedMigrationError(code);
       })
       .finally(() => {
-        if (!cancelled) setManagedMigrationLoaded(true);
+        if (!cancelled && !completionBoundary.isComplete()) setManagedMigrationLoaded(true);
       });
     return () => { cancelled = true; };
   }, [completionBoundary]);
@@ -210,11 +215,15 @@ export function E2eeHistoryClient({
         },
       },
       onStatus: (status) => {
-        setManagedMigration(status);
-        setManagedMigrationError(null);
+        acceptInitialE2eeMigrationStatus(completionBoundary, status, (acceptedStatus) => {
+          setManagedMigration(acceptedStatus);
+          setManagedMigrationError(null);
+        });
       },
       onComplete: () => completionBoundary.finish(),
-      onError: (error) => setManagedMigrationError(errorCode(error)),
+      onError: (error) => {
+        if (!completionBoundary.isComplete()) setManagedMigrationError(errorCode(error));
+      },
     });
     loop.start();
     return () => loop.dispose();
@@ -388,13 +397,13 @@ export function E2eeHistoryClient({
       const status = await fetchJson<E2eeManagedMigrationStatus>(
         "/api/content/managed-migration/status",
       );
-      setManagedMigration(status);
+      acceptInitialE2eeMigrationStatus(completionBoundary, status, setManagedMigration);
     } catch (error) {
-      setManagedMigrationError(errorCode(error));
+      if (!completionBoundary.isComplete()) setManagedMigrationError(errorCode(error));
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [completionBoundary]);
 
   const resumeManagedMigration = useCallback(() => {
     void updateManagedMigrationState(managedMigrationStateBody("resume"));

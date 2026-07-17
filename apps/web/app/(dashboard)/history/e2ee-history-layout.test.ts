@@ -50,4 +50,33 @@ test("initial and loop completion use one ref-backed idempotent lifecycle bounda
   assert.match(clientSource, /acceptInitialE2eeMigrationStatus\(completionBoundary/);
   assert.match(clientSource, /resolveE2eeContentAccountState\(completionBoundary/);
   assert.match(clientSource, /onComplete: \(\) => completionBoundary\.finish\(\)/);
+  assert.match(
+    clientSource,
+    /onStatus: \(status\) => \{[\s\S]*acceptInitialE2eeMigrationStatus\(completionBoundary, status/,
+  );
+  assert.doesNotMatch(clientSource, /setManagedMigration\(status\)/);
+  assert.match(
+    clientSource,
+    /onError: \(error\) => \{[\s\S]*if \(!completionBoundary\.isComplete\(\)\)/,
+  );
+  assert.match(
+    clientSource,
+    /completionBoundary\.unlock\(uck, \((\w+)\) => \{[\s\S]*contentKeyVault\.unlock\(\1\)[\s\S]*dispatch\(\{ type: "uck-unwrapped" \}\)/,
+  );
+  assert.match(
+    clientSource,
+    /if \(!await unlockLocal\(\) && !completionBoundary\.isComplete\(\)\) \{[\s\S]*dispatch\(\{ type: "status"/,
+  );
+  assert.match(clientSource, /const accepted = unlock\(result\.uck\);[\s\S]*if \(!accepted\) return false;/);
+
+  const approvalPolling = clientSource.slice(
+    clientSource.indexOf("const poll = async"),
+    clientSource.indexOf("const createApproval = async"),
+  );
+  assert.match(approvalPolling, /const uck = await openDeviceEnvelope[\s\S]*unlock\(uck\)/);
+  const recovery = clientSource.slice(
+    clientSource.indexOf("const recover = async"),
+    clientSource.indexOf("const updateManagedMigrationState"),
+  );
+  assert.match(recovery, /const uck = await recoverUckFromMnemonic[\s\S]*unlock\(uck\)/);
 });

@@ -15,6 +15,7 @@ const MIGRATIONS = ["1700000001_init.sql", "1700000010_prompt_records.sql", "170
 test("E2EE canary exists only after approved-browser decryption", { timeout: 90_000 }, async () => {
   const container = `toard-e2ee-canary-${randomUUID().slice(0, 8)}`;
   let client: Client | null = null;
+  let uck: Uint8Array | null = null;
   try {
     await execFileAsync("docker", [
       "run", "-d", "--rm", "--name", container,
@@ -44,10 +45,18 @@ test("E2EE canary exists only after approved-browser decryption", { timeout: 90_
       [userId],
     );
     const ownerId = account.rows[0]!.content_owner_id;
-    const uck = crypto.getRandomValues(new Uint8Array(32));
+    uck = crypto.getRandomValues(new Uint8Array(32));
     const record = await encryptCanary(uck, ownerId);
     const ingestRequestBody = JSON.stringify([record]);
     assert.equal(ingestRequestBody.includes(CANARY), false);
+
+    await client.query(
+      `INSERT INTO content_key_wrappers
+       (user_id,content_key_version,wrapper_type,wrapper_ref,kdf_version,
+        public_salt_or_input,nonce,auth_tag,wrapped_content_key)
+       VALUES($1,1,'recovery','recovery-v1','hkdf-sha256-v1',$2,$3,$4,$5)`,
+      [userId, Buffer.alloc(32, 0x21), Buffer.alloc(12, 0x22), Buffer.alloc(16, 0x23), Buffer.alloc(32, 0x24)],
+    );
 
     await client.query(
       `INSERT INTO prompt_records
@@ -74,6 +83,15 @@ test("E2EE canary exists only after approved-browser decryption", { timeout: 90_
     );
     assert.equal(dbScan.rows.some((row) => row.serialized.includes(CANARY)), false);
 
+    const { stdout: dump } = await execFileAsync("docker", [
+      "exec", container, "pg_dump", "-U", "postgres", "--data-only", "--column-inserts", "toard",
+    ], { maxBuffer: 8 * 1024 * 1024 });
+    assert.equal(dump.includes(CANARY), false);
+    assert.equal(dump.includes(Buffer.from(uck).toString("base64")), false);
+    assert.equal(dump.includes("AWS_SECRET_ACCESS_KEY=TOARD_MUST_NOT_PERSIST"), false);
+    assert.match(dump, /content_key_wrappers/);
+    assert.match(dump, /canary-dedup/);
+
     const stored = await client.query<Record<string, unknown>>(
       `SELECT dedup_key, session_id, provider_key, turn_role, ts, content_owner_id,
               content_key_version, wrapped_dek, dek_wrap_iv, dek_wrap_auth_tag, iv,
@@ -85,6 +103,7 @@ test("E2EE canary exists only after approved-browser decryption", { timeout: 90_
     const browserDecryptedText = new TextDecoder().decode(await decryptE2eeRecord(uck, browserRecord));
     assert.equal(browserDecryptedText, CANARY);
   } finally {
+    uck?.fill(0);
     await client?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
   }

@@ -10,19 +10,23 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 
 ## 이미지
 
-멀티 타깃 `Dockerfile` — 두 이미지:
+멀티 타깃 `Dockerfile` — 운영 이미지 세 개:
 
 | 타깃 | 용도 | 실행 |
 |---|---|---|
 | `runner` | Next.js standalone 앱 | `node apps/web/server.js` |
 | `migrator` | 마이그레이션·시드 | `pnpm migrate` / `pnpm seed` |
+| `content-admin` | 암호화 상태·전환 one-shot 도구 | `encryption status` 등 |
 
-CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`·`ghcr.io/devy1540/toard-migrate`를 자동 게시한다(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
+CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`,
+`ghcr.io/devy1540/toard-migrate`, `ghcr.io/devy1540/toard-content-admin`을 자동 게시한다
+(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
 
 ```bash
 docker build --target runner   -t REG/toard:TAG .
 docker build --target migrator  -t REG/toard-migrate:TAG .
-docker push REG/toard:TAG && docker push REG/toard-migrate:TAG
+docker build --target content-admin -t REG/toard-content-admin:TAG .
+docker push REG/toard:TAG && docker push REG/toard-migrate:TAG && docker push REG/toard-content-admin:TAG
 ```
 
 헬스: `GET /api/health`(liveness, 무의존) · `GET /api/ready`(readiness, DB ping).
@@ -125,11 +129,10 @@ helm install toard ./helm/toard \
 
 기본은 usage(토큰·비용)만 수집한다. 프롬프트·응답 **본문**까지 저장하려면 아래 둘이 필요하고, 안 하면 기능은 완전히 비활성이다.
 
-**1) 앱 암호화 키(KEK).** 본문은 서버에서 봉투 암호화(at-rest)되어 저장된다 — DB 엔 암호문만 남는다.
-```sh
-TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)   # 앱 env 로 주입, DB 밖에 보관
-```
-미설정이면 `POST /api/v1/prompts` 가 503 → 수집 비활성. 키를 잃으면 기존 본문은 복호화 불가이므로 **백업 시 KEK 를 별도 보관**한다.
+**1) 서버 관리형 key provider.** 신규 본문은 설치 전체에서 선택한 KMS/Transit/local provider로 사용자별
+UCK를 감싼 `managed_v1`으로 저장한다. provider env, workload identity/secret file, Compose/Helm one-shot
+명령과 회전 절차는 [본문 암호화 운영 런북](content-encryption-runbook.md)을 따른다. `TOARD_CONTENT_KEK_B64`는
+잔여 `server_v1` 전환에만 사용하고 `serverRecords=0`과 백업 보존 확인 전 제거하지 않는다.
 
 **2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 단 **RLS 는 앱이 비-superuser 롤로 접속할 때만 강제**된다(superuser 는 우회). 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
 ```sh
@@ -139,7 +142,12 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 ```
 그리고 각 사용자가 shim 에서 `TOARD_SHIM_COLLECT_CONTENT=1` 로 opt-in 하면 본문이 쌓이고, 본인만 `/history` 에서 조회한다.
 
-> ⚠️ **"관리자도 못 봄"은 관리자 ≠ DB/서버 접근자일 때만 성립한다.** KEK 를 쥔 운영자나 superuser 접속은 여전히 볼 수 있다(E2EE 아님). 감사·거버넌스가 필요한 조직이라면 이 기능을 켜지 않는 편이 낫다.
+> 일반 관리자 UI와 타 사용자는 RLS 때문에 타 사용자 평문/행을 읽지 못한다. DB superuser는 ciphertext와
+> wrapper를 볼 수 있으나 DB dump만으로 평문을 복구할 수 없다. 다만 DB와 KMS/Transit/local KEK 권한을
+> 함께 가진 서버 운영자는 앱 복호화 경로를 실행할 수 있으므로 E2EE는 아니다.
+
+신규 E2EE setup/activation endpoint는 `410 E2EE_SETUP_RETIRED`로 차단된다. 기존 `e2ee_v1` 또는 blocked
+migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed migration API를 유지하며 자동 삭제는 하지 않는다.
 
 ## 무중단 배포 노트 (ADR-001)
 

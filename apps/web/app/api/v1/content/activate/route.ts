@@ -1,34 +1,27 @@
-import { ContentAccountError, activateContentAccount } from "@/lib/content-accounts";
-import { E2eeContractError } from "@/lib/e2ee-contract";
+import { activateContentAccount } from "@/lib/content-accounts";
 import { authenticateIngestToken } from "@/lib/ingest-auth";
 
-const MAX_BODY_BYTES = 32 * 1024;
+type Dependencies = {
+  authenticate: typeof authenticateIngestToken;
+  activate: typeof activateContentAccount;
+};
 
-export async function POST(req: Request): Promise<Response> {
-  const auth = await authenticateIngestToken(req.headers.get("authorization"));
-  if (!auth) return problem(401, "UNAUTHORIZED");
+const defaults: Dependencies = { authenticate: authenticateIngestToken, activate: activateContentAccount };
 
-  const text = await req.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
-    return problem(413, "PAYLOAD_TOO_LARGE");
-  }
+function createPost(overrides: Partial<Dependencies> = {}) {
+  const dependencies = { ...defaults, ...overrides };
+  return async function POST(req: Request): Promise<Response> {
+    let auth;
+    try { auth = await dependencies.authenticate(req.headers.get("authorization")); }
+    catch { return problem(500, "CONTENT_ACTIVATION_FAILED"); }
+    if (!auth) return problem(401, "UNAUTHORIZED");
 
-  let input: unknown;
-  try {
-    input = JSON.parse(text);
-  } catch {
-    return problem(400, "INVALID_JSON");
-  }
-
-  try {
-    const activated = await activateContentAccount(auth.userId, input);
-    return noStore(Response.json(activated));
-  } catch (error) {
-    if (error instanceof ContentAccountError) return problem(400, error.code);
-    if (error instanceof E2eeContractError) return problem(400, "INVALID_E2EE_PAYLOAD");
-    return problem(500, "CONTENT_ACTIVATION_FAILED");
-  }
+    // 인증 후 body를 읽거나 계정 상태를 변경하지 않고 영구 폐기 응답을 보낸다.
+    return problem(410, "E2EE_SETUP_RETIRED");
+  };
 }
+
+export const POST = Object.assign(createPost(), { withDependencies: createPost });
 
 function problem(status: number, code: string): Response {
   return noStore(Response.json({ code }, { status }));

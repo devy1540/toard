@@ -31,9 +31,14 @@
 
 {{/* Job/seed 완료에 영향을 주는 비민감 입력을 canonical SHA-256 ID로 묶는다. */}}
 {{- define "toard.releaseCompletionId" -}}
-{{- $waitSpec := "external-db" -}}
+{{- $waitSpec := dict "mode" "external" -}}
 {{- if .Values.postgres.enabled -}}
-  {{- $waitSpec = printf "bundled-db:%s:%s:%s" .Values.postgres.image .Values.postgres.auth.user (include "toard.postgresHost" .) -}}
+  {{- $waitSpec = dict
+    "host" (include "toard.postgresHost" .)
+    "image" .Values.postgres.image
+    "mode" "bundled"
+    "user" .Values.postgres.auth.user
+  -}}
 {{- end -}}
 {{- $jobSpec := dict
   "affinity" .Values.affinity
@@ -46,7 +51,28 @@
   "tolerations" .Values.tolerations
   "ttlSecondsAfterFinished" .Values.migrate.ttlSecondsAfterFinished
 -}}
-{{- printf "toard-release-completion-v1\nnamespace=%s\nrelease=%s\nrelease_id=%s\nschema=%s\nmigrate_image=%s:%s\npull_policy=%s\ndatabase_secret=%s\ndatabase_key=%s\nwait_spec=%s\njob_spec=%s\ncommand=migrate-seed-marker-v1" .Release.Namespace .Release.Name (include "toard.effectiveReleaseId" .) (include "toard.expectedSchemaVersion" .) .Values.image.migrate.repository .Values.image.migrate.tag .Values.image.migrate.pullPolicy (include "toard.migrationDatabaseSecretName" .) .Values.migrate.databaseSecret.key $waitSpec ($jobSpec | toJson) | sha256sum -}}
+{{- $completionSpec := dict
+  "commandContractVersion" "migrate-seed-marker-v1"
+  "completionContractVersion" 1
+  "databaseSecret" (dict
+    "key" .Values.migrate.databaseSecret.key
+    "name" (include "toard.migrationDatabaseSecretName" .)
+  )
+  "jobSpec" $jobSpec
+  "migrateImage" (dict
+    "pullPolicy" .Values.image.migrate.pullPolicy
+    "repository" .Values.image.migrate.repository
+    "tag" .Values.image.migrate.tag
+  )
+  "release" (dict
+    "effectiveId" (include "toard.effectiveReleaseId" .)
+    "name" .Release.Name
+    "namespace" .Release.Namespace
+  )
+  "schemaVersion" (include "toard.expectedSchemaVersion" . | int64)
+  "waitSpec" $waitSpec
+-}}
+{{- $completionSpec | mustToJson | sha256sum -}}
 {{- end -}}
 
 {{/* immutable Job 이름에는 같은 completion ID의 80-bit prefix를 사용한다. */}}

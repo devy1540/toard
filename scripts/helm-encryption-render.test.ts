@@ -55,6 +55,15 @@ function renderFailure(values: string): HelmResult {
   ], values);
 }
 
+function lintValues(values: string): void {
+  const result = helm([
+    "lint", CHART, "--strict",
+    "--set", "secrets.authSecret=dummy",
+    "-f", "-",
+  ], values);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
 function documents(rendered: string): string[] {
   return rendered.split(/^---\s*$/m).map((document) => document.trim()).filter(Boolean);
 }
@@ -353,7 +362,84 @@ test("GitOps releaseId와 핵심 Job 입력 변경은 새 completion ID와 immut
   const helpers = readFileSync(join(CHART, "templates/_helpers.tpl"), "utf8");
   assert.match(helpers, /printf "helm-revision:%d" \.Release\.Revision/);
   assert.match(helpers, /expectedSchemaVersion/);
-  assert.match(helpers, /job_spec=/);
+  assert.match(helpers, /\$completionSpec := dict/);
+  assert.match(helpers, /\$completionSpec \| mustToJson \| sha256sum/);
+  assert.doesNotMatch(helpers, /printf "toard-release-completion-v1|job_spec=/);
+});
+
+test("schema-valid delimiter collision 쌍은 서로 다른 completion ID와 Job 이름을 만든다", () => {
+  const postgresA = `
+postgres:
+  image: postgres:16-alpine
+  auth:
+    user: toard
+migrate:
+  releaseId: git-canonical
+`;
+  const postgresB = `
+postgres:
+  image: postgres
+  auth:
+    user: 16-alpine:toard
+migrate:
+  releaseId: git-canonical
+`;
+  const migrateImageA = `
+image:
+  migrate:
+    repository: registry.example/toard-migrate:part
+    tag: v1
+    pullPolicy: IfNotPresent
+migrate:
+  releaseId: git-canonical
+`;
+  const migrateImageB = `
+image:
+  migrate:
+    repository: registry.example/toard-migrate
+    tag: part:v1
+    pullPolicy: IfNotPresent
+migrate:
+  releaseId: git-canonical
+`;
+  const databaseSecretA = `
+migrate:
+  releaseId: git-canonical
+  databaseSecret:
+    name: owner
+    key: v2.KEY
+`;
+  const databaseSecretB = `
+migrate:
+  releaseId: git-canonical
+  databaseSecret:
+    name: owner.v2
+    key: KEY
+`;
+  const completion = (values: string) => {
+    lintValues(values);
+    const rendered = render(values);
+    const id = /toard\.dev\/release-completion-id: "([0-9a-f]{64})"/.exec(rendered)?.[1];
+    assert.ok(id);
+    assert.match(rendered, new RegExp(`name: toard-migrate-${id.slice(0, 20)}`));
+    return id;
+  };
+
+  assert.equal(
+    ["postgres:16-alpine", "toard"].join(":"),
+    ["postgres", "16-alpine:toard"].join(":"),
+  );
+  assert.equal(
+    ["registry.example/toard-migrate:part", "v1"].join(":"),
+    ["registry.example/toard-migrate", "part:v1"].join(":"),
+  );
+  assert.equal(
+    ["owner", "v2.KEY"].join("."),
+    ["owner.v2", "KEY"].join("."),
+  );
+  assert.notEqual(completion(postgresA), completion(postgresB));
+  assert.notEqual(completion(migrateImageA), completion(migrateImageB));
+  assert.notEqual(completion(databaseSecretA), completion(databaseSecretB));
 });
 
 test("migrate.releaseId 기본값은 실제 Helm revision 1과 2를 서로 다른 completion ID로 만든다", () => {

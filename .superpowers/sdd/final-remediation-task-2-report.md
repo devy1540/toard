@@ -33,9 +33,9 @@ DONE
 - role-before PostgreSQL topology에서 `installation_identity INSERT` privilege가 `true`로
   남아 실패했다.
 
-### GREEN
+### Initial GREEN (최초 remediation 구현 시점)
 
-- `scripts/toard-admin.test.ts`: 16 pass.
+- 당시 `scripts/toard-admin.test.ts`: 16 pass.
 - `scripts/bootstrap-app-role.integration.test.ts` +
   `scripts/managed-content-write-fence-migration.integration.test.ts`: 10 pass.
 - bootstrap integration은 role-before/role-after/rebootstrap에서 exact
@@ -70,10 +70,18 @@ DONE
   경계를 유지한다.
 - RED: guarded lease DB를 받아야 하는 runtime regression test가 기존 구현에서
   `ADMIN_COMMAND_FAILED`로 실패했다.
-- GREEN: unit/role/runtime/CLI 및 bootstrap PostgreSQL tests 35 pass. 실제 PG test는 unsafe
-  role에서 runtime call 0 및 installation query 0, app role에서 첫 SQL `pg_roles` guard와
-  다음 SQL `installation_identity`를 확인했다. provider audit/rewrap 및 server migration
-  PostgreSQL integration 3 pass, web `tsc --noEmit` pass.
+- GREEN (review-fix 현재 재실행): 다음 두 focused 명령은 **합계 37 pass**다.
+  - CLI/role/runtime **27 pass**:
+    `apps/web/lib/content-database-role-readiness.test.ts`(4) +
+    `apps/web/lib/managed-content-runtime.test.ts`(6) +
+    `scripts/toard-admin.test.ts`(**17**).
+  - PostgreSQL **10 pass**:
+    `scripts/bootstrap-app-role.integration.test.ts`(8) +
+    `scripts/provider-migration-audit.integration.test.ts`(1) +
+    `scripts/provider-rewrap.integration.test.ts`(1).
+  실제 PG guard test는 unsafe role에서 runtime call 0 및 installation query 0, app role에서
+  첫 SQL `pg_roles` guard와 다음 SQL `installation_identity`를 확인했다. web
+  `tsc --noEmit`도 통과했다.
 - 환경 한계: `scripts/managed-content-security.integration.test.ts`의 별도 실행은 기존
   `node_modules/.bin/esbuild` 부재로 bundle spawn 단계에서 중단됐다. 이 revision의 guard/runtime
   tests와 TypeScript 검사는 통과했다.

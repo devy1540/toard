@@ -2,6 +2,7 @@
 # toard 프로덕션 이미지 (멀티 타깃).
 #   --target runner   → Next.js standalone 앱 (기본)
 #   --target migrator → 마이그레이션/시드 실행용 (node-pg-migrate · tsx)
+#   --target content-admin → 암호화 상태·이전 one-shot 관리 도구
 # pnpm 모노레포 + Next standalone. bcryptjs/pg 는 순수 JS → alpine(musl) 무리 없음.
 ARG NODE_VERSION=22-alpine
 
@@ -74,6 +75,17 @@ ENV HOME=/tmp
 COPY migrations/ ./migrations/
 COPY scripts/ ./scripts/
 CMD ["pnpm", "migrate"]
+
+# ---- content-admin: 암호화 상태·전환 one-shot 관리 도구 ----
+# provider secret은 런타임 read-only volume/workload identity로만 주입하며 image layer에 넣지 않는다.
+FROM deps AS content-admin
+ENV HOME=/tmp \
+    NODE_ENV=production
+RUN addgroup -g 1001 -S nodejs && adduser -S toardadmin -u 1001 -G nodejs
+COPY . .
+USER toardadmin
+ENTRYPOINT ["pnpm", "toard-admin"]
+CMD ["encryption", "status"]
 
 # ---- updater: Compose 전용 서버 자가 업데이트 agent ----
 # Docker socket 권한은 웹앱이 아니라 이 선택 서비스에만 부여한다.

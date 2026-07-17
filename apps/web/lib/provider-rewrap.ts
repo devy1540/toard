@@ -14,6 +14,11 @@ const PROVIDERS = new Set<KeyProviderName>([
 
 type QueryResultLike = { rows: Record<string, unknown>[]; rowCount?: number | null };
 type ActiveWrapperSnapshot = ManagedUserKeyRow & { id: string; contextVersion: number };
+type ProviderIdentity = {
+  provider: KeyProviderName;
+  keyRef: string;
+  fingerprint: string;
+};
 
 /** db 주입 시 각 BEGIN/COMMIT 구간 동안 동일한 PostgreSQL session이어야 한다. */
 export type RewrapDb = { query(sql: string, params?: unknown[]): Promise<QueryResultLike> };
@@ -51,8 +56,9 @@ export async function rewrapUserKey(
   let pending: WrappedUserKey | undefined;
   let providerPendingCiphertext: Buffer | undefined;
   try {
+    const targetIdentity = snapshotProviderIdentity(target);
     const active = await runUserTransaction(userId, db, (tx) => loadActiveWrapper(userId, tx));
-    if (active.providerFingerprint === target.fingerprint) return { state: "already-current" };
+    if (active.providerFingerprint === targetIdentity.fingerprint) return { state: "already-current" };
     if (typeof runtime.userKeys.evict !== "function") {
       throw new RewrapError("CACHE_EVICTION_UNAVAILABLE");
     }
@@ -67,17 +73,10 @@ export async function rewrapUserKey(
 
     wrapInput = Buffer.from(uck);
     const providerPending = await target.wrapKey(wrapInput, context);
-    providerPendingCiphertext = Buffer.isBuffer(providerPending.ciphertext)
-      ? providerPending.ciphertext
-      : undefined;
-    const validatedPending = validatePending(providerPending, target);
+    const validated = validatePending(providerPending, targetIdentity, uck);
+    providerPendingCiphertext = validated.providerCiphertext;
+    const validatedPending = validated.pending;
     pending = validatedPending;
-    if (
-      validatedPending.ciphertext.length === uck.length
-      && timingSafeEqual(validatedPending.ciphertext, uck)
-    ) {
-      throw new RewrapError("PENDING_WRAPPER_PLAINTEXT");
-    }
     verificationWrapped = cloneWrapped(validatedPending);
     verified = await target.unwrapKey(verificationWrapped, context);
     assertKey(verified, "PENDING_WRAPPER_INVALID");
@@ -302,15 +301,66 @@ function buffersEqual(left: Buffer, right: Buffer): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-function validatePending(wrapped: WrappedUserKey, target: ManagedContentRuntime["registry"]["active"]): WrappedUserKey {
-  if (wrapped.provider !== target.name || wrapped.keyRef !== target.keyRef || wrapped.fingerprint !== target.fingerprint) {
-    throw new RewrapError("PENDING_WRAPPER_INVALID");
+function validatePending(
+  wrapped: WrappedUserKey,
+  target: ProviderIdentity,
+  uck: Buffer,
+): { pending: WrappedUserKey; providerCiphertext: Buffer } {
+  let providerCiphertext: Buffer | undefined;
+  let ciphertextCopy: Buffer | undefined;
+  let ownershipTransferred = false;
+  try {
+    const provider = wrapped.provider;
+    const keyRef = wrapped.keyRef;
+    const fingerprint = wrapped.fingerprint;
+    const ciphertextValue = wrapped.ciphertext;
+    providerCiphertext = Buffer.isBuffer(ciphertextValue) ? ciphertextValue : undefined;
+    if (
+      provider !== target.provider
+      || keyRef !== target.keyRef
+      || fingerprint !== target.fingerprint
+    ) {
+      throw new RewrapError("PENDING_WRAPPER_INVALID");
+    }
+    const validatedCiphertext = requiredBuffer(ciphertextValue);
+    if (
+      validatedCiphertext.length === uck.length
+      && timingSafeEqual(validatedCiphertext, uck)
+    ) {
+      throw new RewrapError("PENDING_WRAPPER_PLAINTEXT");
+    }
+    const metadata = requiredStringRecord(wrapped.metadata);
+
+    ciphertextCopy = Buffer.from(validatedCiphertext);
+    const pending: WrappedUserKey = {
+      provider: target.provider,
+      keyRef: target.keyRef,
+      fingerprint: target.fingerprint,
+      ciphertext: ciphertextCopy,
+      metadata,
+    };
+    ownershipTransferred = true;
+    return { pending, providerCiphertext: validatedCiphertext };
+  } finally {
+    if (!ownershipTransferred) {
+      ciphertextCopy?.fill(0);
+      providerCiphertext?.fill(0);
+    }
   }
-  return {
-    ...wrapped,
-    ciphertext: Buffer.from(requiredBuffer(wrapped.ciphertext)),
-    metadata: { ...requiredStringRecord(wrapped.metadata) },
-  };
+}
+
+function snapshotProviderIdentity(
+  provider: ManagedContentRuntime["registry"]["active"],
+): ProviderIdentity {
+  const name = provider.name;
+  const keyRef = provider.keyRef;
+  const fingerprint = provider.fingerprint;
+  if (
+    !PROVIDERS.has(name)
+    || typeof keyRef !== "string" || keyRef.length === 0
+    || typeof fingerprint !== "string" || fingerprint.length === 0
+  ) throw new RewrapError("PENDING_WRAPPER_INVALID");
+  return { provider: name, keyRef, fingerprint };
 }
 
 function cloneWrapped(wrapped: WrappedUserKey): WrappedUserKey {

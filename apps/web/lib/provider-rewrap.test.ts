@@ -20,6 +20,7 @@ function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string
   const seenWrapInputs: Buffer[] = [];
   let mutateUnwrapInput = false;
   let plaintextWrapper: "alias" | "copy" | null = null;
+  let invalidMetadata = false;
   const wrappedOutputs: Buffer[] = [];
   const value: KeyManagementProvider & {
     unwrapResult: Buffer;
@@ -27,6 +28,7 @@ function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string
     wrappedOutputs: Buffer[];
     mutateUnwrapInput: boolean;
     plaintextWrapper: "alias" | "copy" | null;
+    invalidMetadata: boolean;
   } = {
     name,
     fingerprint,
@@ -38,6 +40,8 @@ function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string
     set mutateUnwrapInput(next) { mutateUnwrapInput = next; },
     get plaintextWrapper() { return plaintextWrapper; },
     set plaintextWrapper(next) { plaintextWrapper = next; },
+    get invalidMetadata() { return invalidMetadata; },
+    set invalidMetadata(next) { invalidMetadata = next; },
     wrappedOutputs,
     async wrapKey(key: Buffer, _context: KeyContext): Promise<WrappedUserKey> {
       calls.push(`${name}.wrap`);
@@ -48,7 +52,13 @@ function provider(name: "local" | "aws-kms", fingerprint: string, keyRef: string
           ? Buffer.from(key)
           : Buffer.alloc(48, 0x44);
       wrappedOutputs.push(ciphertext);
-      return { provider: name, fingerprint, keyRef, ciphertext, metadata: { version: "1" } };
+      return {
+        provider: name,
+        fingerprint,
+        keyRef,
+        ciphertext,
+        metadata: invalidMetadata ? { version: 7 as never } : { version: "1" },
+      };
     },
     async unwrapKey(wrapped: WrappedUserKey, _context: KeyContext): Promise<Buffer> {
       calls.push(`${name}.unwrap`);
@@ -261,6 +271,38 @@ test("target provider plaintext UCK wrapper fails before unwrap, DB promotion, o
       rewrapUserKey(USER_ID, value, db),
       hasCode("PENDING_WRAPPER_PLAINTEXT"),
     );
+    assert.deepEqual(calls, ["local.unwrap", "aws-kms.wrap"]);
+    assert.equal(db.calls.some((call) => call.sql.startsWith("INSERT INTO managed_content_keys")), false);
+    assert.equal(db.active().state, "active");
+    assert.deepEqual(evicted, []);
+    assert.equal(oldProvider.unwrapResult.every((byte) => byte === 0), true);
+    assert.equal(target.seenWrapInputs[0]!.every((byte) => byte === 0), true);
+    assert.equal(target.wrappedOutputs[0]!.every((byte) => byte === 0), true);
+  }
+});
+
+test("plaintext wrapper with invalid metadata is rejected before any internal ciphertext copy and zeroizes provider ownership", async () => {
+  for (const mode of ["alias", "copy"] as const) {
+    const calls: string[] = [], evicted: string[] = [];
+    const { value, oldProvider, target } = runtime(calls, evicted);
+    target.plaintextWrapper = mode;
+    target.invalidMetadata = true;
+    const db = fakeDb();
+    const intrinsicFrom = Buffer.from;
+    let internalCiphertextCopies = 0;
+    Buffer.from = function (...args: Parameters<typeof Buffer.from>) {
+      if (target.wrappedOutputs.includes(args[0] as Buffer)) internalCiphertextCopies += 1;
+      return Reflect.apply(intrinsicFrom, Buffer, args) as Buffer;
+    } as typeof Buffer.from;
+    try {
+      await assert.rejects(
+        rewrapUserKey(USER_ID, value, db),
+        hasCode("PENDING_WRAPPER_PLAINTEXT"),
+      );
+    } finally {
+      Buffer.from = intrinsicFrom;
+    }
+    assert.equal(internalCiphertextCopies, 0);
     assert.deepEqual(calls, ["local.unwrap", "aws-kms.wrap"]);
     assert.equal(db.calls.some((call) => call.sql.startsWith("INSERT INTO managed_content_keys")), false);
     assert.equal(db.active().state, "active");

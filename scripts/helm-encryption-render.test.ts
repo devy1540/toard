@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -83,6 +84,52 @@ function configEnvironment(configMap: string): Record<string, string> {
   }));
 }
 
+function listNamesInSection(resourceYaml: string, section: "initContainers" | "containers"): string[] {
+  const lines = resourceYaml.split("\n");
+  const sectionIndex = lines.findIndex((line) => line.trim() === `${section}:`);
+  if (sectionIndex < 0) return [];
+  const sectionIndent = lines[sectionIndex]!.search(/\S/);
+  const names: string[] = [];
+  for (const line of lines.slice(sectionIndex + 1)) {
+    const indent = line.search(/\S/);
+    if (indent >= 0 && indent <= sectionIndent) break;
+    const match = new RegExp(`^ {${sectionIndent + 2}}- name: (.+)$`).exec(line);
+    if (match) names.push(match[1]!);
+  }
+  return names;
+}
+
+function serviceAccountName(workload: string): string {
+  const match = /^\s+serviceAccountName: (\S+)$/m.exec(workload);
+  assert.ok(match, "Pod workload에는 serviceAccountName이 필요합니다");
+  return match[1]!;
+}
+
+function resourceName(resourceYaml: string): string {
+  const match = /^  name: (\S+)$/m.exec(resourceYaml);
+  assert.ok(match, "resource name이 필요합니다");
+  return match[1]!;
+}
+
+function environmentNames(containerYaml: string): string[] {
+  return [...containerYaml.matchAll(/^\s+- name: ([A-Z][A-Z0-9_]*)$/gm)]
+    .map((match) => match[1]!)
+    .sort();
+}
+
+function validator(args: readonly string[]): HelmResult {
+  const result = spawnSync(
+    process.execPath,
+    ["--import", "tsx", join(ROOT, "scripts/validate-helm-encryption.ts"), ...args],
+    { cwd: ROOT, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 },
+  );
+  return {
+    status: result.status ?? 1,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? result.error?.message ?? "",
+  };
+}
+
 const AWS_VALUES = `
 serviceAccount:
   annotations:
@@ -137,6 +184,7 @@ test("workload identity와 KMS 설정은 app/content-admin에만 연결된다", 
   const deployment = resource(rendered, "Deployment", "toard");
   const serviceAccount = resource(rendered, "ServiceAccount", "toard");
   const admin = resource(rendered, "Job", "toard-content-admin");
+  const migration = resource(rendered, "Job", "toard-migrate-1");
   const encryptionConfig = resource(rendered, "ConfigMap", "toard-encryption-config");
   const seedRendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\nsecrets:\n  bootstrapAdmin:\n    email: admin@example.com\n    password: test-password\n`);
   const seed = resource(seedRendered, "Job", "toard-seed");
@@ -151,19 +199,148 @@ test("workload identity와 KMS 설정은 app/content-admin에만 연결된다", 
   assert.match(encryptionConfig, /AWS_ROLE_ARN:/);
   assert.match(encryptionConfig, /TOARD_KEY_COST_PER_10000_USD: "0\.03"/);
 
-  const wait = containerBlock(deployment, "wait-for-postgres");
-  const migrate = containerBlock(deployment, "migrate");
-  assert.doesNotMatch(wait, /encryption-config|TOARD_KEY_|AWS_ROLE_ARN|volumeMounts:/);
-  assert.doesNotMatch(migrate, /encryption-config|TOARD_KEY_|AWS_ROLE_ARN|volumeMounts:/);
-  assert.doesNotMatch(seed, /encryption-config|TOARD_KEY_|AWS_ROLE_ARN|kms-files|serviceAccountName:/);
+  assert.deepEqual(listNamesInSection(deployment, "initContainers"), []);
+  assert.doesNotMatch(migration, /encryption-config|TOARD_KEY_|AWS_ROLE_ARN|kms-files/);
+  assert.doesNotMatch(seed, /encryption-config|TOARD_KEY_|AWS_ROLE_ARN|kms-files/);
 });
+
+test("KMS Pod에는 app/content-admin만 있고 migration/seed는 별도 non-KMS SA를 사용한다", () => {
+  const rendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\nsecrets:\n  bootstrapAdmin:\n    email: admin@example.com\n    password: test-password\n`);
+  const workloads = documents(rendered).filter((document) => /^(?:kind: Deployment|kind: Job)$/m.test(document));
+  const app = resource(rendered, "Deployment", "toard");
+  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const seed = resource(rendered, "Job", "toard-seed");
+  const admin = resource(rendered, "Job", "toard-content-admin");
+  const migrationSa = resource(rendered, "ServiceAccount", "toard-migration");
+
+  assert.deepEqual(listNamesInSection(app, "initContainers"), []);
+  assert.deepEqual(listNamesInSection(app, "containers"), ["app"]);
+  assert.deepEqual(listNamesInSection(admin, "containers"), ["content-admin"]);
+  assert.deepEqual(listNamesInSection(migration, "initContainers"), ["wait-for-postgres"]);
+  assert.deepEqual(listNamesInSection(migration, "containers"), ["migrate"]);
+  assert.deepEqual(listNamesInSection(seed, "initContainers"), ["wait-for-postgres"]);
+  assert.deepEqual(listNamesInSection(seed, "containers"), ["seed"]);
+  assert.deepEqual(environmentNames(containerBlock(migration, "migrate")), ["DATABASE_URL"]);
+  assert.deepEqual(environmentNames(containerBlock(seed, "seed")), [
+    "BOOTSTRAP_ADMIN_EMAIL",
+    "BOOTSTRAP_ADMIN_PASSWORD",
+    "DATABASE_URL",
+  ]);
+
+  assert.match(migrationSa, /automountServiceAccountToken: false/);
+  assert.doesNotMatch(migrationSa, /eks\.amazonaws|identity\.test|azure\.workload|iam\.gke/);
+  for (const workload of workloads) {
+    const names = [
+      ...listNamesInSection(workload, "initContainers"),
+      ...listNamesInSection(workload, "containers"),
+    ];
+    const account = serviceAccountName(workload);
+    if (names.some((name) => ["wait-for-postgres", "migrate", "seed"].includes(name))) {
+      assert.equal(account, "toard-migration", `${resourceName(workload)} operational SA`);
+      assert.match(workload, /automountServiceAccountToken: false/);
+      assert.doesNotMatch(workload, /identity\.test|encryption-config|TOARD_KEY_|AWS_ROLE_ARN|kms-files/);
+    }
+    if (account === "toard") {
+      assert.ok(names.every((name) => ["app", "content-admin"].includes(name)), names.join(","));
+    }
+  }
+});
+
+test("migration Job은 revision별 one-shot이며 DB key만 받고 readiness가 실패를 traffic에서 격리한다", () => {
+  const rendered = render(AWS_VALUES);
+  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const deployment = resource(rendered, "Deployment", "toard");
+  const migrationTemplate = [
+    readFileSync(join(CHART, "templates/migration-job.yaml"), "utf8"),
+    readFileSync(join(CHART, "templates/_helpers.tpl"), "utf8"),
+  ].join("\n");
+  const readyRoute = [
+    readFileSync(join(ROOT, "apps/web/app/api/ready/route.ts"), "utf8"),
+    readFileSync(join(ROOT, "apps/web/lib/legacy-content-readiness.ts"), "utf8"),
+  ].join("\n");
+
+  assert.match(migrationTemplate, /\.Release\.Revision/);
+  assert.match(migration, /ttlSecondsAfterFinished: 86400/);
+  assert.match(migration, /backoffLimit: 4/);
+  assert.match(migration, /restartPolicy: Never/);
+  assert.doesNotMatch(migration, /helm\.sh\/hook/);
+  assert.match(migration, /until pg_isready/);
+  assert.match(migration, /name: DATABASE_URL[\s\S]*secretKeyRef:[\s\S]*key: DATABASE_URL/);
+  assert.doesNotMatch(migration, /envFrom:|AUTH_SECRET|AUTH_GITHUB|AUTH_GOOGLE|BOOTSTRAP_ADMIN|encryption-config/);
+  assert.match(deployment, /maxUnavailable: 0/);
+  assert.match(deployment, /readinessProbe:[\s\S]*path: \/api\/ready/);
+  assert.match(readyRoute, /content_legacy_retirement|assertLegacyContentKeyReady/);
+  assert.match(readyRoute, /status: 503/);
+
+  const external = render(`${AWS_VALUES}\npostgres:\n  enabled: false\nsecrets:\n  existingSecret: external-db\n`);
+  const externalMigration = resource(external, "Job", "toard-migrate-1");
+  assert.deepEqual(listNamesInSection(externalMigration, "initContainers"), []);
+  assert.match(externalMigration, /backoffLimit: 4/);
+  assert.match(externalMigration, /name: external-db[\s\S]*key: DATABASE_URL/);
+});
+
+test("Helm notes는 install/upgrade migration 대기와 readiness 의미를 문서화한다", () => {
+  const notes = readFileSync(join(CHART, "templates/NOTES.txt"), "utf8");
+  const deployGuide = readFileSync(join(ROOT, "docs/DEPLOY.md"), "utf8");
+  assert.match(notes, /--wait-for-jobs/);
+  assert.match(notes, /Release\.Revision|migrationJobName/);
+  assert.match(notes, /readiness|503/);
+  assert.match(notes, /maxUnavailable=0/);
+  assert.match(deployGuide, /release revision.*migration Job/i);
+  assert.match(deployGuide, /--wait --wait-for-jobs/);
+  assert.match(deployGuide, /\/api\/ready.*503/s);
+});
+
+test("standalone Helm validator는 lint와 template을 모두 실행한다", () => {
+  const result = validator(["--set-string", "secrets.authSecret=dummy"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /helm lint.*PASS/);
+  assert.match(result.stdout, /helm template.*PASS/);
+});
+
+test("standalone Helm validator는 package script 인자 구분자를 무시한다", () => {
+  const result = validator(["--", "--set-string", "secrets.authSecret=dummy"]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /helm lint.*PASS/);
+  assert.match(result.stdout, /helm template.*PASS/);
+});
+
+for (const [name, mountPath] of [["duplicate", "/run/one"], ["traversal", "/run/../escape"]] as const) {
+  test(`standalone validator가 template-time ${name} mount를 거부한다`, () => {
+    const args = [
+      "--set-string", "secrets.authSecret=dummy",
+      "--set-string", "encryption.provider=aws-kms",
+      "--set-string", "encryption.active.aws.keyArn=arn:aws:kms:ap-northeast-2:123456789012:key/00000000-0000-0000-0000-000000000000",
+      "--set-string", "encryption.active.aws.region=ap-northeast-2",
+      "--set-string", "encryption.secretMounts[0].name=duplicate",
+      "--set-string", "encryption.secretMounts[0].secretName=one",
+      "--set-string", `encryption.secretMounts[0].mountPath=${mountPath}`,
+      "--set-string", "encryption.secretMounts[0].items[0].key=a",
+      "--set-string", "encryption.secretMounts[0].items[0].path=a",
+    ];
+    if (name === "duplicate") {
+      args.push(
+        "--set-string", "encryption.secretMounts[1].name=duplicate",
+        "--set-string", "encryption.secretMounts[1].secretName=two",
+        "--set-string", "encryption.secretMounts[1].mountPath=/run/two",
+        "--set-string", "encryption.secretMounts[1].items[0].key=b",
+        "--set-string", "encryption.secretMounts[1].items[0].path=b",
+      );
+    }
+    const result = validator(args);
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.match(`${result.stdout}\n${result.stderr}`, /helm (?:template|lint --strict).*FAIL|duplicate|normalized|mountPath/i);
+    if (name === "duplicate") assert.match(result.stdout, /helm lint --strict: PASS/);
+  });
+}
 
 test("secret file은 app/content-admin에 read-only로만 mount되고 DB Secret 전체를 admin에 주입하지 않는다", () => {
   const rendered = render(AWS_VALUES);
   const deployment = resource(rendered, "Deployment", "toard");
   const admin = resource(rendered, "Job", "toard-content-admin");
+  const migration = resource(rendered, "Job", "toard-migrate-1");
   const app = containerBlock(deployment, "app");
-  const migrate = containerBlock(deployment, "migrate");
+  const migrate = containerBlock(migration, "migrate");
 
   for (const block of [app, admin]) {
     assert.match(block, /mountPath: \/run\/toard-secrets/);
@@ -283,7 +460,13 @@ encryption:
 ];
 
 for (const fixture of PROVIDERS) {
-  test(`${fixture.name} active/migration 환경변수를 정확히 렌더한다`, () => {
+  test(`${fixture.name} values를 lint하고 active/migration 환경변수를 정확히 렌더한다`, () => {
+    const lint = helm([
+      "lint", "--strict", CHART,
+      "--set", "secrets.authSecret=dummy",
+      "-f", "-",
+    ], fixture.values);
+    assert.equal(lint.status, 0, lint.stderr || lint.stdout);
     const config = resource(render(fixture.values), "ConfigMap", "toard-encryption-config");
     assert.match(config, new RegExp(`TOARD_KEY_ACTIVE_PROVIDER: "${fixture.name}"`));
     assert.match(config, new RegExp(`TOARD_KEY_MIGRATION_PROVIDER: "${fixture.name}"`));
@@ -309,11 +492,26 @@ secrets:
   assert.doesNotMatch(rendered, /kind: StatefulSet/);
 });
 
-test("serviceAccount create=false와 name override를 지원한다", () => {
-  const rendered = render(`${AWS_VALUES}\nserviceAccount:\n  create: false\n  name: kms-existing\n  annotations: {}\n  podLabels: {}\n`);
+test("KMS/migration serviceAccount create=false와 name override를 지원한다", () => {
+  const rendered = render(`${AWS_VALUES}\nserviceAccount:\n  create: false\n  name: kms-existing\n  annotations: {}\n  podLabels: {}\nmigrate:\n  serviceAccount:\n    create: false\n    name: migration-existing\n`);
   assert.doesNotMatch(rendered, /^kind: ServiceAccount$/m);
   assert.match(resource(rendered, "Deployment", "toard"), /serviceAccountName: kms-existing/);
   assert.match(resource(rendered, "Job", "toard-content-admin"), /serviceAccountName: kms-existing/);
+  assert.match(resource(rendered, "Job", "toard-migrate-1"), /serviceAccountName: migration-existing/);
+});
+
+test("KMS와 migration ServiceAccount 이름은 같을 수 없다", () => {
+  const result = renderFailure(`
+serviceAccount:
+  create: false
+  name: shared
+migrate:
+  serviceAccount:
+    create: false
+    name: shared
+`);
+  assert.notEqual(result.status, 0, result.stdout);
+  assert.match(`${result.stderr}\n${result.stdout}`, /ServiceAccount.*different|같을 수 없다/i);
 });
 
 test("podLabels가 chart 소유 selector label을 덮어쓰지 못한다", () => {

@@ -65,14 +65,19 @@ postgres:
     limits:
       memory: 1Gi
 
-# 마이그레이션 — pre-install/pre-upgrade 훅으로 앱 롤아웃 전에 완료 보장.
+# 마이그레이션 — release revision별 일반 Job. 앱 readiness는 완료 전 traffic을 차단한다.
 migrate:
   enabled: true
   seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 86400
+  serviceAccount:
+    create: true
+    name: ""
 
 # 앱과 opt-in content-admin Job이 사용하는 Kubernetes ServiceAccount.
 # IRSA/GCP Workload Identity/Azure Workload Identity annotation은 여기에 둔다.
-# ServiceAccount 신원은 Pod 단위이므로 app Pod의 initContainer와도 공유된다.
+# migration/seed는 별도 non-KMS ServiceAccount를 사용한다.
 serviceAccount:
   create: true
   name: ""

@@ -3,6 +3,22 @@
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
+{{/* migration/seed 전용 non-KMS ServiceAccount 이름 */}}
+{{- define "toard.migrationServiceAccountName" -}}
+{{- if .Values.migrate.serviceAccount.create -}}
+{{- default (printf "%s-migration" (include "toard.fullname" . | trunc 53 | trimSuffix "-")) .Values.migrate.serviceAccount.name -}}
+{{- else -}}
+{{- required "migrate.serviceAccount.create=false이면 name이 필요합니다" .Values.migrate.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
+
+{{/* revision suffix를 보존해 completed Job immutable-name 충돌을 피한다. */}}
+{{- define "toard.migrationJobName" -}}
+{{- $suffix := printf "-migrate-%d" .Release.Revision -}}
+{{- $maxBaseLength := sub 63 (len $suffix) | int -}}
+{{- printf "%s%s" (include "toard.fullname" . | trunc $maxBaseLength | trimSuffix "-") $suffix -}}
+{{- end -}}
+
 {{/* app/content-admin에서 사용할 ServiceAccount 이름 */}}
 {{- define "toard.serviceAccountName" -}}
 {{- if .Values.serviceAccount.create -}}
@@ -14,6 +30,9 @@
 
 {{/* 배포/암호화 values의 보안 경계를 fail-fast */}}
 {{- define "toard.validateDeploymentValues" -}}
+{{- if and .Values.migrate.enabled (eq (include "toard.serviceAccountName" .) (include "toard.migrationServiceAccountName" .)) -}}
+  {{- fail "app/content-admin and migration/seed ServiceAccount names must be different" -}}
+{{- end -}}
 {{- $reservedLabels := list "app.kubernetes.io/name" "app.kubernetes.io/instance" "app.kubernetes.io/component" "app.kubernetes.io/managed-by" "helm.sh/chart" -}}
 {{- range $key, $_ := .Values.serviceAccount.podLabels -}}
   {{- if has $key $reservedLabels -}}

@@ -19,6 +19,26 @@
         "podLabels": { "type": "object", "additionalProperties": { "type": "string" } }
       }
     },
+    "migrate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "seedOnInstall", "backoffLimit", "ttlSecondsAfterFinished", "serviceAccount"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "seedOnInstall": { "type": "boolean" },
+        "backoffLimit": { "type": "integer", "minimum": 0, "maximum": 10 },
+        "ttlSecondsAfterFinished": { "type": "integer", "minimum": 0, "maximum": 604800 },
+        "serviceAccount": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["create", "name"],
+          "properties": {
+            "create": { "type": "boolean" },
+            "name": { "type": "string", "maxLength": 253 }
+          }
+        }
+      }
+    },
     "encryption": {
       "type": "object",
       "additionalProperties": false,
@@ -198,7 +218,10 @@
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$", "maxLength": 63 },
         "secretName": { "type": "string", "pattern": "^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$", "maxLength": 253 },
-        "mountPath": { "type": "string", "pattern": "^/[^\\n\\r]+$" },
+        "mountPath": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$"
+        },
         "items": {
           "type": "array",
           "minItems": 1,

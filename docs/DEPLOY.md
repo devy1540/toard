@@ -101,7 +101,9 @@ helm install toard ./helm/toard \
 - `postgres.enabled=false` + `secrets.databaseUrl=...` → 외부 DB.
 - `migrate.seedOnInstall=true` + `secrets.bootstrapAdmin.*` → 최초 설치 시 providers·admin 시드(post-install 훅).
 - `ingress.enabled=true --set ingress.host=toard.corp.com` → Ingress.
-- 업그레이드: `helm upgrade toard ./helm/toard ...` — 앱 initContainer 가 마이그레이션을 멱등 적용.
+- 설치·업그레이드마다 release revision이 붙은 일반 migration Job이 스키마와 baseline seed를 멱등 적용한다.
+  완료까지 Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 사용한다. Job이 끝나기 전이나 실패한 동안에는
+  `/api/ready`가 503을 반환해 새 앱 파드가 트래픽을 받지 않는다. 완료된 Job은 TTL 이후 정리된다.
 
 ## 본문 수집 활성화 (선택 — 프롬프트/응답 저장)
 
@@ -133,8 +135,9 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 
 ## 스키마 마이그레이션 (expand → contract)
 
-무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. 새 파드의 `migrate` initContainer 가 스키마를
-먼저 올리므로, 그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
+무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. Helm은 release revision별 migration Job이
+스키마를 먼저 올리고, raw Kubernetes 배포는 새 파드의 `migrate` initContainer가 이를 수행한다.
+그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
 마이그레이션은 현재 돌고 있는(구) 코드와 하위호환**이어야 한다. `migrations/` 는 forward-only
 (node-pg-migrate) — 파괴적 변경은 여러 배포에 걸쳐 나눈다.
 

@@ -33,24 +33,6 @@ spec:
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
-      initContainers:
-        # DB 대기 → 스키마 마이그레이션(멱등, node-pg-migrate 락) → 앱 기동
-        {{- if .Values.postgres.enabled }}
-        - name: wait-for-postgres
-          image: {{ .Values.postgres.image }}
-          command: ["sh", "-c", "until pg_isready -h {{ include "toard.postgresHost" . }} -U {{ .Values.postgres.auth.user }}; do sleep 2; done"]
-        {{- end }}
-        {{- if .Values.migrate.enabled }}
-        - name: migrate
-          image: "{{ .Values.image.migrate.repository }}:{{ .Values.image.migrate.tag }}"
-          imagePullPolicy: {{ .Values.image.migrate.pullPolicy }}
-          command: ["sh", "-c", "pnpm migrate && pnpm seed"] # 마이그레이션 + baseline(providers·pricing). admin 은 /setup.
-          envFrom:
-            - secretRef:
-                name: {{ include "toard.secretName" . }}
-            - configMapRef:
-                name: {{ include "toard.fullname" . }}-config
-        {{- end }}
       containers:
         - name: app
           image: "{{ .Values.image.app.repository }}:{{ .Values.image.app.tag }}"

@@ -74,7 +74,18 @@ function database(operationRows: Array<Record<string, unknown>> = []) {
             .filter((row) => row.provider === undefined || row.provider === provider)
             .filter((row) => row.provider_fingerprint === undefined || row.provider_fingerprint === fingerprint)
             .reduce((sum, row) => sum + BigInt(row.operation_count as string), 0n);
-          return { rows: [{ active_operation_count: count.toString() }] };
+          const rows = operationRows.filter((row) => row.cache_result === "none");
+          return {
+            rows: rows.length > 0
+              ? rows.map((row) => ({ ...row, active_operation_count: count.toString() }))
+              : [{
+                  operation: null,
+                  outcome: null,
+                  operation_count: null,
+                  total_latency_ms: null,
+                  active_operation_count: count.toString(),
+                }],
+          };
         }
         if (/cache_result\s*=\s*'none'/i.test(sql)) {
           return { rows: operationRows.filter((row) => row.cache_result === "none") };
@@ -124,16 +135,42 @@ test("실제 KMS 호출만 30일 비용에 포함하고 latency는 sum/count 가
     excludedRequests: 5000,
   });
   const operationQueries = db.calls.filter((call) => /content_key_operation_daily/i.test(call.sql));
-  assert.equal(operationQueries.length, 3);
-  const operationsQuery = operationQueries.find((call) => /cache_result\s*=\s*'none'/i.test(call.sql))!;
+  assert.equal(operationQueries.length, 2);
+  const operationsQuery = operationQueries.find((call) => /active_operation_count/i.test(call.sql))!;
   const cacheQuery = operationQueries.find((call) => /cache_result\s*<>\s*'none'/i.test(call.sql))!;
-  const costQuery = operationQueries.find((call) => /active_operation_count/i.test(call.sql))!;
   for (const query of operationQueries) {
     assert.match(query.sql, /day\s+BETWEEN\s+CURRENT_DATE\s*-\s*INTERVAL\s*'29 days'\s+AND\s+CURRENT_DATE/i);
   }
-  assert.deepEqual(operationsQuery.params, []);
+  assert.match(operationsQuery.sql, /WITH\s+bounded\s+AS/i);
+  assert.match(operationsQuery.sql, /LEFT\s+JOIN\s+grouped/i);
+  assert.deepEqual(operationsQuery.params, ["aws-kms", "aws-kms:0123456789abcdef01234567"]);
   assert.deepEqual(cacheQuery.params, []);
-  assert.deepEqual(costQuery.params, ["aws-kms", "aws-kms:0123456789abcdef01234567"]);
+});
+
+test("none row가 없어도 single snapshot contract는 operations=[]와 active count=0을 반환한다", async () => {
+  const db = database();
+  const status = await getEncryptionAdminStatus({
+    env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+    db,
+    runtime: runtime(),
+  });
+
+  assert.deepEqual(status.operations30d, []);
+  assert.deepEqual(status.costEstimate, {
+    currency: "USD",
+    requestCost: 0,
+    monthlyKeyCost: 1,
+    total: 1,
+    source: "reference",
+    asOf: "2026-07-17",
+    grossReference: true,
+    scope: "active-provider-only",
+    includedRequests: 0,
+    excludedRequests: 0,
+  });
+  const operationQueries = db.calls.filter((call) => /content_key_operation_daily/i.test(call.sql));
+  assert.equal(operationQueries.length, 2);
+  assert.equal(operationQueries.filter((call) => /active_operation_count/i.test(call.sql)).length, 1);
 });
 
 test("operator override는 두 값 모두 명시된 0 이상 finite 숫자만 허용한다", async () => {
@@ -364,7 +401,7 @@ test("최근 30일 query는 미래 날짜를 제외하는 상한을 모두 가�
     runtime: runtime(),
   });
   assert.equal(status.operations30d.length, 0);
-  assert.equal(db.calls.filter((call) => /content_key_operation_daily/i.test(call.sql)).length, 3);
+  assert.equal(db.calls.filter((call) => /content_key_operation_daily/i.test(call.sql)).length, 2);
 });
 
 test("상태 DB 실패와 credential source 실패는 성공 상태로 축소하지 않는다", async () => {

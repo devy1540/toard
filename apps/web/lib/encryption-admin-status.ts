@@ -324,6 +324,8 @@ export async function getEncryptionAdminStatus(
     if (!runtime && env.TOARD_KEY_ACTIVE_PROVIDER?.trim()) {
       throw new Error("MANAGED_CONTENT_RUNTIME_UNAVAILABLE");
     }
+    const activeProvider = runtime?.registry.active ?? null;
+    const identity = activeProvider ? providerIdentity(activeProvider) : null;
 
     const [statusResult, operationsResult, cacheResult] = await Promise.all([
       db.query(
@@ -334,14 +336,31 @@ export async function getEncryptionAdminStatus(
           WHERE singleton=TRUE`,
       ),
       db.query(
-        `SELECT operation,outcome,
-                SUM(operation_count)::text AS operation_count,
-                SUM(total_latency_ms)::text AS total_latency_ms
-           FROM content_key_operation_daily
-          WHERE day BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
-            AND cache_result='none'
-          GROUP BY operation,outcome
-          ORDER BY operation,outcome`,
+        `WITH bounded AS MATERIALIZED (
+           SELECT provider,provider_fingerprint,operation,outcome,
+                  operation_count,total_latency_ms
+             FROM content_key_operation_daily
+            WHERE day BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
+              AND cache_result='none'
+         ), grouped AS (
+           SELECT operation,outcome,
+                  SUM(operation_count)::text AS operation_count,
+                  SUM(total_latency_ms)::text AS total_latency_ms
+             FROM bounded
+            GROUP BY operation,outcome
+         ), active AS (
+           SELECT COALESCE(SUM(operation_count) FILTER (
+                    WHERE provider=$1 AND provider_fingerprint=$2
+                  ),0)::text AS active_operation_count
+             FROM bounded
+         )
+         SELECT grouped.operation,grouped.outcome,
+                grouped.operation_count,grouped.total_latency_ms,
+                active.active_operation_count
+           FROM active
+           LEFT JOIN grouped ON TRUE
+          ORDER BY grouped.operation NULLS LAST,grouped.outcome NULLS LAST`,
+        [identity?.provider ?? null, identity?.fingerprint ?? null],
       ),
       db.query(
         `SELECT cache_result,
@@ -378,9 +397,24 @@ export async function getEncryptionAdminStatus(
     }>();
     const cache30d = { hit: 0, miss: 0, singleFlight: 0 };
     let actualProviderCalls = 0;
+    let activeProviderCalls: number | null = null;
     for (const operationRow of operationsResult.rows) {
+      const rowActiveProviderCalls = parseUnsignedCount(
+        operationRow.active_operation_count,
+      );
+      if (activeProviderCalls === null) activeProviderCalls = rowActiveProviderCalls;
+      else if (activeProviderCalls !== rowActiveProviderCalls) {
+        throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+      }
       const operation = operationRow.operation;
       const outcome = operationRow.outcome;
+      if (operation === null && outcome === null) {
+        if (
+          operationRow.operation_count !== null
+          || operationRow.total_latency_ms !== null
+        ) throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+        continue;
+      }
       if (
         typeof operation !== "string"
         || !OPERATIONS.has(operation as KeyOperation)
@@ -406,6 +440,9 @@ export async function getEncryptionAdminStatus(
         count: nextCount,
         totalLatencyMs: nextLatency,
       });
+    }
+    if (activeProviderCalls === null) {
+      throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
     }
     for (const cacheRow of cacheResult.rows) {
       const result = cacheRow.cache_result;
@@ -448,25 +485,14 @@ export async function getEncryptionAdminStatus(
       };
     }
 
-    const activeProvider = runtime.registry.active;
-    const identity = providerIdentity(activeProvider);
+    if (!activeProvider || !identity) {
+      throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+    }
     pricing = pricingFor(env, identity.provider);
-    const [source, health, activeCostResult] = await Promise.all([
+    const [source, health] = await Promise.all([
       activeProvider.describeCredentialSource().then(credentialSource),
       runtime.health.check(activeProvider).then(healthStatus).catch(safeHealthFailure),
-      db.query(
-        `SELECT COALESCE(SUM(operation_count),0)::text AS active_operation_count
-           FROM content_key_operation_daily
-          WHERE day BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
-            AND provider=$1
-            AND provider_fingerprint=$2
-            AND cache_result='none'`,
-        [identity.provider, identity.fingerprint],
-      ),
     ]);
-    const activeProviderCalls = parseUnsignedCount(
-      activeCostResult.rows[0]?.active_operation_count,
-    );
 
     return {
       enabled: true,

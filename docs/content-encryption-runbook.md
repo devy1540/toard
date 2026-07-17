@@ -112,7 +112,7 @@ credential 값 대신 workload identity 변수 또는 `TOARD_KEY_SECRET_DIR` 아
 실행할 때만 생기는 one-shot container다.
 
 ```bash
-# active provider canary 및 전체 scheme/key 수
+# 전체 scheme/key 집계와 provider 전환 readiness
 docker compose --profile content-admin run --rm content-admin encryption status
 
 # legacy server_v1 → managed_v1, transaction당 최대 25개
@@ -123,14 +123,19 @@ docker compose --profile content-admin run --rm content-admin \
 docker compose --profile content-admin run --rm content-admin \
   encryption rewrap-provider --from aws-kms --to openbao-transit \
   --actor-user-id "$ADMIN_USER_ID"
+
+# 같은 AWS KMS provider 안에서 migration profile을 새 key ref로 둔 key rotation
+docker compose --profile content-admin run --rm content-admin \
+  encryption rewrap-provider --from aws-kms --to aws-kms \
+  --actor-user-id "$ADMIN_USER_ID"
 ```
 
 `ADMIN_USER_ID`는 현재 toard의 인증된 admin 사용자 UUID여야 한다. 명령은 DB에서 해당 사용자의 admin role을
 검증하며, 누락·잘못된 UUID·member·삭제된 사용자는 시작 전에 실패한다. `encryption status`는 JSON으로
 `serverRecords`, `e2eeRecords`, `managedRecords`, active/pending/retiring key 수와
-`wrapperDistribution`, `providerMigration`을 출력한다. provider health와 같은 제거 판정은 관리 → 시스템의
-암호화 panel에서도 읽기 전용으로 확인할 수 있다. canary도 실제 공급자 wrap/unwrap 호출이며 호출 비용/쿼터에
-포함될 수 있다.
+`wrapperDistribution`, `providerMigration`을 출력한다. 이 CLI status는 DB 집계/readiness 조회이며 KMS canary를
+호출하지 않는다. 실제 provider health/canary는 관리 → 시스템의 암호화 panel에서 확인한다. 이 health 경로의
+canary는 실제 공급자 wrap/unwrap 호출이므로 호출 비용/쿼터에 포함될 수 있다.
 
 주의:
 
@@ -149,7 +154,8 @@ docker compose --profile content-admin run --rm content-admin \
 
 1. DB 전체 백업을 만들고 복원 테스트를 한다. local이면 이전/신규 KEK를 DB와 분리해 각각 백업한다.
 2. old provider를 active로 유지한 채 target을 migration profile에 추가한다. 두 공급자의 decrypt 권한을 모두
-   유지하고 앱과 content-admin을 재시작한다.
+   유지하고 앱과 content-admin을 재시작한다. 같은 공급자 안의 key-ref 회전도 지원하며 이때 active와 migration
+   profile의 provider 이름은 같고 fingerprint는 달라야 한다. 두 fingerprint가 같으면 명령은 시작하지 않는다.
 3. 관리 panel health와 `encryption status`를 확인한다. target 설정 오류가 있으면 rewrap을 시작하지 않는다.
 4. `rewrap-provider --from OLD --to TARGET --actor-user-id ADMIN_UUID`를 실행한다. 명령은 인증된 admin actor와
    target provider/fingerprint, 동일 app instance로 `provider_migration_started`를 먼저 기록한다. 그 뒤
@@ -168,8 +174,10 @@ docker compose --profile content-admin run --rm content-admin encryption status 
 같고, old fingerprint의 active가 0이며, pending과 예상 밖 active fingerprint가 모두 0일 때만 나온다.
 target 설정 누락, malformed/overflow 집계, 작업 후 새 old active wrapper가 생긴 경우에는 fail-closed한다.
 모든 사용자 처리와 이 판정이 성공한 뒤에만 같은 actor/target/app instance의
-`provider_migration_completed`가 기록된다. 실패·중단·not-ready에는 completed가 남지 않는다. old wrapper는
-즉시 삭제하지 않고 `retiring` 상태로 남긴다.
+`provider_migration_completed`가 기록된다. 완료 판정은 migration 39의 wrapper-distribution advisory lock을
+잡은 단일 DB transaction에서 분포 재조회와 감사 INSERT를 함께 수행한다. 경쟁 old/pending writer는 그
+transaction 뒤로 직렬화된다. 실패·중단·not-ready에는 completed가 남지 않는다. old wrapper는 즉시 삭제하지
+않고 `retiring` 상태로 남긴다.
 6. 실제 history 읽기/수집을 관찰하는 유예 기간을 둔다. 문제가 생기면 두 provider 설정과 old decrypt 권한을
    그대로 둔 채 원인을 고치고 재실행한다. target 장애 중 old 설정/권한을 먼저 제거하지 않는다.
 7. 유예가 끝난 뒤 active를 target으로 바꾸고 migration profile을 제거한다. 최종 health/fingerprint/status와

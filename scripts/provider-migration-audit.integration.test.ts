@@ -14,6 +14,16 @@ const execFileAsync = promisify(execFile);
 const INSTALLATION_ID = "019f7250-dc4d-78fd-98e8-a5465d0f5b69";
 const OLD = "local:111111111111111111111111";
 const TARGET = "aws-kms:222222222222222222222222";
+const ROTATED_LOCAL = "local:333333333333333333333333";
+
+async function waitUntil(predicate: () => Promise<boolean>, label: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
 
 async function waitForPostgres(connectionString: string): Promise<void> {
   const deadline = Date.now() + 30_000;
@@ -142,6 +152,120 @@ test("provider migration audit authenticates the DB admin actor and completes on
     assert.deepEqual((await admin.query("SELECT event_type FROM content_key_security_events ORDER BY id")).rows,
       [{ event_type: "provider_migration_started" }]);
     assert.doesNotMatch(notReady.stdout + notReady.stderr, /actor@example|integration-password|local:test/i);
+
+    await admin.query("DELETE FROM managed_content_keys; DELETE FROM content_key_security_events");
+    await admin.query(`
+      CREATE TABLE provider_completion_proof(
+        target_active bigint NOT NULL,
+        old_active bigint NOT NULL,
+        pending bigint NOT NULL,
+        unexpected_active bigint NOT NULL
+      );
+      CREATE FUNCTION capture_provider_completion_proof() RETURNS trigger
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path=public,pg_temp AS $$
+      BEGIN
+        IF NEW.event_type='provider_migration_completed' THEN
+          INSERT INTO provider_completion_proof
+          SELECT
+            COALESCE(SUM(wrapper_count) FILTER (
+              WHERE provider='aws-kms' AND provider_fingerprint='${TARGET}' AND state='active'
+            ),0),
+            COALESCE(SUM(wrapper_count) FILTER (
+              WHERE provider='local' AND provider_fingerprint='${OLD}' AND state='active'
+            ),0),
+            COALESCE(SUM(wrapper_count) FILTER (WHERE state='pending'),0),
+            COALESCE(SUM(wrapper_count) FILTER (
+              WHERE state='active' AND NOT (
+                provider='aws-kms' AND provider_fingerprint='${TARGET}'
+              )
+            ),0)
+          FROM managed_content_key_distribution;
+          PERFORM pg_sleep(1);
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER capture_provider_completion_proof_trigger
+      BEFORE INSERT ON content_key_security_events
+      FOR EACH ROW EXECUTE FUNCTION capture_provider_completion_proof();
+    `);
+
+    const concurrentUser = randomUUID();
+    await admin.query("INSERT INTO users(id,email) VALUES($1,'concurrent-old@example.com')", [concurrentUser]);
+    const completing = runCli(command(actor), {
+      ...base,
+      rewrapUser: async () => { throw new Error("zero-user must not rewrap"); },
+    });
+    await waitUntil(async () => (await admin!.query(`
+      SELECT EXISTS(
+        SELECT 1 FROM pg_locks
+         WHERE locktype='advisory' AND granted AND objid=1700000039
+      ) AS locked
+    `)).rows[0].locked === true, "completion distribution advisory lock");
+
+    let writerSettled = false;
+    const writer = admin.query(
+      `INSERT INTO managed_content_keys
+         (user_id,key_version,provider,provider_key_ref,provider_fingerprint,wrapped_user_key,wrapper_metadata,state)
+       VALUES($1,1,'local','local:concurrent',$2,$3,'{}','active')`,
+      [concurrentUser, OLD, Buffer.alloc(64, 0x51)],
+    ).finally(() => { writerSettled = true; });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(writerSettled, false, "old-wrapper writer must serialize behind completion proof");
+    const completedRace = await completing;
+    assert.equal(completedRace.exitCode, 0, completedRace.stderr);
+    await writer;
+    assert.deepEqual((await admin.query("SELECT * FROM provider_completion_proof")).rows, [{
+      target_active: "0", old_active: "0", pending: "0", unexpected_active: "0",
+    }]);
+    assert.deepEqual((await admin.query(`
+      SELECT provider,provider_fingerprint,state,wrapper_count::text
+        FROM managed_content_key_distribution ORDER BY provider,provider_fingerprint,state
+    `)).rows, [{
+      provider: "local", provider_fingerprint: OLD, state: "active", wrapper_count: "1",
+    }]);
+
+    await admin.query("DELETE FROM managed_content_keys; DELETE FROM content_key_security_events; DELETE FROM provider_completion_proof");
+    const abort = new AbortController();
+    const aborting = runCli(command(actor), {
+      ...base,
+      signal: abort.signal,
+      rewrapUser: async () => { throw new Error("zero-user must not rewrap"); },
+    });
+    await waitUntil(async () => (await admin!.query(`
+      SELECT EXISTS(
+        SELECT 1 FROM pg_locks
+         WHERE locktype='advisory' AND granted AND objid=1700000039
+      ) AS locked
+    `)).rows[0].locked === true, "aborting completion advisory lock");
+    abort.abort();
+    const aborted = await aborting;
+    assert.equal(aborted.exitCode, 1);
+    assert.match(aborted.stderr, /INTERRUPTED/);
+    assert.deepEqual((await admin.query(
+      "SELECT event_type FROM content_key_security_events ORDER BY id",
+    )).rows, [{ event_type: "provider_migration_started" }]);
+    assert.equal((await admin.query("SELECT COUNT(*)::int AS count FROM provider_completion_proof")).rows[0].count, 0);
+    assert.doesNotMatch(aborted.stdout + aborted.stderr, new RegExp(actor));
+
+    await admin.query("DROP TRIGGER capture_provider_completion_proof_trigger ON content_key_security_events");
+    runtime.registry = {
+      active: provider("local", OLD),
+      migration: provider("local", ROTATED_LOCAL),
+    } as ManagedContentRuntime["registry"];
+    const sameProvider = await runCli([
+      "encryption", "rewrap-provider", "--from", "local", "--to", "local",
+      "--actor-user-id", actor,
+    ], {
+      ...base,
+      rewrapUser: async () => { throw new Error("zero-user must not rewrap"); },
+    });
+    assert.equal(sameProvider.exitCode, 0, sameProvider.stderr);
+    assert.deepEqual((await admin.query(
+      "SELECT event_type,provider,provider_fingerprint FROM content_key_security_events ORDER BY id",
+    )).rows.slice(-2), [
+      { event_type: "provider_migration_started", provider: "local", provider_fingerprint: ROTATED_LOCAL },
+      { event_type: "provider_migration_completed", provider: "local", provider_fingerprint: ROTATED_LOCAL },
+    ]);
   } finally {
     await pool?.end().catch(() => undefined);
     await admin?.end().catch(() => undefined);

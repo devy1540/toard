@@ -121,6 +121,12 @@ test("migration 39 exposes an exact secret-free wrapper distribution and keeps i
     assert.equal((await admin.query(
       "SELECT has_table_privilege('toard_app','managed_content_key_distribution','SELECT') AS ok",
     )).rows[0].ok, true);
+    assert.equal((await admin.query(
+      "SELECT has_function_privilege('toard_app','lock_managed_content_key_distribution()','EXECUTE') AS ok",
+    )).rows[0].ok, true);
+    assert.equal((await admin.query(
+      "SELECT has_function_privilege('public','lock_managed_content_key_distribution()','EXECUTE') AS ok",
+    )).rows[0].ok, false);
 
     app = new Client({ connectionString: `postgresql://toard_app:integration-password@127.0.0.1:${port}/toard` });
     await app.connect();
@@ -214,6 +220,9 @@ test("migration 39 exposes an exact secret-free wrapper distribution and keeps i
     );
     await admin.query(down);
     assert.equal((await admin.query("SELECT to_regclass('managed_content_key_distribution') IS NULL AS ok")).rows[0].ok, true);
+    assert.equal((await admin.query(
+      "SELECT to_regprocedure('lock_managed_content_key_distribution()') IS NULL AS ok",
+    )).rows[0].ok, true);
     assert.equal((await admin.query("SELECT COUNT(*)::int AS count FROM managed_content_keys")).rows[0].count, 4);
   } finally {
     await concurrentB?.end().catch(() => undefined);

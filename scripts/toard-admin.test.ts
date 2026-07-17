@@ -9,6 +9,7 @@ const USER_A = "11111111-1111-4111-8111-111111111111";
 const USER_B = "22222222-2222-4222-8222-222222222222";
 const OLD_FINGERPRINT = "local:111111111111111111111111";
 const TARGET_FINGERPRINT = "aws-kms:222222222222222222222222";
+const ROTATED_LOCAL_FINGERPRINT = "local:333333333333333333333333";
 
 function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependencies {
   let currentUser: string | null = null;
@@ -273,11 +274,13 @@ test("rewrap-provider requires an exact admin actor and records started before e
           if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
           if (sql.startsWith("SELECT set_config")) return { rows: [] };
           if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: true }] };
+          if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
           if (/INSERT INTO content_key_security_events/i.test(sql)) {
             events.push({ type: String(params[0]), appInstanceId: String(params[6]) });
             return { rows: [], rowCount: 1 };
           }
           if (/FROM users/i.test(sql)) { enumerated = true; return { rows: [] }; }
+          if (/FROM managed_content_key_distribution/i.test(sql)) return { rows: [{ wrapper_distribution: [] }] };
           if (/FROM content_encryption_status/i.test(sql)) return { rows: [{
             server_records: "0", e2ee_records: "0", managed_records: "0",
             active_user_keys: "0", pending_user_keys: "0", retiring_user_keys: "0",
@@ -314,6 +317,7 @@ test("non-admin, failure, interrupt, not-ready, and audit failure never record p
   async function scenario(options: {
     admin?: boolean;
     failAudit?: boolean;
+    failCompletedAudit?: boolean;
     failUser?: boolean;
     interrupted?: boolean;
     ready?: boolean;
@@ -339,14 +343,26 @@ test("non-admin, failure, interrupt, not-ready, and audit failure never record p
             if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
             if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
             if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: options.admin !== false && currentUser === USER_A }] };
+            if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
             if (/INSERT INTO content_key_security_events/i.test(sql)) {
-              if (options.failAudit) throw new Error("token=audit-secret");
+              if (
+                options.failAudit
+                || (options.failCompletedAudit && params[0] === "provider_migration_completed")
+              ) throw new Error("token=audit-secret");
               events.push(String(params[0]));
               if (options.interrupted && params[0] === "provider_migration_started") controller.abort();
               return { rows: [], rowCount: 1 };
             }
             if (/FROM users/i.test(sql)) { enumerations += 1; return { rows: [{ id: USER_B }] }; }
             if (/SELECT EXISTS/i.test(sql)) return { rows: [{ eligible: true }] };
+            if (/FROM managed_content_key_distribution/i.test(sql)) return { rows: [{
+              wrapper_distribution: options.ready === false
+                ? [{ provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "active", wrapper_count: "1" }]
+                : [
+                    { provider: "aws-kms", provider_fingerprint: TARGET_FINGERPRINT, state: "active", wrapper_count: "1" },
+                    { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "retiring", wrapper_count: "1" },
+                  ],
+            }] };
             if (/FROM content_encryption_status/i.test(sql)) return { rows: [{
               server_records: "0", e2ee_records: "0", managed_records: "0",
               active_user_keys: "1", pending_user_keys: "0", retiring_user_keys: "1",
@@ -382,6 +398,7 @@ test("non-admin, failure, interrupt, not-ready, and audit failure never record p
 
   for (const options of [
     { failAudit: true },
+    { failCompletedAudit: true },
     { failUser: true },
     { interrupted: true },
     { ready: false },
@@ -389,6 +406,9 @@ test("non-admin, failure, interrupt, not-ready, and audit failure never record p
     const observed = await scenario(options);
     assert.equal(observed.result.exitCode, 1);
     assert.equal(observed.events.includes("provider_migration_completed"), false);
+    if ("failCompletedAudit" in options) {
+      assert.deepEqual(observed.events, ["provider_migration_started"]);
+    }
   }
 });
 
@@ -423,4 +443,107 @@ test("an interrupt observed during zero-user enumeration leaves started without 
   assert.equal(result.exitCode, 1);
   assert.deepEqual(events, ["provider_migration_started"]);
   assert.match(result.stderr, /INTERRUPTED/);
+});
+
+test("same-provider key-ref rotation is accepted only when runtime fingerprints differ", async () => {
+  const events: string[] = [];
+  let currentUser: string | null = null;
+  const rotated = deps({
+    async runtime() {
+      return {
+        installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        registry: {
+          active: { name: "local", fingerprint: OLD_FINGERPRINT },
+          migration: { name: "local", fingerprint: ROTATED_LOCAL_FINGERPRINT },
+        },
+      } as ManagedContentRuntime;
+    },
+    async acquireDb() {
+      return { db: { async query(sql: string, params: unknown[] = []) {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+        if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
+        if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
+        if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
+        if (/FROM managed_content_key_distribution/i.test(sql)) return { rows: [{ wrapper_distribution: [] }] };
+        if (/INSERT INTO content_key_security_events/i.test(sql)) {
+          events.push(String(params[0]));
+          return { rows: [], rowCount: 1 };
+        }
+        if (/FROM users/i.test(sql)) return { rows: [] };
+        throw new Error(`unexpected query: ${sql}`);
+      } }, release() {} };
+    },
+  });
+
+  const rotatedResult = await runCli([
+    "encryption", "rewrap-provider", "--from", "local", "--to", "local",
+    "--actor-user-id", USER_A,
+  ], rotated);
+  assert.equal(rotatedResult.exitCode, 0, rotatedResult.stderr);
+  assert.deepEqual(events, ["provider_migration_started", "provider_migration_completed"]);
+
+  const duplicate = await runCli([
+    "encryption", "rewrap-provider", "--from", "local", "--to", "local",
+    "--actor-user-id", USER_A,
+  ], deps({
+    async runtime() {
+      return {
+        installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+        registry: {
+          active: { name: "local", fingerprint: OLD_FINGERPRINT },
+          migration: { name: "local", fingerprint: OLD_FINGERPRINT },
+        },
+      } as ManagedContentRuntime;
+    },
+  }));
+  assert.notEqual(duplicate.exitCode, 0);
+  assert.doesNotMatch(duplicate.stdout + duplicate.stderr, new RegExp(USER_A));
+});
+
+test("abort after the last user or during completion readiness leaves only started", async () => {
+  for (const abortAt of ["last-user", "distribution", "completed-insert"] as const) {
+    const controller = new AbortController();
+    const committedEvents: string[] = [];
+    let pendingEvents: string[] = [];
+    let currentUser: string | null = null;
+    const result = await runCli([
+      "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+      "--actor-user-id", USER_A,
+    ], deps({
+      signal: controller.signal,
+      async acquireDb() {
+        return { db: { async query(sql: string, params: unknown[] = []) {
+          if (sql === "BEGIN") { pendingEvents = []; return { rows: [] }; }
+          if (sql === "COMMIT") { committedEvents.push(...pendingEvents); pendingEvents = []; return { rows: [] }; }
+          if (sql === "ROLLBACK") { pendingEvents = []; return { rows: [] }; }
+          if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
+          if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
+          if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
+          if (/FROM managed_content_key_distribution/i.test(sql)) {
+            if (abortAt === "distribution") controller.abort();
+            return { rows: [{ wrapper_distribution: [
+              { provider: "aws-kms", provider_fingerprint: TARGET_FINGERPRINT, state: "active", wrapper_count: "1" },
+              { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "retiring", wrapper_count: "1" },
+            ] }] };
+          }
+          if (/INSERT INTO content_key_security_events/i.test(sql)) {
+            pendingEvents.push(String(params[0]));
+            if (abortAt === "completed-insert" && params[0] === "provider_migration_completed") controller.abort();
+            return { rows: [], rowCount: 1 };
+          }
+          if (/FROM users/i.test(sql)) return { rows: [{ id: USER_A }] };
+          if (/SELECT EXISTS/i.test(sql)) return { rows: [{ eligible: true }] };
+          throw new Error(`unexpected query: ${sql}`);
+        } }, release() {} };
+      },
+      async rewrapUser() {
+        if (abortAt === "last-user") controller.abort();
+        return { state: "migrated" };
+      },
+    }));
+    assert.equal(result.exitCode, 1, abortAt);
+    assert.deepEqual(committedEvents, ["provider_migration_started"], abortAt);
+    assert.match(result.stderr, /INTERRUPTED/, abortAt);
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(USER_A));
+  }
 });

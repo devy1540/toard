@@ -130,7 +130,7 @@ function parseCommand(argv: readonly string[]): ParsedCommand | null {
       || args[4] !== "--actor-user-id"
     ) return null;
     const from = args[1], to = args[3], actorUserId = args[5];
-    if (!isProvider(from) || !isProvider(to) || from === to || !actorUserId || !UUID.test(actorUserId)) return null;
+    if (!isProvider(from) || !isProvider(to) || !actorUserId || !UUID.test(actorUserId)) return null;
     return { command, from, to, actorUserId };
   }
   return null;
@@ -269,6 +269,7 @@ async function rewrapProviders(
     oldIdentity.provider !== from
     || !targetIdentity
     || targetIdentity.provider !== to
+    || targetIdentity.providerFingerprint === oldIdentity.providerFingerprint
   ) return usage();
 
   await withDbLease(deps, (db) => recordProviderMigrationEvent(
@@ -288,29 +289,93 @@ async function rewrapProviders(
     try {
       const result = await withDbLease(deps, (db) => deps.rewrapUser(userId, runtime, db));
       if (result.state === "migrated") migrated += 1;
+      if (deps.signal?.aborted) {
+        failures.push("INTERRUPTED");
+        break;
+      }
     } catch (error) {
       const code = rewrapErrorCode(error);
       failures.push(code && SAFE_REWRAP_CODES.has(code) ? code : "REWRAP_FAILED");
     }
   }
   if (failures.length === 0) {
-    const readiness = await withDbLease(
-      deps,
-      (db) => loadCliEncryptionSnapshot(db, runtime),
-    );
-    if (!readiness.providerMigration.removalReady) {
-      failures.push("PROVIDER_MIGRATION_NOT_READY");
-    } else {
-      await withDbLease(deps, (db) => recordProviderMigrationEvent(
-        "provider_migration_completed", actorUserId, targetIdentity, appInstanceId, db,
-      ));
-    }
+    if (deps.signal?.aborted) failures.push("INTERRUPTED");
+    else failures.push(...await withDbLease(deps, (db) => completeProviderMigration(
+      actorUserId,
+      oldIdentity,
+      targetIdentity,
+      appInstanceId,
+      deps.signal,
+      db,
+    )));
   }
   return summary("migrated", migrated, failures);
 }
 
+async function completeProviderMigration(
+  actorUserId: string,
+  oldIdentity: ProviderDistributionIdentity,
+  targetIdentity: ProviderDistributionIdentity,
+  appInstanceId: string,
+  signal: AbortSignal | undefined,
+  db: RewrapDb,
+): Promise<string[]> {
+  let began = false;
+  let finished = false;
+  const stop = async (reason: string): Promise<string[]> => {
+    await db.query("ROLLBACK");
+    finished = true;
+    return [reason];
+  };
+  try {
+    await db.query("BEGIN");
+    began = true;
+    await setAndValidateAdminActor(actorUserId, db);
+    if (signal?.aborted) return await stop("INTERRUPTED");
+
+    // migration 39 trigger writer와 같은 canonical advisory lock을 잡은 뒤 분포를 새로 읽는다.
+    await db.query("SELECT lock_managed_content_key_distribution()");
+    if (signal?.aborted) return await stop("INTERRUPTED");
+    const distributionResult = await db.query(
+      `SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                'provider',distribution.provider,
+                'provider_fingerprint',distribution.provider_fingerprint,
+                'state',distribution.state,
+                'wrapper_count',distribution.wrapper_count::text
+              ) ORDER BY distribution.provider,distribution.provider_fingerprint,distribution.state),'[]'::jsonb)
+              AS wrapper_distribution
+         FROM managed_content_key_distribution distribution`,
+    );
+    if (signal?.aborted) return await stop("INTERRUPTED");
+    if (distributionResult.rows.length !== 1) throw new Error("INVALID_DISTRIBUTION");
+    const distribution = parseManagedKeyDistribution(distributionResult.rows[0]?.wrapper_distribution);
+    const readiness = evaluateProviderRemovalReadiness(
+      distribution,
+      oldIdentity,
+      targetIdentity,
+    );
+    if (!readiness.removalReady) return await stop("PROVIDER_MIGRATION_NOT_READY");
+    if (signal?.aborted) return await stop("INTERRUPTED");
+
+    await insertProviderMigrationEvent(
+      "provider_migration_completed",
+      actorUserId,
+      targetIdentity,
+      appInstanceId,
+      db,
+    );
+    if (signal?.aborted) return await stop("INTERRUPTED");
+    await db.query("COMMIT");
+    finished = true;
+    return [];
+  } catch {
+    if (began && !finished) await db.query("ROLLBACK").catch(() => undefined);
+    throw new Error("PROVIDER_MIGRATION_AUDIT_FAILED");
+  }
+}
+
 async function recordProviderMigrationEvent(
-  eventType: "provider_migration_started" | "provider_migration_completed",
+  eventType: "provider_migration_started",
   actorUserId: string,
   target: ProviderDistributionIdentity,
   appInstanceId: string,
@@ -320,28 +385,42 @@ async function recordProviderMigrationEvent(
   try {
     await db.query("BEGIN");
     began = true;
-    await db.query("SELECT set_config('app.current_user_id',$1,true)", [actorUserId]);
-    const actor = await db.query(
-      "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND role='admin') AS is_admin",
-      [actorUserId],
-    );
-    if (actor.rows.length !== 1 || actor.rows[0]?.is_admin !== true) {
-      throw new Error("ADMIN_ACTOR_INVALID");
-    }
-    await recordKeySecurityEvent({
-      eventType,
-      userId: null,
-      provider: target.provider,
-      providerFingerprint: target.providerFingerprint,
-      keyVersion: null,
-      actorUserId,
-      appInstanceId,
-    }, db);
+    await setAndValidateAdminActor(actorUserId, db);
+    await insertProviderMigrationEvent(eventType, actorUserId, target, appInstanceId, db);
     await db.query("COMMIT");
   } catch {
     if (began) await db.query("ROLLBACK").catch(() => undefined);
     throw new Error("PROVIDER_MIGRATION_AUDIT_FAILED");
   }
+}
+
+async function setAndValidateAdminActor(actorUserId: string, db: RewrapDb): Promise<void> {
+  await db.query("SELECT set_config('app.current_user_id',$1,true)", [actorUserId]);
+  const actor = await db.query(
+    "SELECT EXISTS(SELECT 1 FROM users WHERE id=$1 AND role='admin') AS is_admin",
+    [actorUserId],
+  );
+  if (actor.rows.length !== 1 || actor.rows[0]?.is_admin !== true) {
+    throw new Error("ADMIN_ACTOR_INVALID");
+  }
+}
+
+async function insertProviderMigrationEvent(
+  eventType: "provider_migration_started" | "provider_migration_completed",
+  actorUserId: string,
+  target: ProviderDistributionIdentity,
+  appInstanceId: string,
+  db: RewrapDb,
+): Promise<void> {
+  await recordKeySecurityEvent({
+    eventType,
+    userId: null,
+    provider: target.provider,
+    providerFingerprint: target.providerFingerprint,
+    keyVersion: null,
+    actorUserId,
+    appInstanceId,
+  }, db);
 }
 
 function summary(label: string, succeeded: number, failures: string[]): CliResult {

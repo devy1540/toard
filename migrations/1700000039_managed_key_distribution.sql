@@ -14,6 +14,18 @@ CREATE TABLE managed_content_key_distribution (
   PRIMARY KEY (provider, provider_fingerprint, state)
 );
 
+-- Trigger writer와 완료 증명 transaction이 공유하는 canonical lock entrypoint다.
+-- 숫자 key를 애플리케이션에 복제하지 않고 이 함수만 호출해 drift를 막는다.
+CREATE FUNCTION lock_managed_content_key_distribution()
+RETURNS void
+LANGUAGE sql
+VOLATILE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS 'SELECT pg_advisory_xact_lock(1700000039)';
+
+REVOKE ALL ON FUNCTION lock_managed_content_key_distribution() FROM PUBLIC;
+
 -- backfill과 trigger 설치 사이에 wrapper write가 빠져나가지 않게 migration transaction 동안 잠근다.
 LOCK TABLE managed_content_keys IN SHARE ROW EXCLUSIVE MODE;
 
@@ -34,7 +46,7 @@ DECLARE
   changed_rows BIGINT;
 BEGIN
   -- 서로 반대 방향의 provider/state 교체도 lock 순서 deadlock 없이 직렬화한다.
-  PERFORM pg_advisory_xact_lock(1700000039);
+  PERFORM lock_managed_content_key_distribution();
 
   IF TG_OP = 'UPDATE'
      AND OLD.provider = NEW.provider
@@ -92,6 +104,7 @@ BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app') THEN
     REVOKE ALL PRIVILEGES ON TABLE managed_content_key_distribution FROM toard_app;
     GRANT SELECT ON TABLE managed_content_key_distribution TO toard_app;
+    GRANT EXECUTE ON FUNCTION lock_managed_content_key_distribution() TO toard_app;
   END IF;
 END $$;
 
@@ -122,4 +135,5 @@ END $$;
 
 DROP TRIGGER managed_content_keys_distribution ON managed_content_keys;
 DROP FUNCTION sync_managed_content_key_distribution();
+DROP FUNCTION lock_managed_content_key_distribution();
 DROP TABLE managed_content_key_distribution;

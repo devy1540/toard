@@ -49,9 +49,9 @@ export type KeySecurityEventType =
   | "e2ee_migration_resumed";
 
 // provider_migration_* requires an explicit authenticated admin actor in RLS.
-// The current non-interactive toard-admin CLI has no actor identity, so it deliberately
-// does not emit these global events; the provider switch/rollback commands in Ops Tasks 4/5
-// must supply the actor when they connect lifecycle start/completion.
+// toard-admin rewrap-provider requires --actor-user-id, validates the current admin row,
+// and records start/completion through this exact DTO. Completion is emitted only after
+// the migration-39 distribution lock and readiness proof succeed in the same transaction.
 
 /** Exact, secret-free audit DTO. Nulls are intentional and shape-dependent. */
 export type KeySecurityEvent = Readonly<{

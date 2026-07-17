@@ -32,6 +32,9 @@ importers:
       dotenv:
         specifier: ^17.4.2
         version: 17.4.2
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
       node-pg-migrate:
         specifier: ^7.9.0
         version: 7.9.1(@types/pg@8.20.0)(pg@8.22.0)

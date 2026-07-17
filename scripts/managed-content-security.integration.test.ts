@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
+import { build } from "esbuild";
 import { Client } from "pg";
 import { GET as managedMigrationStatusGet } from "../apps/web/app/api/content/managed-migration/status/route";
 import { GET as recoveryWrapperGet } from "../apps/web/app/api/content/recovery/wrapper/route";
@@ -249,9 +250,13 @@ test("managed content는 운영 저장/열람에서도 DB dump, 타 사용자, �
     assert.equal(JSON.stringify(artifactEnv).includes(CHILD_KEK_PATH), false);
     assert.equal(JSON.stringify(artifactEnv).includes(keyFile), false);
     assertNoCanaryVariants(JSON.stringify(artifactEnv), [PLAINTEXT, kek, CLOUD_CREDENTIAL_MARKER]);
-    await execFileAsync("node_modules/.bin/esbuild", [
-      "scripts/managed-content-decrypt-child.ts", "--bundle", "--platform=node", "--format=esm", `--outfile=${childBundle}`,
-    ]);
+    await build({
+      entryPoints: ["scripts/managed-content-decrypt-child.ts"],
+      bundle: true,
+      platform: "node",
+      format: "esm",
+      outfile: childBundle,
+    });
     await chmod(childBundle, 0o644);
     const authorizedEnv = { ...artifactEnv };
     const authorizedArgs = [

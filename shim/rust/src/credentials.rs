@@ -15,9 +15,7 @@ impl ContentCollectionMode {
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "e2ee_v1" => Self::LegacyE2eeV1,
-            "1" | "true" | "on" | "yes" | "server_v1" | "managed_v1" => {
-                Self::ServerManaged
-            }
+            "1" | "true" | "on" | "yes" | "server_v1" | "managed_v1" => Self::ServerManaged,
             _ => Self::Off,
         }
     }

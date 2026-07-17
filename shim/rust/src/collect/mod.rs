@@ -1339,10 +1339,7 @@ mod tests {
             content_collection_label(ContentCollectionMode::LegacyE2eeV1),
             "legacy-e2ee-v1"
         );
-        assert_eq!(
-            content_collection_label(ContentCollectionMode::Off),
-            "off"
-        );
+        assert_eq!(content_collection_label(ContentCollectionMode::Off), "off");
     }
 
     #[test]

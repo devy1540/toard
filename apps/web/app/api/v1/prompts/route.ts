@@ -48,7 +48,7 @@ async function postPrompts(req: Request, deps: PromptsPostDeps): Promise<Respons
     batch = parsePromptBatch(await readBoundedJson(req, MAX_BODY_BYTES));
   } catch (e) {
     if (e instanceof RangeError) {
-      return new Response("payload too large (max 4MB)", { status: 413 });
+      return noStoreTextResponse("payload too large (max 4MB)", 413);
     }
     const msg = e instanceof PromptWireError ? e.message : "본문이 유효한 JSON 이 아닙니다";
     return new Response(msg, { status: 400 });
@@ -105,6 +105,13 @@ function managedUnavailableResponse(code: ManagedFailureCode): Response {
       headers: { "Cache-Control": "no-store" },
     },
   );
+}
+
+function noStoreTextResponse(body: string, status: number): Response {
+  return new Response(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 export const POST = Object.assign(createPromptsPost(), {

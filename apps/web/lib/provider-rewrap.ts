@@ -172,18 +172,34 @@ async function verifyManagedCanary(
   db: RewrapDb,
 ): Promise<void> {
   const result = await db.query(
-    `SELECT dedup_key AS "dedupKey", provider_key AS "providerKey", turn_role AS "turnRole", ts,
-            encryption_scheme AS "encryptionScheme", content_key_version AS "contentKeyVersion",
-            aad_version AS "aadVersion", wrapped_dek AS "wrappedDek",
-            dek_wrap_iv AS "dekWrapIv", dek_wrap_auth_tag AS "dekWrapAuthTag",
-            iv, ciphertext, auth_tag AS "authTag"
-       FROM prompt_records
-      WHERE user_id=$1 AND encryption_scheme='managed_v1' AND content_key_version=$2
-      ORDER BY id ASC LIMIT 1`,
+    `SELECT totals.has_records AS "hasRecords",
+            canary.dedup_key AS "dedupKey", canary.provider_key AS "providerKey",
+            canary.turn_role AS "turnRole", canary.ts,
+            canary.encryption_scheme AS "encryptionScheme",
+            canary.content_key_version AS "contentKeyVersion",
+            canary.aad_version AS "aadVersion", canary.wrapped_dek AS "wrappedDek",
+            canary.dek_wrap_iv AS "dekWrapIv", canary.dek_wrap_auth_tag AS "dekWrapAuthTag",
+            canary.iv, canary.ciphertext, canary.auth_tag AS "authTag"
+       FROM (
+         SELECT EXISTS (
+           SELECT 1 FROM prompt_records
+            WHERE user_id=$1 AND encryption_scheme='managed_v1' AND content_key_version=$2
+         ) AS has_records
+       ) totals
+       LEFT JOIN LATERAL (
+         SELECT *
+           FROM prompt_records
+          WHERE user_id=$1 AND encryption_scheme='managed_v1' AND content_key_version=$2
+          ORDER BY id ASC LIMIT 1
+       ) canary ON TRUE`,
     [userId, keyVersion],
   );
   const row = result.rows[0];
-  if (!row) throw new RewrapError("MANAGED_CANARY_MISSING");
+  if (result.rows.length !== 1 || !row) {
+    throw new RewrapError("MANAGED_CANARY_INVALID");
+  }
+  const hasRecords = requiredHasRecords(row.hasRecords);
+  if (!hasRecords) return;
   try {
     decryptManagedContent({
       dedupKey: requiredString(row.dedupKey),
@@ -410,6 +426,10 @@ function requiredPositiveInteger(value: unknown): number {
   const parsed = typeof value === "number" ? value : Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > 32_767) throw new RewrapError("REWRAP_ROW_INVALID");
   return parsed;
+}
+function requiredHasRecords(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new RewrapError("MANAGED_CANARY_INVALID");
+  return value;
 }
 function requiredBuffer(value: unknown): Buffer {
   if (!Buffer.isBuffer(value) || value.length === 0) throw new RewrapError("REWRAP_ROW_INVALID");

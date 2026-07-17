@@ -138,7 +138,7 @@ UCK를 감싼 `managed_v1`으로 저장한다. provider env, workload identity/s
 명령과 회전 절차는 [본문 암호화 운영 런북](content-encryption-runbook.md)을 따른다. `TOARD_CONTENT_KEK_B64`는
 잔여 `server_v1` 전환에만 사용하고 `serverRecords=0`과 백업 보존 확인 전 제거하지 않는다.
 
-**2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 단 **RLS 는 앱이 비-superuser 롤로 접속할 때만 강제**된다(superuser 는 우회). 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
+**2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 앱은 bootstrap으로 만든 exact `toard_app` 롤에 직접 로그인해야 한다. readiness는 superuser/BYPASSRLS/CREATEDB/CREATEROLE/REPLICATION, 다른 role membership, `SET ROLE` 세션, RLS relation owner를 모두 거부한다. 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
 ```sh
 # owner-only (0600) psql input file은 secret manager가 생성한다.
 # 이 파일에는 PSQL-quoted app_password 변수와 bootstrap script의 absolute \i 경로만 둔다.
@@ -164,7 +164,7 @@ psql "$MIGRATION_DATABASE_URL" -f /secure/bootstrap-app-role.psql
 docker compose up -d app
 ```
 
-관리형 본문을 켠 상태에서 `APP_DATABASE_URL`이 superuser 또는 `BYPASSRLS` role이면 `/api/ready`는 503을 반환한다. 관리형 본문을 사용하지 않는 기존 Compose 설치는 두 URL을 설정하지 않아도 기존 기본 연결로 동작한다.
+관리형 본문을 켠 상태에서 `APP_DATABASE_URL`이 직접 로그인한 exact `toard_app` 안전 롤이 아니면 `/api/ready`는 503을 반환한다. owner 연결을 `SET ROLE toard_app`으로 감싼 것도 허용하지 않는다. 관리형 본문을 사용하지 않는 기존 Compose 설치는 두 URL을 설정하지 않아도 기존 기본 연결로 동작한다.
 
 > 일반 관리자 UI와 타 사용자는 RLS 때문에 타 사용자 평문/행을 읽지 못한다. DB superuser는 ciphertext와
 > wrapper를 볼 수 있으나 DB dump만으로 평문을 복구할 수 없다. 다만 DB와 KMS/Transit/local KEK 권한을

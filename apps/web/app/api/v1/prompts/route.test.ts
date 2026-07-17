@@ -259,6 +259,7 @@ test("기존 인증, 4MB, invalid JSON 계약을 유지한다", async () => {
     body: "x".repeat(4 * 1024 * 1024 + 1),
   }));
   assert.equal(tooLarge.status, 413);
+  assert.equal(tooLarge.headers.get("cache-control"), "no-store");
 
   const invalidJson = await POST.withDependencies({
     authenticateIngestToken: auth,
@@ -276,6 +277,7 @@ test("prompt route는 인증 뒤 oversized Content-Length를 본문 read 전에 
   });
   const response = await POST.withDependencies({ authenticateIngestToken: auth })(input.request);
   assert.equal(response.status, 413);
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.equal(input.request.bodyUsed, false);
 });
 
@@ -283,7 +285,9 @@ test("prompt route는 chunked 4MiB 초과를 조기 cancel하고 exact boundary�
   const oversized = streamingRequest(["[\"", "x".repeat(4 * 1024 * 1024), "\"]"]);
   const oversizedResponse = await POST.withDependencies({ authenticateIngestToken: auth })(oversized.request);
   assert.equal(oversizedResponse.status, 413);
+  assert.equal(oversizedResponse.headers.get("cache-control"), "no-store");
   assert.equal(oversized.request.bodyUsed, true);
+  assert.equal(oversized.cancelled(), true);
 
   const exactBody = " ".repeat(4 * 1024 * 1024 - 2) + "[]";
   const exact = streamingRequest([exactBody]);

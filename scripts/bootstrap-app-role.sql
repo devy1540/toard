@@ -1,7 +1,8 @@
 -- toard 앱 런타임 롤(toard_app) 부트스트랩.
 --
--- prompt_records 의 RLS(소유자 전용)는 앱이 "비-superuser·비-BYPASSRLS" 롤로 접속할 때만
--- 실제로 강제된다. superuser 접속은 RLS 를 우회한다(= 의도된 "DB 직접 접근" 탈출구).
+-- prompt_records 의 RLS(소유자 전용)는 앱이 직접 로그인한 exact toard_app 롤로 접속하고,
+-- 위험 속성·다른 role membership·RLS relation 소유권이 없을 때만 안전하게 강제된다.
+-- superuser/BYPASSRLS/table owner 또는 owner role로 SET ROLE 가능한 연결은 RLS를 우회한다.
 -- 이 스크립트로 전용 롤을 만들고, 이후 앱의 DATABASE_URL 만 이 롤로 바꾼다.
 -- 마이그레이션·seed 는 계속 관리(슈퍼유저) 롤로 실행한다.
 --
@@ -26,8 +27,27 @@ SELECT format('CREATE ROLE toard_app LOGIN PASSWORD %L', :'app_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app')
 \gexec
 
--- 재실행 시 로그인·비밀번호와 RLS 강제 role attribute를 함께 복구
-ALTER ROLE toard_app LOGIN NOSUPERUSER NOBYPASSRLS PASSWORD :'app_password';
+-- 재실행 시 로그인·비밀번호와 모든 위험 role attribute를 exact-safe 상태로 복구한다.
+-- NOINHERIT는 membership drift가 revoke되기 전에도 상속 권한이 활성화되지 않게 한다.
+ALTER ROLE toard_app
+  LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION
+  PASSWORD :'app_password';
+
+-- SET ROLE도 RLS/권한 경계를 우회할 수 있으므로 명시적으로 부여된 모든 role membership을 제거한다.
+DO $$
+DECLARE
+  granted_role record;
+BEGIN
+  FOR granted_role IN
+    SELECT granted.rolname
+      FROM pg_auth_members membership
+      JOIN pg_roles member ON member.oid = membership.member
+      JOIN pg_roles granted ON granted.oid = membership.roleid
+     WHERE member.rolname = 'toard_app'
+  LOOP
+    EXECUTE format('REVOKE %I FROM toard_app', granted_role.rolname);
+  END LOOP;
+END $$;
 
 -- 2) 스키마 + 현재 객체 권한
 GRANT USAGE ON SCHEMA public TO toard_app;
@@ -119,7 +139,19 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 
 COMMIT;
 
--- 확인: RLS 가 발효되려면 rolsuper·rolbypassrls 가 모두 f 여야 한다
-SELECT rolname, rolsuper AS is_superuser, rolbypassrls AS bypasses_rls
+-- 확인: 위험 속성은 모두 f이고 membership 결과가 없어야 한다.
+SELECT rolname,
+       rolsuper AS is_superuser,
+       rolbypassrls AS bypasses_rls,
+       rolcreatedb AS can_create_database,
+       rolcreaterole AS can_create_role,
+       rolreplication AS can_replicate,
+       rolinherit AS inherits_role_privileges
 FROM pg_roles
 WHERE rolname = 'toard_app';
+
+SELECT granted.rolname AS granted_role
+FROM pg_auth_members membership
+JOIN pg_roles member ON member.oid = membership.member
+JOIN pg_roles granted ON granted.oid = membership.roleid
+WHERE member.rolname = 'toard_app';

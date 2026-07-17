@@ -115,7 +115,7 @@ function canaryRow() {
   };
 }
 
-function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?: boolean; targetRetiring?: boolean; noCanary?: boolean; failAt?: "insert" | "retire" | "activate" | "audit" } = {}) {
+function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?: boolean; targetRetiring?: boolean; noCanary?: boolean; missingCanaryWithRecord?: boolean; failAt?: "insert" | "retire" | "activate" | "audit" } = {}) {
   let active = activeRow();
   let pending: Record<string, unknown> | null = null;
   let snapshot: { active: typeof active; pending: Record<string, unknown> | null } | null = null;
@@ -143,7 +143,15 @@ function fakeDb(options: { changeBeforeLock?: boolean; changeContextBeforeLock?:
         return { rows: [active] };
       }
       if (sql.includes("FROM managed_content_keys") && sql.includes("state='active'")) return { rows: [active] };
-      if (sql.includes("FROM prompt_records") && sql.includes("managed_v1")) return { rows: options.noCanary ? [] : [canaryRow()] };
+      if (sql.includes("FROM prompt_records") && sql.includes("managed_v1")) {
+        return {
+          rows: options.noCanary
+            ? [{ hasRecords: false }]
+            : options.missingCanaryWithRecord
+              ? [{ hasRecords: true }]
+              : [{ hasRecords: true, ...canaryRow() }],
+        };
+      }
       if (sql.startsWith("INSERT INTO managed_content_keys")) {
         if (options.failAt === "insert") throw new Error("contains secret raw provider error");
         if (options.targetRetiring && !sql.includes("state IN ('pending','retiring')")) return { rows: [], rowCount: 0 };
@@ -332,7 +340,7 @@ test("plaintext wrapper with invalid metadata is rejected before any internal ci
   }
 });
 
-test("missing migration provider, missing canary, and already-current are fail-safe", async () => {
+test("missing migration provider, orphan key without records, and already-current are fail-safe", async () => {
   const calls: string[] = [], evicted: string[] = [];
   const { value, oldProvider } = runtime(calls, evicted);
   value.registry = new KeyProviderRegistry(oldProvider, null);
@@ -340,11 +348,29 @@ test("missing migration provider, missing canary, and already-current are fail-s
 
   const canaryCalls: string[] = [], canaryEvicted: string[] = [];
   const withTarget = runtime(canaryCalls, canaryEvicted);
-  await assert.rejects(
-    rewrapUserKey(USER_ID, withTarget.value, fakeDb({ noCanary: true })),
-    hasCode("MANAGED_CANARY_MISSING"),
+  const orphanDb = fakeDb({ noCanary: true });
+  assert.deepEqual(
+    await rewrapUserKey(USER_ID, withTarget.value, orphanDb),
+    { state: "migrated" },
   );
-  assert.deepEqual(canaryEvicted, []);
+  assert.deepEqual(canaryCalls, ["local.unwrap", "aws-kms.wrap", "aws-kms.unwrap"]);
+  assert.deepEqual(canaryEvicted, [`${USER_ID}:3:${OLD_FINGERPRINT}`]);
+  assert.match(
+    orphanDb.calls.find((call) => call.sql.includes("FROM prompt_records"))!.sql,
+    /EXISTS.*LEFT JOIN LATERAL/s,
+  );
+
+  const missingCanaryCalls: string[] = [], missingCanaryEvicted: string[] = [];
+  const missingCanary = runtime(missingCanaryCalls, missingCanaryEvicted);
+  await assert.rejects(
+    rewrapUserKey(
+      USER_ID,
+      missingCanary.value,
+      fakeDb({ missingCanaryWithRecord: true }),
+    ),
+    hasCode("MANAGED_CANARY_INVALID"),
+  );
+  assert.deepEqual(missingCanaryEvicted, []);
 
   const currentDb = fakeDb();
   const target = provider("aws-kms", OLD_FINGERPRINT, "local:old", []);

@@ -58,7 +58,7 @@ const MANAGED_CONTENT_ENV = {
 
 test("실제 PostgreSQL에서 managed content readiness는 app role만 허용한다", { timeout: 120_000 }, async () => {
   const container = `toard-role-readiness-${randomUUID().slice(0, 6)}`;
-  let admin: Client | null = null;
+  let admin: Client | null = null; let app: Client | null = null;
   try {
     await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
       "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
@@ -77,10 +77,42 @@ test("실제 PostgreSQL에서 managed content readiness는 app role만 허용한
     );
 
     await admin.query("SET ROLE toard_app");
-    await assert.doesNotReject(
+    await assert.rejects(
       assertManagedContentDatabaseRoleReady(admin, MANAGED_CONTENT_ENV),
+      /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
     );
     await admin.query("RESET ROLE");
+
+    app = new Client({
+      connectionString: `postgresql://toard_app:integration-password@127.0.0.1:${port}/toard`,
+    });
+    await app.connect();
+    await assert.doesNotReject(
+      assertManagedContentDatabaseRoleReady(app, MANAGED_CONTENT_ENV),
+    );
+
+    await admin.query("CREATE ROLE toard_migration_owner NOLOGIN");
+    await admin.query("GRANT toard_migration_owner TO toard_app");
+    await assert.rejects(
+      assertManagedContentDatabaseRoleReady(app, MANAGED_CONTENT_ENV),
+      /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
+    );
+    await admin.query("REVOKE toard_migration_owner FROM toard_app");
+
+    await admin.query("ALTER DATABASE toard OWNER TO toard_app");
+    await assert.rejects(
+      assertManagedContentDatabaseRoleReady(app, MANAGED_CONTENT_ENV),
+      /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
+    );
+    await admin.query("ALTER DATABASE toard OWNER TO postgres");
+
+    await admin.query("CREATE TABLE readiness_owned_rls (id integer)");
+    await admin.query("ALTER TABLE readiness_owned_rls ENABLE ROW LEVEL SECURITY");
+    await admin.query("ALTER TABLE readiness_owned_rls OWNER TO toard_app");
+    await assert.rejects(
+      assertManagedContentDatabaseRoleReady(app, MANAGED_CONTENT_ENV),
+      /^Error: MANAGED_CONTENT_DATABASE_ROLE_UNSAFE$/,
+    );
 
     await admin.query("SET ROLE toard_bypass_readiness");
     await assert.rejects(
@@ -90,6 +122,7 @@ test("실제 PostgreSQL에서 managed content readiness는 app role만 허용한
     await admin.query("RESET ROLE");
   } finally {
     await admin?.query("RESET ROLE").catch(() => undefined);
+    await app?.end().catch(() => undefined);
     await admin?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
   }
@@ -97,7 +130,7 @@ test("실제 PostgreSQL에서 managed content readiness는 app role만 허용한
 
 test("실제 PostgreSQL CLI 기본 runtime 경로는 guard 뒤 lease에서만 installation identity를 읽는다", { timeout: 120_000 }, async () => {
   const container = `toard-cli-runtime-guard-${randomUUID().slice(0, 6)}`;
-  let admin: Client | null = null;
+  let admin: Client | null = null; let app: Client | null = null;
   try {
     await execFileAsync("docker", ["run", "-d", "--rm", "--name", container,
       "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
@@ -109,13 +142,18 @@ test("실제 PostgreSQL CLI 기본 runtime 경로는 guard 뒤 lease에서만 in
     await bootstrap(container);
     admin = new Client({ connectionString }); await admin.connect();
     for (const sql of await migrationUps()) await admin.query(sql);
+    app = new Client({
+      connectionString: `postgresql://toard_app:integration-password@127.0.0.1:${port}/toard`,
+    });
+    await app.connect();
 
     const sqls: string[] = [];
     let runtimeCalls = 0;
+    let leaseClient = admin;
     const leaseDb = {
       async query(sql: string, params: unknown[] = []) {
         sqls.push(sql);
-        return admin!.query(sql, params);
+        return leaseClient.query(sql, params);
       },
     };
     const dependencies: AdminCliDependencies = {
@@ -138,7 +176,7 @@ test("실제 PostgreSQL CLI 기본 runtime 경로는 guard 뒤 lease에서만 in
     assert.equal(sqls.some((sql) => sql.includes("installation_identity")), false);
 
     sqls.length = 0;
-    await admin.query("SET ROLE toard_app");
+    leaseClient = app;
     const safe = await runCli(["encryption", "status"], dependencies);
     assert.equal(safe.exitCode, 0, safe.stderr);
     assert.equal(runtimeCalls, 1);
@@ -146,6 +184,7 @@ test("실제 PostgreSQL CLI 기본 runtime 경로는 guard 뒤 lease에서만 in
     assert.match(sqls[1] ?? "", /installation_identity/);
   } finally {
     await admin?.query("RESET ROLE").catch(() => undefined);
+    await app?.end().catch(() => undefined);
     await admin?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
   }
@@ -156,23 +195,25 @@ test("bootstrap script wraps every role and privilege mutation in one transactio
   const begin = sql.indexOf("BEGIN;");
   const createRole = sql.indexOf("SELECT format('CREATE ROLE toard_app");
   const alterRole = sql.indexOf("ALTER ROLE toard_app");
+  const roleMembershipRevoke = sql.indexOf("FROM pg_auth_members");
   const broadGrant = sql.indexOf("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES");
   const sensitiveRevoke = sql.indexOf("REVOKE ALL PRIVILEGES ON TABLE public.content_e2ee_migration_sources");
   const defaultPrivileges = sql.lastIndexOf("ALTER DEFAULT PRIVILEGES IN SCHEMA public");
   const commit = sql.indexOf("COMMIT;");
-  const validation = sql.indexOf("SELECT rolname, rolsuper");
+  const validation = sql.indexOf("AS is_superuser");
   const metaValidation = sql.indexOf("\\if :{?app_password}");
   const metaQuit = sql.indexOf("\\quit");
   assert.ok(metaValidation >= 0 && metaValidation < metaQuit && metaQuit < begin);
   assert.ok(begin >= 0 && begin < createRole);
-  assert.ok(createRole < alterRole && alterRole < broadGrant && broadGrant < sensitiveRevoke);
+  assert.ok(createRole < alterRole && alterRole < roleMembershipRevoke);
+  assert.ok(roleMembershipRevoke < broadGrant && broadGrant < sensitiveRevoke);
   assert.ok(sensitiveRevoke < defaultPrivileges && defaultPrivileges < commit);
   assert.ok(commit < validation);
   assert.equal(sql.indexOf("BEGIN;", begin + 1), -1);
   assert.equal(sql.indexOf("COMMIT;", commit + 1), -1);
 });
 
-test("bootstrap 재실행은 변조된 app role의 superuser와 BYPASSRLS 권한을 복구한다", { timeout: 120_000 }, async () => {
+test("bootstrap 재실행은 app role 속성과 membership을 exact-safe 상태로 복구한다", { timeout: 120_000 }, async () => {
   const container = `toard-bootstrap-role-repair-${randomUUID().slice(0, 6)}`;
   let admin: Client | null = null;
   try {
@@ -184,16 +225,37 @@ test("bootstrap 재실행은 변조된 app role의 superuser와 BYPASSRLS 권한
     const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
     await waitForPostgres(connectionString);
     admin = new Client({ connectionString }); await admin.connect();
-    await admin.query("CREATE ROLE toard_app SUPERUSER BYPASSRLS NOLOGIN");
+    await admin.query(
+      "CREATE ROLE toard_app SUPERUSER BYPASSRLS CREATEDB CREATEROLE REPLICATION INHERIT NOLOGIN",
+    );
+    await admin.query("CREATE ROLE toard_drift_parent NOLOGIN");
+    await admin.query("GRANT toard_drift_parent TO toard_app WITH ADMIN OPTION");
 
     await bootstrap(container);
 
     const result = await admin.query(
-      "SELECT rolsuper, rolbypassrls, rolcanlogin FROM pg_roles WHERE rolname='toard_app'",
+      `SELECT rolsuper, rolbypassrls, rolcreatedb, rolcreaterole,
+              rolreplication, rolinherit, rolcanlogin
+         FROM pg_roles WHERE rolname='toard_app'`,
     );
     assert.deepEqual(result.rows, [
-      { rolsuper: false, rolbypassrls: false, rolcanlogin: true },
+      {
+        rolsuper: false,
+        rolbypassrls: false,
+        rolcreatedb: false,
+        rolcreaterole: false,
+        rolreplication: false,
+        rolinherit: false,
+        rolcanlogin: true,
+      },
     ]);
+    assert.deepEqual((await admin.query(`
+      SELECT granted.rolname
+        FROM pg_auth_members membership
+        JOIN pg_roles member ON member.oid = membership.member
+        JOIN pg_roles granted ON granted.oid = membership.roleid
+       WHERE member.rolname = 'toard_app'
+       ORDER BY granted.rolname`)).rows, []);
   } finally {
     await admin?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);

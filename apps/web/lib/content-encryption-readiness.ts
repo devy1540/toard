@@ -153,6 +153,49 @@ type ProviderIdentitySnapshot = {
   fingerprint: string;
 };
 
+type WriteFenceIdentity = {
+  provider: KeyProviderName;
+  providerFingerprint: string;
+};
+
+const KEY_PROVIDER_NAMES = new Set<KeyProviderName>([
+  "local",
+  "aws-kms",
+  "gcp-kms",
+  "azure-key-vault",
+  "vault-transit",
+  "openbao-transit",
+]);
+
+function parseWriteFenceIdentity(
+  row: Record<string, unknown>,
+): WriteFenceIdentity | null {
+  let providerValue: unknown;
+  let fingerprintValue: unknown;
+  try {
+    providerValue = Reflect.get(row, "write_fence_provider");
+    fingerprintValue = Reflect.get(row, "write_fence_provider_fingerprint");
+  } catch {
+    return fail("MANAGED_KEY_WRITE_FENCE_INVALID");
+  }
+  if (providerValue === null && fingerprintValue === null) return null;
+  if (
+    typeof providerValue !== "string"
+    || !KEY_PROVIDER_NAMES.has(providerValue as KeyProviderName)
+    || typeof fingerprintValue !== "string"
+    || !/^(?:local|aws-kms|gcp-kms|azure-key-vault|vault-transit|openbao-transit):[0-9a-f]{24}$/.test(
+      fingerprintValue,
+    )
+    || !fingerprintValue.startsWith(`${providerValue}:`)
+  ) {
+    return fail("MANAGED_KEY_WRITE_FENCE_INVALID");
+  }
+  return {
+    provider: providerValue as KeyProviderName,
+    providerFingerprint: fingerprintValue,
+  };
+}
+
 function snapshotProviderIdentity(
   provider: KeyManagementProvider,
 ): Record<keyof ProviderIdentitySnapshot, unknown> {
@@ -333,18 +376,24 @@ export async function getContentEncryptionReadiness(
                 'wrapper_count',distribution.wrapper_count::text
               ) ORDER BY distribution.provider,distribution.provider_fingerprint,distribution.state)
                 FROM managed_content_key_distribution distribution
-            ),'[]'::jsonb) AS wrapper_distribution
+            ),'[]'::jsonb) AS wrapper_distribution,
+            write_fence.provider AS write_fence_provider,
+            write_fence.provider_fingerprint AS write_fence_provider_fingerprint
        FROM content_encryption_status
+       LEFT JOIN LATERAL latest_managed_content_write_fence() write_fence
+         ON TRUE
       WHERE singleton=TRUE`,
   );
   if (result.rows.length !== 1) fail("MANAGED_KEY_STATUS_INVALID");
   const statusRow = result.rows[0];
-  const managedRecords = parseManagedRecords(statusRow?.managed_records);
+  if (!statusRow) fail("MANAGED_KEY_STATUS_INVALID");
+  const managedRecords = parseManagedRecords(statusRow.managed_records);
+  const writeFence = parseWriteFenceIdentity(statusRow);
 
   const activeProvider = env.TOARD_KEY_ACTIVE_PROVIDER?.trim();
   if (!activeProvider) {
     if (hasPartialManagedProfile(env)) fail("MANAGED_KEY_CONFIG_INVALID");
-    if (managedRecords > 0) fail("MANAGED_KEY_PROVIDER_MISSING");
+    if (managedRecords > 0 || writeFence) fail("MANAGED_KEY_PROVIDER_MISSING");
     if (runtime) fail("MANAGED_KEY_RUNTIME_MISMATCH");
     return {
       status: "disabled",
@@ -358,8 +407,11 @@ export async function getContentEncryptionReadiness(
   }
 
   let profile: ProviderProfile;
+  let migrationProfile: ProviderProfile | null;
   try {
-    profile = loadKeyManagementConfig(env).active;
+    const config = loadKeyManagementConfig(env);
+    profile = config.active;
+    migrationProfile = config.migration;
   } catch {
     return fail("MANAGED_KEY_CONFIG_INVALID");
   }
@@ -380,7 +432,40 @@ export async function getContentEncryptionReadiness(
     profile,
     snapshotProviderIdentity(provider),
   );
+  let writeFenceProvider: KeyManagementProvider | null = null;
+  if (
+    writeFence
+    && (
+      writeFence.provider !== providerIdentity.provider
+      || writeFence.providerFingerprint !== providerIdentity.fingerprint
+    )
+  ) {
+    const migration = runtime.registry.migration;
+    if (!migration) fail("MANAGED_KEY_WRITE_FENCE_UNRESOLVABLE");
+    const migrationSnapshot = snapshotProviderIdentity(migration);
+    if (
+      migrationSnapshot.provider !== writeFence.provider
+      || migrationSnapshot.fingerprint !== writeFence.providerFingerprint
+    ) {
+      fail("MANAGED_KEY_WRITE_FENCE_UNRESOLVABLE");
+    }
+    if (!migrationProfile) fail("MANAGED_KEY_WRITE_FENCE_MISMATCH");
+    try {
+      await validatedRuntimeIdentity(migrationProfile, migrationSnapshot);
+    } catch {
+      fail("MANAGED_KEY_WRITE_FENCE_MISMATCH");
+    }
+    writeFenceProvider = migration;
+  }
   const health = validatedHealth(await runtime.health.check(provider));
+  if (writeFenceProvider) {
+    const migrationHealth = validatedHealth(
+      await runtime.health.check(writeFenceProvider),
+    );
+    if (migrationHealth.status !== "healthy") {
+      fail("MANAGED_KEY_WRITE_FENCE_NOT_READY");
+    }
+  }
   const identity = {
     ...providerIdentity,
     managedRecords,

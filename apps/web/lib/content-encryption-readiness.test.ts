@@ -24,19 +24,27 @@ import {
 
 const AWS_KEY_ARN =
   "arn:aws:kms:ap-northeast-2:123456789012:key/12345678-1234-1234-1234-123456789012";
+const MIGRATION_AWS_KEY_ARN =
+  "arn:aws:kms:ap-northeast-2:123456789012:key/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const VALID_ENV = {
   TOARD_KEY_ACTIVE_PROVIDER: "aws-kms",
   TOARD_KEY_ACTIVE_AWS_KEY_ARN: AWS_KEY_ARN,
   TOARD_KEY_ACTIVE_AWS_REGION: "ap-northeast-2",
 };
+const VALID_MIGRATION_ENV = {
+  ...VALID_ENV,
+  TOARD_KEY_MIGRATION_PROVIDER: "aws-kms",
+  TOARD_KEY_MIGRATION_AWS_KEY_ARN: MIGRATION_AWS_KEY_ARN,
+  TOARD_KEY_MIGRATION_AWS_REGION: "ap-northeast-2",
+};
 
 class ReadinessProvider implements KeyManagementProvider {
   readonly name = "aws-kms" as const;
-  readonly keyRef = AWS_KEY_ARN;
-  readonly fingerprint = awsKmsProviderFingerprint(
-    AWS_KEY_ARN,
-    "ap-northeast-2",
-  );
+  readonly fingerprint: string;
+
+  constructor(readonly keyRef: string = AWS_KEY_ARN) {
+    this.fingerprint = awsKmsProviderFingerprint(keyRef, "ap-northeast-2");
+  }
 
   async wrapKey(_uck: Buffer, _context: KeyContext): Promise<WrappedUserKey> {
     throw new Error("unused");
@@ -79,6 +87,8 @@ function dbStatus(
         pending_user_keys: "0",
         retiring_user_keys: "0",
         wrapper_distribution: [],
+        write_fence_provider: null,
+        write_fence_provider_fingerprint: null,
         ...row,
       }] };
     },
@@ -86,15 +96,19 @@ function dbStatus(
 }
 
 function runtimeHealth(
-  health: KeyProviderHealth | Record<string, unknown>,
+  health:
+    | KeyProviderHealth
+    | Record<string, unknown>
+    | ((provider: KeyManagementProvider) => KeyProviderHealth | Record<string, unknown>),
   provider: KeyManagementProvider = new ReadinessProvider(),
+  migration: KeyManagementProvider | null = null,
 ): ManagedContentRuntime & {
   calls: KeyManagementProvider[];
 } {
   const calls: KeyManagementProvider[] = [];
   return {
     installationId: "installation",
-    registry: new KeyProviderRegistry(provider, null),
+    registry: new KeyProviderRegistry(provider, migration),
     userKeys: {
       async withActiveUserKey() {
         throw new Error("unused");
@@ -106,7 +120,7 @@ function runtimeHealth(
     health: {
       async check(candidate: KeyManagementProvider) {
         calls.push(candidate);
-        return health as KeyProviderHealth;
+        return (typeof health === "function" ? health(candidate) : health) as KeyProviderHealth;
       },
     } as ManagedContentRuntime["health"],
     calls,
@@ -128,6 +142,7 @@ test("provider 미설정이고 managed row가 없으면 disabled이며 외부 he
   });
   assert.equal(db.calls.length, 1);
   assert.match(db.calls[0]!, /FROM content_encryption_status/i);
+  assert.match(db.calls[0]!, /latest_managed_content_write_fence\(\)/i);
   assert.doesNotMatch(db.calls[0]!, /prompt_records|managed_user_keys/i);
 });
 
@@ -255,6 +270,169 @@ test("readiness는 active/pending distribution fingerprint가 현재 registry에
     }), VALID_ENV, runtime),
     /MANAGED_KEY_DISTRIBUTION_UNRESOLVABLE/,
   );
+});
+
+test("wrapper가 0개여도 최신 write fence target이 registry에 없으면 not-ready다", async () => {
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  });
+
+  await assert.rejects(
+    getContentEncryptionReadiness(dbStatus({
+      active_user_keys: "0",
+      pending_user_keys: "0",
+      retiring_user_keys: "0",
+      wrapper_distribution: [],
+      write_fence_provider: "local",
+      write_fence_provider_fingerprint: "local:111111111111111111111111",
+    }), VALID_ENV, runtime),
+    /MANAGED_KEY_WRITE_FENCE_UNRESOLVABLE/,
+  );
+});
+
+test("active와 다른 write fence target은 exact migration config를 검증하고 health-check한다", async () => {
+  const active = new ReadinessProvider();
+  const migration = new ReadinessProvider(MIGRATION_AWS_KEY_ARN);
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  }, active, migration);
+
+  const status = await getContentEncryptionReadiness(dbStatus({
+    write_fence_provider: migration.name,
+    write_fence_provider_fingerprint: migration.fingerprint,
+  }), VALID_MIGRATION_ENV, runtime);
+
+  assert.equal(status.status, "healthy");
+  assert.deepEqual(runtime.calls, [active, migration]);
+});
+
+test("write fence target의 runtime identity가 migration config와 다르면 health 전에 거부한다", async () => {
+  const active = new ReadinessProvider();
+  const migration = new ReadinessProvider(MIGRATION_AWS_KEY_ARN);
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  }, active, migration);
+  const mismatchedEnv = {
+    ...VALID_ENV,
+    TOARD_KEY_MIGRATION_PROVIDER: "aws-kms",
+    TOARD_KEY_MIGRATION_AWS_KEY_ARN:
+      "arn:aws:kms:ap-northeast-2:123456789012:key/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    TOARD_KEY_MIGRATION_AWS_REGION: "ap-northeast-2",
+  };
+
+  await assert.rejects(
+    getContentEncryptionReadiness(dbStatus({
+      write_fence_provider: migration.name,
+      write_fence_provider_fingerprint: migration.fingerprint,
+    }), mismatchedEnv, runtime),
+    /MANAGED_KEY_WRITE_FENCE_MISMATCH/,
+  );
+  assert.deepEqual(runtime.calls, []);
+});
+
+test("active와 다른 write fence target이 unhealthy면 active가 healthy여도 not-ready다", async () => {
+  const active = new ReadinessProvider();
+  const migration = new ReadinessProvider(MIGRATION_AWS_KEY_ARN);
+  const runtime = runtimeHealth((provider) => provider === migration ? {
+    status: "unhealthy",
+    latencyMs: 2,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+    errorCode: "AUTH_FAILED",
+  } : {
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  }, active, migration);
+
+  await assert.rejects(
+    getContentEncryptionReadiness(dbStatus({
+      write_fence_provider: migration.name,
+      write_fence_provider_fingerprint: migration.fingerprint,
+    }), VALID_MIGRATION_ENV, runtime),
+    /MANAGED_KEY_WRITE_FENCE_NOT_READY/,
+  );
+  assert.deepEqual(runtime.calls, [active, migration]);
+});
+
+test("write fence가 active exact identity면 health-check를 중복하지 않는다", async () => {
+  const active = new ReadinessProvider();
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  }, active);
+
+  const status = await getContentEncryptionReadiness(dbStatus({
+    write_fence_provider: active.name,
+    write_fence_provider_fingerprint: active.fingerprint,
+  }), VALID_ENV, runtime);
+
+  assert.equal(status.status, "healthy");
+  assert.deepEqual(runtime.calls, [active]);
+});
+
+test("write fence identity pair와 형식이 malformed면 generic invalid로 fail-closed다", async () => {
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  });
+  for (const row of [
+    { write_fence_provider: "aws-kms", write_fence_provider_fingerprint: null },
+    { write_fence_provider: null, write_fence_provider_fingerprint: "aws-kms:111111111111111111111111" },
+    { write_fence_provider: "aws-kms", write_fence_provider_fingerprint: "aws-kms:secret-runtime-detail" },
+    { write_fence_provider: { secret: "token" }, write_fence_provider_fingerprint: "aws-kms:111111111111111111111111" },
+  ]) {
+    await assert.rejects(
+      getContentEncryptionReadiness(dbStatus(row), VALID_ENV, runtime),
+      /MANAGED_KEY_WRITE_FENCE_INVALID/,
+    );
+  }
+  assert.equal(runtime.calls.length, 0);
+});
+
+test("write fence DB row의 hostile accessor는 secret을 오류나 DTO에 노출하지 않는다", async () => {
+  const secret = "secret-fence-token";
+  const row = new Proxy({
+    managed_records: "0",
+    active_user_keys: "0",
+    pending_user_keys: "0",
+    retiring_user_keys: "0",
+    wrapper_distribution: [],
+    write_fence_provider: null,
+    write_fence_provider_fingerprint: null,
+  }, {
+    get(target, property, receiver) {
+      if (property === "write_fence_provider") throw new Error(secret);
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  const runtime = runtimeHealth({
+    status: "healthy",
+    latencyMs: 1,
+    checkedAt: new Date("2026-07-17T01:02:03.000Z"),
+  });
+
+  await assert.rejects(
+    getContentEncryptionReadiness({
+      async query() {
+        return { rows: [row] };
+      },
+    }, VALID_ENV, runtime),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "MANAGED_KEY_WRITE_FENCE_INVALID");
+      assert.equal(error.message.includes(secret), false);
+      return true;
+    },
+  );
+  assert.equal(runtime.calls.length, 0);
 });
 
 test("readiness는 aggregate와 malformed distribution snapshot 불일치를 generic not-ready로 닫는다", async () => {

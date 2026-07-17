@@ -216,6 +216,13 @@ for (const topology of ["role-before", "role-after"] as const) {
       for (const sql of await migrationUps()) await admin.query(sql);
       if (topology === "role-after") await bootstrap(container);
 
+      // role-before도 migration 직후 broad default privilege를 남기지 않아야 한다.
+      if (topology === "role-before") {
+        assert.equal((await admin.query(
+          "SELECT has_table_privilege('toard_app','installation_identity','INSERT') AS ok",
+        )).rows[0].ok, false);
+      }
+
       const userA = randomUUID(), userB = randomUUID(), ownerA = randomUUID(), ownerB = randomUUID();
       await admin.query("INSERT INTO users(id,email) VALUES($1,'bootstrap-a@example.com'),($2,'bootstrap-b@example.com')", [userA, userB]);
       await admin.query("INSERT INTO providers(key,display_name,service_name_patterns,collection_method) VALUES('codex','Codex',ARRAY['codex'],'logfile')");
@@ -228,6 +235,10 @@ for (const topology of ["role-before", "role-after"] as const) {
         [userA, Buffer.alloc(32, 1), Buffer.alloc(12, 2), Buffer.from("cipher"), Buffer.alloc(16, 3),
           ownerA, Buffer.alloc(12, 4), Buffer.alloc(16, 5)]);
 
+      // 기존 role-before/role-after 모두에서 bootstrap 재실행도 broad grant를 최소 권한으로 복구한다.
+      await admin.query("GRANT DELETE ON installation_identity, content_encryption_status, managed_content_keys TO toard_app");
+      await bootstrap(container);
+
       for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
         assert.equal((await admin.query("SELECT has_table_privilege('toard_app','content_e2ee_migration_sources',$1) AS ok", [privilege])).rows[0].ok, false);
       }
@@ -235,6 +246,26 @@ for (const topology of ["role-before", "role-after"] as const) {
         assert.equal((await admin.query("SELECT has_table_privilege('toard_app','content_e2ee_migrations',$1) AS ok", [privilege])).rows[0].ok, true);
       }
       assert.equal((await admin.query("SELECT has_table_privilege('toard_app','content_e2ee_migrations','DELETE') AS ok")).rows[0].ok, false);
+      for (const table of ["installation_identity", "content_encryption_status"]) {
+        assert.equal((await admin.query(
+          "SELECT has_table_privilege('toard_app',$1,'SELECT') AS ok", [table],
+        )).rows[0].ok, true, `${topology}:${table}:SELECT`);
+        for (const privilege of ["INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]) {
+          assert.equal((await admin.query(
+            "SELECT has_table_privilege('toard_app',$1,$2) AS ok", [table, privilege],
+          )).rows[0].ok, false, `${topology}:${table}:${privilege}`);
+        }
+      }
+      for (const privilege of ["SELECT", "INSERT", "UPDATE"]) {
+        assert.equal((await admin.query(
+          "SELECT has_table_privilege('toard_app','managed_content_keys',$1) AS ok", [privilege],
+        )).rows[0].ok, true, `${topology}:managed_content_keys:${privilege}`);
+      }
+      for (const privilege of ["DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]) {
+        assert.equal((await admin.query(
+          "SELECT has_table_privilege('toard_app','managed_content_keys',$1) AS ok", [privilege],
+        )).rows[0].ok, false, `${topology}:managed_content_keys:${privilege}`);
+      }
       assert.equal((await admin.query(
         "SELECT has_table_privilege('toard_app','managed_content_key_distribution','SELECT') AS ok",
       )).rows[0].ok, true);
@@ -269,6 +300,18 @@ for (const topology of ["role-before", "role-after"] as const) {
       ]);
 
       app = new Client({ connectionString }); await app.connect(); await app.query("SET ROLE toard_app");
+      await assert.rejects(
+        app.query("UPDATE installation_identity SET created_at=created_at WHERE singleton=TRUE"),
+        (error: unknown) => (error as { code?: string }).code === "42501",
+      );
+      await assert.rejects(
+        app.query("DELETE FROM content_encryption_status WHERE singleton=TRUE"),
+        (error: unknown) => (error as { code?: string }).code === "42501",
+      );
+      await assert.rejects(
+        app.query("DELETE FROM managed_content_keys"),
+        (error: unknown) => (error as { code?: string }).code === "42501",
+      );
       await app.query("BEGIN"); await app.query("SELECT set_config('app.current_user_id',$1,true)", [userA]);
       assert.deepEqual((await app.query("SELECT * FROM get_content_e2ee_migration_progress($1)", [userA])).rows,
         [{ e2ee_records: "1", migrated_records: "0" }]);

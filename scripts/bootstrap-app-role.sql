@@ -77,6 +77,23 @@ BEGIN
     EXECUTE 'GRANT SELECT ON TABLE public.managed_content_key_distribution TO toard_app';
   END IF;
 
+  -- singleton은 trigger/owner만 변경하고 app은 상태를 읽기만 한다.
+  IF to_regclass('public.installation_identity') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.installation_identity FROM toard_app';
+    EXECUTE 'GRANT SELECT ON TABLE public.installation_identity TO toard_app';
+  END IF;
+
+  IF to_regclass('public.content_encryption_status') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.content_encryption_status FROM toard_app';
+    EXECUTE 'GRANT SELECT ON TABLE public.content_encryption_status TO toard_app';
+  END IF;
+
+  -- RLS가 사용자 key 행을 더 제한하고, table-level 권한도 필요한 mutation만 허용한다.
+  IF to_regclass('public.managed_content_keys') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.managed_content_keys FROM toard_app';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.managed_content_keys TO toard_app';
+  END IF;
+
   IF to_regprocedure('public.lock_managed_content_key_distribution()') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.lock_managed_content_key_distribution() FROM PUBLIC';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.lock_managed_content_key_distribution() TO toard_app';

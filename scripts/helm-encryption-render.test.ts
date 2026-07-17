@@ -367,6 +367,33 @@ test("GitOps releaseId와 핵심 Job 입력 변경은 새 completion ID와 immut
   assert.doesNotMatch(helpers, /printf "toard-release-completion-v1|job_spec=/);
 });
 
+test("동일 release ID에서도 encryption ConfigMap 변경은 secret-free pod-template checksum rollout을 만든다", () => {
+  const base = render(`${AWS_VALUES}\nmigrate:\n  releaseId: git-fixed\n`);
+  const keyRefChanged = render(`${AWS_VALUES.replace("00000000-0000-0000-0000-000000000000", "99999999-9999-9999-9999-999999999999")}\nmigrate:\n  releaseId: git-fixed\n`);
+  const migrationChanged = render(`${AWS_VALUES.replace("11111111-1111-1111-1111-111111111111", "88888888-8888-8888-8888-888888888888")}\nmigrate:\n  releaseId: git-fixed\n`);
+  const costChanged = render(`${AWS_VALUES.replace('per10000Usd: "0.03"', 'per10000Usd: "0.04"')}\nmigrate:\n  releaseId: git-fixed\n`);
+  const checksum = (manifest: string) => {
+    const deployment = resource(manifest, "Deployment", "toard");
+    const value = /checksum\/toard-encryption-config: "([0-9a-f]{64})"/.exec(deployment)?.[1];
+    assert.ok(value, deployment);
+    const annotations = deployment.slice(
+      deployment.indexOf("annotations:"),
+      deployment.indexOf("labels:", deployment.indexOf("annotations:")),
+    );
+    assert.doesNotMatch(annotations, /00000000-0000-0000-0000-000000000000|11111111-1111-1111-1111-111111111111|kms-files|token/);
+    return value;
+  };
+
+  const baseChecksum = checksum(base);
+  assert.notEqual(baseChecksum, checksum(keyRefChanged));
+  assert.notEqual(baseChecksum, checksum(migrationChanged));
+  assert.notEqual(baseChecksum, checksum(costChanged));
+  assert.equal(
+    /toard\.dev\/release-completion-id: "([0-9a-f]{64})"/.exec(base)?.[1],
+    /toard\.dev\/release-completion-id: "([0-9a-f]{64})"/.exec(keyRefChanged)?.[1],
+  );
+});
+
 test("schema-valid delimiter collision 쌍은 서로 다른 completion ID와 Job 이름을 만든다", () => {
   const postgresA = `
 postgres:

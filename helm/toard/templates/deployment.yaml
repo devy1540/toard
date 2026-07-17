@@ -20,6 +20,9 @@ spec:
     metadata:
       annotations:
         toard.dev/release-completion-id: {{ include "toard.releaseCompletionId" . | quote }}
+        {{- if .Values.encryption.provider }}
+        checksum/toard-encryption-config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum | quote }}
+        {{- end }}
       labels:
         {{- include "toard.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: app

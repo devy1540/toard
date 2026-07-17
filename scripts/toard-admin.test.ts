@@ -54,6 +54,7 @@ function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependenci
       } as ManagedContentRuntime;
     },
     async acquireDb(): Promise<AdminDbLease> { return { db, release() {} }; },
+    async assertManagedContentDatabaseRoleReady() {},
     loadLegacyKek: () => Buffer.alloc(32, 0x42),
     async migrateServerBatch() { return { migrated: 1, remaining: 0 }; },
     async rewrapUser(userId) {
@@ -95,6 +96,53 @@ test("CLI accepts exact commands and status emits aggregate counts only", async 
   assert.equal(result.stderr, "");
 });
 
+test("각 managed content-admin DB lease는 첫 query 전에 role readiness를 확인한다", async () => {
+  const checkedLeases: number[] = [];
+  const readyLeases = new Set<number>();
+  let acquired = 0;
+  let activeLease = 0;
+  const command = deps({
+    async acquireDb() {
+      const leaseId = ++acquired;
+      activeLease = leaseId;
+      return {
+        db: {
+          async query(sql: string, params: unknown[] = []) {
+            if (!readyLeases.has(leaseId)) throw new Error(`role readiness missing for lease ${leaseId}`);
+            if (sql.includes("content_encryption_status")) return { rows: [{
+              server_records: "0", e2ee_records: "0", managed_records: "0",
+              active_user_keys: "0", pending_user_keys: "0", retiring_user_keys: "0",
+              wrapper_distribution: [],
+            }] };
+            if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: true }] };
+            if (/lock_managed_content_key_distribution/i.test(sql)) return { rows: [{}] };
+            if (/INSERT INTO content_key_security_events/i.test(sql)) return { rows: [], rowCount: 1 };
+            if (/FROM managed_content_key_distribution/i.test(sql)) return { rows: [{ wrapper_distribution: [] }] };
+            if (/FROM users/i.test(sql)) return { rows: [] };
+            if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK" || sql.startsWith("SELECT set_config")) return { rows: [] };
+            throw new Error(`unexpected query: ${sql}`);
+          },
+        },
+        release() {},
+      };
+    },
+    async assertManagedContentDatabaseRoleReady() {
+      checkedLeases.push(activeLease);
+      readyLeases.add(activeLease);
+    },
+  });
+
+  for (const argv of [
+    ["encryption", "status"],
+    ["encryption", "migrate-server", "--batch-size", "1"],
+    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", USER_A],
+  ] as const) {
+    const result = await runCli(argv, command);
+    assert.equal(result.exitCode, 0, result.stderr);
+  }
+  assert.deepEqual(checkedLeases, Array.from({ length: acquired }, (_, index) => index + 1));
+});
+
 test("CLI rejects unknown, duplicate, missing, and extra arguments with usage exit 2", async () => {
   const invalid = [
     ["encryption", "unknown"],
@@ -133,7 +181,7 @@ test("CLI never prints arbitrary codes even when exported error classes are cons
   assert.equal(rewrap.exitCode, 1);
   assert.match(rewrap.stderr, /REWRAP_FAILED/);
   assert.equal(rewrap.stderr.includes("SECRET_IN_CODE"), false);
-  assert.equal(rewrap.stderr.includes(USER_A), false, "authenticated actor must never be printed");
+  assert.equal(rewrap.stderr.includes(USER_A), false, "approval subject must never be printed");
 });
 
 test("plaintext wrapper rejection exposes only its fixed non-secret operational code", async () => {
@@ -255,7 +303,7 @@ test("rewrap-provider requires exact configured names, continues per-user failur
   assert.equal(wrong.exitCode, 2);
 });
 
-test("rewrap-provider requires an exact admin actor and records started before enumeration plus completed after readiness", async () => {
+test("rewrap-provider validates an exact admin approval subject and records started before enumeration plus completed after readiness", async () => {
   const events: Array<{ type: string; appInstanceId: string }> = [];
   let enumerated = false;
   let installationReads = 0;

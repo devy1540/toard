@@ -24,6 +24,7 @@ import {
   type ProviderRemovalReadiness,
 } from "../apps/web/lib/managed-key-distribution";
 import { recordKeySecurityEvent } from "../apps/web/lib/key-management/observability";
+import { assertManagedContentDatabaseRoleReady } from "../apps/web/lib/content-database-role-readiness";
 
 const PROVIDERS = new Set<KeyProviderName>([
   "local", "aws-kms", "gcp-kms", "azure-key-vault", "vault-transit", "openbao-transit",
@@ -47,6 +48,7 @@ const SAFE_REWRAP_CODES = new Set([
 export type AdminCliDependencies = {
   runtime(): Promise<ManagedContentRuntime | null>;
   acquireDb(): Promise<AdminDbLease>;
+  assertManagedContentDatabaseRoleReady(db: RewrapDb): Promise<void>;
   loadLegacyKek(): Buffer;
   migrateServerBatch(
     userId: string,
@@ -78,6 +80,7 @@ export type CliResult = { exitCode: 0 | 1 | 2; stdout: string; stderr: string };
 const defaultDependencies: AdminCliDependencies = {
   runtime: getManagedContentRuntime,
   acquireDb: () => createPoolLeaseFactory(getPool())(),
+  assertManagedContentDatabaseRoleReady,
   loadLegacyKek: loadKek,
   migrateServerBatch: migrateServerContentBatch,
   rewrapUser: rewrapUserKey,
@@ -403,6 +406,8 @@ async function recordProviderMigrationEvent(
   }
 }
 
+// actorUserId는 CLI operator가 인프라 접근통제 아래 지정하는 approval subject다. 이 CLI는
+// 호출자의 인증 identity를 증명하지 않으며, 실제 operator attribution은 workload/orchestration audit에 둔다.
 async function setAndValidateAdminActor(actorUserId: string, db: RewrapDb): Promise<void> {
   await db.query("SELECT set_config('app.current_user_id',$1,true)", [actorUserId]);
   const actor = await db.query(
@@ -506,11 +511,12 @@ export function createPoolLeaseFactory(pool: PoolConnector): AdminCliDependencie
 }
 
 async function withDbLease<T>(
-  deps: Pick<AdminCliDependencies, "acquireDb">,
+  deps: Pick<AdminCliDependencies, "acquireDb" | "assertManagedContentDatabaseRoleReady">,
   fn: (db: RewrapDb) => Promise<T>,
 ): Promise<T> {
   const lease = await deps.acquireDb();
   try {
+    await deps.assertManagedContentDatabaseRoleReady(lease.db);
     return await fn(lease.db);
   } finally {
     await lease.release();

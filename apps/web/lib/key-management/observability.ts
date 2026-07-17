@@ -48,9 +48,11 @@ export type KeySecurityEventType =
   | "e2ee_migration_blocked"
   | "e2ee_migration_resumed";
 
-// provider_migration_* requires an explicit authenticated admin actor in RLS.
-// toard-admin rewrap-provider requires --actor-user-id, validates the current admin row,
-// and records start/completion through this exact DTO. Completion is emitted only after
+// provider_migration_* records an explicit CLI approval subject in RLS. toard-admin
+// rewrap-provider receives --actor-user-id from an infrastructure-controlled operator and
+// validates that subject's current admin row; it does not authenticate the CLI operator.
+// Actual operator attribution belongs to the content-admin workload and external orchestration audit.
+// Completion is emitted only after
 // the migration-39 distribution lock and readiness proof succeed in the same transaction.
 
 /** Exact, secret-free audit DTO. Nulls are intentional and shape-dependent. */

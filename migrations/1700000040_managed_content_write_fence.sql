@@ -39,6 +39,7 @@ REVOKE ALL ON FUNCTION latest_managed_content_write_fence() FROM PUBLIC;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app') THEN
+    REVOKE ALL PRIVILEGES ON FUNCTION latest_managed_content_write_fence() FROM toard_app;
     GRANT EXECUTE ON FUNCTION latest_managed_content_write_fence() TO toard_app;
   END IF;
 END $$;

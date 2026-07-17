@@ -212,6 +212,8 @@ FOR EACH ROW EXECUTE FUNCTION sync_managed_content_key_status();
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'toard_app') THEN
+    -- bootstrap가 migration 전에 실행된 topology에서도 default broad grant를 남기지 않는다.
+    REVOKE ALL PRIVILEGES ON TABLE installation_identity, content_encryption_status, managed_content_keys FROM toard_app;
     GRANT SELECT ON installation_identity, content_encryption_status TO toard_app;
     GRANT SELECT, INSERT, UPDATE ON managed_content_keys TO toard_app;
   END IF;

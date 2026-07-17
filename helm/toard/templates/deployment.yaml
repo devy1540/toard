@@ -19,7 +19,7 @@ spec:
   template:
     metadata:
       annotations:
-        toard.dev/release-revision: {{ .Release.Revision | quote }}
+        toard.dev/release-completion-id: {{ include "toard.releaseCompletionId" . | quote }}
       labels:
         {{- include "toard.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: app
@@ -54,13 +54,8 @@ spec:
           env:
             - name: TOARD_DEPLOYMENT_ID
               value: {{ include "toard.deploymentId" . | quote }}
-            - name: TOARD_RELEASE_REVISION
-              value: {{ .Release.Revision | quote }}
-            - name: TOARD_RELEASE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "toard.releaseReadinessSecretName" . }}
-                  key: token
+            - name: TOARD_RELEASE_COMPLETION_ID
+              value: {{ include "toard.releaseCompletionId" . | quote }}
             - name: TOARD_EXPECTED_SCHEMA_VERSION
               value: {{ include "toard.expectedSchemaVersion" . | quote }}
           {{- end }}

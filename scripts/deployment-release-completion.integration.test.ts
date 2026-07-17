@@ -59,11 +59,10 @@ async function connect(port: string, database: string, role = "postgres"): Promi
   return client;
 }
 
-function releaseEnv(revision: number, token: string) {
+function releaseEnv(completionId: string) {
   return {
     TOARD_DEPLOYMENT_ID: "toard/toard",
-    TOARD_RELEASE_REVISION: String(revision),
-    TOARD_RELEASE_TOKEN: token,
+    TOARD_RELEASE_COMPLETION_ID: completionId,
     TOARD_EXPECTED_SCHEMA_VERSION: String(LATEST_SCHEMA_VERSION),
   };
 }
@@ -134,7 +133,7 @@ test("migration 38, marker CLI, exact release readiness는 실제 PG에서 fail-
           ORDER BY column_name`)).rows.map((row) => row.column_name);
         assert.deepEqual(columns, [
           "completed_at", "deployment_id", "expected_schema_version",
-          "release_revision", "release_token",
+          "release_completion_id",
         ]);
         assert.equal((await admin.query(
           "SELECT has_table_privilege('public','deployment_release_completions','SELECT') AS ok",
@@ -150,61 +149,69 @@ test("migration 38, marker CLI, exact release readiness는 실제 PG에서 fail-
         }
         await assert.rejects(
           app.query(`INSERT INTO deployment_release_completions
-            (deployment_id,release_revision,release_token,expected_schema_version)
-            VALUES('toard/toard',1,$1,$2)`, ["X".repeat(48), LATEST_SCHEMA_VERSION]),
+            (deployment_id,release_completion_id,expected_schema_version)
+            VALUES('toard/toard',$1,$2)`, ["a".repeat(64), LATEST_SCHEMA_VERSION]),
           /permission denied/,
         );
 
-        for (const [deploymentId, revision, token, schema] of [
-          ["TOARD/toard", 1, "A".repeat(48), LATEST_SCHEMA_VERSION],
-          ["toard/toard", 0, "B".repeat(48), LATEST_SCHEMA_VERSION],
-          ["toard/toard", 2, "short", LATEST_SCHEMA_VERSION],
-          ["toard/toard", 3, `${"C".repeat(47)}-`, LATEST_SCHEMA_VERSION],
-          ["toard/toard", 4, "D".repeat(48), 0],
+        for (const [deploymentId, completionId, schema] of [
+          ["TOARD/toard", "a".repeat(64), LATEST_SCHEMA_VERSION],
+          ["toard/toard", "short", LATEST_SCHEMA_VERSION],
+          ["toard/toard", "A".repeat(64), LATEST_SCHEMA_VERSION],
+          ["toard/toard", `${"c".repeat(63)}-`, LATEST_SCHEMA_VERSION],
+          ["toard/toard", "d".repeat(64), 0],
         ] as const) {
           await assert.rejects(
             admin.query(`INSERT INTO deployment_release_completions
-              (deployment_id,release_revision,release_token,expected_schema_version)
-              VALUES($1,$2,$3,$4)`, [deploymentId, revision, token, schema]),
+              (deployment_id,release_completion_id,expected_schema_version)
+              VALUES($1,$2,$3)`, [deploymentId, completionId, schema]),
             /violates check constraint/,
           );
         }
 
         if (topology === "role-after") {
-          const oldToken = "E".repeat(48);
-          const newToken = "F".repeat(48);
-          const failedToken = "G".repeat(48);
-          assert.equal((await ready(app, releaseEnv(7, oldToken))).status, 503);
+          const oldCompletionId = "e".repeat(64);
+          const newCompletionId = "f".repeat(64);
+          const failedCompletionId = "9".repeat(64);
+          assert.equal((await ready(app, releaseEnv(oldCompletionId))).status, 503);
 
           const oldRun = await execFileAsync(
             process.execPath,
             ["--import", "tsx", MARKER_SCRIPT],
             {
               encoding: "utf8",
-              env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(7, oldToken) },
+              env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(oldCompletionId) },
             },
           ) as { stdout: string; stderr: string };
-          assert.equal(oldRun.stdout.includes(oldToken), false);
-          assert.equal(oldRun.stderr.includes(oldToken), false);
-          assert.equal((await ready(app, releaseEnv(7, "H".repeat(48)))).status, 503);
-          assert.equal((await ready(app, releaseEnv(7, oldToken))).status, 200);
+          assert.equal(oldRun.stdout.includes(oldCompletionId), false);
+          assert.equal(oldRun.stderr.includes(oldCompletionId), false);
+          assert.equal((await ready(app, releaseEnv("8".repeat(64)))).status, 503);
+          assert.equal((await ready(app, releaseEnv(oldCompletionId))).status, 200);
 
           await execFileAsync(process.execPath, ["--import", "tsx", MARKER_SCRIPT], {
-            env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(8, newToken) },
+            env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(oldCompletionId) },
           });
-          assert.equal((await ready(app, releaseEnv(7, oldToken))).status, 200);
-          assert.equal((await ready(app, releaseEnv(8, newToken))).status, 200);
+          assert.equal((await admin.query(
+            "SELECT COUNT(*)::int AS count FROM deployment_release_completions",
+          )).rows[0].count, 1);
+
+          await execFileAsync(process.execPath, ["--import", "tsx", MARKER_SCRIPT], {
+            env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(newCompletionId) },
+          });
+          assert.equal((await ready(app, releaseEnv(oldCompletionId))).status, 200);
+          assert.equal((await ready(app, releaseEnv(newCompletionId))).status, 200);
           assert.equal((await admin.query(
             "SELECT COUNT(*)::int AS count FROM deployment_release_completions",
           )).rows[0].count, 2);
 
           await assert.rejects(execFileAsync("sh", ["-c", "exit 9 && pnpm mark:deployment-release"], {
-            env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(9, failedToken) },
+            env: { ...process.env, DATABASE_URL: databaseUrl(port, database), ...releaseEnv(failedCompletionId) },
           }));
           assert.equal((await admin.query(
-            "SELECT COUNT(*)::int AS count FROM deployment_release_completions WHERE release_revision=9",
+            "SELECT COUNT(*)::int AS count FROM deployment_release_completions WHERE release_completion_id=$1",
+            [failedCompletionId],
           )).rows[0].count, 0);
-          assert.equal((await ready(app, releaseEnv(9, failedToken))).status, 503);
+          assert.equal((await ready(app, releaseEnv(failedCompletionId))).status, 503);
 
           await assert.rejects(admin.query(down), /rollback blocked/);
           await admin.query("DELETE FROM deployment_release_completions");

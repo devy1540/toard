@@ -33,11 +33,10 @@ const DEGRADED: ContentEncryptionReadiness = {
   errorCode: "TEMPORARY",
 };
 
-const RELEASE_TOKEN = "C".repeat(48);
+const RELEASE_COMPLETION_ID = "c".repeat(64);
 const RELEASE_ENV = {
   TOARD_DEPLOYMENT_ID: "toard/toard",
-  TOARD_RELEASE_REVISION: "4",
-  TOARD_RELEASE_TOKEN: RELEASE_TOKEN,
+  TOARD_RELEASE_COMPLETION_ID: RELEASE_COMPLETION_ID,
   TOARD_EXPECTED_SCHEMA_VERSION: String(LATEST_SCHEMA_VERSION),
 };
 
@@ -263,8 +262,8 @@ test("Helm env가 설정되면 exact completion marker 전에는 503이고 일�
       getPool: () => ({
         async query(sql: string, params?: unknown[]) {
           if (/deployment_release_completions/.test(sql)) {
-            assert.equal(params?.length, 4);
-            const exact = params?.[2] === RELEASE_TOKEN;
+            assert.equal(params?.length, 3);
+            const exact = params?.[1] === RELEASE_COMPLETION_ID;
             return { rows: marker === "correct" && exact ? [{ ok: 1 }] : [] };
           }
           return { rows: [] };
@@ -272,7 +271,7 @@ test("Helm env가 설정되면 exact completion marker 전에는 503이고 일�
       }),
     })();
     assert.equal(response.status, marker === "correct" ? 200 : 503);
-    assert.equal((await response.text()).includes(RELEASE_TOKEN), false);
+    assert.equal((await response.text()).includes(RELEASE_COMPLETION_ID), false);
   }
 });
 
@@ -287,7 +286,7 @@ test("partial release env와 marker query 오류는 detail 없이 503이다", as
       getPool: () => ({
         async query(sql: string) {
           if (/deployment_release_completions/.test(sql)) {
-            throw new Error(`relation missing ${RELEASE_TOKEN}`);
+            throw new Error(`relation missing ${RELEASE_COMPLETION_ID}`);
           }
           return { rows: [] };
         },
@@ -304,6 +303,6 @@ test("partial release env와 marker query 오류는 detail 없이 503이다", as
     const text = await response.text();
     assert.equal(response.status, 503);
     assert.deepEqual(JSON.parse(text), { status: "not-ready" });
-    assert.equal(text.includes(RELEASE_TOKEN), false);
+    assert.equal(text.includes(RELEASE_COMPLETION_ID), false);
   }
 });

@@ -65,9 +65,10 @@ postgres:
     limits:
       memory: 1Gi
 
-# 마이그레이션 — release revision별 일반 Job. migrate+seed+exact completion marker 전에는 새 app이 not-ready다.
+# 마이그레이션 — 결정적 completion ID별 일반 Job. migrate+seed+exact marker 전에는 새 app이 not-ready다.
 migrate:
   enabled: true
+  releaseId: "" # GitOps는 release마다 바뀌는 stable Git SHA/semver를 반드시 지정. 빈 값은 Helm revision fallback.
   seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
   backoffLimit: 4
   ttlSecondsAfterFinished: 86400

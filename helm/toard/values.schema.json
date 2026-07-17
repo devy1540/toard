@@ -22,9 +22,14 @@
     "migrate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "seedOnInstall", "backoffLimit", "ttlSecondsAfterFinished", "databaseSecret", "serviceAccount"],
+      "required": ["enabled", "releaseId", "seedOnInstall", "backoffLimit", "ttlSecondsAfterFinished", "databaseSecret", "serviceAccount"],
       "properties": {
         "enabled": { "type": "boolean" },
+        "releaseId": {
+          "type": "string",
+          "pattern": "^$|^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$",
+          "maxLength": 128
+        },
         "seedOnInstall": { "type": "boolean" },
         "backoffLimit": { "type": "integer", "minimum": 0, "maximum": 10 },
         "ttlSecondsAfterFinished": { "type": "integer", "minimum": 0, "maximum": 604800 },

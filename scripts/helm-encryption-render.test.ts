@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -65,6 +65,15 @@ function resource(rendered: string, kind: string, name: string): string {
     && new RegExp(`^  name: ${name}$`, "m").test(document)
   ));
   assert.ok(found, `${kind}/${name} 리소스가 필요합니다`);
+  return found;
+}
+
+function migrationJob(rendered: string): string {
+  const found = documents(rendered).find((document) => (
+    /^kind: Job$/m.test(document)
+    && /app\.kubernetes\.io\/component: migration/m.test(document)
+  ));
+  assert.ok(found, "migration Job 리소스가 필요합니다");
   return found;
 }
 
@@ -185,7 +194,7 @@ test("workload identity와 KMS 설정은 app/content-admin에만 연결된다", 
   const deployment = resource(rendered, "Deployment", "toard");
   const serviceAccount = resource(rendered, "ServiceAccount", "toard");
   const admin = resource(rendered, "Job", "toard-content-admin");
-  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const migration = migrationJob(rendered);
   const encryptionConfig = resource(rendered, "ConfigMap", "toard-encryption-config");
   const seedRendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\nsecrets:\n  bootstrapAdmin:\n    email: admin@example.com\n    password: test-password\n`);
   const seed = resource(seedRendered, "Job", "toard-seed");
@@ -209,7 +218,7 @@ test("KMS Pod에는 app/content-admin만 있고 migration/seed는 별도 non-KMS
   const rendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\nsecrets:\n  bootstrapAdmin:\n    email: admin@example.com\n    password: test-password\n`);
   const workloads = documents(rendered).filter((document) => /^(?:kind: Deployment|kind: Job)$/m.test(document));
   const app = resource(rendered, "Deployment", "toard");
-  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const migration = migrationJob(rendered);
   const seed = resource(rendered, "Job", "toard-seed");
   const admin = resource(rendered, "Job", "toard-content-admin");
   const migrationSa = resource(rendered, "ServiceAccount", "toard-migration");
@@ -225,8 +234,7 @@ test("KMS Pod에는 app/content-admin만 있고 migration/seed는 별도 non-KMS
     "DATABASE_URL",
     "TOARD_DEPLOYMENT_ID",
     "TOARD_EXPECTED_SCHEMA_VERSION",
-    "TOARD_RELEASE_REVISION",
-    "TOARD_RELEASE_TOKEN",
+    "TOARD_RELEASE_COMPLETION_ID",
   ]);
   assert.deepEqual(environmentNames(containerBlock(seed, "seed")), [
     "BOOTSTRAP_ADMIN_EMAIL",
@@ -253,9 +261,9 @@ test("KMS Pod에는 app/content-admin만 있고 migration/seed는 별도 non-KMS
   }
 });
 
-test("migration Job은 revision별 one-shot이며 최소 release env만 받고 readiness가 실패를 traffic에서 격리한다", () => {
+test("migration Job은 completion ID별 one-shot이며 최소 release env만 받고 readiness가 실패를 traffic에서 격리한다", () => {
   const rendered = render(AWS_VALUES);
-  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const migration = migrationJob(rendered);
   const deployment = resource(rendered, "Deployment", "toard");
   const migrationTemplate = [
     readFileSync(join(CHART, "templates/migration-job.yaml"), "utf8"),
@@ -280,36 +288,39 @@ test("migration Job은 revision별 one-shot이며 최소 release env만 받고 r
   assert.match(readyRoute, /status: 503/);
 
   const external = render(`${AWS_VALUES}\npostgres:\n  enabled: false\nsecrets:\n  existingSecret: external-db\n`);
-  const externalMigration = resource(external, "Job", "toard-migrate-1");
+  const externalMigration = migrationJob(external);
   assert.deepEqual(listNamesInSection(externalMigration, "initContainers"), []);
   assert.match(externalMigration, /backoffLimit: 4/);
   assert.match(externalMigration, /name: external-db[\s\S]*key: DATABASE_URL/);
 });
 
-test("release 전용 opaque token은 Secret ref로만 app과 post-seed marker에 공유된다", () => {
+test("동일 desired state는 random Secret 없이 byte-for-byte 동일 completion manifest를 만든다", () => {
   const rendered = render(AWS_VALUES);
-  const releaseSecret = resource(rendered, "Secret", "toard-release-readiness-1");
+  const rerendered = render(AWS_VALUES);
   const deployment = resource(rendered, "Deployment", "toard");
-  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const completionId = /toard\.dev\/release-completion-id: "([0-9a-f]{64})"/.exec(deployment)?.[1];
+  assert.ok(completionId);
+  const migration = resource(rendered, "Job", `toard-migrate-${completionId.slice(0, 20)}`);
   const app = containerBlock(deployment, "app");
   const migrate = containerBlock(migration, "migrate");
-  const token = /^  token: "([A-Za-z0-9]{48})"$/m.exec(releaseSecret)?.[1];
-  const redact = (value: string) => token ? value.replaceAll(token, "<redacted>") : value;
-  const redactedSecret = redact(releaseSecret);
 
-  assert.equal(token?.length, 48);
-  assert.match(redactedSecret, /immutable: true/);
-  assert.doesNotMatch(redactedSecret, /AUTH_SECRET|DATABASE_URL|KMS|BOOTSTRAP/);
-  assert.match(deployment, /toard\.dev\/release-revision: "1"/);
+  assert.equal(rerendered, rendered);
+  assert.doesNotMatch(rendered, /release-readiness|TOARD_RELEASE_TOKEN|randAlphaNum/);
+  const completionSources = [
+    "templates/_helpers.tpl",
+    "templates/deployment.yaml",
+    "templates/migration-job.yaml",
+  ].map((path) => readFileSync(join(CHART, path), "utf8")).join("\n");
+  assert.doesNotMatch(completionSources, /randAlphaNum|releaseReadinessSecret|TOARD_RELEASE_TOKEN/);
   for (const workload of [app, migrate]) {
-    const redactedWorkload = redact(workload);
-    assert.match(redactedWorkload, /name: TOARD_DEPLOYMENT_ID\s+value: "default\/toard"/);
-    assert.match(redactedWorkload, /name: TOARD_RELEASE_REVISION\s+value: "1"/);
-    assert.match(redactedWorkload, new RegExp(
+    assert.match(workload, /name: TOARD_DEPLOYMENT_ID\s+value: "default\/toard"/);
+    assert.match(workload, new RegExp(
       `name: TOARD_EXPECTED_SCHEMA_VERSION\\s+value: "${LATEST_SCHEMA_VERSION}"`,
     ));
-    assert.match(redactedWorkload, /name: TOARD_RELEASE_TOKEN[\s\S]*name: toard-release-readiness-1[\s\S]*key: token/);
-    assert.equal(token ? workload.includes(token) : true, false);
+    assert.match(workload, new RegExp(
+      `name: TOARD_RELEASE_COMPLETION_ID\\s+value: "${completionId}"`,
+    ));
+    assert.doesNotMatch(workload, /secretKeyRef:[\s\S]*release-readiness|TOARD_RELEASE_REVISION/);
   }
   assert.match(
     migrate,
@@ -318,19 +329,95 @@ test("release 전용 opaque token은 Secret ref로만 app과 post-seed marker에
   assert.doesNotMatch(deployment, /pnpm migrate|pnpm seed|mark:deployment-release/);
 });
 
+test("GitOps releaseId와 핵심 Job 입력 변경은 새 completion ID와 immutable Job을 만든다", () => {
+  const base = render(`${AWS_VALUES}\nmigrate:\n  releaseId: git-abc123\n`);
+  const same = render(`${AWS_VALUES}\nmigrate:\n  releaseId: git-abc123\n`);
+  const releaseChanged = render(`${AWS_VALUES}\nmigrate:\n  releaseId: git-def456\n`);
+  const imageChanged = render(`${AWS_VALUES}\nimage:\n  migrate:\n    repository: registry.example/toard-migrate\n    tag: sha-222\n    pullPolicy: IfNotPresent\nmigrate:\n  releaseId: git-abc123\n`);
+  const databaseChanged = render(`${AWS_VALUES}\nmigrate:\n  releaseId: git-abc123\n  databaseSecret:\n    name: owner-v2\n    key: DATABASE_URL\n`);
+  const podSpecChanged = render(`${AWS_VALUES}\nresources:\n  requests:\n    cpu: 250m\nmigrate:\n  releaseId: git-abc123\n`);
+  const id = (manifest: string) => {
+    const match = /toard\.dev\/release-completion-id: "([0-9a-f]{64})"/.exec(manifest);
+    assert.ok(match);
+    return match[1]!;
+  };
+
+  assert.equal(base, same);
+  assert.notEqual(id(base), id(releaseChanged));
+  assert.notEqual(id(base), id(imageChanged));
+  assert.notEqual(id(base), id(databaseChanged));
+  assert.notEqual(id(base), id(podSpecChanged));
+  for (const manifest of [base, releaseChanged, imageChanged, databaseChanged, podSpecChanged]) {
+    assert.match(manifest, new RegExp(`name: toard-migrate-${id(manifest).slice(0, 20)}`));
+  }
+  const helpers = readFileSync(join(CHART, "templates/_helpers.tpl"), "utf8");
+  assert.match(helpers, /printf "helm-revision:%d" \.Release\.Revision/);
+  assert.match(helpers, /expectedSchemaVersion/);
+  assert.match(helpers, /job_spec=/);
+});
+
+test("migrate.releaseId 기본값은 실제 Helm revision 1과 2를 서로 다른 completion ID로 만든다", () => {
+  const parent = join(ROOT, "node_modules/.cache/toard-helm-test");
+  mkdirSync(parent, { recursive: true });
+  const chart = mkdtempSync(join(parent, "revision-"));
+  cpSync(CHART, chart, { recursive: true });
+  writeFileSync(join(chart, "templates/revision-fixture.yaml"), `
+{{- $release1 := dict "Name" .Release.Name "Namespace" .Release.Namespace "Revision" 1 -}}
+{{- $release2 := dict "Name" .Release.Name "Namespace" .Release.Namespace "Revision" 2 -}}
+{{- $context1 := dict "Values" .Values "Chart" .Chart "Release" $release1 -}}
+{{- $context2 := dict "Values" .Values "Chart" .Chart "Release" $release2 -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: revision-fixture
+data:
+  revision-1: {{ include "toard.releaseCompletionId" $context1 | quote }}
+  revision-2: {{ include "toard.releaseCompletionId" $context2 | quote }}
+`);
+  try {
+    const result = helm([
+      "template", "toard", chart,
+      "--set", "secrets.authSecret=dummy",
+    ]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const revision1 = /revision-1: "([0-9a-f]{64})"/.exec(result.stdout)?.[1];
+    const revision2 = /revision-2: "([0-9a-f]{64})"/.exec(result.stdout)?.[1];
+    assert.ok(revision1);
+    assert.ok(revision2);
+    assert.notEqual(revision1, revision2);
+  } finally {
+    rmSync(chart, { recursive: true, force: true });
+  }
+});
+
+test("malformed GitOps releaseId를 fail-fast 한다", () => {
+  for (const releaseId of ["bad/id", "space id", "", "a".repeat(129)]) {
+    if (releaseId === "") continue;
+    const result = renderFailure(`migrate:\n  releaseId: ${JSON.stringify(releaseId)}\n`);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stderr}\n${result.stdout}`, /releaseId|pattern|length/i);
+  }
+});
+
 test("Helm notes는 install/upgrade migration 대기와 readiness 의미를 문서화한다", () => {
   const notes = readFileSync(join(CHART, "templates/NOTES.txt"), "utf8");
   const deployGuide = readFileSync(join(ROOT, "docs/DEPLOY.md"), "utf8");
   assert.match(notes, /--wait-for-jobs/);
-  assert.match(notes, /Release\.Revision|migrationJobName/);
+  assert.match(notes, /migrate\.releaseId/);
+  assert.match(notes, /Argo|Flux|GitOps/);
   assert.match(notes, /readiness|503/);
   assert.match(notes, /maxUnavailable=0/);
   assert.match(notes, /marker|completion/);
-  assert.match(deployGuide, /release revision.*migration Job/i);
+  assert.match(deployGuide, /migrate\.releaseId/);
+  assert.match(deployGuide, /Argo CD|Flux|GitOps/);
   assert.match(deployGuide, /--wait --wait-for-jobs/);
   assert.match(deployGuide, /\/api\/ready.*503/s);
   assert.match(deployGuide, /migrate.*seed.*marker/is);
-  assert.match(deployGuide, /correlation nonce/i);
+  assert.match(deployGuide, /mutable tag|가변 태그/i);
+  assert.match(deployGuide, /force.*rerun|강제 재실행/i);
+  assert.match(deployGuide, /rollback|롤백/i);
+  assert.match(deployGuide, /forward-only/i);
+  assert.doesNotMatch(notes, /release token|correlation nonce|dedicated Kubernetes Secret/i);
 });
 
 test("standalone Helm validator는 lint와 template을 모두 실행한다", () => {
@@ -380,7 +467,7 @@ test("secret file은 app/content-admin에 read-only로만 mount되고 DB Secret 
   const rendered = render(AWS_VALUES);
   const deployment = resource(rendered, "Deployment", "toard");
   const admin = resource(rendered, "Job", "toard-content-admin");
-  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const migration = migrationJob(rendered);
   const app = containerBlock(deployment, "app");
   const migrate = containerBlock(migration, "migrate");
 
@@ -550,7 +637,7 @@ migrate:
     key: OWNER_DATABASE_URL
 `);
   const deployment = resource(rendered, "Deployment", "toard");
-  const migration = resource(rendered, "Job", "toard-migrate-1");
+  const migration = migrationJob(rendered);
   const seed = resource(rendered, "Job", "toard-seed");
 
   assert.match(deployment, /secretRef:\s*\n\s*name: app-runtime-db/);
@@ -565,7 +652,7 @@ test("KMS/migration serviceAccount create=false와 name override를 지원한다
   assert.doesNotMatch(rendered, /^kind: ServiceAccount$/m);
   assert.match(resource(rendered, "Deployment", "toard"), /serviceAccountName: kms-existing/);
   assert.match(resource(rendered, "Job", "toard-content-admin"), /serviceAccountName: kms-existing/);
-  assert.match(resource(rendered, "Job", "toard-migrate-1"), /serviceAccountName: migration-existing/);
+  assert.match(migrationJob(rendered), /serviceAccountName: migration-existing/);
 });
 
 test("KMS와 migration ServiceAccount 이름은 같을 수 없다", () => {

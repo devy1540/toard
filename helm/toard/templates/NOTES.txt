@@ -24,13 +24,15 @@ toard 가 배포되었습니다. (release: {{ .Release.Name }}, ns: {{ .Release.
 
 4) schema migration:
 {{- if .Values.migrate.enabled }}
-   일반 Job {{ include "toard.migrationJobName" . }} 이 Release.Revision마다 새 이름으로 실행됩니다.
+   결정적 completion ID의 일반 Job {{ include "toard.migrationJobName" . }} 이 실행됩니다.
    Job은 migrate → baseline seed → exact release completion marker 순서로 성공해야 완료됩니다.
    완료 대기: kubectl wait -n {{ .Release.Namespace }} --for=condition=complete --timeout=10m job/{{ include "toard.migrationJobName" . }}
    install/upgrade 명령 자체도 기다리게 하려면 --wait --wait-for-jobs 를 함께 사용하세요.
-   이 옵션이 없어도 app의 /api/ready는 자신의 revision/token/schema completion marker가 없으면 503입니다.
+   이 옵션이 없어도 app의 /api/ready는 자신의 completion ID/schema marker가 없으면 503입니다.
    RollingUpdate maxUnavailable=0 이므로 upgrade 중 기존 ready replica는 새 replica가 준비될 때까지 유지됩니다.
-   release token은 인증 credential이 아닌 correlation nonce이며 dedicated Kubernetes Secret에서만 참조됩니다.
+   Helm CLI는 migrate.releaseId=""일 때 Release.Revision을 fallback 입력으로 사용합니다.
+   Argo CD/Flux 등 GitOps는 migrate.releaseId에 같은 desired state면 같은 값, 새 release면 새 Git SHA/semver를 지정하세요.
+   가변 이미지 태그는 쓰지 말고, 같은 manifest를 강제 재실행하려면 migrate.releaseId를 명시적으로 바꾸세요.
 {{- else }}
    migrate.enabled=false — operator가 호환 schema를 먼저 적용해야 합니다.
 {{- end }}

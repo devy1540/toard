@@ -101,14 +101,22 @@ helm install toard ./helm/toard \
 - `postgres.enabled=false` + `secrets.databaseUrl=...` → 외부 DB.
 - `migrate.seedOnInstall=true` + `secrets.bootstrapAdmin.*` → 최초 설치 시 providers·admin 시드(post-install 훅).
 - `ingress.enabled=true --set ingress.host=toard.corp.com` → Ingress.
-- 설치·업그레이드마다 release revision이 붙은 일반 migration Job이 `migrate → baseline seed → completion marker`
-  순서로 실행된다. `/api/ready`는 새 파드의 deployment id·revision·token·expected schema와 정확히 일치하는
-  DB marker가 생기기 전까지 503이다. 따라서 migrate/seed/marker 중 하나라도 실패하면 새 파드는 트래픽을
-  받지 않고, `maxUnavailable=0`인 기존 파드는 자신의 과거 marker로 계속 ready다. 완료된 Job은 TTL 뒤
-  정리하지만 과거 DB marker는 즉시 삭제하지 않는다. Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 쓴다.
-- release token은 인증 credential이 아닌 rollout correlation nonce지만 Secret으로 취급한다. 값은 revision별
-  dedicated Kubernetes Secret에만 있고 Deployment/Job은 `secretKeyRef`로 참조한다. 앱 API·UI·로그에는
-  출력하지 않는다. 단 Kubernetes Secret 또는 Helm Secret manifest를 읽을 권한이 있는 운영자는 볼 수 있다.
+- 일반 migration Job은 `migrate → baseline seed → completion marker` 순서로 실행된다. Job 이름, 앱 Pod
+  annotation, 앱/Job env, DB marker는 모두 동일한 64자리 release completion ID를 사용한다. 이 ID는
+  namespace/release, effective release ID, expected schema, migrator 이미지, DB Secret 이름/key 및 주요 Job
+  spec을 SHA-256으로 묶은 비밀이 아닌 배포 식별자다. 별도 Kubernetes Secret을 만들지 않는다.
+- Helm CLI에서 `migrate.releaseId=""`이면 `.Release.Revision`이 fallback 입력이다. Argo CD·Flux 같은 GitOps는
+  Helm revision이 실제 desired-state 변경과 일치하지 않을 수 있으므로 `migrate.releaseId`를 반드시 지정한다.
+  동일 desired state에는 동일 값을 유지하고, 새 배포마다 변경되는 안정적인 Git commit SHA 또는 semver를
+  사용한다. migrator에는 `latest` 같은 mutable tag(가변 태그)를 쓰지 말고 digest나 immutable tag를 쓴다.
+  같은 desired state의 migration을 force rerun(강제 재실행)하려면 `migrate.releaseId`를 새 값으로 바꾼다.
+- `/api/ready`는 새 파드의 deployment ID·completion ID·expected schema와 정확히 일치하는 DB marker가
+  생기기 전까지 503이다. 따라서 migrate/seed/marker 중 하나라도 실패하면 새 파드는 트래픽을 받지 않고,
+  `maxUnavailable=0`인 기존 파드는 자신의 과거 marker로 계속 ready다. 완료된 Job은 TTL 뒤 정리하지만
+  과거 DB marker는 보존한다. Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 쓴다.
+- 롤백은 이전 이미지와 이전 `migrate.releaseId`를 포함한 이전 desired state를 그대로 복원한다. 그러면 같은
+  completion ID와 보존된 과거 marker를 다시 사용한다. 단 DB migration은 forward-only이므로 이전 앱이
+  현재 스키마와 호환될 때만 안전하다. DB 스키마 자체를 자동 downgrade하지 않는다.
 - 앱 `DATABASE_URL`을 `toard_app`처럼 marker table SELECT-only 롤로 운영하면 migration/seed/marker Job에는
   owner 연결을 별도 Secret으로 주입한다: `migrate.databaseSecret.name`과 `migrate.databaseSecret.key`.
   비우면 호환성을 위해 앱과 같은 `DATABASE_URL`을 사용하므로 그 연결은 migration owner여야 한다.
@@ -143,7 +151,7 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 
 ## 스키마 마이그레이션 (expand → contract)
 
-무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. Helm은 release revision별 migration Job이
+무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. Helm은 release completion ID별 migration Job이
 스키마를 먼저 올리고, raw Kubernetes 배포는 새 파드의 `migrate` initContainer가 이를 수행한다.
 그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
 마이그레이션은 현재 돌고 있는(구) 코드와 하위호환**이어야 한다. `migrations/` 는 forward-only

@@ -1,5 +1,5 @@
 {{- if .Values.migrate.enabled }}
-# release revision마다 새 이름으로 실행되는 일반 Job이다. Helm hook이 아니며,
+# deterministic completion ID마다 새 이름으로 실행되는 일반 Job이다. Helm hook이 아니며,
 # app readiness가 migrate+seed 뒤 exact release marker 생성 전/실패 시 traffic을 차단한다.
 apiVersion: batch/v1
 kind: Job
@@ -45,13 +45,8 @@ spec:
                   key: {{ .Values.migrate.databaseSecret.key }}
             - name: TOARD_DEPLOYMENT_ID
               value: {{ include "toard.deploymentId" . | quote }}
-            - name: TOARD_RELEASE_REVISION
-              value: {{ .Release.Revision | quote }}
-            - name: TOARD_RELEASE_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "toard.releaseReadinessSecretName" . }}
-                  key: token
+            - name: TOARD_RELEASE_COMPLETION_ID
+              value: {{ include "toard.releaseCompletionId" . | quote }}
             - name: TOARD_EXPECTED_SCHEMA_VERSION
               value: {{ include "toard.expectedSchemaVersion" . | quote }}
           resources:

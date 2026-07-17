@@ -17,16 +17,41 @@
 {{- default (include "toard.secretName" .) .Values.migrate.databaseSecret.name -}}
 {{- end -}}
 
-{{/* revision suffix를 보존해 completed Job immutable-name 충돌을 피한다. */}}
-{{- define "toard.migrationJobName" -}}
-{{- $suffix := printf "-migrate-%d" .Release.Revision -}}
-{{- $maxBaseLength := sub 63 (len $suffix) | int -}}
-{{- printf "%s%s" (include "toard.fullname" . | trunc $maxBaseLength | trimSuffix "-") $suffix -}}
+{{/* GitOps는 stable releaseId, Helm CLI는 revision을 completion hash 입력으로 사용한다. */}}
+{{- define "toard.effectiveReleaseId" -}}
+{{- if .Values.migrate.releaseId -}}
+  {{- if or (gt (len .Values.migrate.releaseId) 128) (not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$" .Values.migrate.releaseId)) -}}
+    {{- fail "migrate.releaseId must match ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$" -}}
+  {{- end -}}
+  {{- .Values.migrate.releaseId -}}
+{{- else -}}
+  {{- printf "helm-revision:%d" .Release.Revision -}}
+{{- end -}}
 {{- end -}}
 
-{{/* release마다 새 opaque readiness nonce를 담는 dedicated Secret 이름 */}}
-{{- define "toard.releaseReadinessSecretName" -}}
-{{- $suffix := printf "-release-readiness-%d" .Release.Revision -}}
+{{/* Job/seed 완료에 영향을 주는 비민감 입력을 canonical SHA-256 ID로 묶는다. */}}
+{{- define "toard.releaseCompletionId" -}}
+{{- $waitSpec := "external-db" -}}
+{{- if .Values.postgres.enabled -}}
+  {{- $waitSpec = printf "bundled-db:%s:%s:%s" .Values.postgres.image .Values.postgres.auth.user (include "toard.postgresHost" .) -}}
+{{- end -}}
+{{- $jobSpec := dict
+  "affinity" .Values.affinity
+  "backoffLimit" .Values.migrate.backoffLimit
+  "imagePullSecrets" .Values.imagePullSecrets
+  "nodeSelector" .Values.nodeSelector
+  "podSecurityContext" .Values.podSecurityContext
+  "resources" .Values.resources
+  "serviceAccountName" (include "toard.migrationServiceAccountName" .)
+  "tolerations" .Values.tolerations
+  "ttlSecondsAfterFinished" .Values.migrate.ttlSecondsAfterFinished
+-}}
+{{- printf "toard-release-completion-v1\nnamespace=%s\nrelease=%s\nrelease_id=%s\nschema=%s\nmigrate_image=%s:%s\npull_policy=%s\ndatabase_secret=%s\ndatabase_key=%s\nwait_spec=%s\njob_spec=%s\ncommand=migrate-seed-marker-v1" .Release.Namespace .Release.Name (include "toard.effectiveReleaseId" .) (include "toard.expectedSchemaVersion" .) .Values.image.migrate.repository .Values.image.migrate.tag .Values.image.migrate.pullPolicy (include "toard.migrationDatabaseSecretName" .) .Values.migrate.databaseSecret.key $waitSpec ($jobSpec | toJson) | sha256sum -}}
+{{- end -}}
+
+{{/* immutable Job 이름에는 같은 completion ID의 80-bit prefix를 사용한다. */}}
+{{- define "toard.migrationJobName" -}}
+{{- $suffix := printf "-migrate-%s" (include "toard.releaseCompletionId" . | trunc 20) -}}
 {{- $maxBaseLength := sub 63 (len $suffix) | int -}}
 {{- printf "%s%s" (include "toard.fullname" . | trunc $maxBaseLength | trimSuffix "-") $suffix -}}
 {{- end -}}

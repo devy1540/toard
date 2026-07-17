@@ -21,14 +21,12 @@ export async function assertDeploymentReleaseReady(
     `SELECT 1 AS ok
        FROM deployment_release_completions
       WHERE deployment_id = $1
-        AND release_revision = $2
-        AND release_token = $3
-        AND expected_schema_version = $4
+        AND release_completion_id = $2
+        AND expected_schema_version = $3
       LIMIT 1`,
     [
       release.deploymentId,
-      release.releaseRevision,
-      release.releaseToken,
+      release.releaseCompletionId,
       release.expectedSchemaVersion,
     ],
   );

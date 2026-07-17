@@ -11,12 +11,11 @@ type MarkerDb = {
 
 const INSERT_COMPLETION_SQL = `
   INSERT INTO deployment_release_completions
-    (deployment_id, release_revision, release_token, expected_schema_version)
-  VALUES ($1, $2, $3, $4)
-  ON CONFLICT (deployment_id, release_revision) DO UPDATE
+    (deployment_id, release_completion_id, expected_schema_version)
+  VALUES ($1, $2, $3)
+  ON CONFLICT (deployment_id, release_completion_id) DO UPDATE
     SET completed_at = deployment_release_completions.completed_at
-    WHERE deployment_release_completions.release_token = EXCLUDED.release_token
-      AND deployment_release_completions.expected_schema_version = EXCLUDED.expected_schema_version
+    WHERE deployment_release_completions.expected_schema_version = EXCLUDED.expected_schema_version
   RETURNING deployment_id
 `;
 
@@ -29,8 +28,7 @@ export async function insertDeploymentReleaseCompletion(
   if (!release) throw new Error("DEPLOYMENT_RELEASE_ENV_INVALID");
   const result = await db.query(INSERT_COMPLETION_SQL, [
     release.deploymentId,
-    release.releaseRevision,
-    release.releaseToken,
+    release.releaseCompletionId,
     release.expectedSchemaVersion,
   ]);
   if (result.rowCount !== 1) {
@@ -53,7 +51,7 @@ const isMain = process.argv[1]
   : false;
 if (isMain) {
   main().catch(() => {
-    // release token, DATABASE_URL, SQL/driver detail은 어느 실패 경로에서도 출력하지 않는다.
+    // completion ID, DATABASE_URL, SQL/driver detail은 어느 실패 경로에서도 출력하지 않는다.
     console.error("deployment release completion failed");
     process.exitCode = 1;
   });

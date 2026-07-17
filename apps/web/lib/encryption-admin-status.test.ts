@@ -12,12 +12,18 @@ const STATUS_ROW = {
   retiring_user_keys: "9",
   e2ee_migration_pending: "10",
   e2ee_migration_blocked: "11",
+  wrapper_distribution: [
+    { provider: "aws-kms", provider_fingerprint: "aws-kms:0123456789abcdef01234567", state: "active", wrapper_count: "7" },
+    { provider: "aws-kms", provider_fingerprint: "aws-kms:0123456789abcdef01234567", state: "pending", wrapper_count: "8" },
+    { provider: "aws-kms", provider_fingerprint: "aws-kms:0123456789abcdef01234567", state: "retiring", wrapper_count: "9" },
+  ],
 };
 
 function runtime(options: {
   provider?: "aws-kms" | "gcp-kms" | "azure-key-vault";
   health?: "healthy" | "unhealthy";
   credential?: { kind: string; staticCredential: boolean };
+  migrationProvider?: "gcp-kms";
 } = {}): ManagedContentRuntime {
   const provider = options.provider ?? "aws-kms";
   const keyRef = provider === "aws-kms"
@@ -38,9 +44,14 @@ function runtime(options: {
       staticCredential: false,
     },
   } as never;
+  const migration = options.migrationProvider === "gcp-kms" ? {
+    name: "gcp-kms",
+    keyRef: "projects/acme/locations/global/keyRings/toard/cryptoKeys/target",
+    fingerprint: "gcp-kms:222222222222222222222222",
+  } : undefined;
   return {
     installationId: "00000000-0000-0000-0000-000000000001",
-    registry: { active } as never,
+    registry: { active, migration } as never,
     userKeys: {} as never,
     health: {
       check: async () => options.health === "unhealthy"
@@ -59,13 +70,16 @@ function runtime(options: {
   };
 }
 
-function database(operationRows: Array<Record<string, unknown>> = []) {
+function database(
+  operationRows: Array<Record<string, unknown>> = [],
+  statusRow: Record<string, unknown> = STATUS_ROW,
+) {
   const calls: Array<{ sql: string; params: unknown[] }> = [];
   return {
     calls,
     query: async (sql: string, params: unknown[] = []) => {
       calls.push({ sql, params });
-      if (/FROM content_encryption_status/i.test(sql)) return { rows: [STATUS_ROW] };
+      if (/FROM content_encryption_status/i.test(sql)) return { rows: [statusRow] };
       if (/FROM content_key_operation_daily/i.test(sql)) {
         if (/active_operation_count/i.test(sql)) {
           const [provider, fingerprint] = params;
@@ -99,6 +113,84 @@ function database(operationRows: Array<Record<string, unknown>> = []) {
     },
   };
 }
+
+test("provider/fingerprint/state 분포와 old provider 제거 가능 여부를 같은 secret-free snapshot으로 반환한다", async () => {
+  const readyRow = {
+    ...STATUS_ROW,
+    active_user_keys: "7",
+    pending_user_keys: "0",
+    retiring_user_keys: "7",
+    wrapper_distribution: [
+      { provider: "gcp-kms", provider_fingerprint: "gcp-kms:222222222222222222222222", state: "active", wrapper_count: "7" },
+      { provider: "aws-kms", provider_fingerprint: "aws-kms:0123456789abcdef01234567", state: "retiring", wrapper_count: "7" },
+    ],
+  };
+  const db = database([], readyRow);
+  const status = await getEncryptionAdminStatus({
+    env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+    db,
+    runtime: runtime({ migrationProvider: "gcp-kms" }),
+  });
+
+  assert.deepEqual(status.wrapperDistribution, [
+    { provider: "gcp-kms", providerFingerprint: "gcp-kms:222222222222222222222222", state: "active", count: 7 },
+    { provider: "aws-kms", providerFingerprint: "aws-kms:0123456789abcdef01234567", state: "retiring", count: 7 },
+  ]);
+  assert.deepEqual(status.providerMigration, {
+    old: { provider: "aws-kms", providerFingerprint: "aws-kms:0123456789abcdef01234567" },
+    target: { provider: "gcp-kms", providerFingerprint: "gcp-kms:222222222222222222222222" },
+    totalActiveWrappers: 7,
+    oldActiveWrappers: 0,
+    targetActiveWrappers: 7,
+    pendingWrappers: 0,
+    unexpectedActiveWrappers: 0,
+    removalReady: true,
+  });
+  assert.equal(db.calls.filter((call) => /content_encryption_status/i.test(call.sql)).length, 1);
+  assert.match(db.calls.find((call) => /content_encryption_status/i.test(call.sql))!.sql, /managed_content_key_distribution/i);
+  assert.doesNotMatch(JSON.stringify(status), /wrapped_user_key|key material|credential=|secret/i);
+});
+
+test("예상 밖 fingerprint, pending, target 부재와 malformed distribution은 제거 가능으로 축소하지 않는다", async () => {
+  const unexpected = {
+    ...STATUS_ROW,
+    active_user_keys: "1",
+    pending_user_keys: "0",
+    retiring_user_keys: "0",
+    wrapper_distribution: [
+      { provider: "gcp-kms", provider_fingerprint: "gcp-kms:333333333333333333333333", state: "active", wrapper_count: "1" },
+    ],
+  };
+  const status = await getEncryptionAdminStatus({
+    env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+    db: database([], unexpected),
+    runtime: runtime({ migrationProvider: "gcp-kms" }),
+  });
+  assert.equal(status.providerMigration.unexpectedActiveWrappers, 1);
+  assert.equal(status.providerMigration.removalReady, false);
+
+  const noTarget = await getEncryptionAdminStatus({
+    env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+    db: database(),
+    runtime: runtime(),
+  });
+  assert.equal(noTarget.providerMigration.target, null);
+  assert.equal(noTarget.providerMigration.removalReady, false);
+
+  for (const wrapperDistribution of [
+    [{ provider: "aws-kms", provider_fingerprint: "aws-kms:0123456789abcdef01234567", state: "active", wrapper_count: "01" }],
+    [{ provider: "aws-kms", provider_fingerprint: "aws-kms:0123456789abcdef01234567", state: "active", wrapper_count: "1", token: "secret" }],
+  ]) {
+    await assert.rejects(
+      getEncryptionAdminStatus({
+        env: { TOARD_KEY_ACTIVE_PROVIDER: "aws-kms" },
+        db: database([], { ...STATUS_ROW, wrapper_distribution: wrapperDistribution }),
+        runtime: runtime({ migrationProvider: "gcp-kms" }),
+      }),
+      /ENCRYPTION_ADMIN_STATUS_UNAVAILABLE/,
+    );
+  }
+});
 
 test("실제 KMS 호출만 30일 비용에 포함하고 latency는 sum/count 가중 평균이다", async () => {
   const db = database([

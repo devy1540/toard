@@ -10,6 +10,13 @@ import {
   getManagedContentRuntime,
   type ManagedContentRuntime,
 } from "./managed-content-runtime";
+import {
+  evaluateProviderRemovalReadiness,
+  parseManagedKeyDistribution,
+  type ManagedKeyDistributionEntry,
+  type ProviderDistributionIdentity,
+  type ProviderRemovalReadiness,
+} from "./managed-key-distribution";
 
 const REFERENCE_PRICING = {
   "aws-kms": { asOf: "2026-07-17", per10kUsd: 0.03, monthlyKeyUsd: 1.00 },
@@ -69,6 +76,8 @@ export type EncryptionAdminStatus = {
   records: { serverV1: number; e2eeV1: number; managedV1: number };
   userKeys: { active: number; pending: number; retiring: number };
   migrations: { e2eePending: number; e2eeBlocked: number };
+  wrapperDistribution: ManagedKeyDistributionEntry[];
+  providerMigration: ProviderRemovalReadiness;
   operations30d: Array<{
     operation: KeyOperation;
     outcome: KeyOperationOutcome;
@@ -160,6 +169,27 @@ function providerIdentity(provider: KeyManagementProvider): {
     throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
   }
   return { provider: name, keyRef, fingerprint };
+}
+
+function distributionIdentity(identity: ReturnType<typeof providerIdentity> | null): ProviderDistributionIdentity | null {
+  return identity ? {
+    provider: identity.provider,
+    providerFingerprint: identity.fingerprint,
+  } : null;
+}
+
+function distributionCounts(distribution: readonly ManagedKeyDistributionEntry[]): {
+  active: number;
+  pending: number;
+  retiring: number;
+} {
+  const counts = { active: 0, pending: 0, retiring: 0 };
+  for (const entry of distribution) {
+    const next = counts[entry.state] + entry.count;
+    if (!Number.isSafeInteger(next)) throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+    counts[entry.state] = next;
+  }
+  return counts;
 }
 
 function exactOwnDataSnapshotVariants(
@@ -326,12 +356,23 @@ export async function getEncryptionAdminStatus(
     }
     const activeProvider = runtime?.registry.active ?? null;
     const identity = activeProvider ? providerIdentity(activeProvider) : null;
+    const migrationProvider = runtime?.registry.migration ?? null;
+    const migrationIdentity = migrationProvider ? providerIdentity(migrationProvider) : null;
 
     const [statusResult, operationsResult, cacheResult] = await Promise.all([
       db.query(
         `SELECT server_records,e2ee_records,managed_records,
                 active_user_keys,pending_user_keys,retiring_user_keys,
-                e2ee_migration_pending,e2ee_migration_blocked
+                e2ee_migration_pending,e2ee_migration_blocked,
+                COALESCE((
+                  SELECT jsonb_agg(jsonb_build_object(
+                    'provider',distribution.provider,
+                    'provider_fingerprint',distribution.provider_fingerprint,
+                    'state',distribution.state,
+                    'wrapper_count',distribution.wrapper_count::text
+                  ) ORDER BY distribution.provider,distribution.provider_fingerprint,distribution.state)
+                  FROM managed_content_key_distribution distribution
+                ),'[]'::jsonb) AS wrapper_distribution
            FROM content_encryption_status
           WHERE singleton=TRUE`,
       ),
@@ -384,6 +425,18 @@ export async function getEncryptionAdminStatus(
       pending: parseUnsignedCount(row.pending_user_keys),
       retiring: parseUnsignedCount(row.retiring_user_keys),
     };
+    const wrapperDistribution = parseManagedKeyDistribution(row.wrapper_distribution);
+    const observedDistributionCounts = distributionCounts(wrapperDistribution);
+    if (
+      observedDistributionCounts.active !== userKeys.active
+      || observedDistributionCounts.pending !== userKeys.pending
+      || observedDistributionCounts.retiring !== userKeys.retiring
+    ) throw new Error("ENCRYPTION_ADMIN_STATUS_INVALID");
+    const providerMigration = evaluateProviderRemovalReadiness(
+      wrapperDistribution,
+      distributionIdentity(identity),
+      distributionIdentity(migrationIdentity),
+    );
     const migrations = {
       e2eePending: parseUnsignedCount(row.e2ee_migration_pending),
       e2eeBlocked: parseUnsignedCount(row.e2ee_migration_blocked),
@@ -479,6 +532,8 @@ export async function getEncryptionAdminStatus(
         records,
         userKeys,
         migrations,
+        wrapperDistribution,
+        providerMigration,
         operations30d,
         cache30d,
         costEstimate: null,
@@ -504,6 +559,8 @@ export async function getEncryptionAdminStatus(
       records,
       userKeys,
       migrations,
+      wrapperDistribution,
+      providerMigration,
       operations30d,
       cache30d,
       costEstimate: costEstimate(pricing, activeProviderCalls, actualProviderCalls),

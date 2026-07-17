@@ -10,23 +10,27 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 
 ## 이미지
 
-멀티 타깃 `Dockerfile` — 운영 이미지 세 개:
+멀티 타깃 `Dockerfile` — 운영 이미지 네 개:
 
 | 타깃 | 용도 | 실행 |
 |---|---|---|
 | `runner` | Next.js standalone 앱 | `node apps/web/server.js` |
 | `migrator` | 마이그레이션·시드 | `pnpm migrate` / `pnpm seed` |
 | `content-admin` | 암호화 상태·전환 one-shot 도구 | `encryption status` 등 |
+| `updater` | Compose 자가 업데이트 agent | `node packages/updater/src/server.mjs` |
 
 CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`,
-`ghcr.io/devy1540/toard-migrate`, `ghcr.io/devy1540/toard-content-admin`을 자동 게시한다
+`ghcr.io/devy1540/toard-migrate`, `ghcr.io/devy1540/toard-content-admin`,
+`ghcr.io/devy1540/toard-updater`를 자동 게시한다
 (amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
 
 ```bash
 docker build --target runner   -t REG/toard:TAG .
 docker build --target migrator  -t REG/toard-migrate:TAG .
 docker build --target content-admin -t REG/toard-content-admin:TAG .
-docker push REG/toard:TAG && docker push REG/toard-migrate:TAG && docker push REG/toard-content-admin:TAG
+docker build --target updater -t REG/toard-updater:TAG .
+docker push REG/toard:TAG && docker push REG/toard-migrate:TAG \
+  && docker push REG/toard-content-admin:TAG && docker push REG/toard-updater:TAG
 ```
 
 헬스: `GET /api/health`(liveness, 무의존) · `GET /api/ready`(readiness, DB ping).

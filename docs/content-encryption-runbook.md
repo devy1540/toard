@@ -121,12 +121,16 @@ docker compose --profile content-admin run --rm content-admin \
 
 # active=aws-kms, migration=openbao-transit로 설정한 뒤 UCK wrapper 전환
 docker compose --profile content-admin run --rm content-admin \
-  encryption rewrap-provider --from aws-kms --to openbao-transit
+  encryption rewrap-provider --from aws-kms --to openbao-transit \
+  --actor-user-id "$ADMIN_USER_ID"
 ```
 
-`encryption status`는 JSON으로 `serverRecords`, `e2eeRecords`, `managedRecords`, active/pending/retiring key 수를
-출력한다. provider health는 관리 → 시스템의 암호화 panel에서 확인한다. canary도 실제 공급자 wrap/unwrap
-호출이며 호출 비용/쿼터에 포함될 수 있다.
+`ADMIN_USER_ID`는 현재 toard의 인증된 admin 사용자 UUID여야 한다. 명령은 DB에서 해당 사용자의 admin role을
+검증하며, 누락·잘못된 UUID·member·삭제된 사용자는 시작 전에 실패한다. `encryption status`는 JSON으로
+`serverRecords`, `e2eeRecords`, `managedRecords`, active/pending/retiring key 수와
+`wrapperDistribution`, `providerMigration`을 출력한다. provider health와 같은 제거 판정은 관리 → 시스템의
+암호화 panel에서도 읽기 전용으로 확인할 수 있다. canary도 실제 공급자 wrap/unwrap 호출이며 호출 비용/쿼터에
+포함될 수 있다.
 
 주의:
 
@@ -147,28 +151,32 @@ docker compose --profile content-admin run --rm content-admin \
 2. old provider를 active로 유지한 채 target을 migration profile에 추가한다. 두 공급자의 decrypt 권한을 모두
    유지하고 앱과 content-admin을 재시작한다.
 3. 관리 panel health와 `encryption status`를 확인한다. target 설정 오류가 있으면 rewrap을 시작하지 않는다.
-4. `rewrap-provider --from OLD --to TARGET`을 실행한다. 명령은 사용자별로 검증된 pending wrapper를 만든 뒤
+4. `rewrap-provider --from OLD --to TARGET --actor-user-id ADMIN_UUID`를 실행한다. 명령은 인증된 admin actor와
+   target provider/fingerprint, 동일 app instance로 `provider_migration_started`를 먼저 기록한다. 그 뒤
+   사용자별로 검증된 pending wrapper를 만든 뒤
    canary를 복호화하고 한 transaction에서 target을 active, old를 retiring으로 바꾼다. 실패 사용자는 old
    wrapper를 유지하며 명령은 exit 1과 안전한 오류 코드만 출력한다. 수정 후 같은 명령을 재실행할 수 있다.
-5. migration owner DB 연결로 비민감 분포를 확인한다.
+5. `encryption status` 또는 관리 panel의 비민감 분포를 확인한다. 둘 다 RLS가 적용된 사용자 wrapper 행을
+   직접 열거하지 않고 `provider/fingerprint/state/count` 집계만 읽는다.
 
-```sql
-SELECT provider, provider_fingerprint, state, count(*)
-FROM managed_content_keys
-GROUP BY provider, provider_fingerprint, state
-ORDER BY provider, provider_fingerprint, state;
+```bash
+docker compose --profile content-admin run --rm content-admin encryption status | jq \
+  '{wrapperDistribution, providerMigration}'
 ```
 
-target fingerprint의 `active` 수가 전체 active 수와 같고 old fingerprint의 `active`가 0인지 확인한다.
-`pendingUserKeys=0`도 확인한다. old wrapper는 즉시 삭제하지 않고 `retiring` 상태로 남긴다.
+`providerMigration.removalReady=true`는 runtime migration target fingerprint의 `active` 수가 전체 active 수와
+같고, old fingerprint의 active가 0이며, pending과 예상 밖 active fingerprint가 모두 0일 때만 나온다.
+target 설정 누락, malformed/overflow 집계, 작업 후 새 old active wrapper가 생긴 경우에는 fail-closed한다.
+모든 사용자 처리와 이 판정이 성공한 뒤에만 같은 actor/target/app instance의
+`provider_migration_completed`가 기록된다. 실패·중단·not-ready에는 completed가 남지 않는다. old wrapper는
+즉시 삭제하지 않고 `retiring` 상태로 남긴다.
 6. 실제 history 읽기/수집을 관찰하는 유예 기간을 둔다. 문제가 생기면 두 provider 설정과 old decrypt 권한을
    그대로 둔 채 원인을 고치고 재실행한다. target 장애 중 old 설정/권한을 먼저 제거하지 않는다.
 7. 유예가 끝난 뒤 active를 target으로 바꾸고 migration profile을 제거한다. 최종 health/fingerprint/status와
    백업을 확인한 다음에만 old provider 권한을 회수한다. wrapper/key의 자동 삭제 기능은 제공하지 않는다.
 
-현재 noninteractive `toard-admin` CLI에는 인증된 관리자 actor가 없어서 전역
-`provider_migration_started|completed` security event를 기록하지 않는다. 사용자별 `user_key_rewrapped` 감사
-이벤트와 집계는 기록되지만, 전역 시작/완료 이벤트가 필요하면 외부 변경관리 로그를 함께 보존한다.
+`provider_migration_started|completed`와 사용자별 `user_key_rewrapped` 감사 INSERT가 실패하면 전환 명령도
+실패한다. CLI는 actor UUID, provider 오류 원문, credential·key material을 stdout/stderr에 출력하지 않는다.
 
 ## Helm / GitOps
 
@@ -216,7 +224,8 @@ kubectl -n toard delete job toard-content-admin
   고치고 새 `migrate.releaseId`로 재실행한다. DB downgrade는 자동화하지 않는다.
 - provider 전환 rollback: old decrypt 권한과 old wrapper가 남아 있을 때만 안전하다. 현재 target을 active로
   유지하고 old를 migration provider로 설정한 뒤 `rewrap-provider --from TARGET --to OLD`를 별도 변경 창에서
-  수행한다. 모든 active wrapper가 old fingerprint로 돌아온 것을 확인한 다음 active 설정을 old로 바꾼다.
+  수행한다(`--actor-user-id ADMIN_UUID` 필수). 모든 active wrapper가 old fingerprint로 돌아온 것을
+  `providerMigration.removalReady=true`로 확인한 다음 active 설정을 old로 바꾼다.
 
 ## 보안 회귀 검증
 

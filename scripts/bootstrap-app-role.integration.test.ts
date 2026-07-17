@@ -160,6 +160,15 @@ for (const topology of ["role-before", "role-after"] as const) {
         assert.equal((await admin.query("SELECT has_table_privilege('toard_app','content_e2ee_migrations',$1) AS ok", [privilege])).rows[0].ok, true);
       }
       assert.equal((await admin.query("SELECT has_table_privilege('toard_app','content_e2ee_migrations','DELETE') AS ok")).rows[0].ok, false);
+      assert.equal((await admin.query(
+        "SELECT has_table_privilege('toard_app','managed_content_key_distribution','SELECT') AS ok",
+      )).rows[0].ok, true);
+      for (const privilege of ["INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]) {
+        assert.equal((await admin.query(
+          "SELECT has_table_privilege('toard_app','managed_content_key_distribution',$1) AS ok",
+          [privilege],
+        )).rows[0].ok, false, `${topology}:${privilege}`);
+      }
       assert.equal((await admin.query("SELECT has_function_privilege('toard_app','get_content_e2ee_migration_progress(uuid)','EXECUTE') AS ok")).rows[0].ok, true);
       const publicExecute = await admin.query<{ name: string; public_execute: boolean }>(`
         SELECT p.proname AS name,

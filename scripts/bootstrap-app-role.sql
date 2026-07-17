@@ -72,6 +72,11 @@ BEGIN
     EXECUTE 'GRANT USAGE ON SEQUENCE public.content_key_security_events_id_seq TO toard_app';
   END IF;
 
+  IF to_regclass('public.managed_content_key_distribution') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.managed_content_key_distribution FROM toard_app';
+    EXECUTE 'GRANT SELECT ON TABLE public.managed_content_key_distribution TO toard_app';
+  END IF;
+
   IF to_regclass('public.deployment_release_completions') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.deployment_release_completions FROM toard_app';
     EXECUTE 'GRANT SELECT ON TABLE public.deployment_release_completions TO toard_app';

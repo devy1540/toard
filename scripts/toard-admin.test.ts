@@ -7,12 +7,23 @@ import { runCli, type AdminCliDependencies, type AdminDbLease } from "./toard-ad
 
 const USER_A = "11111111-1111-4111-8111-111111111111";
 const USER_B = "22222222-2222-4222-8222-222222222222";
+const OLD_FINGERPRINT = "local:111111111111111111111111";
+const TARGET_FINGERPRINT = "aws-kms:222222222222222222222222";
 
 function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependencies {
   let currentUser: string | null = null;
   const db = {
     async query(sql: string, params: unknown[] = []) {
-      if (sql.includes("content_encryption_status")) return { rows: [{ server_records: "2", e2ee_records: "3", managed_records: "4", active_user_keys: "5", pending_user_keys: "0", retiring_user_keys: "1" }] };
+      if (sql.includes("content_encryption_status")) return { rows: [{
+        server_records: "2", e2ee_records: "3", managed_records: "4",
+        active_user_keys: "5", pending_user_keys: "0", retiring_user_keys: "1",
+        wrapper_distribution: [
+          { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "active", wrapper_count: "5" },
+          { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "retiring", wrapper_count: "1" },
+        ],
+      }] };
+      if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
+      if (/INSERT INTO content_key_security_events/i.test(sql)) return { rows: [], rowCount: 1 };
       if (sql.includes("FROM users")) return { rows: [{ id: USER_B }, { id: USER_A }] };
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
       if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
@@ -26,9 +37,10 @@ function deps(overrides: Partial<AdminCliDependencies> = {}): AdminCliDependenci
   return {
     async runtime() {
       return {
+        installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
         registry: {
-          active: { name: "local", fingerprint: "local:old" },
-          migration: { name: "aws-kms", fingerprint: "aws:new" },
+          active: { name: "local", fingerprint: OLD_FINGERPRINT },
+          migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
         },
       } as ManagedContentRuntime;
     },
@@ -55,6 +67,20 @@ test("CLI accepts exact commands and status emits aggregate counts only", async 
     pendingUserKeys: 0,
     retiringUserKeys: 1,
     serverRecords: 2,
+    wrapperDistribution: [
+      { provider: "local", providerFingerprint: OLD_FINGERPRINT, state: "active", count: 5 },
+      { provider: "local", providerFingerprint: OLD_FINGERPRINT, state: "retiring", count: 1 },
+    ],
+    providerMigration: {
+      old: { provider: "local", providerFingerprint: OLD_FINGERPRINT },
+      target: { provider: "aws-kms", providerFingerprint: TARGET_FINGERPRINT },
+      totalActiveWrappers: 5,
+      oldActiveWrappers: 5,
+      targetActiveWrappers: 0,
+      pendingWrappers: 0,
+      unexpectedActiveWrappers: 0,
+      removalReady: false,
+    },
   });
   assert.equal(result.stdout.includes("TOP-SECRET-ENV"), false);
   assert.equal(result.stderr, "");
@@ -92,17 +118,18 @@ test("CLI never prints arbitrary codes even when exported error classes are cons
   assert.equal(server.stderr.includes("SECRET_IN_CODE"), false);
 
   const rewrap = await runCli(
-    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms"],
+    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", USER_A],
     deps({ async rewrapUser() { throw new RewrapError("SECRET_IN_CODE"); } }),
   );
   assert.equal(rewrap.exitCode, 1);
   assert.match(rewrap.stderr, /REWRAP_FAILED/);
   assert.equal(rewrap.stderr.includes("SECRET_IN_CODE"), false);
+  assert.equal(rewrap.stderr.includes(USER_A), false, "authenticated actor must never be printed");
 });
 
 test("plaintext wrapper rejection exposes only its fixed non-secret operational code", async () => {
   const result = await runCli(
-    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms"],
+    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", USER_A],
     deps({ async rewrapUser() { throw new RewrapError("PENDING_WRAPPER_PLAINTEXT"); } }),
   );
   assert.equal(result.exitCode, 1);
@@ -136,9 +163,11 @@ test("CLI acquires a fixed client lease for enumeration and each atomic user ope
     acquired += 1;
     const db = {
       async query(sql: string, params: unknown[] = []) {
-        if (sql.includes("FROM users")) return { rows: [{ id: USER_A }, { id: USER_B }] };
         if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
         if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
+        if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
+        if (/INSERT INTO content_key_security_events/i.test(sql)) return { rows: [], rowCount: 1 };
+        if (sql.includes("FROM users")) return { rows: [{ id: USER_A }, { id: USER_B }] };
         if (sql.includes("SELECT EXISTS")) return { rows: [{ eligible: true }] };
         throw new Error(`unexpected query: ${sql}`);
       },
@@ -147,7 +176,7 @@ test("CLI acquires a fixed client lease for enumeration and each atomic user ope
     return { db, release() { released += 1; } };
   };
   const result = await runCli(
-    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms"],
+    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", USER_A],
     deps({
       acquireDb,
       async rewrapUser(userId, _runtime, db) {
@@ -158,7 +187,7 @@ test("CLI acquires a fixed client lease for enumeration and each atomic user ope
     }),
   );
   assert.equal(result.exitCode, 1);
-  assert.equal(acquired, 3, "one enumeration lease plus one lease per eligible user");
+  assert.equal(acquired, 4, "one audit lease, one enumeration lease, and one lease per eligible user");
   assert.equal(released, acquired);
 });
 
@@ -202,15 +231,196 @@ test("SIGINT observed after an atomic batch stops before the next batch and user
 
 test("rewrap-provider requires exact configured names, continues per-user failures, and sanitizes errors", async () => {
   const result = await runCli([
-    "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+    "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", USER_A,
   ], deps());
   assert.equal(result.exitCode, 1);
   assert.match(result.stdout, /migrated=1 failed=1/);
-  assert.match(result.stderr, new RegExp(`${USER_B} REWRAP_FAILED`));
+  assert.match(result.stderr, /REWRAP_FAILED/);
+  assert.doesNotMatch(result.stderr, new RegExp(`${USER_A}|${USER_B}`));
   assert.equal(result.stderr.includes("raw secret stack"), false);
 
   const wrong = await runCli([
-    "encryption", "rewrap-provider", "--from", "gcp-kms", "--to", "aws-kms",
+    "encryption", "rewrap-provider", "--from", "gcp-kms", "--to", "aws-kms", "--actor-user-id", USER_A,
   ], deps());
   assert.equal(wrong.exitCode, 2);
+});
+
+test("rewrap-provider requires an exact admin actor and records started before enumeration plus completed after readiness", async () => {
+  const events: Array<{ type: string; appInstanceId: string }> = [];
+  let enumerated = false;
+  let installationReads = 0;
+  const zeroUser = deps({
+    async runtime() {
+      const current = {
+        registry: {
+          active: { name: "local", fingerprint: OLD_FINGERPRINT },
+          migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
+        },
+      } as ManagedContentRuntime;
+      Object.defineProperty(current, "installationId", {
+        get() {
+          installationReads += 1;
+          return installationReads === 1
+            ? "019f7250-dc4d-78fd-98e8-a5465d0f5b69"
+            : "029f7250-dc4d-78fd-98e8-a5465d0f5b69";
+        },
+      });
+      return current;
+    },
+    async acquireDb() {
+      return {
+        db: { async query(sql: string, params: unknown[] = []) {
+          if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+          if (sql.startsWith("SELECT set_config")) return { rows: [] };
+          if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: true }] };
+          if (/INSERT INTO content_key_security_events/i.test(sql)) {
+            events.push({ type: String(params[0]), appInstanceId: String(params[6]) });
+            return { rows: [], rowCount: 1 };
+          }
+          if (/FROM users/i.test(sql)) { enumerated = true; return { rows: [] }; }
+          if (/FROM content_encryption_status/i.test(sql)) return { rows: [{
+            server_records: "0", e2ee_records: "0", managed_records: "0",
+            active_user_keys: "0", pending_user_keys: "0", retiring_user_keys: "0",
+            wrapper_distribution: [],
+          }] };
+          throw new Error(`unexpected query: ${sql}`);
+        } },
+        release() {},
+      };
+    },
+  });
+
+  const missingActor = await runCli(
+    ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms"],
+    zeroUser,
+  );
+  assert.equal(missingActor.exitCode, 2);
+
+  const result = await runCli([
+    "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+    "--actor-user-id", USER_A,
+  ], zeroUser);
+  assert.equal(result.exitCode, 0);
+  assert.equal(enumerated, true);
+  assert.deepEqual(events, [
+    { type: "provider_migration_started", appInstanceId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69" },
+    { type: "provider_migration_completed", appInstanceId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69" },
+  ]);
+  assert.match(result.stdout, /migrated=0 failed=0/);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(USER_A));
+});
+
+test("non-admin, failure, interrupt, not-ready, and audit failure never record provider_migration_completed", async () => {
+  async function scenario(options: {
+    admin?: boolean;
+    failAudit?: boolean;
+    failUser?: boolean;
+    interrupted?: boolean;
+    ready?: boolean;
+  }): Promise<{ result: Awaited<ReturnType<typeof runCli>>; events: string[]; enumerations: number }> {
+    const events: string[] = [];
+    let enumerations = 0;
+    const controller = new AbortController();
+    const custom = deps({
+      signal: controller.signal,
+      async runtime() {
+        return {
+          installationId: "019f7250-dc4d-78fd-98e8-a5465d0f5b69",
+          registry: {
+            active: { name: "local", fingerprint: OLD_FINGERPRINT },
+            migration: { name: "aws-kms", fingerprint: TARGET_FINGERPRINT },
+          },
+        } as ManagedContentRuntime;
+      },
+      async acquireDb() {
+        let currentUser: string | null = null;
+        return {
+          db: { async query(sql: string, params: unknown[] = []) {
+            if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+            if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
+            if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: options.admin !== false && currentUser === USER_A }] };
+            if (/INSERT INTO content_key_security_events/i.test(sql)) {
+              if (options.failAudit) throw new Error("token=audit-secret");
+              events.push(String(params[0]));
+              if (options.interrupted && params[0] === "provider_migration_started") controller.abort();
+              return { rows: [], rowCount: 1 };
+            }
+            if (/FROM users/i.test(sql)) { enumerations += 1; return { rows: [{ id: USER_B }] }; }
+            if (/SELECT EXISTS/i.test(sql)) return { rows: [{ eligible: true }] };
+            if (/FROM content_encryption_status/i.test(sql)) return { rows: [{
+              server_records: "0", e2ee_records: "0", managed_records: "0",
+              active_user_keys: "1", pending_user_keys: "0", retiring_user_keys: "1",
+              wrapper_distribution: options.ready === false
+                ? [{ provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "active", wrapper_count: "1" }]
+                : [
+                    { provider: "aws-kms", provider_fingerprint: TARGET_FINGERPRINT, state: "active", wrapper_count: "1" },
+                    { provider: "local", provider_fingerprint: OLD_FINGERPRINT, state: "retiring", wrapper_count: "1" },
+                  ],
+            }] };
+            throw new Error(`unexpected query: ${sql}`);
+          } },
+          release() {},
+        };
+      },
+      async rewrapUser() {
+        if (options.failUser) throw new Error("credential=user-secret");
+        return { state: "migrated" };
+      },
+    });
+    const result = await runCli([
+      "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+      "--actor-user-id", USER_A,
+    ], custom);
+    assert.doesNotMatch(result.stdout + result.stderr, /audit-secret|user-secret|credential=|token=/i);
+    return { result, events, enumerations };
+  }
+
+  const nonAdmin = await scenario({ admin: false });
+  assert.equal(nonAdmin.result.exitCode, 1);
+  assert.equal(nonAdmin.enumerations, 0);
+  assert.deepEqual(nonAdmin.events, []);
+
+  for (const options of [
+    { failAudit: true },
+    { failUser: true },
+    { interrupted: true },
+    { ready: false },
+  ]) {
+    const observed = await scenario(options);
+    assert.equal(observed.result.exitCode, 1);
+    assert.equal(observed.events.includes("provider_migration_completed"), false);
+  }
+});
+
+test("an interrupt observed during zero-user enumeration leaves started without completed", async () => {
+  const controller = new AbortController();
+  const events: string[] = [];
+  let currentUser: string | null = null;
+  const result = await runCli([
+    "encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms",
+    "--actor-user-id", USER_A,
+  ], deps({
+    signal: controller.signal,
+    async acquireDb() {
+      return { db: { async query(sql: string, params: unknown[] = []) {
+        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [] };
+        if (sql.startsWith("SELECT set_config")) { currentUser = String(params[0]); return { rows: [] }; }
+        if (/SELECT EXISTS[\s\S]*role='admin'/i.test(sql)) return { rows: [{ is_admin: currentUser === USER_A }] };
+        if (/INSERT INTO content_key_security_events/i.test(sql)) {
+          events.push(String(params[0]));
+          return { rows: [], rowCount: 1 };
+        }
+        if (/FROM users/i.test(sql)) { controller.abort(); return { rows: [] }; }
+        if (/FROM content_encryption_status/i.test(sql)) return { rows: [{
+          server_records: "0", e2ee_records: "0", managed_records: "0",
+          active_user_keys: "0", pending_user_keys: "0", retiring_user_keys: "0",
+          wrapper_distribution: [],
+        }] };
+        throw new Error(`unexpected query: ${sql}`);
+      } }, release() {} };
+    },
+  }));
+  assert.equal(result.exitCode, 1);
+  assert.deepEqual(events, ["provider_migration_started"]);
+  assert.match(result.stderr, /INTERRUPTED/);
 });

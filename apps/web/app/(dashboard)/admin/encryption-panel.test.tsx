@@ -19,6 +19,20 @@ const STATUS: EncryptionAdminStatus = {
   records: { serverV1: 4, e2eeV1: 5, managedV1: 6 },
   userKeys: { active: 7, pending: 8, retiring: 9 },
   migrations: { e2eePending: 10, e2eeBlocked: 11 },
+  wrapperDistribution: [
+    { provider: "aws-kms", providerFingerprint: "aws-kms:0123456789abcdef01234567", state: "retiring", count: 7 },
+    { provider: "gcp-kms", providerFingerprint: "gcp-kms:222222222222222222222222", state: "active", count: 7 },
+  ],
+  providerMigration: {
+    old: { provider: "aws-kms", providerFingerprint: "aws-kms:0123456789abcdef01234567" },
+    target: { provider: "gcp-kms", providerFingerprint: "gcp-kms:222222222222222222222222" },
+    totalActiveWrappers: 7,
+    oldActiveWrappers: 0,
+    targetActiveWrappers: 7,
+    pendingWrappers: 0,
+    unexpectedActiveWrappers: 0,
+    removalReady: true,
+  },
   operations30d: [{ operation: "wrap", outcome: "success", count: 20000, averageLatencyMs: 3.2 }],
   cache30d: { hit: 75, miss: 20, singleFlight: 5 },
   costEstimate: {
@@ -64,6 +78,9 @@ test("관리형 암호화 패널은 ko/en에서 상태와 gross reference 기준
   assert.match(koHtml, /현재 키.*기준|이전 provider.*제외/);
   assert.match(enHtml, /current key|previous provider.*excluded/i);
   assert.match(koHtml, /75\.0%/);
+  assert.match(koHtml, /제거 가능/);
+  assert.match(enHtml, /ready to remove/i);
+  assert.match(koHtml, /gcp-kms:222222222222222222222222/);
 });
 
 test("패널은 read-only이며 secret control과 비밀값을 렌더하지 않는다", () => {

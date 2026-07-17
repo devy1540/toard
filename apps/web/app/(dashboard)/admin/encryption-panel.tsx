@@ -76,6 +76,48 @@ export function EncryptionPanel({ status }: { status: EncryptionAdminStatus | nu
       ) : null}
 
       <div className="rounded-md border p-3 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="font-medium">{t("providerMigration")}</p>
+          <Badge variant={status.providerMigration.removalReady ? "secondary" : "destructive"}>
+            {status.providerMigration.removalReady ? t("removalReady") : t("removalBlocked")}
+          </Badge>
+        </div>
+        <p className="text-muted-foreground mt-2">
+          {t("migrationReadinessCounts", {
+            oldActive: status.providerMigration.oldActiveWrappers,
+            targetActive: status.providerMigration.targetActiveWrappers,
+            totalActive: status.providerMigration.totalActiveWrappers,
+            pending: status.providerMigration.pendingWrappers,
+            unexpected: status.providerMigration.unexpectedActiveWrappers,
+          })}
+        </p>
+        <dl className="mt-2 grid min-w-0 gap-x-4 gap-y-1 sm:grid-cols-[auto_minmax(0,1fr)]">
+          <dt className="text-muted-foreground">{t("oldFingerprint")}</dt>
+          <dd className="break-all font-mono">{status.providerMigration.old?.providerFingerprint ?? "—"}</dd>
+          <dt className="text-muted-foreground">{t("targetFingerprint")}</dt>
+          <dd className="break-all font-mono">{status.providerMigration.target?.providerFingerprint ?? "—"}</dd>
+        </dl>
+        <p className="mt-3 font-medium">{t("wrapperDistribution")}</p>
+        {status.wrapperDistribution.length === 0 ? (
+          <p className="text-muted-foreground mt-1">{t("wrapperDistributionEmpty")}</p>
+        ) : (
+          <ul className="mt-1 space-y-1">
+            {status.wrapperDistribution.map((entry) => (
+              <li
+                className="grid min-w-0 gap-x-2 sm:grid-cols-[minmax(0,1fr)_auto]"
+                key={`${entry.provider}:${entry.providerFingerprint}:${entry.state}`}
+              >
+                <span className="break-all font-mono">
+                  {entry.providerFingerprint} · {entry.state}
+                </span>
+                <span>{t("wrapperCount", { count: entry.count })}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      <div className="rounded-md border p-3 text-xs">
         <p className="flex items-center gap-2 font-medium"><KeyRound className="size-4" />{t("estimatedCost")}</p>
         {status.costEstimate ? (
           <>

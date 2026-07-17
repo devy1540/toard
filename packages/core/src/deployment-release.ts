@@ -1,5 +1,5 @@
 /** Repository migration prefix expected by a release-completion marker. */
-export const LATEST_SCHEMA_VERSION = 1700000038 as const;
+export const LATEST_SCHEMA_VERSION = 1700000039 as const;
 
 const RELEASE_ENV_KEYS = [
   "TOARD_DEPLOYMENT_ID",

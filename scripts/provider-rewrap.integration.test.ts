@@ -88,7 +88,11 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
     await admin.query("GRANT USAGE ON SCHEMA public TO toard_app; GRANT SELECT ON users,prompt_records TO toard_app; GRANT SELECT,INSERT,UPDATE ON managed_content_keys TO toard_app");
 
     const userId = randomUUID();
-    await admin.query("INSERT INTO users(id,email) VALUES($1,'provider-rewrap@example.com')", [userId]);
+    const actorId = randomUUID();
+    await admin.query(
+      "INSERT INTO users(id,email,role) VALUES($1,'provider-rewrap@example.com','member'),($2,'provider-rewrap-actor@example.com','admin')",
+      [userId, actorId],
+    );
     await admin.query("INSERT INTO providers(key,display_name,service_name_patterns,collection_method) VALUES('codex','Codex',ARRAY['codex'],'logfile')");
     await admin.query(
       `INSERT INTO managed_content_keys
@@ -312,7 +316,7 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
     });
     runtime.registry = new KeyProviderRegistry(old, target);
     const operational = await runCli(
-      ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms"],
+      ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", actorId],
       {
         runtime: async () => runtime,
         acquireDb: createPoolLeaseFactory(operationalPool),
@@ -324,7 +328,8 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
     );
     assert.equal(operational.exitCode, 1);
     assert.match(operational.stdout, /migrated=1 failed=1/);
-    assert.match(operational.stderr, new RegExp(`${failingUser} REWRAP_FAILED`));
+    assert.match(operational.stderr, /REWRAP_FAILED/);
+    assert.doesNotMatch(operational.stderr, new RegExp(`${actorId}|${failingUser}`));
 
     const successPids = await admin.query(
       "SELECT COUNT(DISTINCT backend_pid)::int AS count,COUNT(*)::int AS events FROM rewrap_pid_audit WHERE user_id=$1",
@@ -337,6 +342,64 @@ test("provider rewrap uses user RLS, preserves managed ciphertext, and atomicall
       "SELECT provider,state FROM managed_content_keys WHERE user_id=$1 ORDER BY state",
       [failingUser],
     )).rows, [{ provider: "local", state: "active" }]);
+
+    assert.deepEqual((await admin.query(
+      `SELECT event_type,actor_user_id::text,provider,provider_fingerprint,app_instance_id
+         FROM content_key_security_events
+        WHERE event_type LIKE 'provider_migration_%'
+        ORDER BY id`,
+    )).rows, [{
+      event_type: "provider_migration_started",
+      actor_user_id: actorId,
+      provider: "aws-kms",
+      provider_fingerprint: TARGET_FINGERPRINT,
+      app_instance_id: INSTALLATION_ID,
+    }]);
+
+    await admin.query(`
+      DROP TRIGGER fail_selected_rewrap_trigger ON managed_content_keys;
+      DROP FUNCTION fail_selected_rewrap();
+    `);
+    const completed = await runCli(
+      ["encryption", "rewrap-provider", "--from", "local", "--to", "aws-kms", "--actor-user-id", actorId],
+      {
+        runtime: async () => runtime,
+        acquireDb: createPoolLeaseFactory(operationalPool),
+        loadLegacyKek: () => Buffer.alloc(32),
+        migrateServerBatch: async () => { throw new Error("not used"); },
+        rewrapUser: rewrapUserKey,
+        close: async () => operationalPool?.end(),
+      },
+    );
+    assert.deepEqual(completed, { exitCode: 0, stdout: "migrated=1 failed=0\n", stderr: "" });
+    assert.deepEqual((await admin.query(
+      `SELECT event_type,actor_user_id::text,provider,provider_fingerprint,app_instance_id
+         FROM content_key_security_events
+        WHERE event_type LIKE 'provider_migration_%'
+        ORDER BY id`,
+    )).rows, [
+      {
+        event_type: "provider_migration_started",
+        actor_user_id: actorId,
+        provider: "aws-kms",
+        provider_fingerprint: TARGET_FINGERPRINT,
+        app_instance_id: INSTALLATION_ID,
+      },
+      {
+        event_type: "provider_migration_started",
+        actor_user_id: actorId,
+        provider: "aws-kms",
+        provider_fingerprint: TARGET_FINGERPRINT,
+        app_instance_id: INSTALLATION_ID,
+      },
+      {
+        event_type: "provider_migration_completed",
+        actor_user_id: actorId,
+        provider: "aws-kms",
+        provider_fingerprint: TARGET_FINGERPRINT,
+        app_instance_id: INSTALLATION_ID,
+      },
+    ]);
 
     const lease = await createPoolLeaseFactory(operationalPool)();
     try {

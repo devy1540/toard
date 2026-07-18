@@ -180,6 +180,12 @@ fn same_endpoint_updates_credentials_without_deleting_state() {
         .expect("target must exist");
     let cursor = target.join("state/cursors.json");
     fs::write(&cursor, "keep-me").expect("cursor fixture must be written");
+    let credentials_path = target.join("credentials");
+    let mut activated = fs::read_to_string(&credentials_path).unwrap();
+    activated.push_str(
+        "collect_content_since=2026-01-02\ncontent_owner_id=owner-1\ncontent_key_version=7\ncontent_device_id=device-1\n",
+    );
+    fs::write(&credentials_path, activated).unwrap();
 
     assert_success(&fixture.upsert(
         "https://company.example/api",
@@ -190,11 +196,30 @@ fn same_endpoint_updates_credentials_without_deleting_state() {
 
     assert_eq!(fixture.target_directories().len(), 1);
     assert_eq!(fs::read_to_string(cursor).unwrap(), "keep-me");
-    let credentials = fs::read_to_string(target.join("credentials")).unwrap();
+    let credentials = fs::read_to_string(&credentials_path).unwrap();
     assert!(credentials.contains("agent_key=tk_new"));
     assert!(!credentials.contains("tk_old"));
     assert!(credentials.contains("collect_content=server_v1"));
     assert!(credentials.contains("collect_tools=false"));
+    assert!(credentials.contains("collect_content_since=2026-01-02"));
+    assert!(credentials.contains("content_owner_id=owner-1"));
+    assert!(credentials.contains("content_key_version=7"));
+    assert!(credentials.contains("content_device_id=device-1"));
+
+    let explicit_since = fixture
+        .command()
+        .args(["target", "upsert"])
+        .env("TOARD_INGEST_ENDPOINT", "https://company.example/api")
+        .env("TOARD_INGEST_TOKEN", "tk_latest")
+        .env("TOARD_SHIM_COLLECT_CONTENT", "off")
+        .env("TOARD_SHIM_COLLECT_TOOLS", "true")
+        .env("TOARD_SHIM_COLLECT_CONTENT_SINCE", "2026-07-18")
+        .output()
+        .expect("explicit since upsert must run");
+    assert_success(&explicit_since);
+    let credentials = fs::read_to_string(credentials_path).unwrap();
+    assert!(credentials.contains("collect_content_since=2026-07-18"));
+    assert!(!credentials.contains("collect_content_since=2026-01-02"));
 }
 
 #[test]

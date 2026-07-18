@@ -157,28 +157,63 @@ impl TargetStore {
     pub fn upsert(&self, mut credentials: Credentials) -> Result<Target, TargetError> {
         self.with_lock(|| {
             self.migrate_legacy_unlocked()?;
+            self.write_target_unlocked(&mut credentials)
+        })
+    }
+
+    pub fn upsert_installer(
+        &self,
+        mut credentials: Credentials,
+        update_content_since: bool,
+    ) -> Result<Target, TargetError> {
+        self.with_lock(|| {
+            self.migrate_legacy_unlocked()?;
             let endpoint = validate_credentials(&credentials)?;
-            credentials.endpoint = Some(endpoint.clone());
+            let credentials_path = self
+                .targets_dir()
+                .join(target_id(&endpoint))
+                .join("credentials");
+            if let Ok(content) = fs::read_to_string(credentials_path) {
+                let existing = credentials::parse(&content);
+                if !update_content_since {
+                    credentials.collect_content_since = existing.collect_content_since;
+                }
+                if credentials.content_owner_id.is_none() {
+                    credentials.content_owner_id = existing.content_owner_id;
+                }
+                if credentials.content_key_version.is_none() {
+                    credentials.content_key_version = existing.content_key_version;
+                }
+                if credentials.content_device_id.is_none() {
+                    credentials.content_device_id = existing.content_device_id;
+                }
+            }
+            self.write_target_unlocked(&mut credentials)
+        })
+    }
 
-            let id = target_id(&endpoint);
-            let target_dir = self.targets_dir().join(&id);
-            let state_dir = target_dir.join("state");
-            create_private_dir(&target_dir)?;
-            create_private_dir(&state_dir)?;
-            let credentials_path = target_dir.join("credentials");
-            crate::fsx::write_atomic(
-                &credentials_path,
-                &credentials::serialize(&credentials),
-                0o600,
-            )?;
+    fn write_target_unlocked(&self, credentials: &mut Credentials) -> Result<Target, TargetError> {
+        let endpoint = validate_credentials(credentials)?;
+        credentials.endpoint = Some(endpoint.clone());
 
-            Ok(Target {
-                id,
-                endpoint,
-                credentials_path,
-                state_dir,
-                credentials,
-            })
+        let id = target_id(&endpoint);
+        let target_dir = self.targets_dir().join(&id);
+        let state_dir = target_dir.join("state");
+        create_private_dir(&target_dir)?;
+        create_private_dir(&state_dir)?;
+        let credentials_path = target_dir.join("credentials");
+        crate::fsx::write_atomic(
+            &credentials_path,
+            &credentials::serialize(credentials),
+            0o600,
+        )?;
+
+        Ok(Target {
+            id,
+            endpoint,
+            credentials_path,
+            state_dir,
+            credentials: credentials.clone(),
         })
     }
 

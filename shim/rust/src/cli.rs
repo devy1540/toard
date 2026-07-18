@@ -166,12 +166,16 @@ fn target_upsert() -> i32 {
             return 2;
         }
     };
+    let content_since = env::var("TOARD_SHIM_COLLECT_CONTENT_SINCE").ok();
+    let update_content_since = content_since
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
     let credentials = match crate::credentials::from_installer_input(InstallerCredentialsInput {
         token,
         endpoint,
         collect_content: env::var("TOARD_SHIM_COLLECT_CONTENT").ok(),
         collect_tools: env::var("TOARD_SHIM_COLLECT_TOOLS").ok(),
-        collect_content_since: env::var("TOARD_SHIM_COLLECT_CONTENT_SINCE").ok(),
+        collect_content_since: content_since,
     }) {
         Ok(credentials) => credentials,
         Err(error) => {
@@ -186,7 +190,7 @@ fn target_upsert() -> i32 {
             return 1;
         }
     };
-    match store.upsert(credentials) {
+    match store.upsert_installer(credentials, update_content_since) {
         Ok(target) => {
             println!("target={} endpoint={}", &target.id[..12], target.endpoint);
             0

@@ -117,6 +117,10 @@ impl TargetStore {
         self.root.join("targets")
     }
 
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn load_or_migrate(&self) -> Result<Vec<Target>, TargetError> {
         self.with_lock(|| match self.migrate_legacy_unlocked() {
             Ok(()) => self.load_unlocked(),
@@ -134,6 +138,20 @@ impl TargetStore {
                 }
             }
         })
+    }
+
+    pub fn load_readonly(&self) -> Result<Vec<Target>, TargetError> {
+        let mut targets = self.load_unlocked()?;
+        if self.root.join("credentials").is_file() {
+            let fallback = self.legacy_fallback()?;
+            if let Some(existing) = targets.iter_mut().find(|target| target.id == fallback.id) {
+                *existing = fallback;
+            } else {
+                targets.push(fallback);
+            }
+            targets.sort_by(|left, right| left.id.cmp(&right.id));
+        }
+        Ok(targets)
     }
 
     pub fn upsert(&self, mut credentials: Credentials) -> Result<Target, TargetError> {
@@ -205,6 +223,9 @@ impl TargetStore {
 
     fn load_unlocked(&self) -> Result<Vec<Target>, TargetError> {
         let mut targets = Vec::new();
+        if !self.targets_dir().is_dir() {
+            return Ok(targets);
+        }
         for entry in fs::read_dir(self.targets_dir())? {
             let entry = entry?;
             if !entry.file_type()?.is_dir() {
@@ -649,6 +670,22 @@ mod tests {
             .targets_dir()
             .join(target_id("https://personal.example/api"))
             .exists());
+    }
+
+    #[test]
+    fn readonly_load_exposes_legacy_without_migrating_it() {
+        let temp = TempRoot::new("readonly");
+        let root = temp.path().join(".toard");
+        write_legacy_fixture(&root, "company", "https://company.example/api");
+        let store = TargetStore::from_root(root.clone());
+
+        let targets = store.load_readonly().unwrap();
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].credentials_path, root.join("credentials"));
+        assert!(root.join("credentials").is_file());
+        assert!(!root.join("legacy-backup").exists());
+        assert!(!root.join("targets").exists());
     }
 
     #[cfg(unix)]

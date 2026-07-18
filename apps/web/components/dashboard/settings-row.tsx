@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
+import { Field, FieldContent, FieldDescription, FieldTitle } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
 
 /**
@@ -10,33 +11,66 @@ export function SettingsRow({
   label,
   description,
   wide = false,
+  layout = "compact",
+  className,
   children,
 }: {
   label: ReactNode;
   description?: ReactNode;
   /** true 면 우측 정렬 컨트롤 대신 본문형 콘텐츠(좌측 정렬·풀폭) — 패널·프로즈용 */
   wide?: boolean;
+  layout?: "compact" | "settings";
+  className?: string;
   children: ReactNode;
 }) {
+  const settingsLayout = layout === "settings";
+  const labelId = useId();
+
   return (
-    <div
+    <Field
+      orientation={null}
+      aria-labelledby={labelId}
       className={cn(
-        "flex flex-col gap-2 py-4 first:pt-0 last:pb-0 sm:flex-row sm:gap-6",
-        wide ? "sm:items-start" : "sm:items-center",
+        settingsLayout
+          ? "grid min-w-0 gap-3 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)] lg:items-center"
+          : "flex flex-col gap-2 py-4 first:pt-0 last:pb-0 sm:flex-row sm:gap-6",
+        !settingsLayout && (wide ? "sm:items-start" : "sm:items-center"),
+        className,
       )}
     >
-      <div className="min-w-0 sm:w-52 sm:shrink-0">
-        <div className="text-sm font-medium">{label}</div>
-        {description ? <div className="text-muted-foreground mt-0.5 text-xs">{description}</div> : null}
-      </div>
-      <div
-        className={cn(
-          "min-w-0 flex-1",
-          wide ? "" : "flex flex-wrap items-center gap-2 sm:justify-end",
+      <FieldContent className={cn("min-w-0 flex-none gap-0", !settingsLayout && "sm:w-52 sm:shrink-0")}>
+        {settingsLayout ? (
+          <h2 id={labelId} className="text-sm font-semibold">
+            {label}
+          </h2>
+        ) : (
+          <FieldTitle id={labelId} className="w-auto leading-5 font-medium">
+            {label}
+          </FieldTitle>
         )}
-      >
-        {children}
-      </div>
-    </div>
+        {description ? (
+          <FieldDescription
+            className={cn(
+              "text-xs leading-4",
+              settingsLayout ? "mt-1 max-w-sm last:mt-1" : "mt-0.5 last:mt-0.5",
+            )}
+          >
+            {description}
+          </FieldDescription>
+        ) : null}
+      </FieldContent>
+      {settingsLayout ? (
+        children
+      ) : (
+        <div
+          className={cn(
+            "min-w-0 flex-1",
+            wide ? "" : "flex flex-wrap items-center gap-2 sm:justify-end",
+          )}
+        >
+          {children}
+        </div>
+      )}
+    </Field>
   );
 }

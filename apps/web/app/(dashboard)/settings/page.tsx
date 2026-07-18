@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getLocale, getTranslations } from "next-intl/server";
 import { oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
+import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -117,11 +118,12 @@ async function AccountTab({
           <CardDescription>{t("loginMethods.description")}</CardDescription>
         </CardHeader>
         <CardContent className="min-w-0 divide-y">
-          <section className="grid min-w-0 gap-4 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold">{t("loginMethods.google")}</h2>
-              <p className="text-muted-foreground mt-1 max-w-sm text-xs">{t("loginMethods.googleDescription")}</p>
-            </div>
+          <SettingsRow
+            layout="settings"
+            className="gap-4 lg:items-start"
+            label={t("loginMethods.google")}
+            description={t("loginMethods.googleDescription")}
+          >
             <div className="flex min-w-0 flex-wrap items-center gap-2 self-center">
               <Badge variant={googleLinked ? "secondary" : "outline"}>
                 {googleLinked ? t("loginMethods.connected") : t("loginMethods.notConnected")}
@@ -142,17 +144,16 @@ async function AccountTab({
                 <span className="text-muted-foreground text-sm">{t("loginMethods.googleNotConfigured")}</span>
               ) : null}
             </div>
-          </section>
+          </SettingsRow>
 
-          <section className="grid min-w-0 gap-4 py-4 first:pt-0 last:pb-0 lg:grid-cols-[16rem_minmax(0,1fr)]">
-            <div className="min-w-0">
-              <h2 className="text-sm font-semibold">{hasPassword ? t("account.changeTitle") : t("account.setTitle")}</h2>
-              <p className="text-muted-foreground mt-1 max-w-sm text-xs">
-                {hasPassword ? t("account.changeDescription") : t("account.setDescription")}
-              </p>
-            </div>
+          <SettingsRow
+            layout="settings"
+            className="gap-4 lg:items-start"
+            label={hasPassword ? t("account.changeTitle") : t("account.setTitle")}
+            description={hasPassword ? t("account.changeDescription") : t("account.setDescription")}
+          >
             <PasswordForm hasPassword={hasPassword} />
-          </section>
+          </SettingsRow>
         </CardContent>
       </Card>
     </div>

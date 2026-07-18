@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { AlertTriangle } from "lucide-react";
 import { formatVersion, isShimOutdated } from "@toard/core";
+import { Alert } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { SettingsRow } from "@/components/dashboard/settings-row";
@@ -138,10 +139,10 @@ async function MembersTab() {
   return (
     <div className="space-y-4">
       {outdatedDevices > 0 ? (
-        <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+        <Alert className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
           <span>{t("members.outdatedBanner", { count: outdatedDevices })}</span>
-        </div>
+        </Alert>
       ) : null}
 
       <Card className="min-w-0">

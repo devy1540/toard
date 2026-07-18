@@ -1,7 +1,7 @@
 import type { OrganizationUtilizationResult, UtilizationDimensionKey } from "@toard/core";
 import { getFormatter, getTranslations } from "next-intl/server";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 
 const dimensions: UtilizationDimensionKey[] = [
   "context_continuity",
@@ -18,7 +18,7 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
         <CardHeader>
           <CardTitle className="flex flex-wrap items-center gap-2">
             {t("utilization.title")}
-            <Badge variant="outline">{t("utilization.experiment")}</Badge>
+            <FeatureStatusBadge status="experiment">{t("utilization.experiment")}</FeatureStatusBadge>
           </CardTitle>
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
@@ -39,7 +39,7 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
         <CardHeader>
           <CardTitle className="flex flex-wrap items-center gap-2">
             {t("utilization.title")}
-            <Badge variant="outline">{t("utilization.experiment")}</Badge>
+            <FeatureStatusBadge status="experiment">{t("utilization.experiment")}</FeatureStatusBadge>
           </CardTitle>
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
@@ -59,7 +59,7 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
       <CardHeader>
         <CardTitle className="flex flex-wrap items-center gap-2">
           {t("utilization.title")}
-          <Badge variant="outline">{t("utilization.experiment")}</Badge>
+          <FeatureStatusBadge status="experiment">{t("utilization.experiment")}</FeatureStatusBadge>
         </CardTitle>
         <CardDescription>{t("utilization.description")}</CardDescription>
       </CardHeader>

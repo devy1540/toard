@@ -180,6 +180,17 @@ fn run_real(real: &std::path::Path, args: &[OsString]) -> ! {
     std::process::exit(1);
 }
 
+#[cfg(windows)]
+fn run_real(real: &std::path::Path, args: &[OsString]) -> ! {
+    match Command::new(real).args(args).status() {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(err) => {
+            eprintln!("toard-shim: 실행 실패 ({}): {err}", real.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 #[cfg(test)]
 mod wrapper_target_tests {
     use super::*;
@@ -229,16 +240,5 @@ mod wrapper_target_tests {
             select_wrapper_mode(&[], credentials("https://legacy.example/api", None)),
             WrapperMode::Missing
         ));
-    }
-}
-
-#[cfg(windows)]
-fn run_real(real: &std::path::Path, args: &[OsString]) -> ! {
-    match Command::new(real).args(args).status() {
-        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
-        Err(err) => {
-            eprintln!("toard-shim: 실행 실패 ({}): {err}", real.display());
-            std::process::exit(1);
-        }
     }
 }

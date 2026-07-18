@@ -151,9 +151,9 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 ## 🔗 shim 설치 (사용량 수집)
 
-개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
+개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 한 사용자 계정에는 shim과 주기 수집 작업을 하나만 설치하고, 회사·개인 등 **임의 개수의 toard 서버 target으로 독립 전송**할 수 있다. 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
 
-**한 줄 설치(권장)** — 로그인 후 **설정 → 컴퓨터 연결**에서 운영체제를 확인하고 안내된 명령을 복사한다. 이 컴퓨터용 토큰은 자동 발급되며, 설치 후 첫 인증 요청까지 화면이 자동으로 확인한다. 사용량은 로컬 세션 파일 pull로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필).
+**한 줄 설치(권장)** — 로그인 후 **설정 → 컴퓨터 연결**에서 운영체제를 확인하고 안내된 명령을 복사한다. 이 컴퓨터용 토큰은 자동 발급되며, 설치 후 첫 인증 요청까지 화면이 자동으로 확인한다. 새 서버의 명령을 실행하면 기존 target은 유지한 채 추가되고, 같은 서버 명령을 다시 실행하면 그 target의 token·정책만 갱신하며 전송 커서는 보존한다. 구버전 단일 서버 설치도 첫 신버전 설치 때 target 구조로 자동 이전된다. 사용량은 로컬 세션 파일 pull로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필).
 
 ```bash
 curl -fsSL <toard 주소>/install.sh | TOARD_INGEST_TOKEN=<내 토큰> sh
@@ -165,9 +165,9 @@ Windows x64에서는 같은 화면이 PowerShell 명령을 제공한다:
 $env:TOARD_INGEST_TOKEN='<내 토큰>'; irm '<toard 주소>/install.ps1' | iex
 ```
 
-**직접 설정(고급)** — 설정 화면의 `연결된 컴퓨터 관리`에서 OS별 진단·업데이트·제거 명령과 credentials 경로를 확인한다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows는 GitHub Release 바이너리를 PowerShell 설치기가 직접 내려받아 SHA256을 검증하며, Windows 주기 수집 데몬 등록은 아직 지원하지 않는다.
+**직접 설정(고급)** — `toard-shim targets list`는 token을 제외한 target·정책·최근 전송 상태를 보여주고, `toard-shim doctor`는 모든 target을 진단한다. 서버별 자격증명과 커서는 `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`에 분리된다. 한 서버가 일시적으로 닿지 않아도 다른 target은 계속 전송하며, 실패한 target은 다음 회차에 자기 미전송분만 재시도한다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows 설치기는 GitHub Release 바이너리를 직접 내려받아 SHA256을 검증하고 작업 스케줄러에 주기 수집을 등록한다.
 
-**제거** — macOS·Linux는 `curl -fsSL <toard>/uninstall.sh | sh`, Windows는 `irm '<toard>/uninstall.ps1' | iex`. toard가 설치한 shim·자격증명·PATH 설정만 제거하고 기존 Claude/Codex는 유지한다.
+**제거** — macOS·Linux는 `curl -fsSL <toard>/uninstall.sh | sh`, Windows는 `irm '<toard>/uninstall.ps1' | iex`. 각 서버가 제공하는 제거 명령은 해당 서버 target만 삭제한다. 다른 target이 남으면 shim·주기 수집·PATH를 유지하고, 마지막 target을 삭제할 때만 공용 설치물을 정리한다. 등록되지 않은 서버의 제거 명령은 no-op이며, 기존 Claude/Codex와 원본 세션 로그는 항상 유지한다.
 
 ## 🧊 ClickHouse 모드 (옵트인)
 

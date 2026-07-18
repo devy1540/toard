@@ -10,6 +10,10 @@ test("POSIX installer upserts target before daemon and selected doctor", () => {
   assert.match(script, /"\$SHIM" target upsert/);
   assert.match(script, /"\$SHIM" daemon install/);
   assert.match(script, /"\$SHIM" doctor --target-env/);
+  assert.match(
+    script,
+    /PATH="\$BIN_DIR:\$PATH" TOARD_INGEST_ENDPOINT="\$ENDPOINT" "\$SHIM" doctor --target-env/,
+  );
   assert.doesNotMatch(script, />\s*"\$HOME\/\.toard\/credentials"/);
   assert.doesNotMatch(script, /agent_key=/);
   assert.doesNotMatch(script, /target upsert[^\n]*\$TOKEN/);

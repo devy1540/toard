@@ -59,7 +59,7 @@ export function installScript(endpoint: string, contentDefaultOn: boolean): stri
     "esac",
     "",
     "# 6) 다른 target의 접속 상태와 무관하게 방금 등록한 endpoint만 진단한다.",
-    'TOARD_INGEST_ENDPOINT="$ENDPOINT" "$SHIM" doctor --target-env',
+    'PATH="$BIN_DIR:$PATH" TOARD_INGEST_ENDPOINT="$ENDPOINT" "$SHIM" doctor --target-env',
     'echo "toard 연결 완료 — endpoint=$ENDPOINT"',
     "",
   ].join("\n");

@@ -210,10 +210,15 @@ impl TargetStore {
             Ok(()) => Ok(()),
             Err(migration_error) => {
                 self.ensure_registry_revisions_unlocked()?;
-                if self.load_unlocked()?.is_empty() {
-                    Err(migration_error)
-                } else {
+                let has_valid_registry = !self.load_unlocked()?.is_empty();
+                let malformed_legacy = matches!(
+                    migration_error,
+                    TargetError::InvalidCredentials(_) | TargetError::InvalidEndpoint(_)
+                );
+                if has_valid_registry && malformed_legacy {
                     Ok(())
+                } else {
+                    Err(migration_error)
                 }
             }
         }
@@ -1149,6 +1154,31 @@ mod tests {
             .upsert(credentials("second", "https://second.example/api"))
             .unwrap();
         assert_eq!(store.load_readonly().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn valid_legacy_io_failure_still_blocks_new_target_upsert() {
+        let temp = TempRoot::new("valid-legacy-io-failure");
+        let root = temp.path().join(".toard");
+        let store = TargetStore::from_root(root.clone());
+        store
+            .upsert(credentials("personal", "https://personal.example/api"))
+            .unwrap();
+        write_legacy_fixture(&root, "company", "https://company.example/api");
+        fs::write(
+            root.join("targets")
+                .join(target_id("https://company.example/api")),
+            "blocks-directory",
+        )
+        .unwrap();
+
+        assert!(store
+            .upsert(credentials("second", "https://second.example/api"))
+            .is_err());
+        assert!(!store
+            .targets_dir()
+            .join(target_id("https://second.example/api"))
+            .exists());
     }
 
     #[test]

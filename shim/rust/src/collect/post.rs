@@ -260,6 +260,14 @@ pub fn mark_unsupported(state_dir: &Path, name: &str) {
     let _ = crate::fsx::write_atomic(&path, &format!("{}\n", crate::bg::now_unix()), 0o600);
 }
 
+pub fn clear_unsupported(state_dir: &Path, name: &str) {
+    let _ = std::fs::remove_file(state_dir.join(format!("unsupported-{name}")));
+}
+
+pub fn unsupported_marked(state_dir: &Path, name: &str) -> bool {
+    state_dir.join(format!("unsupported-{name}")).is_file()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

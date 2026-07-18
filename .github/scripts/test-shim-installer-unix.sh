@@ -140,7 +140,8 @@ grep -q '"sent":3' "$COMPANY_TARGET/state/cursors/codex.json"
 test "$(cat "$COMPANY_TARGET/state/content-since")" = 123
 test "$(cat "$COMPANY_TARGET/state/tool-since")" = 456
 test ! -e "$PERSONAL_TARGET/state/content-since"
-test ! -e "$PERSONAL_TARGET/state/tool-since"
+test -f "$PERSONAL_TARGET/state/tool-since"
+test "$(cat "$PERSONAL_TARGET/state/tool-since")" -gt 0
 
 # 같은 개인 endpoint 재설치는 token/policy만 갱신하고 회사 상태와 target 수를 보존한다.
 run_personal_installer tk_personal_new

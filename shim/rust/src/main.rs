@@ -195,6 +195,7 @@ mod wrapper_target_tests {
     fn target(endpoint: &str, token: &str) -> targets::Target {
         targets::Target {
             id: targets::target_id(endpoint),
+            revision: String::new(),
             endpoint: endpoint.into(),
             credentials_path: std::path::PathBuf::from("credentials"),
             state_dir: std::path::PathBuf::from("state"),

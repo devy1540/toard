@@ -29,6 +29,13 @@ test("POSIX uninstaller removes only its endpoint unless it was last", () => {
   );
   assert.ok(script.indexOf('"$REMOVED" = "0"') < script.indexOf('rm -rf'));
   assert.ok(script.indexOf('"$REMAINING" -gt 0') < script.indexOf('rm -rf'));
+  assert.match(script, /PENDING_FILE.*cleanup-pending/);
+  assert.match(script, /RESULT='removed=1\nremaining=0'/);
+  assert.ok(script.indexOf("for rc in") < script.indexOf('rm -f "$BIN_DIR/toard-shim"'));
+  assert.ok(
+    script.indexOf('rm -f "$BIN_DIR/toard-shim"') <
+      script.indexOf('rm -f "$PENDING_FILE"'),
+  );
 });
 
 test("POSIX uninstaller validates the exact machine output before cleanup", () => {
@@ -38,6 +45,7 @@ test("POSIX uninstaller validates the exact machine output before cleanup", () =
   assert.match(script, /machine 출력이 올바르지 않습니다/);
   assert.match(script, /\*\[!0-9\]\*/);
   assert.match(script, /legacy-backup/);
+  assert.match(script, /cleanup-pending/);
   assert.match(script, /targets/);
   assert.match(script, /state/);
 });

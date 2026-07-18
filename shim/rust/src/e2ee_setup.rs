@@ -1,6 +1,6 @@
 use crate::content_crypto::{generate_device_keypair, wrap_for_device};
 use crate::content_keys::{ContentKeyStore, SystemContentKeyStore};
-use crate::credentials::{with_e2ee_activation, ContentCollectionMode};
+use crate::credentials::ContentCollectionMode;
 use crate::recovery::RecoveryMaterial;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -337,6 +337,8 @@ fn select_approval_request<'a>(
 
 fn setup() -> Result<(), SetupError> {
     let target = single_target()?;
+    let target_id = target.id.clone();
+    let target_revision = target.revision.clone();
     let credentials = target.credentials;
     if credentials.collect_content == ContentCollectionMode::E2eeV1 {
         return Ok(());
@@ -427,15 +429,8 @@ fn setup() -> Result<(), SetupError> {
         SetupError::RemoteActivation,
     );
 
-    let credentials_path = target.credentials_path;
-    let original_credentials = std::fs::read_to_string(&credentials_path).unwrap_or_default();
-    let updated_credentials = with_e2ee_activation(
-        &original_credentials,
-        &prepared.content_owner_id,
-        prepared.active_key_version,
-        &device_id,
-    )
-    .map_err(|_| SetupError::CredentialWrite)?;
+    let target_store =
+        crate::targets::TargetStore::from_home().map_err(|_| SetupError::CredentialWrite)?;
     let key_store = SystemContentKeyStore;
 
     commit_after_activation(
@@ -453,22 +448,42 @@ fn setup() -> Result<(), SetupError> {
                 .map_err(|_| SetupError::SecureStore)
         },
         || {
-            crate::fsx::write_atomic(&credentials_path, &updated_credentials, 0o600)
+            target_store
+                .activate_e2ee(
+                    &target_id,
+                    &prepared.content_owner_id,
+                    prepared.active_key_version,
+                    &device_id,
+                    &target_revision,
+                )
                 .map_err(|_| SetupError::CredentialWrite)
         },
     )
 }
 
 fn single_target() -> Result<crate::targets::Target, SetupError> {
-    let targets = crate::targets::TargetStore::from_home()
-        .and_then(|store| store.load_or_migrate())
+    let store =
+        crate::targets::TargetStore::from_home().map_err(|_| SetupError::TargetSelection)?;
+    let targets = store
+        .load_or_migrate()
         .map_err(|_| SetupError::TargetSelection)?;
     let mut targets = targets.into_iter();
     let target = targets.next().ok_or(SetupError::TargetSelection)?;
     if targets.next().is_some() {
         return Err(SetupError::TargetSelection);
     }
+    if !registry_target_ready_for_remote_activation(&store, &target) {
+        return Err(SetupError::TargetSelection);
+    }
     Ok(target)
+}
+
+fn registry_target_ready_for_remote_activation(
+    store: &crate::targets::TargetStore,
+    target: &crate::targets::Target,
+) -> bool {
+    !target.revision.is_empty()
+        && target.credentials_path == store.targets_dir().join(&target.id).join("credentials")
 }
 
 fn commit_after_activation<T>(
@@ -995,6 +1010,29 @@ mod tests {
         assert!(result.is_err());
         assert!(writes.borrow().is_empty());
         assert!(!result.unwrap_err().to_string().contains("word1"));
+    }
+
+    #[test]
+    fn legacy_fallback_is_rejected_before_remote_activation() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-e2ee-fallback-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let store = crate::targets::TargetStore::from_root(root.clone());
+        let endpoint = "https://company.example/api";
+        let fallback = crate::targets::Target {
+            id: crate::targets::target_id(endpoint),
+            revision: String::new(),
+            endpoint: endpoint.into(),
+            credentials_path: root.join("credentials"),
+            state_dir: root.join("state"),
+            credentials: crate::credentials::Credentials::default(),
+        };
+
+        assert!(!registry_target_ready_for_remote_activation(
+            &store, &fallback
+        ));
     }
 
     #[test]

@@ -77,6 +77,10 @@ pub fn load(state_dir: &Path, adapter: &str) -> Cursor {
 pub fn save(state_dir: &Path, adapter: &str, cursor: &Cursor) {
     let path = cursor_path(state_dir, adapter);
     if let Ok(body) = serde_json::to_string_pretty(cursor) {
+        if let Some(directory) = path.parent() {
+            let _ = std::fs::create_dir_all(directory);
+            let _ = crate::fsx::set_mode(directory, 0o700);
+        }
         let _ = crate::fsx::write_atomic(&path, &body, 0o600);
     }
 }
@@ -103,6 +107,37 @@ mod tests {
         let s = &back.files["/tmp/a.jsonl"];
         assert_eq!((s.mtime_ms, s.size, s.sent), (1_700_000_000_000, 42, 7));
         assert_eq!(s.sent_hash, "abc");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_directory_and_file_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = std::env::temp_dir().join(format!(
+            "toard-cursor-mode-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+
+        save(&state, "codex", &Cursor::default());
+
+        assert_eq!(
+            std::fs::metadata(state.join("cursors"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(state.join("cursors/codex.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(state);
     }
 
     #[test]

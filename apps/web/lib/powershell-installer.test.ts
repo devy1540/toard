@@ -129,6 +129,21 @@ test("PowerShell uninstaller gates full cleanup on the last removed target", () 
     script.indexOf("$remaining -gt 0") <
       script.indexOf("Remove-Item -Recurse"),
   );
+  assert.match(script, /cleanup receipt was not found/);
+  assert.ok(
+    script.indexOf("SetEnvironmentVariable('Path'") <
+      script.indexOf("if (Test-Path $shim) { Remove-Item -Force $shim }"),
+  );
+  assert.ok(
+    script.indexOf("if (Test-Path $shim) { Remove-Item -Force $shim }") <
+      script.indexOf(
+        "if (Test-Path $pendingFile) { Remove-Item -Force $pendingFile }",
+      ),
+  );
+  assert.doesNotMatch(
+    script,
+    /Remove-Item -Recurse -Force -ErrorAction SilentlyContinue/,
+  );
 });
 
 test("PowerShell uninstaller removes only toard-owned state during full cleanup", () => {
@@ -138,6 +153,7 @@ test("PowerShell uninstaller removes only toard-owned state during full cleanup"
     "legacy-backup",
     "state",
     "registry.lock",
+    "cleanup-pending",
     "claude.exe",
     "codex.exe",
     "toard-shim.exe",

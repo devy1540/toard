@@ -87,6 +87,7 @@ pub fn target_id(normalized_endpoint: &str) -> String {
 #[derive(Clone, Debug)]
 pub struct Target {
     pub id: String,
+    pub revision: String,
     pub endpoint: String,
     pub credentials_path: PathBuf,
     pub state_dir: PathBuf,
@@ -123,13 +124,18 @@ impl TargetStore {
 
     pub fn load_or_migrate(&self) -> Result<Vec<Target>, TargetError> {
         self.with_lock(|| match self.migrate_legacy_unlocked() {
-            Ok(()) => self.load_unlocked(),
+            Ok(()) => {
+                self.ensure_registry_revisions_unlocked()?;
+                self.load_unlocked()
+            }
             Err(migration_error) => {
-                let fallback = self.legacy_fallback()?;
+                self.ensure_registry_revisions_unlocked()?;
                 let mut targets = self.load_unlocked()?;
-                if !targets.iter().any(|target| target.id == fallback.id) {
-                    targets.push(fallback);
-                    targets.sort_by(|left, right| left.id.cmp(&right.id));
+                if let Ok(fallback) = self.legacy_fallback() {
+                    if !targets.iter().any(|target| target.id == fallback.id) {
+                        targets.push(fallback);
+                        targets.sort_by(|left, right| left.id.cmp(&right.id));
+                    }
                 }
                 if targets.is_empty() {
                     Err(migration_error)
@@ -143,11 +149,18 @@ impl TargetStore {
     pub fn load_readonly(&self) -> Result<Vec<Target>, TargetError> {
         let mut targets = self.load_unlocked()?;
         if self.root.join("credentials").is_file() {
-            let fallback = self.legacy_fallback()?;
-            if let Some(existing) = targets.iter_mut().find(|target| target.id == fallback.id) {
-                *existing = fallback;
-            } else {
-                targets.push(fallback);
+            match self.legacy_fallback() {
+                Ok(fallback) => {
+                    if let Some(existing) =
+                        targets.iter_mut().find(|target| target.id == fallback.id)
+                    {
+                        *existing = fallback;
+                    } else {
+                        targets.push(fallback);
+                    }
+                }
+                Err(error) if targets.is_empty() => return Err(error),
+                Err(_) => {}
             }
             targets.sort_by(|left, right| left.id.cmp(&right.id));
         }
@@ -156,7 +169,7 @@ impl TargetStore {
 
     pub fn upsert(&self, mut credentials: Credentials) -> Result<Target, TargetError> {
         self.with_lock(|| {
-            self.migrate_legacy_unlocked()?;
+            self.migrate_before_write_unlocked()?;
             self.write_target_unlocked(&mut credentials)
         })
     }
@@ -167,7 +180,7 @@ impl TargetStore {
         update_content_since: bool,
     ) -> Result<Target, TargetError> {
         self.with_lock(|| {
-            self.migrate_legacy_unlocked()?;
+            self.migrate_before_write_unlocked()?;
             let endpoint = validate_credentials(&credentials)?;
             let credentials_path = self
                 .targets_dir()
@@ -192,6 +205,20 @@ impl TargetStore {
         })
     }
 
+    fn migrate_before_write_unlocked(&self) -> Result<(), TargetError> {
+        match self.migrate_legacy_unlocked() {
+            Ok(()) => Ok(()),
+            Err(migration_error) => {
+                self.ensure_registry_revisions_unlocked()?;
+                if self.load_unlocked()?.is_empty() {
+                    Err(migration_error)
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     fn write_target_unlocked(&self, credentials: &mut Credentials) -> Result<Target, TargetError> {
         let endpoint = validate_credentials(credentials)?;
         credentials.endpoint = Some(endpoint.clone());
@@ -201,15 +228,19 @@ impl TargetStore {
         let state_dir = target_dir.join("state");
         create_private_dir(&target_dir)?;
         create_private_dir(&state_dir)?;
+        let revision = write_new_revision(&target_dir, &endpoint)?;
         let credentials_path = target_dir.join("credentials");
         crate::fsx::write_atomic(
             &credentials_path,
             &credentials::serialize(credentials),
             0o600,
         )?;
+        initialize_enabled_since(&state_dir, credentials)?;
+        let _ = fs::remove_file(self.root.join("cleanup-pending"));
 
         Ok(Target {
             id,
+            revision,
             endpoint,
             credentials_path,
             state_dir,
@@ -221,15 +252,86 @@ impl TargetStore {
         let endpoint = normalize_endpoint(endpoint)?;
         let id = target_id(&endpoint);
         self.with_lock(|| {
-            let path = self.targets_dir().join(id);
-            let removed = if path.is_dir() {
-                fs::remove_dir_all(path)?;
-                true
+            let path = self.targets_dir().join(&id);
+            let targets = self.load_unlocked()?;
+            let registered = targets.iter().any(|target| target.id == id);
+            let remaining = if registered {
+                targets.len() - 1
             } else {
-                false
+                targets.len()
             };
-            let remaining = self.load_unlocked()?.len();
+            let pending_path = self.root.join("cleanup-pending");
+            if registered && remaining == 0 {
+                crate::fsx::write_atomic(&pending_path, &format!("{endpoint}\n"), 0o600)?;
+            }
+            if registered {
+                fs::remove_dir_all(&path)?;
+            }
+            let mut removed = registered;
+            if !registered && remaining == 0 {
+                removed = fs::read_to_string(&pending_path)
+                    .ok()
+                    .and_then(|value| normalize_endpoint(value.trim()).ok())
+                    .is_some_and(|pending| pending == endpoint);
+            } else if remaining > 0 {
+                let _ = fs::remove_file(&pending_path);
+            }
             Ok(RemoveResult { removed, remaining })
+        })
+    }
+
+    pub fn activate_e2ee(
+        &self,
+        id: &str,
+        owner_id: &str,
+        key_version: u16,
+        device_id: &str,
+        expected_revision: &str,
+    ) -> Result<(), TargetError> {
+        if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(TargetError::InvalidCredentials("target id is invalid"));
+        }
+        if owner_id.is_empty()
+            || device_id.is_empty()
+            || key_version == 0
+            || owner_id.contains(['\r', '\n'])
+            || device_id.contains(['\r', '\n'])
+        {
+            return Err(TargetError::InvalidCredentials("E2EE metadata is invalid"));
+        }
+        self.with_lock(|| {
+            let target_dir = self.targets_dir().join(id);
+            let revision = read_revision(&target_dir)?;
+            if revision != expected_revision {
+                return Err(TargetError::InvalidCredentials(
+                    "target credentials changed during E2EE setup",
+                ));
+            }
+            let credentials_path = target_dir.join("credentials");
+            let content = fs::read_to_string(&credentials_path).map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    TargetError::InvalidCredentials("target no longer exists")
+                } else {
+                    error.into()
+                }
+            })?;
+            let mut credentials = credentials::parse(&content);
+            let endpoint = validate_credentials(&credentials)?;
+            if target_id(&endpoint) != id {
+                return Err(TargetError::InvalidCredentials(
+                    "stored target identity is invalid",
+                ));
+            }
+            credentials.collect_content = credentials::ContentCollectionMode::E2eeV1;
+            credentials.content_owner_id = Some(owner_id.to_string());
+            credentials.content_key_version = Some(key_version);
+            credentials.content_device_id = Some(device_id.to_string());
+            crate::fsx::write_atomic(
+                &credentials_path,
+                &credentials::serialize(&credentials),
+                0o600,
+            )?;
+            initialize_enabled_since(&target_dir.join("state"), &credentials)
         })
     }
 
@@ -292,6 +394,7 @@ impl TargetStore {
             }
             targets.push(Target {
                 id,
+                revision: read_revision(&entry.path()).unwrap_or_default(),
                 endpoint,
                 credentials_path,
                 state_dir: entry.path().join("state"),
@@ -302,6 +405,30 @@ impl TargetStore {
         Ok(targets)
     }
 
+    fn ensure_registry_revisions_unlocked(&self) -> Result<(), TargetError> {
+        if !self.targets_dir().is_dir() {
+            return Ok(());
+        }
+        for entry in fs::read_dir(self.targets_dir())? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let credentials_path = entry.path().join("credentials");
+            let Ok(content) = fs::read_to_string(credentials_path) else {
+                continue;
+            };
+            let credentials = credentials::parse(&content);
+            let Ok(endpoint) = validate_credentials(&credentials) else {
+                continue;
+            };
+            if target_id(&endpoint) == entry.file_name().to_string_lossy() {
+                ensure_revision(&entry.path(), &endpoint)?;
+            }
+        }
+        Ok(())
+    }
+
     fn legacy_fallback(&self) -> Result<Target, TargetError> {
         let credentials_path = self.root.join("credentials");
         let content = fs::read_to_string(&credentials_path)?;
@@ -310,6 +437,7 @@ impl TargetStore {
         credentials.endpoint = Some(endpoint.clone());
         Ok(Target {
             id: target_id(&endpoint),
+            revision: String::new(),
             endpoint,
             credentials_path,
             state_dir: self.root.join("state"),
@@ -335,7 +463,12 @@ impl TargetStore {
         if target_dir.exists() {
             create_private_dir(&target_dir)?;
             create_private_dir(&target_state)?;
+            if let Ok(existing_content) = fs::read_to_string(target_dir.join("credentials")) {
+                let existing = credentials::parse(&existing_content);
+                merge_unmentioned_legacy_fields(&content, &mut credentials, &existing);
+            }
             copy_legacy_state(&legacy_state, &target_state)?;
+            write_new_revision(&target_dir, &endpoint)?;
             crate::fsx::write_atomic(
                 &target_dir.join("credentials"),
                 &credentials::serialize(&credentials),
@@ -356,6 +489,7 @@ impl TargetStore {
                     &credentials::serialize(&credentials),
                     0o600,
                 )?;
+                write_new_revision(&staging, &endpoint)?;
                 copy_legacy_state(&legacy_state, &staged_state)?;
                 validate_readable_tree(&staging)?;
                 fs::rename(&staging, &target_dir)?;
@@ -366,6 +500,8 @@ impl TargetStore {
             }
             staged_result?;
         }
+        initialize_enabled_since(&target_state, &credentials)?;
+        let _ = fs::remove_file(self.root.join("cleanup-pending"));
 
         let backup = self.root.join("legacy-backup").join(unique_stamp());
         create_private_dir(&backup)?;
@@ -387,6 +523,108 @@ impl TargetStore {
         crate::fsx::write_atomic(&backup.join("migration.txt"), &marker, 0o600)?;
         Ok(())
     }
+}
+
+fn initialize_enabled_since(
+    state_dir: &Path,
+    credentials: &Credentials,
+) -> Result<(), TargetError> {
+    initialize_enabled_since_at(state_dir, credentials, crate::bg::now_unix_ms())
+}
+
+fn initialize_enabled_since_at(
+    state_dir: &Path,
+    credentials: &Credentials,
+    now_ms: i64,
+) -> Result<(), TargetError> {
+    create_private_dir(state_dir)?;
+    if credentials.collect_content.is_enabled()
+        && credentials.collect_content_since.is_none()
+        && !state_dir.join("content-since").exists()
+    {
+        crate::fsx::write_atomic(
+            &state_dir.join("content-since"),
+            &format!("{now_ms}\n"),
+            0o600,
+        )?;
+    }
+    if credentials.collect_tools && !state_dir.join("tool-since").exists() {
+        crate::fsx::write_atomic(&state_dir.join("tool-since"), &format!("{now_ms}\n"), 0o600)?;
+    }
+    Ok(())
+}
+
+fn has_key(content: &str, expected: &str) -> bool {
+    content.lines().any(|line| {
+        let line = line.trim();
+        !line.starts_with('#')
+            && line
+                .split_once('=')
+                .is_some_and(|(key, _)| key.trim() == expected)
+    })
+}
+
+fn merge_unmentioned_legacy_fields(
+    source: &str,
+    incoming: &mut Credentials,
+    existing: &Credentials,
+) {
+    let preserve_e2ee = existing.collect_content == credentials::ContentCollectionMode::E2eeV1
+        && incoming.collect_content != credentials::ContentCollectionMode::E2eeV1;
+    if !has_key(source, "collect_content") {
+        incoming.collect_content = existing.collect_content;
+    }
+    if !has_key(source, "collect_content_since") {
+        incoming.collect_content_since = existing.collect_content_since.clone();
+    }
+    if !has_key(source, "collect_tools") {
+        incoming.collect_tools = existing.collect_tools;
+    }
+    if !has_key(source, "content_owner_id") {
+        incoming.content_owner_id = existing.content_owner_id.clone();
+    }
+    if !has_key(source, "content_key_version") {
+        incoming.content_key_version = existing.content_key_version;
+    }
+    if !has_key(source, "content_device_id") {
+        incoming.content_device_id = existing.content_device_id.clone();
+    }
+    if preserve_e2ee {
+        incoming.collect_content = credentials::ContentCollectionMode::E2eeV1;
+        incoming.collect_content_since = existing.collect_content_since.clone();
+        incoming.content_owner_id = existing.content_owner_id.clone();
+        incoming.content_key_version = existing.content_key_version;
+        incoming.content_device_id = existing.content_device_id.clone();
+    }
+}
+
+fn ensure_revision(target_dir: &Path, endpoint: &str) -> Result<String, TargetError> {
+    let path = target_dir.join("revision");
+    if let Ok(value) = fs::read_to_string(&path) {
+        let value = value.trim();
+        if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Ok(value.to_string());
+        }
+    }
+    write_new_revision(target_dir, endpoint)
+}
+
+fn write_new_revision(target_dir: &Path, endpoint: &str) -> Result<String, TargetError> {
+    let seed = format!("{endpoint}\n{}\n{}", unique_stamp(), std::process::id());
+    let value = format!("{:x}", Sha256::digest(seed.as_bytes()));
+    crate::fsx::write_atomic(&target_dir.join("revision"), &format!("{value}\n"), 0o600)?;
+    Ok(value)
+}
+
+fn read_revision(target_dir: &Path) -> Result<String, TargetError> {
+    let value = fs::read_to_string(target_dir.join("revision"))?;
+    let value = value.trim();
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(TargetError::InvalidCredentials(
+            "target revision is invalid",
+        ));
+    }
+    Ok(value.to_string())
 }
 
 fn create_private_dir(path: &Path) -> Result<(), TargetError> {
@@ -589,6 +827,51 @@ mod tests {
     }
 
     #[test]
+    fn upsert_records_enable_time_once_for_content_and_tools() {
+        let temp = TempRoot::new("enable-since");
+        let store = TargetStore::from_root(temp.path().join(".toard"));
+        let mut enabled = credentials("company", "https://company.example/api");
+        enabled.collect_content = crate::credentials::ContentCollectionMode::ServerV1;
+
+        let target = store.upsert(enabled.clone()).unwrap();
+        let content_since = fs::read_to_string(target.state_dir.join("content-since")).unwrap();
+        let tool_since = fs::read_to_string(target.state_dir.join("tool-since")).unwrap();
+        assert!(content_since.trim().parse::<i64>().unwrap() > 0);
+        assert!(tool_since.trim().parse::<i64>().unwrap() > 0);
+
+        fs::write(target.state_dir.join("content-since"), "111\n").unwrap();
+        fs::write(target.state_dir.join("tool-since"), "222\n").unwrap();
+        store.upsert(enabled).unwrap();
+        assert_eq!(
+            fs::read_to_string(target.state_dir.join("content-since")).unwrap(),
+            "111\n"
+        );
+        assert_eq!(
+            fs::read_to_string(target.state_dir.join("tool-since")).unwrap(),
+            "222\n"
+        );
+    }
+
+    #[test]
+    fn enable_cutoffs_preserve_millisecond_precision() {
+        let temp = TempRoot::new("enable-since-ms");
+        let state = temp.path().join("state");
+        let mut enabled = credentials("company", "https://company.example/api");
+        enabled.collect_content = crate::credentials::ContentCollectionMode::ServerV1;
+
+        initialize_enabled_since_at(&state, &enabled, 1_700_000_000_987).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(state.join("content-since")).unwrap(),
+            "1700000000987\n"
+        );
+        assert_eq!(
+            fs::read_to_string(state.join("tool-since")).unwrap(),
+            "1700000000987\n"
+        );
+    }
+
+    #[test]
     fn remove_reports_missing_and_last_target_without_broad_cleanup() {
         let temp = TempRoot::new("remove");
         let store = TargetStore::from_root(temp.path().join(".toard"));
@@ -610,7 +893,57 @@ mod tests {
                 remaining: 0,
             }
         );
+        assert_eq!(
+            store.remove("https://company.example/api").unwrap(),
+            RemoveResult {
+                removed: true,
+                remaining: 0,
+            },
+            "last-target cleanup must remain retryable"
+        );
+        assert_eq!(
+            store.remove("https://missing.example/api").unwrap(),
+            RemoveResult {
+                removed: false,
+                remaining: 0,
+            }
+        );
         assert!(store.targets_dir().is_dir());
+    }
+
+    #[test]
+    fn last_target_is_not_deleted_when_cleanup_receipt_cannot_be_written() {
+        let temp = TempRoot::new("remove-receipt-failure");
+        let root = temp.path().join(".toard");
+        let store = TargetStore::from_root(root.clone());
+        let target = store
+            .upsert(credentials("company", "https://company.example/api"))
+            .unwrap();
+        fs::create_dir(root.join("cleanup-pending")).unwrap();
+
+        assert!(store.remove("https://company.example/api").is_err());
+        assert!(target.credentials_path.is_file());
+    }
+
+    #[test]
+    fn orphan_directory_never_counts_as_the_last_registered_target() {
+        let temp = TempRoot::new("remove-orphan");
+        let root = temp.path().join(".toard");
+        let store = TargetStore::from_root(root.clone());
+        let registered = store
+            .upsert(credentials("company", "https://company.example/api"))
+            .unwrap();
+        let orphan_id = target_id("https://orphan.example/api");
+        fs::create_dir_all(root.join("targets").join(orphan_id)).unwrap();
+
+        assert_eq!(
+            store.remove("https://orphan.example/api").unwrap(),
+            RemoveResult {
+                removed: false,
+                remaining: 1,
+            }
+        );
+        assert!(registered.credentials_path.is_file());
     }
 
     fn write_legacy_fixture(root: &Path, token: &str, endpoint: &str) {
@@ -684,6 +1017,95 @@ mod tests {
     }
 
     #[test]
+    fn reimport_preserves_unmentioned_policy_and_e2ee_metadata() {
+        let temp = TempRoot::new("reimport-metadata");
+        let root = temp.path().join(".toard");
+        let store = TargetStore::from_root(root.clone());
+        let mut active = credentials("company-old", "https://company.example/api");
+        active.collect_content = crate::credentials::ContentCollectionMode::E2eeV1;
+        active.collect_content_since = Some("all".into());
+        active.collect_tools = false;
+        active.content_owner_id = Some("owner-1".into());
+        active.content_key_version = Some(7);
+        active.content_device_id = Some("device-1".into());
+        store.upsert(active).unwrap();
+        fs::write(
+            root.join("credentials"),
+            "agent_key=company-new\nendpoint=https://company.example/api/\ncollect_content=true\ncollect_tools=true\n",
+        )
+        .unwrap();
+
+        let targets = store.load_or_migrate().unwrap();
+
+        assert_eq!(targets[0].credentials.token.as_deref(), Some("company-new"));
+        assert_eq!(
+            targets[0].credentials.collect_content,
+            crate::credentials::ContentCollectionMode::E2eeV1
+        );
+        assert_eq!(
+            targets[0].credentials.collect_content_since.as_deref(),
+            Some("all")
+        );
+        assert!(targets[0].credentials.collect_tools);
+        assert_eq!(
+            targets[0].credentials.content_owner_id.as_deref(),
+            Some("owner-1")
+        );
+        assert_eq!(targets[0].credentials.content_key_version, Some(7));
+        assert_eq!(
+            targets[0].credentials.content_device_id.as_deref(),
+            Some("device-1")
+        );
+    }
+
+    #[test]
+    fn locked_e2ee_activation_rejects_updated_or_recreated_target() {
+        let temp = TempRoot::new("e2ee-update");
+        let root = temp.path().join(".toard");
+        let store = TargetStore::from_root(root);
+        let first = store
+            .upsert(credentials("old-token", "https://company.example/api"))
+            .unwrap();
+        let updated = store
+            .upsert(credentials("new-token", "https://company.example/api"))
+            .unwrap();
+
+        assert_ne!(updated.revision, first.revision);
+        assert!(store
+            .activate_e2ee(&first.id, "owner-1", 3, "device-1", &first.revision)
+            .is_err());
+        let current = store.load_or_migrate().unwrap().remove(0);
+        assert_eq!(current.credentials.token.as_deref(), Some("new-token"));
+        assert!(current.credentials.content_owner_id.is_none());
+
+        store
+            .activate_e2ee(&updated.id, "owner-1", 3, "device-1", &updated.revision)
+            .unwrap();
+
+        store.remove("https://company.example/api").unwrap();
+        let replacement = store
+            .upsert(credentials(
+                "replacement-token",
+                "https://company.example/api",
+            ))
+            .unwrap();
+        assert_ne!(replacement.revision, updated.revision);
+        assert!(store
+            .activate_e2ee(&updated.id, "owner-2", 4, "device-2", &updated.revision)
+            .is_err());
+        let current = store.load_or_migrate().unwrap().remove(0);
+        assert_eq!(
+            current.credentials.token.as_deref(),
+            Some("replacement-token")
+        );
+        assert_eq!(
+            current.credentials.collect_content,
+            crate::credentials::ContentCollectionMode::Off
+        );
+        assert!(current.credentials.content_owner_id.is_none());
+    }
+
+    #[test]
     fn migration_failure_keeps_legacy_fallback_and_blocks_new_target() {
         let temp = TempRoot::new("fallback");
         let root = temp.path().join(".toard");
@@ -705,6 +1127,28 @@ mod tests {
             .targets_dir()
             .join(target_id("https://personal.example/api"))
             .exists());
+    }
+
+    #[test]
+    fn invalid_legacy_credentials_do_not_block_valid_registry_targets() {
+        let temp = TempRoot::new("invalid-legacy");
+        let root = temp.path().join(".toard");
+        let store = TargetStore::from_root(root.clone());
+        store
+            .upsert(credentials("personal", "https://personal.example/api"))
+            .unwrap();
+        fs::write(root.join("credentials"), "agent_key=partial-only\n").unwrap();
+
+        let targets = store.load_or_migrate().unwrap();
+
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].endpoint, "https://personal.example/api");
+        assert!(root.join("credentials").is_file());
+
+        store
+            .upsert(credentials("second", "https://second.example/api"))
+            .unwrap();
+        assert_eq!(store.load_readonly().unwrap().len(), 2);
     }
 
     #[test]

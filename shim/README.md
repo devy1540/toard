@@ -30,6 +30,8 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 
 서버별 자격증명과 전송 상태의 기준 저장소는 `~/.toard/targets/<sha256(endpoint)>/`다. 그 아래 `credentials`와 `state/`(usage/content/tool 커서·전송 상태)가 있으므로 회사와 개인 서버가 서로의 진행 위치를 덮어쓰지 않는다. `~/.toard/state/`에는 `last-collect` 같은 shim 전체 스케줄 상태만 둔다.
 
+실패한 target의 미전송분은 로컬 원본 세션 로그가 남아 있는 동안 다음 수집에서 재구성한다. 별도 durable outbox는 없으므로 장기 장애 중 원본 로그를 삭제하면 그 target의 누락분은 복구할 수 없다. 실패 상태의 `toard-shim doctor`에도 이 한계를 표시한다.
+
 기존 단일 서버 설치의 `~/.toard/credentials`와 서버별 상태는 신버전 설치 또는 첫 CLI 실행 때 해당 endpoint target으로 자동 이동하고 원본은 `~/.toard/legacy-backup/`에 보관한다. 이후 legacy 경로를 live mirror로 유지하지 않는다. 같은 endpoint의 설치 명령을 다시 실행하면 token·수집 정책만 갱신하고 그 target의 커서는 보존한다.
 
 **(experimental OTLP 전용 — 강등)** `claude-env` 는 OTLP push 커버리지 갭(PATH 를 거치지 않는 IDE 확장·절대경로·alias 실행)을 메우던 장치로, Claude Code 가 직접 읽는 settings.json 의 `env` 에 OTEL 키를 병합 주입한다. 사용량이 이제 pull(트랜스크립트)로 수집되므로 **일반 사용엔 불필요**하고, `TOARD_EXPERIMENTAL_OTLP` + 서버 `collection_method='otel'` 로 push 를 되켤 때만 의미가 있다(`on` 실행 시 강등 경고 출력). 우리가 넣은 값은 `~/.toard/state/claude-env.json` 에 기록되며, 사용자가 직접 설정했거나 이후 변경한 키는 덮지도 지우지도 않는다(경고만). 토큰이 평문으로 들어가므로 settings.json 은 0600 으로 조정된다.
@@ -67,7 +69,7 @@ toard-shim e2ee approve
 - **본문·사용량 모두 pull 로 일원화(설계 확정)**: OTLP 로는 응답을 얻을 수 없어(Codex 는 응답 이벤트 자체가 없고 — 실측·소스 확정) 본문은 전 도구가 로컬 세션 파일에서 pull 하고, 사용량도 같은 파일에서 pull 한다(claude/codex 트랜스크립트, docs/design-usage-pull). usage·content 는 **커서(`{adapter}` vs `{adapter}-content`)·엔드포인트가 완전 분리**돼 서로 영향이 없다.
   - claude: `~/.claude/projects/**/*.jsonl` (Desktop 사용분 포함). codex: `~/.codex/sessions/**/*.jsonl`(CODEX_HOME 존중). 각 도구가 프롬프트+응답을 전문으로 남긴다.
 - **백필 컷오프 `collect_content_since`** (credentials 또는 env `TOARD_SHIM_COLLECT_CONTENT_SINCE`): 이 시점 이후 턴만 수집.
-  - **미설정(기본) = "지금부터"** — 최초 활성화 시각을 `~/.toard/state/content-since` 에 기록해, 켜는 순간 과거 대화가 통째로 전송되지 않는다.
+  - **미설정(기본) = "지금부터"** — target 활성화 시각을 `~/.toard/targets/<id>/state/content-since`에 기록해, 켜는 순간 과거 대화가 통째로 전송되지 않는다.
   - `collect_content_since=2026-06-01`(그 날짜부터) · `collect_content_since=all`(전량 백필). 진행 중 세션이 append 돼도 옛 턴은 컷오프로 제외된다.
 - **설치 기본값**: E2EE 선택 시에도 setup 완료 전에는 본문 수집이 off다. `TOARD_SHIM_COLLECT_CONTENT=0`으로 언제든 강제 해제할 수 있다.
 - **신뢰경계**: shim은 UCK를 OS keyring에서 읽어 레코드별 DEK와 본문을 로컬 암호화한다. 서버 방향 payload에는 평문이 없다.

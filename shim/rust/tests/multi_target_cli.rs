@@ -104,7 +104,9 @@ for arg in "$@"; do
     token_ok=1
   fi
 done
-if [ "$endpoint" = company ]; then
+if [ -n "$TOARD_TEST_CURL_STATUS" ]; then
+  printf '%s' "$TOARD_TEST_CURL_STATUS"
+elif [ "$endpoint" = company ]; then
   printf 000
 elif [ "$endpoint" = personal ] && [ "$token_ok" = 1 ]; then
   printf 200
@@ -246,6 +248,33 @@ fn machine_remove_is_idempotent_and_reports_remaining_targets() {
     assert_success(&missing);
     assert_eq!(stdout(&missing), "removed=0\nremaining=1\n");
     assert_eq!(fixture.target_directories().len(), 1);
+
+    let last = fixture
+        .command()
+        .args(["target", "remove", "--machine"])
+        .env("TOARD_INGEST_ENDPOINT", "https://company.example/api")
+        .output()
+        .expect("last target remove must run");
+    assert_success(&last);
+    assert_eq!(stdout(&last), "removed=1\nremaining=0\n");
+
+    let cleanup_retry = fixture
+        .command()
+        .args(["target", "remove", "--machine"])
+        .env("TOARD_INGEST_ENDPOINT", "https://company.example/api")
+        .output()
+        .expect("last target cleanup retry must run");
+    assert_success(&cleanup_retry);
+    assert_eq!(stdout(&cleanup_retry), "removed=1\nremaining=0\n");
+
+    let unrelated_missing = fixture
+        .command()
+        .args(["target", "remove", "--machine"])
+        .env("TOARD_INGEST_ENDPOINT", "https://missing.example/api")
+        .output()
+        .expect("unrelated missing target remove must run");
+    assert_success(&unrelated_missing);
+    assert_eq!(stdout(&unrelated_missing), "removed=0\nremaining=0\n");
 }
 
 #[test]
@@ -300,6 +329,20 @@ fn doctor_checks_all_targets_and_target_env_uses_stored_token() {
     let fixture = CliFixture::new();
     assert_success(&fixture.upsert("https://company.example/api", "tk_company", "off", "true"));
     assert_success(&fixture.upsert("https://personal.example/api", "tk_personal", "off", "true"));
+    let company_target = fixture
+        .target_directories()
+        .into_iter()
+        .find(|target| {
+            fs::read_to_string(target.join("credentials"))
+                .expect("credentials must be readable")
+                .contains("company.example")
+        })
+        .expect("company target must exist");
+    fs::write(
+        company_target.join("state/delivery.json"),
+        r#"{"last_attempt_at":"2026-07-18T00:00:00Z","last_success_at":null,"result":"unreachable","error_fingerprint":"abc","last_logged_at":"2026-07-18T00:00:00Z"}"#,
+    )
+    .expect("delivery status must be written");
     fixture.install_doctor_tools();
     let bin = fixture.shim.parent().unwrap();
 
@@ -324,6 +367,10 @@ fn doctor_checks_all_targets_and_target_env_uses_stored_token() {
         all_stdout.contains("endpoint 연결 + 토큰 유효"),
         "{all_stdout}"
     );
+    assert!(
+        all_stdout.contains("로컬 원본 세션 로그가 남아 있는 동안"),
+        "{all_stdout}"
+    );
 
     let selected = fixture
         .command()
@@ -337,4 +384,15 @@ fn doctor_checks_all_targets_and_target_env_uses_stored_token() {
     let selected_stdout = stdout(&selected);
     assert!(!selected_stdout.contains("https://company.example/api"));
     assert!(selected_stdout.contains("https://personal.example/api"));
+
+    let selected_server_error = fixture
+        .command()
+        .args(["doctor", "--target-env"])
+        .env("PATH", bin)
+        .env("TOARD_INGEST_ENDPOINT", "https://personal.example/api")
+        .env("TOARD_TEST_CURL_STATUS", "500")
+        .output()
+        .expect("selected doctor server error must run");
+    assert!(!selected_server_error.status.success());
+    assert!(stdout(&selected_server_error).contains("HTTP 500"));
 }

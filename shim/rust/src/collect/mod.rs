@@ -249,7 +249,6 @@ fn prepare_cached_adapters(
                 dry_run,
             );
             let tools_active = target_collect_tools(&target.credentials)
-                && !tool_cursor.files.is_empty()
                 && post::unsupported_probe_due(&target.state_dir, "tool-events");
             let content_active = target_content_mode(&target.credentials).is_enabled();
             for file in &files {
@@ -288,24 +287,8 @@ fn prepare_cached_adapters(
     prepared
 }
 
-fn seed_tool_baseline(files: &[(String, cursor::FileStamp)]) -> cursor::Cursor {
-    let mut cursor = cursor::Cursor::default();
-    for (path, stamp) in files {
-        cursor.files.insert(
-            path.clone(),
-            cursor::FileState {
-                mtime_ms: stamp.mtime_ms,
-                size: stamp.size,
-                sent: 0,
-                sent_hash: String::new(),
-            },
-        );
-    }
-    cursor
-}
-
 fn tool_since_ms(state_dir: &Path, dry_run: bool) -> i64 {
-    let now = (bg::now_unix() * 1000) as i64;
+    let now = bg::now_unix_ms();
     let path = state_dir.join("tool-since");
     if let Ok(value) = std::fs::read_to_string(&path) {
         if let Ok(parsed) = value.trim().parse::<i64>() {
@@ -313,7 +296,7 @@ fn tool_since_ms(state_dir: &Path, dry_run: bool) -> i64 {
         }
     }
     if !dry_run {
-        let _ = fsx::write_atomic(&path, &format!("{now}\n"), 0o644);
+        let _ = fsx::write_atomic(&path, &format!("{now}\n"), 0o600);
     }
     now
 }
@@ -321,14 +304,11 @@ fn tool_since_ms(state_dir: &Path, dry_run: bool) -> i64 {
 fn should_parse_tool_file(
     collect_tools: bool,
     probe_due: bool,
-    first_tool_run: bool,
     usage_same: bool,
     tools_same: bool,
     reconciliation_scan: bool,
 ) -> bool {
-    reconciliation_scan
-        || !usage_same
-        || (collect_tools && probe_due && !first_tool_run && !tools_same)
+    reconciliation_scan || !usage_same || (collect_tools && probe_due && !tools_same)
 }
 
 fn reconciliation_active(
@@ -700,6 +680,7 @@ pub fn run_with(
         credentials.endpoint = Some(endpoint.clone());
         targets.push(Target {
             id: crate::targets::target_id(&endpoint),
+            revision: String::new(),
             endpoint,
             credentials_path: store.root().join("credentials"),
             state_dir: global_state.clone(),
@@ -729,7 +710,7 @@ pub fn run_with(
         if !dry_run {
             let _ = crate::delivery::record_attempt(&target.state_dir);
         }
-        let code = run_target(
+        let outcome = run_target(
             target,
             &global_state,
             transport,
@@ -739,29 +720,118 @@ pub fn run_with(
             quiet,
             host.as_deref(),
         );
-        if code == 2 {
+        if outcome.code == 2 {
+            for message in outcome.diagnostics.messages {
+                eprintln!("{message}");
+            }
             return 2;
         }
-        if code == 0 {
+        if outcome.code == 0 && !outcome.diagnostics.degraded {
             if !dry_run && target_still_exists(target, &global_state) {
                 let _ = crate::delivery::record_success(&target.state_dir);
             }
         } else {
-            failed = true;
+            failed |= outcome.code != 0;
             if !dry_run && target_still_exists(target, &global_state) {
-                let _ = crate::delivery::record_failure(
-                    &target.state_dir,
-                    crate::delivery::DeliveryKind::ServerError,
-                    "target delivery failed",
-                );
+                let kind = outcome
+                    .diagnostics
+                    .kind
+                    .unwrap_or(crate::delivery::DeliveryKind::Disabled);
+                let fingerprint_source = if outcome.diagnostics.messages.is_empty() {
+                    format!("{kind:?}")
+                } else {
+                    outcome.diagnostics.messages.join("\n")
+                };
+                let should_log =
+                    crate::delivery::record_failure(&target.state_dir, kind, &fingerprint_source)
+                        .unwrap_or(true);
+                if should_emit_failure(should_log, quiet) {
+                    for message in &outcome.diagnostics.messages {
+                        eprintln!("{message}");
+                    }
+                }
             }
         }
     }
     i32::from(failed)
 }
 
+#[derive(Default)]
+struct TargetDiagnostics {
+    kind: Option<crate::delivery::DeliveryKind>,
+    messages: Vec<String>,
+    degraded: bool,
+}
+
+impl TargetDiagnostics {
+    fn fail(&mut self, kind: crate::delivery::DeliveryKind, message: String) {
+        let priority = |kind: &crate::delivery::DeliveryKind| match kind {
+            crate::delivery::DeliveryKind::Unauthorized => 3,
+            crate::delivery::DeliveryKind::Unreachable => 2,
+            crate::delivery::DeliveryKind::Disabled
+            | crate::delivery::DeliveryKind::Unsupported => 0,
+            _ => 1,
+        };
+        if self
+            .kind
+            .as_ref()
+            .is_none_or(|current| priority(&kind) > priority(current))
+        {
+            self.kind = Some(kind);
+        }
+        self.messages.push(message);
+    }
+
+    fn disabled(&mut self, message: String) {
+        self.degraded = true;
+        if self.kind.is_none() {
+            self.kind = Some(crate::delivery::DeliveryKind::Disabled);
+        }
+        self.messages.push(message);
+    }
+
+    fn unsupported(&mut self, message: String) {
+        self.degraded = true;
+        if self.kind.is_none() {
+            self.kind = Some(crate::delivery::DeliveryKind::Unsupported);
+        }
+        self.messages.push(message);
+    }
+}
+
+fn should_emit_failure(rate_limit_allows: bool, quiet: bool) -> bool {
+    rate_limit_allows || !quiet
+}
+
+struct TargetRunResult {
+    code: i32,
+    diagnostics: TargetDiagnostics,
+}
+
+fn classify_transport_error(error: &str) -> crate::delivery::DeliveryKind {
+    if error.contains("토큰이 유효하지") {
+        crate::delivery::DeliveryKind::Unauthorized
+    } else if error.contains("연결 실패")
+        || error.contains("curl 실행 불가")
+        || error.contains("unreachable")
+    {
+        crate::delivery::DeliveryKind::Unreachable
+    } else {
+        crate::delivery::DeliveryKind::ServerError
+    }
+}
+
 fn target_still_exists(target: &Target, global_state: &Path) -> bool {
-    target.state_dir == global_state || target.credentials_path.is_file()
+    if target.state_dir == global_state {
+        return true;
+    }
+    let Some(target_dir) = target.credentials_path.parent() else {
+        return false;
+    };
+    target.credentials_path.is_file()
+        && std::fs::read_to_string(target_dir.join("revision"))
+            .ok()
+            .is_some_and(|revision| revision.trim() == target.revision)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -774,19 +844,26 @@ fn run_target(
     dry_run: bool,
     quiet: bool,
     host: Option<&str>,
-) -> i32 {
+) -> TargetRunResult {
     let state_dir = &target.state_dir;
     let creds = &target.credentials;
     let endpoint = &target.endpoint;
+    let mut diagnostics = TargetDiagnostics::default();
     let token = match (&creds.token, dry_run) {
         (Some(t), _) => Some(t.clone()),
         (None, true) => None,
         (None, false) => {
-            eprintln!(
-                "toard-shim: {} target 자격 증명이 없습니다",
-                target.endpoint
+            diagnostics.fail(
+                crate::delivery::DeliveryKind::Unauthorized,
+                format!(
+                    "toard-shim: {} target 자격 증명이 없습니다",
+                    target.endpoint
+                ),
             );
-            return 1;
+            return TargetRunResult {
+                code: 1,
+                diagnostics,
+            };
         }
     };
     let collect_tools = target_collect_tools(creds);
@@ -816,21 +893,8 @@ fn run_target(
         );
         let tool_cursor_key = format!("{key}-tools");
         let mut tool_cur = cursor::load(state_dir, &tool_cursor_key);
-        let first_tool_run = collect_tools && tool_cur.files.is_empty();
         let tool_probe_due = collect_tools && post::unsupported_probe_due(state_dir, "tool-events");
-        let tool_active = tool_probe_due && !first_tool_run;
-        if first_tool_run {
-            let stamps = files
-                .iter()
-                .filter_map(|file| {
-                    cursor::stamp(file).map(|stamp| (file.display().to_string(), stamp))
-                })
-                .collect::<Vec<_>>();
-            tool_cur = seed_tool_baseline(&stamps);
-            if !dry_run && target_still_exists(target, global_state) {
-                cursor::save(state_dir, &tool_cursor_key, &tool_cur);
-            }
-        }
+        let tool_active = tool_probe_due;
 
         let mut changed = 0usize;
         let mut parsed_total = 0usize;
@@ -852,7 +916,6 @@ fn run_target(
             if !should_parse_tool_file(
                 collect_tools,
                 tool_probe_due,
-                first_tool_run,
                 usage_same,
                 tools_same,
                 reconciliation_scan,
@@ -953,7 +1016,10 @@ fn run_target(
                         deduped += result.deduped;
                     }
                     Err(error) => {
-                        eprintln!("toard-shim: {key} 전송 실패 — {error}");
+                        diagnostics.fail(
+                            classify_transport_error(&error),
+                            format!("toard-shim: {key} 전송 실패 — {error}"),
+                        );
                         usage_ok = false;
                         failed = true;
                         break;
@@ -991,15 +1057,21 @@ fn run_target(
                             break;
                         }
                         post::EndpointResult::Unauthorized => {
-                            eprintln!(
-                                "toard-shim: {key} 재생 보정 실패 — 토큰이 유효하지 않습니다"
+                            diagnostics.fail(
+                                crate::delivery::DeliveryKind::Unauthorized,
+                                format!(
+                                    "toard-shim: {key} 재생 보정 실패 — 토큰이 유효하지 않습니다"
+                                ),
                             );
                             reconciliation_ok = false;
                             failed = true;
                             break;
                         }
                         post::EndpointResult::Err(error) => {
-                            eprintln!("toard-shim: {key} 재생 보정 실패 — {error}");
+                            diagnostics.fail(
+                                classify_transport_error(&error),
+                                format!("toard-shim: {key} 재생 보정 실패 — {error}"),
+                            );
                             reconciliation_ok = false;
                             failed = true;
                             break;
@@ -1007,6 +1079,7 @@ fn run_target(
                     }
                 }
                 if reconciliation_ok {
+                    post::clear_unsupported(state_dir, "usage-reconciliation");
                     println!(
                         "{key}: 기존 재생 오염 키 {}건 확인 · {reconciled}건 철회",
                         replay_keys.len()
@@ -1054,15 +1127,21 @@ fn run_target(
                             break;
                         }
                         post::EndpointResult::Unauthorized => {
-                            eprintln!(
-                                "toard-shim: {key} 도구 전송 실패 — 토큰이 유효하지 않습니다"
+                            diagnostics.fail(
+                                crate::delivery::DeliveryKind::Unauthorized,
+                                format!(
+                                    "toard-shim: {key} 도구 전송 실패 — 토큰이 유효하지 않습니다"
+                                ),
                             );
                             tools_ok = false;
                             failed = true;
                             break;
                         }
                         post::EndpointResult::Err(error) => {
-                            eprintln!("toard-shim: {key} 도구 전송 실패 — {error}");
+                            diagnostics.fail(
+                                classify_transport_error(&error),
+                                format!("toard-shim: {key} 도구 전송 실패 — {error}"),
+                            );
                             tools_ok = false;
                             failed = true;
                             break;
@@ -1071,6 +1150,9 @@ fn run_target(
                 }
             }
             if tools_ok && target_still_exists(target, global_state) {
+                if !tool_events.is_empty() {
+                    post::clear_unsupported(state_dir, "tool-events");
+                }
                 for (path, state) in tool_updates {
                     tool_cur.files.insert(path, state);
                 }
@@ -1089,7 +1171,7 @@ fn run_target(
         // 백필 컷오프: 미설정=지금부터(최초 활성화 시각 기록), 날짜/all 지정 시 과거 포함.
         let since_ms =
             content_since_ms_for_state(state_dir, creds.collect_content_since.as_deref(), dry_run);
-        let context = ContentRunContext {
+        let mut context = ContentRunContext {
             endpoint,
             token: token.as_deref(),
             credentials: creds,
@@ -1100,13 +1182,14 @@ fn run_target(
             transport,
             credentials_path: &target.credentials_path,
             global_state,
+            diagnostics: &mut diagnostics,
         };
         for adapter in prepared_adapters {
             let key = adapter.key();
             if only.is_some_and(|o| o != key) {
                 continue;
             }
-            if collect_content_for(adapter.as_ref(), &context) {
+            if collect_content_for(adapter.as_ref(), &mut context) {
                 failed = true;
             }
         }
@@ -1120,11 +1203,17 @@ fn run_target(
                 let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
                 match transport.put_tool_inventory(endpoint, token, &pending.body) {
                     post::EndpointResult::Ok(_) => {
+                        post::clear_unsupported(state_dir, "tool-inventory");
                         if target_still_exists(target, global_state) {
                             match inventory::commit_delivery(state_dir, &pending) {
                                 Ok(()) => println!("도구 인벤토리: 최신 스냅샷 전송"),
                                 Err(error) => {
-                                    eprintln!("toard-shim: 도구 인벤토리 상태 저장 실패 — {error}");
+                                    diagnostics.fail(
+                                        crate::delivery::DeliveryKind::ServerError,
+                                        format!(
+                                            "toard-shim: 도구 인벤토리 상태 저장 실패 — {error}"
+                                        ),
+                                    );
                                     failed = true;
                                 }
                             }
@@ -1136,11 +1225,17 @@ fn run_target(
                         }
                     }
                     post::EndpointResult::Unauthorized => {
-                        eprintln!("toard-shim: 도구 인벤토리 전송 실패 — 토큰이 유효하지 않습니다");
+                        diagnostics.fail(
+                            crate::delivery::DeliveryKind::Unauthorized,
+                            "toard-shim: 도구 인벤토리 전송 실패 — 토큰이 유효하지 않습니다".into(),
+                        );
                         failed = true;
                     }
                     post::EndpointResult::Err(error) => {
-                        eprintln!("toard-shim: 도구 인벤토리 전송 실패 — {error}");
+                        diagnostics.fail(
+                            classify_transport_error(&error),
+                            format!("toard-shim: 도구 인벤토리 전송 실패 — {error}"),
+                        );
                         failed = true;
                     }
                 }
@@ -1149,13 +1244,33 @@ fn run_target(
     }
 
     if !matched {
-        eprintln!(
-            "toard-shim: 어댑터를 찾을 수 없습니다: {}",
-            only.unwrap_or("?")
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            format!(
+                "toard-shim: 어댑터를 찾을 수 없습니다: {}",
+                only.unwrap_or("?")
+            ),
         );
-        return 2;
+        return TargetRunResult {
+            code: 2,
+            diagnostics,
+        };
     }
-    i32::from(failed)
+    for (name, label, enabled) in [
+        ("usage-reconciliation", "사용량 재생 보정", true),
+        ("tool-events", "도구 활동", collect_tools),
+        ("tool-inventory", "도구 인벤토리", collect_tools),
+    ] {
+        if enabled && post::unsupported_marked(state_dir, name) {
+            diagnostics.unsupported(format!(
+                "toard-shim: {label} endpoint를 서버가 지원하지 않습니다 — 24시간마다 다시 확인합니다"
+            ));
+        }
+    }
+    TargetRunResult {
+        code: i32::from(failed),
+        diagnostics,
+    }
 }
 
 /// 본문 전송용 endpoint 안전성 — https 또는 로컬(localhost/127.0.0.1/[::1])만 허용.
@@ -1192,9 +1307,10 @@ struct ContentRunContext<'a> {
     transport: &'a dyn post::Transport,
     credentials_path: &'a Path,
     global_state: &'a Path,
+    diagnostics: &'a mut TargetDiagnostics,
 }
 
-fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentRunContext<'_>) -> bool {
+fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext<'_>) -> bool {
     let ContentRunContext {
         endpoint,
         token,
@@ -1206,15 +1322,19 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentRunContext<'_>
         transport,
         credentials_path,
         global_state,
+        diagnostics,
     } = context;
     let key = adapter.key();
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
     let secure = endpoint_is_secure(endpoint);
     if !*dry_run && !secure {
-        eprintln!(
-            "toard-shim: {key} 본문 수집 건너뜀 — 안전하지 않은 endpoint({endpoint}). 평문 HTTP 로는 본문을 전송하지 않습니다(https 또는 localhost 필요)."
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            format!(
+                "toard-shim: {key} 본문 수집 건너뜀 — 안전하지 않은 endpoint({endpoint}). 평문 HTTP 로는 본문을 전송하지 않습니다(https 또는 localhost 필요)."
+            ),
         );
-        return false;
+        return true;
     }
     let cursor_key = format!("{key}-content");
     let files = adapter.discover_files();
@@ -1295,17 +1415,28 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentRunContext<'_>
         let e2ee_material = match credentials.collect_content {
             crate::credentials::ContentCollectionMode::E2eeV1 => {
                 let Some(owner_id) = credentials.content_owner_id.as_deref() else {
-                    eprintln!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 소유자 설정이 없습니다");
+                    diagnostics.fail(
+                        crate::delivery::DeliveryKind::ServerError,
+                        format!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 소유자 설정이 없습니다"),
+                    );
                     return true;
                 };
                 let Some(key_version) = credentials.content_key_version else {
-                    eprintln!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 키 버전 설정이 없습니다");
+                    diagnostics.fail(
+                        crate::delivery::DeliveryKind::ServerError,
+                        format!(
+                            "toard-shim: {key} E2EE 수집 실패 — 콘텐츠 키 버전 설정이 없습니다"
+                        ),
+                    );
                     return true;
                 };
                 let uck = match SystemContentKeyStore.get_uck(owner_id, key_version) {
                     Ok(uck) => uck,
                     Err(_) => {
-                        eprintln!("toard-shim: {key} E2EE 수집 실패 — 운영체제 보안 저장소에서 콘텐츠 키를 불러올 수 없습니다");
+                        diagnostics.fail(
+                            crate::delivery::DeliveryKind::ServerError,
+                            format!("toard-shim: {key} E2EE 수집 실패 — 운영체제 보안 저장소에서 콘텐츠 키를 불러올 수 없습니다"),
+                        );
                         return true;
                     }
                 };
@@ -1322,8 +1453,11 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentRunContext<'_>
                     match to_e2ee_prompts_body(key, owner_id, *key_version, uck, chunk) {
                         Ok(body) => body,
                         Err(_) => {
-                            eprintln!(
-                                "toard-shim: {key} E2EE 수집 실패 — 로컬 암호화에 실패했습니다"
+                            diagnostics.fail(
+                                crate::delivery::DeliveryKind::ServerError,
+                                format!(
+                                    "toard-shim: {key} E2EE 수집 실패 — 로컬 암호화에 실패했습니다"
+                                ),
                             );
                             return true;
                         }
@@ -1338,11 +1472,16 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentRunContext<'_>
                 }
                 Ok(None) => {
                     // 서버에서 본문 수집이 비활성(503) — 실패 아님. 커서 미갱신하고 종료(추후 활성 시 재전송)
-                    println!("{key} 본문: 서버에서 비활성(503) — 건너뜀");
+                    diagnostics.disabled(format!(
+                        "toard-shim: {key} 본문 서버에서 비활성(503) — 커서를 유지하고 건너뜁니다"
+                    ));
                     return false;
                 }
                 Err(e) => {
-                    eprintln!("toard-shim: {key} 본문 전송 실패 — {e}");
+                    diagnostics.fail(
+                        classify_transport_error(&e),
+                        format!("toard-shim: {key} 본문 전송 실패 — {e}"),
+                    );
                     // 커서를 갱신하지 않음 → 다음 실행에서 재시도 (dedup 이 중복 흡수)
                     return true;
                 }
@@ -1381,6 +1520,48 @@ mod tests {
     struct ContentFanoutTestAdapter {
         file: PathBuf,
         parse_calls: Rc<Cell<usize>>,
+    }
+
+    struct ToolFirstRunAdapter {
+        file: PathBuf,
+    }
+
+    impl LogAdapter for ToolFirstRunAdapter {
+        fn key(&self) -> &'static str {
+            "tool_first_run"
+        }
+
+        fn discover_files(&self) -> Vec<PathBuf> {
+            vec![self.file.clone()]
+        }
+
+        fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
+            Vec::new()
+        }
+
+        fn parse_changed(
+            &self,
+            _path: &Path,
+            _include_content: bool,
+            include_tools: bool,
+        ) -> ParsedLog {
+            ParsedLog {
+                tools: include_tools
+                    .then(|| RawToolActivity {
+                        ts_ms: (crate::bg::now_unix() * 1000) as i64 + 1_000,
+                        session_id: Some(Arc::from("session-1")),
+                        call_id: "call-1".into(),
+                        kind: ToolActivityKind::Mcp,
+                        item_key: "demo".into(),
+                        plugin_key: None,
+                        outcome: ToolOutcome::Success,
+                        detection: ToolDetection::Explicit,
+                    })
+                    .into_iter()
+                    .collect(),
+                ..ParsedLog::default()
+            }
+        }
     }
 
     impl LogAdapter for ContentFanoutTestAdapter {
@@ -1451,8 +1632,12 @@ mod tests {
         calls: RefCell<Vec<String>>,
         fail_company: Cell<bool>,
         remove_target: RefCell<Option<PathBuf>>,
+        replace_target_revision: RefCell<Option<PathBuf>>,
         prompt_calls: RefCell<Vec<String>>,
+        tool_calls: RefCell<Vec<String>>,
         fail_company_prompts: Cell<bool>,
+        disable_prompts: Cell<bool>,
+        support_inventory: Cell<bool>,
     }
 
     impl post::Transport for FanoutTestTransport {
@@ -1465,6 +1650,9 @@ mod tests {
             self.calls.borrow_mut().push(endpoint.to_string());
             if let Some(path) = self.remove_target.borrow_mut().take() {
                 std::fs::remove_dir_all(path).unwrap();
+            }
+            if let Some(path) = self.replace_target_revision.borrow_mut().take() {
+                std::fs::write(path.join("revision"), "replacement-revision\n").unwrap();
             }
             if endpoint.contains("company") && self.fail_company.get() {
                 Err("unreachable".into())
@@ -1483,7 +1671,9 @@ mod tests {
             _body: &str,
         ) -> Result<Option<post::PostResult>, String> {
             self.prompt_calls.borrow_mut().push(endpoint.to_string());
-            if endpoint.contains("company") && self.fail_company_prompts.get() {
+            if self.disable_prompts.get() {
+                Ok(None)
+            } else if endpoint.contains("company") && self.fail_company_prompts.get() {
                 Err("unreachable".into())
             } else {
                 Ok(Some(post::PostResult {
@@ -1495,11 +1685,15 @@ mod tests {
 
         fn post_tool_events(
             &self,
-            _endpoint: &str,
+            endpoint: &str,
             _token: &str,
             _body: &str,
         ) -> post::EndpointResult {
-            post::EndpointResult::Unsupported
+            self.tool_calls.borrow_mut().push(endpoint.to_string());
+            post::EndpointResult::Ok(post::PostResult {
+                inserted: 1,
+                ..post::PostResult::default()
+            })
         }
 
         fn post_usage_reconciliation(
@@ -1517,7 +1711,11 @@ mod tests {
             _token: &str,
             _body: &str,
         ) -> post::EndpointResult {
-            post::EndpointResult::Unsupported
+            if self.support_inventory.get() {
+                post::EndpointResult::Ok(post::PostResult::default())
+            } else {
+                post::EndpointResult::Unsupported
+            }
         }
     }
 
@@ -1591,6 +1789,18 @@ mod tests {
             1
         );
         assert_eq!(transport.calls.borrow().len(), 2);
+        assert_eq!(
+            crate::delivery::load(&company.state_dir)
+                .expect("failed target delivery status")
+                .result,
+            crate::delivery::DeliveryKind::Unreachable
+        );
+        assert_eq!(
+            crate::delivery::load(&personal.state_dir)
+                .expect("successful target delivery status")
+                .result,
+            crate::delivery::DeliveryKind::Success
+        );
 
         transport.fail_company.set(false);
         transport.calls.borrow_mut().clear();
@@ -1668,6 +1878,49 @@ mod tests {
     }
 
     #[test]
+    fn replaced_same_endpoint_target_never_commits_the_old_delivery_cursor() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-fanout-replace-race-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("old-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: false,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let target_dir = target.state_dir.parent().unwrap().to_path_buf();
+        let transport = FanoutTestTransport::default();
+        *transport.replace_target_revision.borrow_mut() = Some(target_dir);
+
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(FanoutTestAdapter {
+                    file,
+                    parse_calls: Rc::new(Cell::new(0)),
+                })],
+                Some("fanout_test"),
+                false,
+                true,
+            ),
+            0
+        );
+        assert!(cursor::load(&target.state_dir, "fanout_test")
+            .files
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn content_failure_is_isolated_per_target_after_one_parse() {
         let root = std::env::temp_dir().join(format!(
             "toard-content-fanout-{}-{}",
@@ -1726,6 +1979,186 @@ mod tests {
         );
         assert_eq!(transport.prompt_calls.borrow().len(), 2);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_collect_sends_tools_created_after_target_registration() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-tool-first-run-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: true,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        assert!(target.state_dir.join("tool-since").is_file());
+        let transport = FanoutTestTransport::default();
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(ToolFirstRunAdapter { file })],
+            Some("tool_first_run"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 0);
+        assert_eq!(
+            transport.tool_calls.borrow().as_slice(),
+            ["https://personal.example/api"]
+        );
+        assert_eq!(
+            cursor::load(&target.state_dir, "tool_first_run-tools")
+                .files
+                .len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disabled_content_keeps_cursor_and_records_disabled_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-content-disabled-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_content: crate::credentials::ContentCollectionMode::ServerV1,
+                collect_content_since: Some("all".into()),
+                collect_tools: false,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let transport = FanoutTestTransport::default();
+        transport.disable_prompts.set(true);
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(ContentFanoutTestAdapter {
+                file,
+                parse_calls: Rc::new(Cell::new(0)),
+            })],
+            Some("content_fanout_test"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 0);
+        assert!(
+            cursor::load(&target.state_dir, "content_fanout_test-content")
+                .files
+                .is_empty()
+        );
+        assert_eq!(
+            crate::delivery::load(&target.state_dir).unwrap().result,
+            crate::delivery::DeliveryKind::Disabled
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_tool_inventory_remains_observable_until_a_probe_succeeds() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-inventory-unsupported-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: true,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let transport = FanoutTestTransport::default();
+
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(ToolFirstRunAdapter { file: file.clone() })],
+                None,
+                false,
+                true,
+            ),
+            0
+        );
+        assert_eq!(
+            crate::delivery::load(&target.state_dir).unwrap().result,
+            crate::delivery::DeliveryKind::Unsupported
+        );
+        assert!(post::unsupported_marked(
+            &target.state_dir,
+            "tool-inventory"
+        ));
+
+        transport.support_inventory.set(true);
+        std::fs::write(target.state_dir.join("unsupported-tool-inventory"), "0\n").unwrap();
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(ToolFirstRunAdapter { file })],
+                None,
+                false,
+                true,
+            ),
+            0
+        );
+        assert_eq!(
+            crate::delivery::load(&target.state_dir).unwrap().result,
+            crate::delivery::DeliveryKind::Success
+        );
+        assert!(!post::unsupported_marked(
+            &target.state_dir,
+            "tool-inventory"
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manual_collect_always_emits_the_current_failure() {
+        assert!(!should_emit_failure(false, true));
+        assert!(should_emit_failure(false, false));
+        assert!(should_emit_failure(true, true));
+    }
+
+    #[test]
+    fn real_failure_overrides_degraded_delivery_kind() {
+        let mut diagnostics = TargetDiagnostics::default();
+        diagnostics.disabled("content disabled".into());
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            "inventory failed".into(),
+        );
+        assert_eq!(
+            diagnostics.kind,
+            Some(crate::delivery::DeliveryKind::ServerError)
+        );
     }
 
     #[test]
@@ -1961,42 +2394,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_baseline_seeds_stamps_without_events() {
-        let files = vec![
-            (
-                "/tmp/a.jsonl".to_string(),
-                cursor::FileStamp {
-                    mtime_ms: 1,
-                    size: 10,
-                },
-            ),
-            (
-                "/tmp/b.jsonl".to_string(),
-                cursor::FileStamp {
-                    mtime_ms: 2,
-                    size: 20,
-                },
-            ),
-        ];
-        let cursor = seed_tool_baseline(&files);
-        assert_eq!(cursor.files.len(), 2);
-        assert_eq!(cursor.files["/tmp/a.jsonl"].sent, 0);
-    }
-
-    #[test]
     fn unsupported_backoff_skips_tool_parse_until_probe_is_due() {
-        assert!(!should_parse_tool_file(
-            true, false, false, true, false, false
-        ));
-        assert!(should_parse_tool_file(
-            true, true, false, true, false, false
-        ));
-        assert!(!should_parse_tool_file(
-            true, true, false, true, true, false
-        ));
-        assert!(should_parse_tool_file(
-            false, false, false, true, true, true
-        ));
+        assert!(!should_parse_tool_file(true, false, true, false, false));
+        assert!(should_parse_tool_file(true, true, true, false, false));
+        assert!(!should_parse_tool_file(true, true, true, true, false));
+        assert!(should_parse_tool_file(false, false, true, true, true));
     }
 
     #[test]

@@ -165,7 +165,7 @@ Windows x64에서는 같은 화면이 PowerShell 명령을 제공한다:
 $env:TOARD_INGEST_TOKEN='<내 토큰>'; irm '<toard 주소>/install.ps1' | iex
 ```
 
-**직접 설정(고급)** — `toard-shim targets list`는 token을 제외한 target·정책·최근 전송 상태를 보여주고, `toard-shim doctor`는 모든 target을 진단한다. 서버별 자격증명과 커서는 `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`에 분리된다. 한 서버가 일시적으로 닿지 않아도 다른 target은 계속 전송하며, 실패한 target은 다음 회차에 자기 미전송분만 재시도한다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows 설치기는 GitHub Release 바이너리를 직접 내려받아 SHA256을 검증하고 작업 스케줄러에 주기 수집을 등록한다.
+**직접 설정(고급)** — `toard-shim targets list`는 token을 제외한 target·정책·최근 전송 상태를 보여주고, `toard-shim doctor`는 모든 target을 진단한다. 서버별 자격증명과 커서는 `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`에 분리된다. 한 서버가 일시적으로 닿지 않아도 다른 target은 계속 전송하며, 실패한 target은 다음 회차에 자기 미전송분만 재시도한다. 단, 별도 durable outbox는 없으므로 장애 중 로컬 원본 세션 로그를 삭제하면 그 target의 누락분은 복구할 수 없다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows 설치기는 GitHub Release 바이너리를 직접 내려받아 SHA256을 검증하고 작업 스케줄러에 주기 수집을 등록한다.
 
 **제거** — macOS·Linux는 `curl -fsSL <toard>/uninstall.sh | sh`, Windows는 `irm '<toard>/uninstall.ps1' | iex`. 각 서버가 제공하는 제거 명령은 해당 서버 target만 삭제한다. 다른 target이 남으면 shim·주기 수집·PATH를 유지하고, 마지막 target을 삭제할 때만 공용 설치물을 정리한다. 등록되지 않은 서버의 제거 명령은 no-op이며, 기존 Claude/Codex와 원본 세션 로그는 항상 유지한다.
 

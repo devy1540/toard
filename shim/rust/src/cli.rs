@@ -485,6 +485,7 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
                     .unwrap_or_default();
                 targets.push(crate::targets::Target {
                     id: crate::targets::target_id(&endpoint),
+                    revision: String::new(),
                     endpoint,
                     credentials_path: root.join("credentials"),
                     state_dir: root.join("state"),
@@ -502,6 +503,7 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
         d.fail("등록된 target이 없습니다 — 서버 설치 스크립트로 연결하세요");
     }
 
+    let strict_target_probe = selected_endpoint.is_some();
     for target in &targets {
         println!("target {} — {}", &target.id[..12], target.endpoint);
         let Some(token) = target.credentials.token.as_deref() else {
@@ -521,8 +523,16 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
                 target.endpoint
             )),
             Ok(0) => d.fail(&format!("endpoint 연결 실패: {}", target.endpoint)),
+            Ok(code) if strict_target_probe => d.fail(&format!(
+                "endpoint 연결 확인 실패: {} HTTP {code}",
+                target.endpoint
+            )),
             Ok(code) => warn(&format!(
                 "endpoint 응답이 예상 밖입니다: {} HTTP {code}",
+                target.endpoint
+            )),
+            Err(error) if strict_target_probe => d.fail(&format!(
+                "endpoint 점검 실패: {} — {error}",
                 target.endpoint
             )),
             Err(error) => warn(&format!(
@@ -531,11 +541,16 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
             )),
         }
         match crate::delivery::load(&target.state_dir) {
-            Some(status) => info(&format!(
-                "최근 전송: {:?}, 마지막 성공: {}",
-                status.result,
-                status.last_success_at.as_deref().unwrap_or("없음")
-            )),
+            Some(status) => {
+                info(&format!(
+                    "최근 전송: {:?}, 마지막 성공: {}",
+                    status.result,
+                    status.last_success_at.as_deref().unwrap_or("없음")
+                ));
+                if status.result != crate::delivery::DeliveryKind::Success {
+                    info("미전송분 재시도는 로컬 원본 세션 로그가 남아 있는 동안 가능합니다 — 장애 중 원본 로그를 삭제하면 복구할 수 없습니다");
+                }
+            }
             None => info("최근 전송 기록 없음"),
         }
         println!();

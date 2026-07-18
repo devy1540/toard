@@ -1,6 +1,6 @@
 use crate::content_crypto::{generate_device_keypair, wrap_for_device};
 use crate::content_keys::{ContentKeyStore, SystemContentKeyStore};
-use crate::credentials::{read_credentials, with_e2ee_activation, ContentCollectionMode};
+use crate::credentials::ContentCollectionMode;
 use crate::recovery::RecoveryMaterial;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -77,6 +77,7 @@ impl ConfirmationGate {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SetupError {
+    TargetSelection,
     MissingCredentials,
     InvalidEndpoint,
     RemoteSetup,
@@ -94,6 +95,7 @@ pub enum SetupError {
 impl std::fmt::Display for SetupError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
+            Self::TargetSelection => "E2EE 명령은 target이 정확히 하나일 때만 사용할 수 있습니다",
             Self::MissingCredentials => "수집 자격 증명이 없습니다",
             Self::InvalidEndpoint => "E2EE 설정 endpoint는 HTTPS 또는 localhost여야 합니다",
             Self::RemoteSetup => "E2EE 계정 준비에 실패했습니다",
@@ -213,7 +215,14 @@ pub fn approve(request_id: Option<&str>) -> i32 {
 }
 
 pub fn status() -> i32 {
-    let credentials = read_credentials();
+    let target = match single_target() {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("toard-shim: {error}");
+            return 1;
+        }
+    };
+    let credentials = target.credentials;
     if credentials.collect_content != ContentCollectionMode::E2eeV1 {
         println!("toard-shim: E2EE 비활성 (본문 수집 off)");
         return 1;
@@ -241,7 +250,8 @@ pub fn status() -> i32 {
 }
 
 fn approve_inner(request_id: Option<&str>) -> Result<(), SetupError> {
-    let credentials = read_credentials();
+    let target = single_target()?;
+    let credentials = target.credentials;
     let token = credentials
         .token
         .as_deref()
@@ -326,7 +336,10 @@ fn select_approval_request<'a>(
 }
 
 fn setup() -> Result<(), SetupError> {
-    let credentials = read_credentials();
+    let target = single_target()?;
+    let target_id = target.id.clone();
+    let target_revision = target.revision.clone();
+    let credentials = target.credentials;
     if credentials.collect_content == ContentCollectionMode::E2eeV1 {
         return Ok(());
     }
@@ -416,18 +429,8 @@ fn setup() -> Result<(), SetupError> {
         SetupError::RemoteActivation,
     );
 
-    let credentials_path = crate::fsx::home_dir()
-        .ok_or(SetupError::CredentialWrite)?
-        .join(".toard")
-        .join("credentials");
-    let original_credentials = std::fs::read_to_string(&credentials_path).unwrap_or_default();
-    let updated_credentials = with_e2ee_activation(
-        &original_credentials,
-        &prepared.content_owner_id,
-        prepared.active_key_version,
-        &device_id,
-    )
-    .map_err(|_| SetupError::CredentialWrite)?;
+    let target_store =
+        crate::targets::TargetStore::from_home().map_err(|_| SetupError::CredentialWrite)?;
     let key_store = SystemContentKeyStore;
 
     commit_after_activation(
@@ -445,10 +448,42 @@ fn setup() -> Result<(), SetupError> {
                 .map_err(|_| SetupError::SecureStore)
         },
         || {
-            crate::fsx::write_atomic(&credentials_path, &updated_credentials, 0o600)
+            target_store
+                .activate_e2ee(
+                    &target_id,
+                    &prepared.content_owner_id,
+                    prepared.active_key_version,
+                    &device_id,
+                    &target_revision,
+                )
                 .map_err(|_| SetupError::CredentialWrite)
         },
     )
+}
+
+fn single_target() -> Result<crate::targets::Target, SetupError> {
+    let store =
+        crate::targets::TargetStore::from_home().map_err(|_| SetupError::TargetSelection)?;
+    let targets = store
+        .load_or_migrate()
+        .map_err(|_| SetupError::TargetSelection)?;
+    let mut targets = targets.into_iter();
+    let target = targets.next().ok_or(SetupError::TargetSelection)?;
+    if targets.next().is_some() {
+        return Err(SetupError::TargetSelection);
+    }
+    if !registry_target_ready_for_remote_activation(&store, &target) {
+        return Err(SetupError::TargetSelection);
+    }
+    Ok(target)
+}
+
+fn registry_target_ready_for_remote_activation(
+    store: &crate::targets::TargetStore,
+    target: &crate::targets::Target,
+) -> bool {
+    !target.revision.is_empty()
+        && target.credentials_path == store.targets_dir().join(&target.id).join("credentials")
 }
 
 fn commit_after_activation<T>(
@@ -978,6 +1013,29 @@ mod tests {
     }
 
     #[test]
+    fn legacy_fallback_is_rejected_before_remote_activation() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-e2ee-fallback-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let store = crate::targets::TargetStore::from_root(root.clone());
+        let endpoint = "https://company.example/api";
+        let fallback = crate::targets::Target {
+            id: crate::targets::target_id(endpoint),
+            revision: String::new(),
+            endpoint: endpoint.into(),
+            credentials_path: root.join("credentials"),
+            state_dir: root.join("state"),
+            credentials: crate::credentials::Credentials::default(),
+        };
+
+        assert!(!registry_target_ready_for_remote_activation(
+            &store, &fallback
+        ));
+    }
+
+    #[test]
     fn local_page_has_no_store_csp_and_does_not_put_words_in_action() {
         let gate = gate();
         let page = render_page("127.0.0.1:1234".parse().unwrap(), &gate);
@@ -1014,7 +1072,8 @@ mod tests {
 
         let mut malformed = TcpStream::connect(address).unwrap();
         malformed.write_all(&[0xff]).unwrap();
-        malformed.shutdown(Shutdown::Write).unwrap();
+        // 서버가 malformed byte를 즉시 거부해 먼저 닫는 것도 정상이다.
+        let _ = malformed.shutdown(Shutdown::Write);
         thread::sleep(Duration::from_millis(20));
 
         let body = "saved=yes&word0=word3&word1=word11&word2=word22";

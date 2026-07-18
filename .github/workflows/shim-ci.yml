@@ -9,8 +9,11 @@ on:
       - "shim/**"
       - "npm/**"
       - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/lib/shell-installer.ts"
+      - "apps/web/lib/shell-uninstaller.ts"
       - "apps/web/app/install.sh/**"
       - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.sh/**"
       - "apps/web/app/uninstall.ps1/**"
       - ".github/scripts/**"
       - "fixtures/usage-event.golden.json" # UsageEvent 계약 미러 테스트 (§5.6)
@@ -21,8 +24,11 @@ on:
       - "shim/**"
       - "npm/**"
       - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/lib/shell-installer.ts"
+      - "apps/web/lib/shell-uninstaller.ts"
       - "apps/web/app/install.sh/**"
       - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.sh/**"
       - "apps/web/app/uninstall.ps1/**"
       - ".github/scripts/**"
       - "fixtures/usage-event.golden.json"
@@ -82,7 +88,7 @@ jobs:
       - name: parse generated PowerShell installers
         shell: pwsh
         run: |
-          pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(join(process.env.RUNNER_TEMP, 'install.ps1'), buildPowerShellInstallScript('https://toard.example/api', false)); writeFileSync(join(process.env.RUNNER_TEMP, 'uninstall.ps1'), buildPowerShellUninstallScript());"
+          pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(join(process.env.RUNNER_TEMP, 'install.ps1'), buildPowerShellInstallScript('https://toard.example/api', false)); writeFileSync(join(process.env.RUNNER_TEMP, 'uninstall.ps1'), buildPowerShellUninstallScript('https://toard.example/api'));"
           [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/install.ps1")) | Out-Null
           [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/uninstall.ps1")) | Out-Null
           [scriptblock]::Create((Get-Content -Raw ".github/scripts/test-shim-installer-windows.ps1")) | Out-Null

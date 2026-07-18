@@ -66,32 +66,42 @@ struct WatchStamp {
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct InventoryState {
+struct InventoryScanState {
     last_checked: u64,
     fingerprint: String,
     stamps: Vec<WatchStamp>,
+    #[serde(default)]
+    body: String,
 }
 
-pub struct PendingInventory {
+pub struct InventorySnapshot {
     pub body: String,
-    state: InventoryState,
+    pub fingerprint: String,
 }
 
-fn state_path() -> Option<PathBuf> {
-    crate::fsx::state_dir().map(|dir| dir.join("tool-inventory.json"))
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct InventoryDeliveryState {
+    fingerprint: String,
 }
 
-fn load_state() -> InventoryState {
-    state_path()
-        .and_then(|path| std::fs::read_to_string(path).ok())
+fn scan_state_path(global_state_dir: &Path) -> PathBuf {
+    global_state_dir.join("tool-inventory-scan.json")
+}
+
+fn delivery_state_path(target_state_dir: &Path) -> PathBuf {
+    target_state_dir.join("tool-inventory.json")
+}
+
+fn load_scan_state(global_state_dir: &Path) -> InventoryScanState {
+    std::fs::read_to_string(scan_state_path(global_state_dir))
+        .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-fn save_state(state: &InventoryState) {
-    let Some(path) = state_path() else { return };
+fn save_scan_state(global_state_dir: &Path, state: &InventoryScanState) {
     if let Ok(text) = serde_json::to_string(state) {
-        let _ = crate::fsx::write_atomic(&path, &text, 0o600);
+        let _ = crate::fsx::write_atomic(&scan_state_path(global_state_dir), &text, 0o600);
     }
 }
 
@@ -235,33 +245,55 @@ pub fn scan_inventory(home: &Path) -> Vec<InventoryItem> {
     unique.into_iter().collect()
 }
 
-pub fn prepare_inventory(host: Option<&str>, dry_run: bool) -> Option<PendingInventory> {
+pub fn prepare_inventory(
+    global_state_dir: &Path,
+    host: Option<&str>,
+    dry_run: bool,
+) -> Option<InventorySnapshot> {
     let home = crate::fsx::home_dir()?;
     let now = crate::bg::now_unix();
     let current_stamps = stamps(&home);
-    let mut state = load_state();
-    if state.stamps == current_stamps && now.saturating_sub(state.last_checked) < 24 * 60 * 60 {
-        return None;
+    let mut state = load_scan_state(global_state_dir);
+    if state.stamps == current_stamps
+        && now.saturating_sub(state.last_checked) < 24 * 60 * 60
+        && !state.fingerprint.is_empty()
+        && !state.body.is_empty()
+    {
+        return Some(InventorySnapshot {
+            body: state.body,
+            fingerprint: state.fingerprint,
+        });
     }
     let items = scan_inventory(&home);
     let fingerprint = inventory_fingerprint(&items);
+    let body = inventory_body(host, (now * 1000) as i64, &items);
     state.last_checked = now;
     state.stamps = current_stamps;
-    if fingerprint == state.fingerprint {
-        if !dry_run {
-            save_state(&state);
-        }
-        return None;
+    state.fingerprint.clone_from(&fingerprint);
+    state.body.clone_from(&body);
+    if !dry_run {
+        save_scan_state(global_state_dir, &state);
     }
-    state.fingerprint = fingerprint;
-    Some(PendingInventory {
-        body: inventory_body(host, (now * 1000) as i64, &items),
-        state,
-    })
+    Some(InventorySnapshot { body, fingerprint })
 }
 
-pub fn commit_inventory(pending: PendingInventory) {
-    save_state(&pending.state);
+pub fn needs_delivery(target_state_dir: &Path, snapshot: &InventorySnapshot) -> bool {
+    let delivered = std::fs::read_to_string(delivery_state_path(target_state_dir))
+        .ok()
+        .and_then(|text| serde_json::from_str::<InventoryDeliveryState>(&text).ok())
+        .unwrap_or_default();
+    delivered.fingerprint != snapshot.fingerprint
+}
+
+pub fn commit_delivery(
+    target_state_dir: &Path,
+    snapshot: &InventorySnapshot,
+) -> std::io::Result<()> {
+    let state = InventoryDeliveryState {
+        fingerprint: snapshot.fingerprint.clone(),
+    };
+    let text = serde_json::to_string(&state).map_err(std::io::Error::other)?;
+    crate::fsx::write_atomic(&delivery_state_path(target_state_dir), &text, 0o600)
 }
 
 #[cfg(test)]
@@ -286,5 +318,27 @@ mod tests {
         for forbidden in ["endpoint", "command", "arguments", "output", "/Users/"] {
             assert!(!body.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn inventory_delivery_commit_is_per_target() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-inventory-delivery-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let company = root.join("company");
+        let personal = root.join("personal");
+        let snapshot = InventorySnapshot {
+            body: "{\"fingerprint\":\"fingerprint-1\"}".into(),
+            fingerprint: "fingerprint-1".into(),
+        };
+
+        assert!(needs_delivery(&company, &snapshot));
+        assert!(needs_delivery(&personal, &snapshot));
+        commit_delivery(&company, &snapshot).unwrap();
+        assert!(!needs_delivery(&company, &snapshot));
+        assert!(needs_delivery(&personal, &snapshot));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

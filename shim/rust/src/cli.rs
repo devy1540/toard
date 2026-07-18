@@ -6,7 +6,9 @@ use std::process::Command;
 
 use crate::claude_env;
 use crate::codex;
-use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
+use crate::credentials::{
+    read_credentials, ContentCollectionMode, InstallerCredentialsInput, DEFAULT_ENDPOINT,
+};
 use crate::fsx;
 use crate::resolve::{find_real_binary, first_in_path, is_shim_executable_path};
 
@@ -17,7 +19,13 @@ pub fn version() -> &'static str {
 
 pub fn run(args: &[String]) -> ! {
     match args.first().map(String::as_str) {
-        Some("doctor") => std::process::exit(doctor()),
+        Some("capabilities") if args.len() == 1 => {
+            println!("multi-target-v1");
+            std::process::exit(0);
+        }
+        Some("targets") => std::process::exit(targets_cmd(&args[1..])),
+        Some("target") => std::process::exit(target_cmd(&args[1..])),
+        Some("doctor") => std::process::exit(doctor_cmd(&args[1..])),
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
@@ -45,6 +53,10 @@ fn print_usage() {
 
 사용법: toard-shim <command>
 
+  capabilities                  installer 호환 capability 출력
+  targets list                 등록된 전송 대상 목록 출력 (토큰 제외)
+  target upsert                installer env의 endpoint·token·정책 추가/갱신
+  target remove --machine      installer env의 endpoint 대상 제거 결과 출력
   doctor                       설치·자격 증명·endpoint·PATH 상태 진단
   claude-env on|off|status     ~/.claude/settings.json env 주입 관리
                                (IDE 등 PATH 를 거치지 않는 실행까지 수집)
@@ -66,6 +78,168 @@ fn print_usage() {
   help                         이 도움말",
         version()
     );
+}
+
+fn installer_env(name: &str) -> Result<String, &'static str> {
+    env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("필수 installer 환경변수가 없습니다")
+}
+
+fn targets_cmd(args: &[String]) -> i32 {
+    if args != ["list"] {
+        eprintln!("toard-shim: 사용법: toard-shim targets list");
+        return 2;
+    }
+    let store = match crate::targets::TargetStore::from_home() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("toard-shim: target 저장소를 열 수 없습니다: {error}");
+            return 1;
+        }
+    };
+    let targets = match store.load_or_migrate() {
+        Ok(targets) => targets,
+        Err(error) => {
+            eprintln!("toard-shim: target 목록을 읽을 수 없습니다: {error}");
+            return 1;
+        }
+    };
+    for target in targets {
+        let content = match target.credentials.collect_content {
+            ContentCollectionMode::Off => "off",
+            ContentCollectionMode::ServerV1 => "server_v1",
+            ContentCollectionMode::E2eeV1 => "e2ee_v1",
+        };
+        let tools = if target.credentials.collect_tools {
+            "on"
+        } else {
+            "off"
+        };
+        let status = crate::delivery::load(&target.state_dir)
+            .map(|status| {
+                let result = format!("{:?}", status.result).to_ascii_lowercase();
+                match status.last_success_at {
+                    Some(last_success) => format!("delivery={result} last_success={last_success}"),
+                    None => format!("delivery={result}"),
+                }
+            })
+            .unwrap_or_else(|| "delivery=never".to_string());
+        println!(
+            "{} {} content={} tools={} {}",
+            &target.id[..12],
+            target.endpoint,
+            content,
+            tools,
+            status
+        );
+    }
+    0
+}
+
+fn target_cmd(args: &[String]) -> i32 {
+    match args {
+        [command] if command == "upsert" => target_upsert(),
+        [command, machine] if command == "remove" && machine == "--machine" => {
+            target_remove_machine()
+        }
+        _ => {
+            eprintln!("toard-shim: 사용법: toard-shim target upsert | target remove --machine");
+            2
+        }
+    }
+}
+
+fn target_upsert() -> i32 {
+    let token = match installer_env("TOARD_INGEST_TOKEN") {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("toard-shim: TOARD_INGEST_TOKEN 이 필요합니다");
+            return 2;
+        }
+    };
+    let endpoint = match installer_env("TOARD_INGEST_ENDPOINT") {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("toard-shim: TOARD_INGEST_ENDPOINT 가 필요합니다");
+            return 2;
+        }
+    };
+    let content_since = env::var("TOARD_SHIM_COLLECT_CONTENT_SINCE").ok();
+    let update_content_since = content_since
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let credentials = match crate::credentials::from_installer_input(InstallerCredentialsInput {
+        token,
+        endpoint,
+        collect_content: env::var("TOARD_SHIM_COLLECT_CONTENT").ok(),
+        collect_tools: env::var("TOARD_SHIM_COLLECT_TOOLS").ok(),
+        collect_content_since: content_since,
+    }) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            eprintln!("toard-shim: installer 입력이 올바르지 않습니다: {error}");
+            return 2;
+        }
+    };
+    let store = match crate::targets::TargetStore::from_home() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("toard-shim: target 저장소를 열 수 없습니다: {error}");
+            return 1;
+        }
+    };
+    match store.upsert_installer(credentials, update_content_since) {
+        Ok(target) => {
+            println!("target={} endpoint={}", &target.id[..12], target.endpoint);
+            0
+        }
+        Err(crate::targets::TargetError::InvalidEndpoint(error)) => {
+            eprintln!("toard-shim: endpoint가 올바르지 않습니다: {error}");
+            2
+        }
+        Err(crate::targets::TargetError::InvalidCredentials(error)) => {
+            eprintln!("toard-shim: 자격 증명이 올바르지 않습니다: {error}");
+            2
+        }
+        Err(error) => {
+            eprintln!("toard-shim: target 저장 실패: {error}");
+            1
+        }
+    }
+}
+
+fn target_remove_machine() -> i32 {
+    let endpoint = match installer_env("TOARD_INGEST_ENDPOINT") {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("toard-shim: TOARD_INGEST_ENDPOINT 가 필요합니다");
+            return 2;
+        }
+    };
+    let store = match crate::targets::TargetStore::from_home() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("toard-shim: target 저장소를 열 수 없습니다: {error}");
+            return 1;
+        }
+    };
+    match store.remove(&endpoint) {
+        Ok(result) => {
+            println!("removed={}", u8::from(result.removed));
+            println!("remaining={}", result.remaining);
+            0
+        }
+        Err(crate::targets::TargetError::InvalidEndpoint(error)) => {
+            eprintln!("toard-shim: endpoint가 올바르지 않습니다: {error}");
+            2
+        }
+        Err(error) => {
+            eprintln!("toard-shim: target 제거 실패: {error}");
+            1
+        }
+    }
 }
 
 fn e2ee_cmd(args: &[String]) -> i32 {
@@ -132,9 +306,17 @@ fn claude_env_cmd(args: &[String]) -> i32 {
             // 파일만 있으면 재시작·env 주입 없이 수집된다. claude-env(=settings.json OTEL 주입)는
             // experimental OTLP(TOARD_EXPERIMENTAL_OTLP + 서버 collection_method='otel')용으로만 남는다.
             warn("claude-env 는 experimental OTLP 전용으로 강등됐습니다 — 일반 사용량 수집엔 불필요(트랜스크립트 pull 로 자동 수집).");
-            let creds = read_credentials();
+            let creds = match singleton_credentials_for_legacy_push() {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    eprintln!("toard-shim: {error}");
+                    return 1;
+                }
+            };
             let Some(token) = creds.token else {
-                eprintln!("toard-shim: 자격 증명이 없습니다 — ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정 후 재시도");
+                eprintln!(
+                    "toard-shim: 선택된 target의 자격 증명 또는 TOARD_INGEST_TOKEN 설정 후 재시도"
+                );
                 return 1;
             };
             let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
@@ -215,6 +397,20 @@ fn claude_env_cmd(args: &[String]) -> i32 {
     }
 }
 
+fn singleton_credentials_for_legacy_push() -> Result<crate::credentials::Credentials, String> {
+    let targets = crate::targets::TargetStore::from_home()
+        .and_then(|store| store.load_or_migrate())
+        .map_err(|error| format!("target 저장소를 읽을 수 없습니다: {error}"))?;
+    match targets.as_slice() {
+        [] => Ok(read_credentials()),
+        [target] => Ok(target.credentials.clone()),
+        _ => Err(
+            "이 기능은 target이 정확히 하나일 때만 사용할 수 있습니다 — 멀티 target은 pull 수집을 사용하세요"
+                .into(),
+        ),
+    }
+}
+
 fn ok(msg: &str) {
     println!("  ✓ {msg}");
 }
@@ -236,53 +432,128 @@ impl Doctor {
     }
 }
 
-fn doctor() -> i32 {
+fn doctor_cmd(args: &[String]) -> i32 {
+    match args {
+        [] => doctor(None),
+        [flag] if flag == "--target-env" => {
+            let endpoint = match installer_env("TOARD_INGEST_ENDPOINT") {
+                Ok(endpoint) => endpoint,
+                Err(_) => {
+                    eprintln!(
+                        "toard-shim: doctor --target-env에는 TOARD_INGEST_ENDPOINT가 필요합니다"
+                    );
+                    return 2;
+                }
+            };
+            match crate::targets::normalize_endpoint(&endpoint) {
+                Ok(endpoint) => doctor(Some(&endpoint)),
+                Err(error) => {
+                    eprintln!("toard-shim: endpoint가 올바르지 않습니다: {error}");
+                    2
+                }
+            }
+        }
+        _ => {
+            eprintln!("toard-shim: 사용법: toard-shim doctor [--target-env]");
+            2
+        }
+    }
+}
+
+fn doctor(selected_endpoint: Option<&str>) -> i32 {
     println!("toard-shim doctor — v{}\n", version());
     let mut d = Doctor { failed: false };
 
-    // 1. 자격 증명
-    let creds = read_credentials();
-    let cred_path = fsx::home_dir().map(|h| h.join(".toard").join("credentials"));
-    match &creds.token {
-        Some(_) => {
-            ok("토큰 로드됨 (~/.toard/credentials 또는 TOARD_INGEST_TOKEN)");
-            // 파일 퍼미션 점검은 Unix 전용 — Windows 는 ACL 모델이라 mode 비트가 무의미
-            #[cfg(unix)]
-            if let Some(p) = cred_path.as_ref().filter(|p| p.is_file()) {
-                use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = std::fs::metadata(p) {
-                    if meta.permissions().mode() & 0o077 != 0 {
-                        warn(&format!(
-                            "credentials 권한이 넓습니다({:o}) — chmod 600 권장",
-                            meta.permissions().mode() & 0o777
-                        ));
-                    }
-                }
-            }
-            #[cfg(not(unix))]
-            let _ = &cred_path;
+    // 1–2. target별 자격 증명·endpoint·최근 전송 상태. registry가 권위이며,
+    // --target-env는 endpoint 선택에만 사용하고 env token은 의도적으로 무시한다.
+    let store = crate::targets::TargetStore::from_home();
+    let mut targets = match store.and_then(|store| store.load_or_migrate()) {
+        Ok(targets) => targets,
+        Err(error) => {
+            d.fail(&format!("target 저장소를 읽을 수 없습니다: {error}"));
+            Vec::new()
         }
-        None => d.fail("자격 증명 없음 — 수집 비활성(순수 패스스루). ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정"),
+    };
+    if targets.is_empty() && selected_endpoint.is_none() {
+        // registry가 아직 없는 env-only 구버전 자동화는 진단 호환만 유지한다.
+        let credentials = read_credentials();
+        if credentials.token.is_some() {
+            let endpoint = credentials.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
+            if let Ok(endpoint) = crate::targets::normalize_endpoint(endpoint) {
+                let root = fsx::home_dir()
+                    .map(|home| home.join(".toard"))
+                    .unwrap_or_default();
+                targets.push(crate::targets::Target {
+                    id: crate::targets::target_id(&endpoint),
+                    revision: String::new(),
+                    endpoint,
+                    credentials_path: root.join("credentials"),
+                    state_dir: root.join("state"),
+                    credentials,
+                });
+            }
+        }
+    }
+    if let Some(endpoint) = selected_endpoint {
+        targets.retain(|target| target.endpoint == endpoint);
+        if targets.is_empty() {
+            d.fail(&format!("등록된 target을 찾을 수 없습니다: {endpoint}"));
+        }
+    } else if targets.is_empty() {
+        d.fail("등록된 target이 없습니다 — 서버 설치 스크립트로 연결하세요");
     }
 
-    // 2. endpoint 연결 + 토큰 유효성 (curl 위임 — shim 은 HTTP 클라이언트를 갖지 않는다)
-    let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
-    if creds.endpoint.is_none() {
-        info(&format!(
-            "endpoint 미설정 — 기본값 사용: {DEFAULT_ENDPOINT}"
-        ));
-    }
-    if let Some(token) = &creds.token {
-        match probe_ingest(endpoint, token) {
-            Ok(200) => ok(&format!("endpoint 연결 + 토큰 유효: {endpoint}")),
-            Ok(401) => d.fail("토큰이 유효하지 않습니다(만료/폐기) — 대시보드에서 재발급 필요"),
-            Ok(404) => d.fail(&format!(
-                "{endpoint}/v1/logs 가 없습니다 — endpoint 값을 확인하세요"
+    let strict_target_probe = selected_endpoint.is_some();
+    for target in &targets {
+        println!("target {} — {}", &target.id[..12], target.endpoint);
+        let Some(token) = target.credentials.token.as_deref() else {
+            d.fail(&format!("자격 증명 없음: {}", target.endpoint));
+            continue;
+        };
+        ok("토큰 로드됨 (target credentials)");
+        check_credentials_permissions(&target.credentials_path);
+        match probe_ingest(&target.endpoint, token) {
+            Ok(200) => ok(&format!("endpoint 연결 + 토큰 유효: {}", target.endpoint)),
+            Ok(401) => d.fail(&format!(
+                "토큰이 유효하지 않습니다(만료/폐기): {}",
+                target.endpoint
             )),
-            Ok(0) => d.fail(&format!("endpoint 연결 실패: {endpoint}")),
-            Ok(code) => warn(&format!("endpoint 응답이 예상 밖입니다: HTTP {code}")),
-            Err(e) => warn(&format!("endpoint 점검 생략 — {e}")),
+            Ok(404) => d.fail(&format!(
+                "{}/v1/logs 가 없습니다 — endpoint 값을 확인하세요",
+                target.endpoint
+            )),
+            Ok(0) => d.fail(&format!("endpoint 연결 실패: {}", target.endpoint)),
+            Ok(code) if strict_target_probe => d.fail(&format!(
+                "endpoint 연결 확인 실패: {} HTTP {code}",
+                target.endpoint
+            )),
+            Ok(code) => warn(&format!(
+                "endpoint 응답이 예상 밖입니다: {} HTTP {code}",
+                target.endpoint
+            )),
+            Err(error) if strict_target_probe => d.fail(&format!(
+                "endpoint 점검 실패: {} — {error}",
+                target.endpoint
+            )),
+            Err(error) => warn(&format!(
+                "endpoint 점검 생략: {} — {error}",
+                target.endpoint
+            )),
         }
+        match crate::delivery::load(&target.state_dir) {
+            Some(status) => {
+                info(&format!(
+                    "최근 전송: {:?}, 마지막 성공: {}",
+                    status.result,
+                    status.last_success_at.as_deref().unwrap_or("없음")
+                ));
+                if status.result != crate::delivery::DeliveryKind::Success {
+                    info("미전송분 재시도는 로컬 원본 세션 로그가 남아 있는 동안 가능합니다 — 장애 중 원본 로그를 삭제하면 복구할 수 없습니다");
+                }
+            }
+            None => info("최근 전송 기록 없음"),
+        }
+        println!();
     }
 
     // 3. PATH 가로채기 순서 + 진짜 바이너리
@@ -399,6 +670,24 @@ fn doctor() -> i32 {
     }
 }
 
+fn check_credentials_permissions(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                warn(&format!(
+                    "credentials 권한이 넓습니다({:o}) — chmod 600 권장: {}",
+                    meta.permissions().mode() & 0o777,
+                    path.display()
+                ));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// last-collect 스탬프 나이(초) — 편승·데몬·직접 collect 가 공유하는 스탬프 기준.
 fn last_collect_age() -> Option<u64> {
     let stamp = fsx::state_dir()?.join("last-collect");
@@ -423,8 +712,27 @@ fn human_age(secs: u64) -> String {
 /// `POST {endpoint}/v1/logs` 에 빈 OTLP(`{}`)를 보내 연결·인증을 확인한다.
 /// 빈 페이로드는 서버에서 레코드 0건으로 즉시 반환되므로 부작용이 없다.
 fn probe_ingest(endpoint: &str, token: &str) -> Result<u16, String> {
+    if token.contains(['\r', '\n']) {
+        return Err("토큰 형식이 올바르지 않습니다".into());
+    }
     let url = format!("{}/v1/logs", endpoint.trim_end_matches('/'));
     let null_dev = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    let temp_dir = fsx::state_dir()
+        .ok_or_else(|| "HOME 이 없어 임시 파일을 만들 수 없습니다".to_string())?
+        .join("tmp");
+    let auth_path = temp_dir.join(format!("doctor-auth-{}.conf", std::process::id()));
+    let body_path = temp_dir.join(format!("doctor-body-{}.json", std::process::id()));
+    let escaped = token.replace('\\', "\\\\").replace('"', "\\\"");
+    fsx::write_atomic(
+        &auth_path,
+        &format!("header = \"Authorization: Bearer {escaped}\"\n"),
+        0o600,
+    )
+    .map_err(|error| format!("인증 임시 파일 쓰기 실패: {error}"))?;
+    if let Err(error) = fsx::write_atomic(&body_path, "{}", 0o600) {
+        let _ = std::fs::remove_file(&auth_path);
+        return Err(format!("본문 임시 파일 쓰기 실패: {error}"));
+    }
     let out = Command::new("curl")
         .args([
             "-sS",
@@ -432,20 +740,24 @@ fn probe_ingest(endpoint: &str, token: &str) -> Result<u16, String> {
             null_dev,
             "-w",
             "%{http_code}",
+            "--connect-timeout",
+            "5",
             "--max-time",
             "5",
+            "--config",
+            &auth_path.display().to_string(),
             "-X",
             "POST",
             "-H",
             "Content-Type: application/json",
-            "-H",
-            &format!("Authorization: Bearer {token}"),
-            "--data",
-            "{}",
+            "--data-binary",
+            &format!("@{}", body_path.display()),
             &url,
         ])
-        .output()
-        .map_err(|e| format!("curl 실행 불가: {e}"))?;
+        .output();
+    let _ = std::fs::remove_file(&auth_path);
+    let _ = std::fs::remove_file(&body_path);
+    let out = out.map_err(|e| format!("curl 실행 불가: {e}"))?;
     String::from_utf8_lossy(&out.stdout)
         .trim()
         .parse::<u16>()

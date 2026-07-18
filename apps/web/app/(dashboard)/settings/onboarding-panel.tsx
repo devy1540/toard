@@ -5,7 +5,11 @@ import { useTranslations } from "next-intl";
 import { CopyButton } from "@/components/dashboard/copy-button";
 import { Button } from "@/components/ui/button";
 import { Disclosure } from "@/components/ui/disclosure";
-import { detectInstallPlatform, type InstallPlatform } from "@/lib/onboarding-install";
+import {
+  buildManagementCommands,
+  detectInstallPlatform,
+  type InstallPlatform,
+} from "@/lib/onboarding-install";
 
 const PLATFORMS: InstallPlatform[] = ["windows", "macos", "linux"];
 
@@ -13,7 +17,7 @@ type NavigatorWithUserAgentData = Navigator & {
   userAgentData?: { platform?: string };
 };
 
-export function OnboardingPanel({ baseUrl, endpoint }: { baseUrl: string; endpoint: string }) {
+export function OnboardingPanel({ baseUrl }: { baseUrl: string }) {
   const t = useTranslations("settings");
   const [platform, setPlatform] = useState<InstallPlatform>("macos");
 
@@ -27,7 +31,7 @@ export function OnboardingPanel({ baseUrl, endpoint }: { baseUrl: string; endpoi
     if (detected) setPlatform(detected);
   }, []);
 
-  const commands = managementCommands(platform, baseUrl, endpoint);
+  const commands = buildManagementCommands(platform, baseUrl);
 
   return (
     <Disclosure
@@ -75,30 +79,4 @@ function ManagementCommand({ title, command }: { title: string; command: string 
       </pre>
     </div>
   );
-}
-
-function managementCommands(platform: InstallPlatform, baseUrl: string, endpoint: string) {
-  const base = baseUrl.replace(/\/+$/, "");
-  if (platform === "windows") {
-    const shim = '"$HOME\\.toard\\bin\\toard-shim.exe"';
-    return {
-      manual: `notepad "$HOME\\.toard\\credentials"\n# agent_key=<내 토큰>\n# endpoint=${endpoint}`,
-      doctor: `& ${shim} doctor`,
-      update: `& ${shim} update`,
-      uninstall: `irm '${base}/uninstall.ps1' | iex`,
-    };
-  }
-  return {
-    manual: [
-      "mkdir -p ~/.toard && chmod 700 ~/.toard",
-      "cat > ~/.toard/credentials <<'EOF'",
-      "agent_key=<내 토큰>",
-      `endpoint=${endpoint}`,
-      "EOF",
-      "chmod 600 ~/.toard/credentials",
-    ].join("\n"),
-    doctor: "toard-shim doctor",
-    update: "toard-shim update",
-    uninstall: `curl -fsSL '${base}/uninstall.sh' | sh`,
-  };
 }

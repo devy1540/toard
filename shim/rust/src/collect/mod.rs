@@ -430,7 +430,7 @@ fn reconciliation_keys(
 
 /// 본문 수집 opt-in — 기본 off. 이게 켜져야 shim 이 프롬프트/응답 본문을 담는다.
 /// env(TOARD_SHIM_COLLECT_CONTENT)가 명시되면 그 값이 우선하고, 미설정이면
-/// `~/.toard/credentials` 의 `collect_content` 플래그(install.sh 가 기록)를 따른다.
+/// legacy/env 호환 credentials의 `collect_content` 플래그를 따른다.
 /// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
 pub fn content_enabled() -> bool {
     content_collection_mode().is_enabled()

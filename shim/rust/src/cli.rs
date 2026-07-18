@@ -314,7 +314,9 @@ fn claude_env_cmd(args: &[String]) -> i32 {
                 }
             };
             let Some(token) = creds.token else {
-                eprintln!("toard-shim: 자격 증명이 없습니다 — ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정 후 재시도");
+                eprintln!(
+                    "toard-shim: 선택된 target의 자격 증명 또는 TOARD_INGEST_TOKEN 설정 후 재시도"
+                );
                 return 1;
             };
             let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);

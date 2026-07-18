@@ -491,6 +491,10 @@ fn rotate_daemon_logs() {
 /// `toard-shim collect` 본체. only=특정 어댑터만, dry_run=파싱 결과만 출력,
 /// quiet=무변경 시 무출력(데몬 주기 실행용 — 전송·오류는 항상 출력).
 pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
+    let Some(state_dir) = fsx::state_dir() else {
+        eprintln!("toard-shim: HOME 디렉터리를 찾을 수 없습니다");
+        return 1;
+    };
     let creds = read_credentials();
     let endpoint = creds
         .endpoint
@@ -533,17 +537,18 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
         }
 
         let files = adapter.discover_files();
-        let mut cur = cursor::load(key);
+        let mut cur = cursor::load(&state_dir, key);
         let reconciliation_scan = reconciliation_active(
             key,
             cur.reconciliation_version,
-            post::unsupported_probe_due("usage-reconciliation"),
+            post::unsupported_probe_due(&state_dir, "usage-reconciliation"),
             dry_run,
         );
         let tool_cursor_key = format!("{key}-tools");
-        let mut tool_cur = cursor::load(&tool_cursor_key);
+        let mut tool_cur = cursor::load(&state_dir, &tool_cursor_key);
         let first_tool_run = collect_tools && tool_cur.files.is_empty();
-        let tool_probe_due = collect_tools && post::unsupported_probe_due("tool-events");
+        let tool_probe_due =
+            collect_tools && post::unsupported_probe_due(&state_dir, "tool-events");
         let tool_active = tool_probe_due && !first_tool_run;
         if first_tool_run {
             let stamps = files
@@ -554,7 +559,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 .collect::<Vec<_>>();
             tool_cur = seed_tool_baseline(&stamps);
             if !dry_run {
-                cursor::save(&tool_cursor_key, &tool_cur);
+                cursor::save(&state_dir, &tool_cursor_key, &tool_cur);
             }
         }
 
@@ -723,7 +728,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                     ) {
                         post::EndpointResult::Ok(result) => reconciled += result.reconciled,
                         post::EndpointResult::Unsupported => {
-                            post::mark_unsupported("usage-reconciliation");
+                            post::mark_unsupported(&state_dir, "usage-reconciliation");
                             reconciliation_ok = false;
                             break;
                         }
@@ -764,7 +769,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             if reconciliation_scan && reconciliation_complete {
                 cur.reconciliation_version = CODEX_REPLAY_RECONCILIATION_VERSION;
             }
-            cursor::save(key, &cur);
+            cursor::save(&state_dir, key, &cur);
         }
 
         if tool_active {
@@ -784,7 +789,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                             result.deduped
                         ),
                         post::EndpointResult::Unsupported => {
-                            post::mark_unsupported("tool-events");
+                            post::mark_unsupported(&state_dir, "tool-events");
                             tools_ok = false;
                             break;
                         }
@@ -814,7 +819,7 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                     .map(|file| file.display().to_string())
                     .collect::<std::collections::HashSet<_>>();
                 tool_cur.files.retain(|path, _| alive.contains(path));
-                cursor::save(&tool_cursor_key, &tool_cur);
+                cursor::save(&state_dir, &tool_cursor_key, &tool_cur);
             }
         }
     }
@@ -823,37 +828,46 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
     if content_enabled() {
         // 백필 컷오프: 미설정=지금부터(최초 활성화 시각 기록), 날짜/all 지정 시 과거 포함.
         let since_ms = content_since_ms(creds.collect_content_since.as_deref(), dry_run);
+        let context = ContentRunContext {
+            endpoint: &endpoint,
+            token: token.as_deref(),
+            credentials: &creds,
+            dry_run,
+            quiet,
+            since_ms,
+            state_dir: &state_dir,
+        };
         for adapter in adapters() {
             let key = adapter.key();
             if only.is_some_and(|o| o != key) {
                 continue;
             }
-            if collect_content_for(
-                adapter.as_ref(),
-                &endpoint,
-                token.as_deref(),
-                &creds,
-                dry_run,
-                quiet,
-                since_ms,
-            ) {
+            if collect_content_for(adapter.as_ref(), &context) {
                 failed = true;
             }
         }
     }
 
-    if collect_tools && only.is_none() && post::unsupported_probe_due("tool-inventory") {
-        if let Some(pending) = inventory::prepare_inventory(host.as_deref(), dry_run) {
-            if dry_run {
+    if collect_tools && only.is_none() && post::unsupported_probe_due(&state_dir, "tool-inventory")
+    {
+        if let Some(pending) = inventory::prepare_inventory(&state_dir, host.as_deref(), dry_run) {
+            if inventory::needs_delivery(&state_dir, &pending) && dry_run {
                 println!("도구 인벤토리: 변경 감지 → 전송 대상 [dry-run]");
-            } else {
+            } else if inventory::needs_delivery(&state_dir, &pending) {
                 let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
                 match post::put_tool_inventory(&endpoint, token, &pending.body) {
                     post::EndpointResult::Ok(_) => {
-                        inventory::commit_inventory(pending);
-                        println!("도구 인벤토리: 최신 스냅샷 전송");
+                        match inventory::commit_delivery(&state_dir, &pending) {
+                            Ok(()) => println!("도구 인벤토리: 최신 스냅샷 전송"),
+                            Err(error) => {
+                                eprintln!("toard-shim: 도구 인벤토리 상태 저장 실패 — {error}");
+                                failed = true;
+                            }
+                        }
                     }
-                    post::EndpointResult::Unsupported => post::mark_unsupported("tool-inventory"),
+                    post::EndpointResult::Unsupported => {
+                        post::mark_unsupported(&state_dir, "tool-inventory")
+                    }
                     post::EndpointResult::Unauthorized => {
                         eprintln!("toard-shim: 도구 인벤토리 전송 실패 — 토큰이 유효하지 않습니다");
                         failed = true;
@@ -900,19 +914,30 @@ fn endpoint_is_secure(endpoint: &str) -> bool {
 
 /// 한 어댑터의 본문 수집: 별도 커서(`{key}-content`)로 변한 파일만 재파싱 →
 /// 봉투 전 평문을 /v1/prompts 로 전송. 반환은 "실패 여부"(true 면 커서 미갱신·재시도).
-fn collect_content_for(
-    adapter: &dyn LogAdapter,
-    endpoint: &str,
-    token: Option<&str>,
-    credentials: &crate::credentials::Credentials,
+struct ContentRunContext<'a> {
+    endpoint: &'a str,
+    token: Option<&'a str>,
+    credentials: &'a crate::credentials::Credentials,
     dry_run: bool,
     quiet: bool,
     since_ms: i64,
-) -> bool {
+    state_dir: &'a Path,
+}
+
+fn collect_content_for(adapter: &dyn LogAdapter, context: &ContentRunContext<'_>) -> bool {
+    let ContentRunContext {
+        endpoint,
+        token,
+        credentials,
+        dry_run,
+        quiet,
+        since_ms,
+        state_dir,
+    } = context;
     let key = adapter.key();
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
     let secure = endpoint_is_secure(endpoint);
-    if !dry_run && !secure {
+    if !*dry_run && !secure {
         eprintln!(
             "toard-shim: {key} 본문 수집 건너뜀 — 안전하지 않은 endpoint({endpoint}). 평문 HTTP 로는 본문을 전송하지 않습니다(https 또는 localhost 필요)."
         );
@@ -920,7 +945,7 @@ fn collect_content_for(
     }
     let cursor_key = format!("{key}-content");
     let files = adapter.discover_files();
-    let mut cur = cursor::load(&cursor_key);
+    let mut cur = cursor::load(state_dir, &cursor_key);
 
     // usage 루프와 동일한 파일별 전송 필터 — since 는 최초 opt-in 시각으로 고정되므로
     // 컷오프 필터 결과도 파일 내용에 대해 결정적이라 prefix 판정이 유효하다.
@@ -939,7 +964,7 @@ fn collect_content_for(
         changed += 1;
         let mut file_records = adapter.parse_content(file);
         // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
-        file_records.retain(|r| r.ts_ms >= since_ms);
+        file_records.retain(|r| r.ts_ms >= *since_ms);
         parsed_total += file_records.len();
         let keys: Vec<String> = file_records
             .iter()
@@ -964,7 +989,7 @@ fn collect_content_for(
         records.extend(file_records.into_iter().skip(start));
     }
 
-    if dry_run {
+    if *dry_run {
         let scheme = match credentials.collect_content {
             crate::credentials::ContentCollectionMode::E2eeV1 => "e2ee_v1",
             crate::credentials::ContentCollectionMode::ServerV1 => "server_v1",
@@ -974,10 +999,10 @@ fn collect_content_for(
             "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 · {scheme} (since {}) [dry-run]",
             files.len(),
             records.len(),
-            if since_ms <= 0 {
+            if *since_ms <= 0 {
                 "전체".to_string()
             } else {
-                iso::epoch_ms_to_iso(since_ms)
+                iso::epoch_ms_to_iso(*since_ms)
             }
         );
         if !secure {
@@ -989,7 +1014,7 @@ fn collect_content_for(
     }
 
     if records.is_empty() {
-        if !quiet {
+        if !*quiet {
             println!("{key} 본문: 새 레코드 없음 (변경 {changed}개)");
         }
     } else {
@@ -1062,7 +1087,7 @@ fn collect_content_for(
     let alive: std::collections::HashSet<String> =
         files.iter().map(|f| f.display().to_string()).collect();
     cur.files.retain(|k, _| alive.contains(k));
-    cursor::save(&cursor_key, &cur);
+    cursor::save(state_dir, &cursor_key, &cur);
     false
 }
 

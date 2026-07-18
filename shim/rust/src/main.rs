@@ -48,6 +48,27 @@ const GUARD_ENV: &str = "TOARD_SHIM_GUARD_PID";
 #[cfg(windows)]
 const GUARD_MAX_DEPTH: u32 = 64;
 
+enum WrapperMode {
+    Missing,
+    Single(credentials::Credentials),
+    Multiple,
+}
+
+fn select_wrapper_mode(
+    targets: &[targets::Target],
+    legacy: credentials::Credentials,
+) -> WrapperMode {
+    match targets {
+        [] if legacy.token.is_some() => WrapperMode::Single(legacy),
+        [] => WrapperMode::Missing,
+        [target] if target.credentials.token.is_some() => {
+            WrapperMode::Single(target.credentials.clone())
+        }
+        [_] => WrapperMode::Missing,
+        [_, _, ..] => WrapperMode::Multiple,
+    }
+}
+
 fn main() {
     // 백그라운드 작업 내부 재진입 — argv0 과 무관하게 최우선 분기
     match env::args().nth(1).as_deref() {
@@ -68,22 +89,40 @@ fn main() {
 
     guard_against_recursion();
 
-    let creds = read_credentials();
+    let legacy = read_credentials();
+    let targets = match targets::TargetStore::from_home().and_then(|store| store.load_or_migrate())
+    {
+        Ok(targets) => targets,
+        Err(error) => {
+            notice(&format!(
+                "target 저장소를 읽지 못해 legacy 자격 증명만 확인합니다: {error}"
+            ));
+            Vec::new()
+        }
+    };
+    let wrapper_mode = select_wrapper_mode(&targets, legacy);
 
     // 사용량은 트랜스크립트 pull(collect, 아래 maybe_spawn_background)로 수집한다(docs/design-usage-pull).
     // OTLP push 주입은 experimental(TOARD_EXPERIMENTAL_OTLP)로만 — 기본은 env/config 주입 없이 순수 패스스루라
     // 재시작·env 주입 dance 가 불필요하다. 토큰이 없으면 collect 도 전송 불가라 그대로 패스스루.
-    match &creds.token {
-        Some(token) if otel::experimental_otlp_enabled() => {
-            let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
+    match &wrapper_mode {
+        WrapperMode::Single(credentials) if otel::experimental_otlp_enabled() => {
+            let token = credentials
+                .token
+                .as_deref()
+                .expect("single wrapper credentials must contain a token");
+            let endpoint = credentials.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
             otel::inject_env(&tool, endpoint, token);
             if tool == "codex" {
                 codex::inject_config(endpoint, token);
             }
         }
-        Some(_) => {} // 기본 경로: 주입 없음(pull 로 수집)
-        None => notice(
-            "자격 증명이 없어 실행합니다 — 수집하려면 ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정",
+        WrapperMode::Multiple if otel::experimental_otlp_enabled() => notice(
+            "experimental OTLP는 여러 target에 주입할 수 없어 비활성화했습니다 — pull 수집은 모든 target으로 전송됩니다",
+        ),
+        WrapperMode::Single(_) | WrapperMode::Multiple => {} // 기본 경로: 주입 없음(pull 수집)
+        WrapperMode::Missing => notice(
+            "등록된 target이 없어 실행합니다 — 수집하려면 서버 설치 스크립트로 연결하세요",
         ),
     }
 
@@ -139,6 +178,57 @@ fn run_real(real: &std::path::Path, args: &[OsString]) -> ! {
     let err = Command::new(real).args(args).exec();
     eprintln!("toard-shim: exec 실패 ({}): {err}", real.display());
     std::process::exit(1);
+}
+
+#[cfg(test)]
+mod wrapper_target_tests {
+    use super::*;
+
+    fn credentials(endpoint: &str, token: Option<&str>) -> credentials::Credentials {
+        credentials::Credentials {
+            endpoint: Some(endpoint.into()),
+            token: token.map(str::to_string),
+            ..credentials::Credentials::default()
+        }
+    }
+
+    fn target(endpoint: &str, token: &str) -> targets::Target {
+        targets::Target {
+            id: targets::target_id(endpoint),
+            endpoint: endpoint.into(),
+            credentials_path: std::path::PathBuf::from("credentials"),
+            state_dir: std::path::PathBuf::from("state"),
+            credentials: credentials(endpoint, Some(token)),
+        }
+    }
+
+    #[test]
+    fn wrapper_uses_registry_singleton_and_refuses_push_for_multiple_targets() {
+        let legacy = credentials("https://legacy.example/api", Some("tk_legacy"));
+        let company = target("https://company.example/api", "tk_company");
+        let personal = target("https://personal.example/api", "tk_personal");
+
+        match select_wrapper_mode(&[], legacy.clone()) {
+            WrapperMode::Single(selected) => {
+                assert_eq!(selected.token.as_deref(), Some("tk_legacy"));
+            }
+            _ => panic!("legacy credentials must remain compatible without registry targets"),
+        }
+        match select_wrapper_mode(std::slice::from_ref(&company), legacy.clone()) {
+            WrapperMode::Single(selected) => {
+                assert_eq!(selected.token.as_deref(), Some("tk_company"));
+            }
+            _ => panic!("one registry target must be selected"),
+        }
+        assert!(matches!(
+            select_wrapper_mode(&[company, personal], legacy),
+            WrapperMode::Multiple
+        ));
+        assert!(matches!(
+            select_wrapper_mode(&[], credentials("https://legacy.example/api", None)),
+            WrapperMode::Missing
+        ));
+    }
 }
 
 #[cfg(windows)]

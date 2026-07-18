@@ -42,7 +42,11 @@ pub fn maybe_spawn_background() {
     ) {
         return;
     }
-    if read_credentials().token.is_none() {
+    let configured = TargetStore::from_home()
+        .and_then(|store| store.load_or_migrate())
+        .map(|targets| !targets.is_empty())
+        .unwrap_or_else(|_| read_credentials().token.is_some());
+    if !configured {
         return;
     }
     let interval = std::env::var("TOARD_SHIM_COLLECT_INTERVAL")

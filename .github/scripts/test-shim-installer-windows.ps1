@@ -35,7 +35,7 @@ try {
   $env:TOARD_E2E_INSTALLER = $installer
   $env:TOARD_E2E_UNINSTALLER = $uninstaller
   $env:TOARD_E2E_ENDPOINT = "$baseUrl/api"
-  pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(process.env.TOARD_E2E_INSTALLER, buildPowerShellInstallScript(process.env.TOARD_E2E_ENDPOINT, false)); writeFileSync(process.env.TOARD_E2E_UNINSTALLER, buildPowerShellUninstallScript());"
+  pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(process.env.TOARD_E2E_INSTALLER, buildPowerShellInstallScript(process.env.TOARD_E2E_ENDPOINT, false)); writeFileSync(process.env.TOARD_E2E_UNINSTALLER, buildPowerShellUninstallScript(process.env.TOARD_E2E_ENDPOINT));"
   if ($LASTEXITCODE -ne 0) { throw 'PowerShell installer generation failed' }
 
   $env:USERPROFILE = $homeDir
@@ -47,11 +47,30 @@ try {
   & $installer
 
   $binDir = Join-Path $homeDir '.toard/bin'
-  $credentials = [IO.File]::ReadAllLines((Join-Path $homeDir '.toard/credentials'))
-  if ($credentials.Count -ne 3) { throw "expected 3 credential lines, got $($credentials.Count)" }
-  if ($credentials[0] -ne 'agent_key=tk_e2e_test') { throw 'token credential line mismatch' }
-  if ($credentials[1] -ne "endpoint=$baseUrl/api") { throw 'endpoint credential line mismatch' }
-  if ($credentials[2] -ne 'collect_content=true') { throw 'content credential line mismatch' }
+  $toardDir = Join-Path $homeDir '.toard'
+  if (Test-Path (Join-Path $toardDir 'credentials')) { throw 'legacy credentials must be migrated' }
+  $targetDirs = @(Get-ChildItem -Directory (Join-Path $toardDir 'targets'))
+  if ($targetDirs.Count -ne 1) { throw "expected one target directory, got $($targetDirs.Count)" }
+  $credentialsPath = Join-Path $targetDirs[0].FullName 'credentials'
+  $credentials = [IO.File]::ReadAllLines($credentialsPath)
+  foreach ($line in @('agent_key=tk_e2e_test', "endpoint=$baseUrl/api", 'collect_content=server_v1', 'collect_tools=true')) {
+    if ($credentials -notcontains $line) { throw "missing target credential line: $line" }
+  }
+  $list = & (Join-Path $binDir 'toard-shim.exe') targets list | Out-String
+  if ($list -notmatch [regex]::Escape("$baseUrl/api")) { throw 'target list endpoint missing' }
+  if ($list -match 'tk_e2e_test') { throw 'target list exposed token' }
+
+  $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+  foreach ($path in @($toardDir, (Join-Path $toardDir 'targets'), $targetDirs[0].FullName, $credentialsPath, (Join-Path $targetDirs[0].FullName 'state'))) {
+    $acl = Get-Acl -LiteralPath $path
+    if (-not $acl.AreAccessRulesProtected) { throw "ACL inheritance remains enabled: $path" }
+    $allowed = @($acl.Access | Where-Object { $_.AccessControlType -eq 'Allow' })
+    if ($allowed.Count -eq 0) { throw "ACL has no allow rule: $path" }
+    foreach ($rule in $allowed) {
+      $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+      if ($sid -ne $currentSid) { throw "ACL allows another principal on ${path}: $sid" }
+    }
+  }
   foreach ($name in @('claude.exe', 'codex.exe', 'toard-shim.exe')) {
     if (-not (Test-Path (Join-Path $binDir $name))) { throw "missing installed binary: $name" }
   }
@@ -64,7 +83,7 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'persisted installation doctor failed' }
 
   & $uninstaller
-  if (Test-Path (Join-Path $homeDir '.toard/credentials')) { throw 'credentials were not removed' }
+  if (Test-Path (Join-Path $homeDir '.toard/targets')) { throw 'target registry was not removed' }
   schtasks.exe /Query /TN toard-collect 2>$null | Out-Null
   if ($LASTEXITCODE -eq 0) { throw 'scheduled task was not removed' }
 } finally {

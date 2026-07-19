@@ -459,8 +459,8 @@ function dashboardBundleRows(query: string, includeTeam = true): Array<Record<st
 }
 
 function dashboardFixture(options: {
-  usageRows?: DashboardUsageBundleRow[];
-  breakdownRows?: DashboardBreakdownBundleRow[];
+  usageRows?: Array<Record<string, unknown>>;
+  breakdownRows?: Array<Record<string, unknown>>;
 } = {}) {
   const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
@@ -503,6 +503,12 @@ function dashboardFixture(options: {
     pgQueries,
     queries,
   };
+}
+
+function dashboardRowWithout<T extends object>(row: T, field: keyof T): Record<string, unknown> {
+  const copy = { ...row } as Record<string, unknown>;
+  delete copy[String(field)];
+  return copy;
 }
 
 test("ClickHouse 조직 dashboard는 두 JSON read로 기존 공개 결과를 조립한다", async () => {
@@ -685,6 +691,125 @@ test("daily row의 필수 bucket이 없으면 fail closed한다", async () => {
     fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
     /Organization dashboard daily row is missing its bucket/,
   );
+});
+
+test("dashboard bundle parser는 overview 필수 numeric field 누락을 거부한다", async () => {
+  const rows = dashboardUsageBundleRows();
+  const currentIndex = rows.findIndex((row) => row.result_kind === "current_overview");
+  rows[currentIndex] = dashboardRowWithout(rows[currentIndex]!, "sessions") as DashboardUsageBundleRow;
+  const fixture = dashboardFixture({ usageRows: rows });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Organization dashboard usage row parsing error.*current_overview.*sessions/,
+  );
+});
+
+test("dashboard bundle parser는 daily 필수 numeric field 누락을 거부한다", async () => {
+  const rows = dashboardUsageBundleRows();
+  const dailyIndex = rows.findIndex((row) => row.result_kind === "daily");
+  rows[dailyIndex] = dashboardRowWithout(rows[dailyIndex]!, "cache_creation") as DashboardUsageBundleRow;
+  const fixture = dashboardFixture({ usageRows: rows });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Organization dashboard usage row parsing error.*daily.*cache_creation/,
+  );
+});
+
+test("dashboard bundle parser는 breakdown의 key·numeric·coverage field 누락을 거부한다", async () => {
+  for (const field of ["key", "tokens", "legacy_events"] as const) {
+    const rows = dashboardBreakdownBundleRows();
+    rows[0] = dashboardRowWithout(rows[0]!, field) as DashboardBreakdownBundleRow;
+    const fixture = dashboardFixture({ breakdownRows: rows });
+
+    await assert.rejects(
+      fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+      new RegExp(`Organization dashboard breakdown row parsing error.*user_leader.*${field}`),
+      field,
+    );
+  }
+});
+
+test("dashboard bundle parser는 필수 numeric·coverage field의 잘못된 타입과 값을 거부한다", async () => {
+  const cases: Array<{
+    name: string;
+    usageRows?: Array<Record<string, unknown>>;
+    breakdownRows?: Array<Record<string, unknown>>;
+    expected: RegExp;
+  }> = [
+    {
+      name: "overview coverage boolean",
+      usageRows: dashboardUsageBundleRows().map((row) => row.result_kind === "current_overview"
+        ? { ...row, priced_events: false }
+        : row),
+      expected: /usage row parsing error.*current_overview.*priced_events/,
+    },
+    {
+      name: "daily numeric object",
+      usageRows: dashboardUsageBundleRows().map((row) => row.result_kind === "daily"
+        ? { ...row, cost: {} }
+        : row),
+      expected: /usage row parsing error.*daily.*cost/,
+    },
+    {
+      name: "breakdown non-numeric string",
+      breakdownRows: dashboardBreakdownBundleRows().map((row) => row.result_kind === "provider"
+        ? { ...row, sessions: "not-a-number" }
+        : row),
+      expected: /breakdown row parsing error.*provider.*sessions/,
+    },
+  ];
+
+  for (const malformed of cases) {
+    const fixture = dashboardFixture({
+      ...(malformed.usageRows ? { usageRows: malformed.usageRows } : {}),
+      ...(malformed.breakdownRows ? { breakdownRows: malformed.breakdownRows } : {}),
+    });
+    await assert.rejects(
+      fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+      malformed.expected,
+      malformed.name,
+    );
+  }
+});
+
+test("dashboard bundle parser는 finite number와 numeric string을 모두 허용한다", async () => {
+  const numericFields = new Set([
+    "sessions",
+    "active_users",
+    "cost",
+    "input",
+    "output",
+    "cache_read",
+    "cache_creation",
+    "tokens",
+    "priced_events",
+    "unpriced_events",
+    "legacy_events",
+  ]);
+  const asJsonNumbers = (rows: Array<Record<string, unknown>>) => rows.map((row) => Object.fromEntries(
+    Object.entries(row).map(([field, value]) => [
+      field,
+      numericFields.has(field) ? Number(value) : value,
+    ]),
+  ));
+  const fixture = dashboardFixture({
+    usageRows: asJsonNumbers(dashboardUsageBundleRows()),
+    breakdownRows: asJsonNumbers(dashboardBreakdownBundleRows()),
+  });
+
+  const result = await fixture.storage.getOrganizationDashboard(organizationDashboardQuery());
+
+  assert.equal(result.overview.totalSessions, 2);
+  assert.deepEqual(result.overview.costCoverage, {
+    pricedEvents: 2,
+    unpricedEvents: 3,
+    legacyEvents: 4,
+  });
+  assert.equal(result.daily[0]?.costUsd, 0.6);
+  assert.equal(result.topUsers[0]?.totalTokens, 18);
+  assert.equal(result.providerBreakdown[0]?.sessions, 2);
 });
 
 test("dashboard current와 previous source parameter namespace는 충돌하지 않는다", async () => {

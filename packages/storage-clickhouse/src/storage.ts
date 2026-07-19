@@ -237,9 +237,9 @@ function clickHouseTimestampToIso(value: unknown): string | null {
 }
 
 interface CostCoverageRow {
-  priced_events?: string;
-  unpriced_events?: string;
-  legacy_events?: string;
+  priced_events?: string | number;
+  unpriced_events?: string | number;
+  legacy_events?: string | number;
 }
 
 interface AggRow extends CostCoverageRow {
@@ -252,17 +252,126 @@ interface AggRow extends CostCoverageRow {
   cache_creation?: string;
 }
 
-interface OrganizationUsageBundleRow extends AggRow {
-  result_kind: string;
+type OrganizationUsageBundleKind = "current_overview" | "previous_overview" | "daily";
+type OrganizationBreakdownBundleKind = "user_leader" | "team_leader" | "provider";
+type OrganizationDashboardNumeric = string | number;
+
+interface OrganizationUsageBundleRow {
+  result_kind: OrganizationUsageBundleKind;
   day: string | null;
+  sessions: OrganizationDashboardNumeric;
+  active_users: OrganizationDashboardNumeric;
+  cost: OrganizationDashboardNumeric;
+  input: OrganizationDashboardNumeric;
+  output: OrganizationDashboardNumeric;
+  cache_read: OrganizationDashboardNumeric;
+  cache_creation: OrganizationDashboardNumeric;
+  priced_events: OrganizationDashboardNumeric;
+  unpriced_events: OrganizationDashboardNumeric;
+  legacy_events: OrganizationDashboardNumeric;
 }
 
-interface OrganizationBreakdownBundleRow extends CostCoverageRow {
-  result_kind: string;
+interface OrganizationBreakdownBundleRow {
+  result_kind: OrganizationBreakdownBundleKind;
   key: string;
-  cost?: string;
-  tokens?: string;
-  sessions?: string;
+  cost: OrganizationDashboardNumeric;
+  tokens: OrganizationDashboardNumeric;
+  sessions: OrganizationDashboardNumeric;
+  priced_events: OrganizationDashboardNumeric;
+  unpriced_events: OrganizationDashboardNumeric;
+  legacy_events: OrganizationDashboardNumeric;
+}
+
+function organizationDashboardParsingError(
+  bundle: "usage" | "breakdown",
+  kind: string,
+  field: string,
+): Error {
+  return new Error(`Organization dashboard ${bundle} row parsing error: ${kind}.${field}`);
+}
+
+function organizationDashboardRow(
+  value: unknown,
+  bundle: "usage" | "breakdown",
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw organizationDashboardParsingError(bundle, "unknown", "row");
+  }
+  return value as Record<string, unknown>;
+}
+
+function organizationDashboardNumeric(
+  row: Record<string, unknown>,
+  bundle: "usage" | "breakdown",
+  kind: string,
+  field: string,
+): OrganizationDashboardNumeric {
+  const value = row[field];
+  const valid = typeof value === "number"
+    ? Number.isFinite(value)
+    : typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value));
+  if (!valid) {
+    throw organizationDashboardParsingError(bundle, kind, field);
+  }
+  return value as OrganizationDashboardNumeric;
+}
+
+function parseOrganizationUsageBundleRow(value: unknown): OrganizationUsageBundleRow {
+  const row = organizationDashboardRow(value, "usage");
+  const rawKind = row.result_kind;
+  if (typeof rawKind !== "string") {
+    throw organizationDashboardParsingError("usage", "unknown", "result_kind");
+  }
+  if (rawKind !== "current_overview" && rawKind !== "previous_overview" && rawKind !== "daily") {
+    throw new Error("Unknown organization dashboard usage row kind");
+  }
+  const day = row.day;
+  if (rawKind === "daily") {
+    if (day == null) throw new Error("Organization dashboard daily row is missing its bucket");
+    if (typeof day !== "string") {
+      throw organizationDashboardParsingError("usage", rawKind, "day");
+    }
+  } else if (day !== null) {
+    throw organizationDashboardParsingError("usage", rawKind, "day");
+  }
+  return {
+    result_kind: rawKind,
+    day,
+    sessions: organizationDashboardNumeric(row, "usage", rawKind, "sessions"),
+    active_users: organizationDashboardNumeric(row, "usage", rawKind, "active_users"),
+    cost: organizationDashboardNumeric(row, "usage", rawKind, "cost"),
+    input: organizationDashboardNumeric(row, "usage", rawKind, "input"),
+    output: organizationDashboardNumeric(row, "usage", rawKind, "output"),
+    cache_read: organizationDashboardNumeric(row, "usage", rawKind, "cache_read"),
+    cache_creation: organizationDashboardNumeric(row, "usage", rawKind, "cache_creation"),
+    priced_events: organizationDashboardNumeric(row, "usage", rawKind, "priced_events"),
+    unpriced_events: organizationDashboardNumeric(row, "usage", rawKind, "unpriced_events"),
+    legacy_events: organizationDashboardNumeric(row, "usage", rawKind, "legacy_events"),
+  };
+}
+
+function parseOrganizationBreakdownBundleRow(value: unknown): OrganizationBreakdownBundleRow {
+  const row = organizationDashboardRow(value, "breakdown");
+  const rawKind = row.result_kind;
+  if (typeof rawKind !== "string") {
+    throw organizationDashboardParsingError("breakdown", "unknown", "result_kind");
+  }
+  if (rawKind !== "user_leader" && rawKind !== "team_leader" && rawKind !== "provider") {
+    throw new Error("Unknown organization dashboard breakdown row kind");
+  }
+  if (typeof row.key !== "string") {
+    throw organizationDashboardParsingError("breakdown", rawKind, "key");
+  }
+  return {
+    result_kind: rawKind,
+    key: row.key,
+    cost: organizationDashboardNumeric(row, "breakdown", rawKind, "cost"),
+    tokens: organizationDashboardNumeric(row, "breakdown", rawKind, "tokens"),
+    sessions: organizationDashboardNumeric(row, "breakdown", rawKind, "sessions"),
+    priced_events: organizationDashboardNumeric(row, "breakdown", rawKind, "priced_events"),
+    unpriced_events: organizationDashboardNumeric(row, "breakdown", rawKind, "unpriced_events"),
+    legacy_events: organizationDashboardNumeric(row, "breakdown", rawKind, "legacy_events"),
+  };
 }
 
 const costCoverage = (row: CostCoverageRow | undefined): UsageCostCoverage => ({
@@ -2679,32 +2788,26 @@ SELECT 'provider' AS result_kind, provider_key AS key,
 FROM ${current.source}
 GROUP BY provider_key ORDER BY tokens DESC`;
 
-    const [usageRows, breakdownRows] = await Promise.all([
-      this.queryJson<OrganizationUsageBundleRow>(
+    const [usagePayload, breakdownPayload] = await Promise.all([
+      this.queryJson<unknown>(
         usageSql,
         params,
         undefined,
         "organization_dashboard_usage",
       ),
-      this.queryJson<OrganizationBreakdownBundleRow>(
+      this.queryJson<unknown>(
         breakdownSql,
         current.params,
         undefined,
         "organization_dashboard_breakdown",
       ),
     ]);
-
-    const usageKinds = new Set(["current_overview", "previous_overview", "daily"]);
-    if (usageRows.some((row) => !usageKinds.has(row.result_kind))) {
-      throw new Error("Unknown organization dashboard usage row kind");
-    }
+    const usageRows = usagePayload.map(parseOrganizationUsageBundleRow);
+    const breakdownRows = breakdownPayload.map(parseOrganizationBreakdownBundleRow);
     const currentRow = usageRows.find((row) => row.result_kind === "current_overview");
     const previousRow = usageRows.find((row) => row.result_kind === "previous_overview");
     if (!currentRow || !previousRow) {
       throw new Error("Organization dashboard overview row is missing");
-    }
-    if (usageRows.some((row) => row.result_kind === "daily" && row.day == null)) {
-      throw new Error("Organization dashboard daily row is missing its bucket");
     }
 
     const toOverview = (row: OrganizationUsageBundleRow): OverviewStats => ({
@@ -2731,10 +2834,6 @@ GROUP BY provider_key ORDER BY tokens DESC`;
       }))
       .sort((a, b) => a.day.localeCompare(b.day));
 
-    const breakdownKinds = new Set(["user_leader", "team_leader", "provider"]);
-    if (breakdownRows.some((row) => !breakdownKinds.has(row.result_kind))) {
-      throw new Error("Unknown organization dashboard breakdown row kind");
-    }
     const userRows = breakdownRows.filter((row) => row.result_kind === "user_leader");
     const teamRows = breakdownRows.filter((row) => row.result_kind === "team_leader");
     const providerRows = breakdownRows.filter((row) => row.result_kind === "provider");

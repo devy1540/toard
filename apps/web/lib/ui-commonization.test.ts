@@ -246,6 +246,23 @@ test("Windows shim CI verifies GUI helper subsystem and scheduled action", () =>
   assert.match(e2e, /\$taskInfo\.LastTaskResult\s*-ne\s*0/);
 });
 
+test("Windows installer E2E migrates an existing legacy scheduled task", () => {
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+
+  assert.match(e2e, /\$legacyShim\s*=\s*Join-Path \$legacyBinDir 'toard-shim\.exe'/);
+  assert.match(e2e, /Copy-Item -Force \$Binary \$legacyShim/);
+  assert.match(
+    e2e,
+    /New-ScheduledTaskAction -Execute \$legacyShim -Argument 'collect --quiet'/,
+  );
+  assert.match(e2e, /New-ScheduledTaskTrigger -Once -At \(Get-Date\)\.AddYears\(1\)/);
+  assert.match(e2e, /Register-ScheduledTask -TaskName 'toard-collect'/);
+  assert.ok(
+    e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'") < e2e.indexOf("& $installer"),
+  );
+  assert.match(e2e, /finally \{[\s\S]*schtasks\.exe \/Delete \/TN toard-collect \/F/);
+});
+
 test("shim release publishes the Windows no-console helper", () => {
   const workflow = repoSource(".github/workflows/shim-release.yml");
 

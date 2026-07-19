@@ -222,10 +222,41 @@ fn cleanup_downloads(downloads: &[(String, std::path::PathBuf)]) {
 }
 
 #[cfg(any(windows, test))]
+#[derive(Debug)]
+#[must_use = "helper replacement must be committed or rolled back"]
+struct WindowsFileReplacement {
+    destination: std::path::PathBuf,
+    backup: std::path::PathBuf,
+    had_previous: bool,
+}
+
+#[cfg(any(windows, test))]
+impl WindowsFileReplacement {
+    fn commit(self) {
+        if self.had_previous {
+            let _ = std::fs::remove_file(self.backup);
+        }
+    }
+
+    fn rollback(self) -> Result<(), String> {
+        match std::fs::remove_file(&self.destination) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("새 helper 제거 실패: {error}")),
+        }
+        if self.had_previous {
+            std::fs::rename(&self.backup, &self.destination)
+                .map_err(|error| format!("기존 helper 복원 실패: {error}"))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(any(windows, test))]
 fn replace_windows_file(
     tmp: &std::path::Path,
     destination: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<WindowsFileReplacement, String> {
     let old = destination.with_extension("exe.old");
     let _ = std::fs::remove_file(&old);
     let moved_old = destination.is_file();
@@ -238,7 +269,36 @@ fn replace_windows_file(
             let _ = std::fs::rename(&old, destination);
         }
         format!("helper 교체 실패: {error}")
+    })?;
+    Ok(WindowsFileReplacement {
+        destination: destination.to_path_buf(),
+        backup: old,
+        had_previous: moved_old,
     })
+}
+
+#[cfg(any(windows, test))]
+fn replace_windows_pair<F>(
+    helper_tmp: &std::path::Path,
+    helper: &std::path::Path,
+    main_tmp: &std::path::Path,
+    main: &std::path::Path,
+    replace_main: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&std::path::Path, &std::path::Path) -> Result<(), String>,
+{
+    let helper_replacement = replace_windows_file(helper_tmp, helper)?;
+    match replace_main(main_tmp, main) {
+        Ok(()) => {
+            helper_replacement.commit();
+            Ok(())
+        }
+        Err(main_error) => match helper_replacement.rollback() {
+            Ok(()) => Err(main_error),
+            Err(rollback_error) => Err(format!("{main_error}; helper 롤백 실패: {rollback_error}")),
+        },
+    }
 }
 
 /// 다운로드 → SHA256 검증 → chmod 755 → rename 으로 자기 자신 교체(원자적).
@@ -276,13 +336,19 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
     }
 
     #[cfg(windows)]
-    if let Some((_, helper_tmp)) = downloads.get(1) {
-        if let Err(error) = replace_windows_file(helper_tmp, &background_install_path(&exe)) {
-            cleanup_downloads(&downloads);
-            return Err(error);
-        }
-    }
-    if let Err(error) = replace_exe(&downloads[0].1, &exe) {
+    let replace_result = match downloads.get(1) {
+        Some((_, helper_tmp)) => replace_windows_pair(
+            helper_tmp,
+            &background_install_path(&exe),
+            &downloads[0].1,
+            &exe,
+            replace_exe,
+        ),
+        None => Err("Windows helper 다운로드가 없습니다".into()),
+    };
+    #[cfg(not(windows))]
+    let replace_result = replace_exe(&downloads[0].1, &exe);
+    if let Err(error) = replace_result {
         cleanup_downloads(&downloads);
         return Err(error);
     }
@@ -464,12 +530,81 @@ mod tests {
         let _ = std::fs::remove_file(&old);
         std::fs::write(&tmp, b"new helper").unwrap();
 
-        replace_windows_file(&tmp, &destination).unwrap();
+        replace_windows_file(&tmp, &destination).unwrap().commit();
 
         assert_eq!(std::fs::read(&destination).unwrap(), b"new helper");
         assert!(!tmp.exists());
         assert!(!old.exists());
         std::fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn main_replace_failure_restores_the_previous_helper() {
+        let dir = std::env::temp_dir().join(format!(
+            "toard-shim-pair-rollback-existing-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let helper_tmp = dir.join("helper.download");
+        let helper = dir.join("toard-shim-background.exe");
+        let helper_backup = helper.with_extension("exe.old");
+        let main_tmp = dir.join("main.download");
+        let main = dir.join("toard-shim.exe");
+        std::fs::write(&helper_tmp, b"new helper").unwrap();
+        std::fs::write(&helper, b"old helper").unwrap();
+        std::fs::write(&main_tmp, b"new main").unwrap();
+        std::fs::write(&main, b"old main").unwrap();
+
+        let error = replace_windows_pair(
+            &helper_tmp,
+            &helper,
+            &main_tmp,
+            &main,
+            |actual_tmp, actual_main| {
+                assert_eq!(actual_tmp, main_tmp);
+                assert_eq!(actual_main, main);
+                Err("injected main replacement failure".into())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "injected main replacement failure");
+        assert_eq!(std::fs::read(&helper).unwrap(), b"old helper");
+        assert!(!helper_backup.exists());
+        assert_eq!(std::fs::read(&main).unwrap(), b"old main");
+        assert_eq!(std::fs::read(&main_tmp).unwrap(), b"new main");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn main_replace_failure_removes_a_newly_installed_helper() {
+        let dir = std::env::temp_dir().join(format!(
+            "toard-shim-pair-rollback-new-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let helper_tmp = dir.join("helper.download");
+        let helper = dir.join("toard-shim-background.exe");
+        let helper_backup = helper.with_extension("exe.old");
+        let main_tmp = dir.join("main.download");
+        let main = dir.join("toard-shim.exe");
+        std::fs::write(&helper_tmp, b"new helper").unwrap();
+        std::fs::write(&main_tmp, b"new main").unwrap();
+        std::fs::write(&main, b"old main").unwrap();
+
+        let error = replace_windows_pair(&helper_tmp, &helper, &main_tmp, &main, |_, _| {
+            Err("injected main replacement failure".into())
+        })
+        .unwrap_err();
+
+        assert_eq!(error, "injected main replacement failure");
+        assert!(!helper.exists());
+        assert!(!helper_backup.exists());
+        assert_eq!(std::fs::read(&main).unwrap(), b"old main");
+        assert_eq!(std::fs::read(&main_tmp).unwrap(), b"new main");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

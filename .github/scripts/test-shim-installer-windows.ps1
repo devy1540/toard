@@ -48,7 +48,10 @@ try {
   # 구버전 회사 설치를 만든 뒤 신버전 개인 installer가 자동 migration하는 흐름을 검증한다.
   $legacyToardDir = Join-Path $homeDir '.toard'
   $legacyCursorDir = Join-Path $legacyToardDir 'state/cursors'
-  New-Item -ItemType Directory -Force -Path $legacyCursorDir | Out-Null
+  $legacyBinDir = Join-Path $legacyToardDir 'bin'
+  $legacyShim = Join-Path $legacyBinDir 'toard-shim.exe'
+  New-Item -ItemType Directory -Force -Path $legacyCursorDir, $legacyBinDir | Out-Null
+  Copy-Item -Force $Binary $legacyShim
   [IO.File]::WriteAllLines((Join-Path $legacyToardDir 'credentials'), @(
     'agent_key=tk_company',
     "endpoint=$companyEndpoint",
@@ -62,6 +65,9 @@ try {
   )
   [IO.File]::WriteAllText((Join-Path $legacyToardDir 'state/content-since'), "123`n")
   [IO.File]::WriteAllText((Join-Path $legacyToardDir 'state/tool-since'), "456`n")
+  $legacyTaskAction = New-ScheduledTaskAction -Execute $legacyShim -Argument 'collect --quiet'
+  $legacyTaskTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)
+  Register-ScheduledTask -TaskName 'toard-collect' -Action $legacyTaskAction -Trigger $legacyTaskTrigger -Force | Out-Null
 
   $env:TOARD_E2E_INSTALLER = $installer
   $env:TOARD_E2E_UNINSTALL_PERSONAL = $uninstallPersonal

@@ -93,15 +93,22 @@ const usageRows = [
 ] as const;
 
 function labelPool(): Pool {
+  const userSql = "SELECT id::text AS id, COALESCE(name, email) AS label FROM users WHERE id = ANY($1)";
+  const teamSql = "SELECT id::text AS id, name AS label FROM teams WHERE id = ANY($1)";
   return {
-    query: async (sql: string) => {
-      if (sql.includes("FROM users")) {
+    query: async (sql: string, params: unknown[] = []) => {
+      assert.equal(params.length, 1);
+      assert.ok(Array.isArray(params[0]));
+      const ids = [...params[0]].sort();
+      if (sql === userSql) {
+        assert.deepEqual(ids, ["user-1", "user-2"]);
         return { rows: [{ id: "user-1", label: "User 1" }], rowCount: 1 };
       }
-      if (sql.includes("FROM teams")) {
+      if (sql === teamSql) {
+        assert.deepEqual(ids, ["team-1", "team-2"]);
         return { rows: [{ id: "team-1", label: "Team 1" }], rowCount: 1 };
       }
-      return { rows: [], rowCount: 0 };
+      throw new Error("Unexpected PostgreSQL query in ClickHouse integration test");
     },
   } as unknown as Pool;
 }
@@ -110,6 +117,10 @@ function explicitLoopbackUrl(): string {
   const raw = process.env.CLICKHOUSE_URL;
   assert.ok(raw, "explicit local CLICKHOUSE_URL is required");
   const parsed = new URL(raw);
+  assert.ok(
+    parsed.protocol === "http:" || parsed.protocol === "https:",
+    "CLICKHOUSE_URL protocol must be HTTP or HTTPS",
+  );
   const hostname = parsed.hostname.startsWith("[") && parsed.hostname.endsWith("]")
     ? parsed.hostname.slice(1, -1)
     : parsed.hostname;
@@ -117,8 +128,166 @@ function explicitLoopbackUrl(): string {
     hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1",
     "CLICKHOUSE_URL hostname must be an exact loopback host",
   );
-  return raw;
+  assert.ok(
+    parsed.pathname === "" || parsed.pathname === "/",
+    "CLICKHOUSE_URL pathname must be empty",
+  );
+  assert.equal(parsed.search, "", "CLICKHOUSE_URL search parameters are not allowed");
+  assert.equal(parsed.hash, "", "CLICKHOUSE_URL hash is not allowed");
+  assert.equal(parsed.username, "", "CLICKHOUSE_URL userinfo is not allowed");
+  assert.equal(parsed.password, "", "CLICKHOUSE_URL userinfo is not allowed");
+  return parsed.origin;
 }
+
+type CleanupAdmin = Pick<ClickHouseClient, "command" | "close">;
+type CleanupClient = Pick<ClickHouseClient, "close">;
+
+async function cleanupTemporaryDatabase({
+  admin,
+  client,
+  quotedDatabase,
+  databaseCreationAttempted,
+}: {
+  admin: CleanupAdmin;
+  client: CleanupClient | undefined;
+  quotedDatabase: string;
+  databaseCreationAttempted: boolean;
+}): Promise<void> {
+  assert.match(quotedDatabase, /^`toard_dashboard_[0-9a-f]{32}`$/);
+  const errors: unknown[] = [];
+  try {
+    await client?.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (databaseCreationAttempted) {
+    try {
+      await admin.command({ query: `DROP DATABASE IF EXISTS ${quotedDatabase}` });
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    await admin.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "Temporary ClickHouse database cleanup failed");
+  }
+}
+
+test("integration URL은 client 생성 전에 config-bearing URL과 non-loopback을 거부한다", () => {
+  const original = process.env.CLICKHOUSE_URL;
+  const invalidUrls = [
+    "ftp://localhost:8123",
+    "http://localhost:8123/existing_db",
+    "http://localhost:8123/?database=existing_db",
+    "http://localhost:8123/#fragment",
+    "http://user@localhost:8123",
+    "http://:password@localhost:8123",
+    "http://127.0.0.2:8123",
+    "http://localhost.example:8123",
+  ];
+  try {
+    for (const url of invalidUrls) {
+      process.env.CLICKHOUSE_URL = url;
+      let reachedClientCreation = false;
+      assert.throws(() => {
+        explicitLoopbackUrl();
+        reachedClientCreation = true;
+      });
+      assert.equal(reachedClientCreation, false);
+    }
+
+    for (const url of ["http://localhost:8123", "http://localhost:8123/"]) {
+      process.env.CLICKHOUSE_URL = url;
+      assert.equal(explicitLoopbackUrl(), "http://localhost:8123");
+    }
+  } finally {
+    if (original == null) delete process.env.CLICKHOUSE_URL;
+    else process.env.CLICKHOUSE_URL = original;
+  }
+});
+
+test("CREATE 응답이 유실되어도 생성 시도한 UUID database를 exact DROP IF EXISTS로 정리한다", async () => {
+  const database = "toard_dashboard_0123456789abcdef0123456789abcdef";
+  const quotedDatabase = `\`${database}\``;
+  const commands: string[] = [];
+  let adminClosed = false;
+  let databaseExists = false;
+  const admin = {
+    command: async ({ query }: { query: string }) => {
+      commands.push(query);
+      if (query === `CREATE DATABASE ${quotedDatabase}`) {
+        databaseExists = true;
+        throw new Error("CREATE response lost");
+      }
+      if (query === `DROP DATABASE IF EXISTS ${quotedDatabase}`) {
+        databaseExists = false;
+        return;
+      }
+      throw new Error("unexpected command");
+    },
+    close: async () => {
+      adminClosed = true;
+    },
+  } as unknown as Pick<ClickHouseClient, "command" | "close">;
+  let databaseCreationAttempted = false;
+
+  await assert.rejects(async () => {
+    try {
+      databaseCreationAttempted = true;
+      await admin.command({ query: `CREATE DATABASE ${quotedDatabase}` });
+    } finally {
+      await cleanupTemporaryDatabase({
+        admin,
+        client: undefined,
+        quotedDatabase,
+        databaseCreationAttempted,
+      });
+    }
+  }, /CREATE response lost/);
+
+  assert.deepEqual(commands, [
+    `CREATE DATABASE ${quotedDatabase}`,
+    `DROP DATABASE IF EXISTS ${quotedDatabase}`,
+  ]);
+  assert.equal(databaseExists, false);
+  assert.equal(adminClosed, true);
+});
+
+test("temporary database cleanup은 client close, DROP, admin close 실패를 서로 격리한다", async () => {
+  const operations: string[] = [];
+  const client = {
+    close: async () => {
+      operations.push("client.close");
+      throw new Error("client close failed");
+    },
+  } as unknown as Pick<ClickHouseClient, "close">;
+  const admin = {
+    command: async () => {
+      operations.push("admin.drop");
+      throw new Error("drop failed");
+    },
+    close: async () => {
+      operations.push("admin.close");
+      throw new Error("admin close failed");
+    },
+  } as unknown as Pick<ClickHouseClient, "command" | "close">;
+
+  await assert.rejects(
+    cleanupTemporaryDatabase({
+      admin,
+      client,
+      quotedDatabase: "`toard_dashboard_0123456789abcdef0123456789abcdef`",
+      databaseCreationAttempted: true,
+    }),
+    AggregateError,
+  );
+  assert.deepEqual(operations, ["client.close", "admin.drop", "admin.close"]);
+});
 
 test("실제 ClickHouse에서 dashboard snapshot은 기존 개별 결과와 동일하다", {
   skip: process.env.RUN_CLICKHOUSE_DASHBOARD_INTEGRATION !== "1",
@@ -137,12 +306,17 @@ test("실제 ClickHouse에서 dashboard snapshot은 기존 개별 결과와 동�
   };
   const admin = createClient(connection);
   let client: ClickHouseClient | undefined;
-  let databaseCreated = false;
+  let databaseCreationAttempted = false;
 
   try {
+    databaseCreationAttempted = true;
     await admin.command({ query: `CREATE DATABASE ${quotedDatabase}` });
-    databaseCreated = true;
     client = createClient({ ...connection, database });
+    const effectiveDatabase = await client.query({
+      query: "SELECT currentDatabase() AS database",
+      format: "JSONEachRow",
+    }).then((result) => result.json<{ database: string }>());
+    assert.deepEqual(effectiveDatabase, [{ database }]);
     await client.command({ query: `CREATE TABLE usage_events (
       dedup_key String,
       provider_key LowCardinality(String),
@@ -231,41 +405,96 @@ test("실제 ClickHouse에서 dashboard snapshot은 기존 개별 결과와 동�
       totalCacheCreationTokens: 0,
       costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 },
     });
-    assert.deepEqual(daily.map((row) => [row.day, row.costUsd]), [
-      ["2026-07-02", 1],
-      ["2026-07-03", 0],
-      ["2026-07-04", 2],
+    assert.deepEqual(daily, [
+      {
+        day: "2026-07-02",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 1,
+        inputTokens: 20,
+        outputTokens: 10,
+        cacheReadTokens: 5,
+        cacheCreationTokens: 0,
+      },
+      {
+        day: "2026-07-03",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 0,
+        inputTokens: 40,
+        outputTokens: 20,
+        cacheReadTokens: 10,
+        cacheCreationTokens: 5,
+      },
+      {
+        day: "2026-07-04",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 2,
+        inputTokens: 30,
+        outputTokens: 15,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+      },
     ]);
-    assert.deepEqual(topUsers.map(({ key, label, totalTokens }) => ({
-      key,
-      label,
-      totalTokens,
-    })), [
-      { key: "user-2", label: "user-2", totalTokens: 120 },
-      { key: "user-1", label: "User 1", totalTokens: 35 },
+    assert.deepEqual(topUsers, [
+      {
+        key: "user-2",
+        label: "user-2",
+        costUsd: 2,
+        totalTokens: 120,
+        sessions: 2,
+        costCoverage: { pricedEvents: 0, unpricedEvents: 1, legacyEvents: 1 },
+      },
+      {
+        key: "user-1",
+        label: "User 1",
+        costUsd: 1,
+        totalTokens: 35,
+        sessions: 1,
+        costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 },
+      },
     ]);
-    assert.deepEqual(topTeams.map(({ key, label, costUsd }) => ({ key, label, costUsd })), [
-      { key: "team-2", label: "team-2", costUsd: 2 },
-      { key: "team-1", label: "Team 1", costUsd: 1 },
+    assert.deepEqual(topTeams, [
+      {
+        key: "team-2",
+        label: "team-2",
+        costUsd: 2,
+        totalTokens: 120,
+        sessions: 2,
+        costCoverage: { pricedEvents: 0, unpricedEvents: 1, legacyEvents: 1 },
+      },
+      {
+        key: "team-1",
+        label: "Team 1",
+        costUsd: 1,
+        totalTokens: 35,
+        sessions: 1,
+        costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 },
+      },
     ]);
-    assert.deepEqual(providerBreakdown.map(({ providerKey, totalTokens }) => ({
-      providerKey,
-      totalTokens,
-    })), [
-      { providerKey: "anthropic", totalTokens: 120 },
-      { providerKey: "codex", totalTokens: 35 },
+    assert.deepEqual(providerBreakdown, [
+      {
+        providerKey: "anthropic",
+        costUsd: 2,
+        totalTokens: 120,
+        sessions: 2,
+        costCoverage: { pricedEvents: 0, unpricedEvents: 1, legacyEvents: 1 },
+      },
+      {
+        providerKey: "codex",
+        costUsd: 1,
+        totalTokens: 35,
+        sessions: 1,
+        costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 },
+      },
     ]);
   } finally {
-    try {
-      await client?.close();
-    } finally {
-      try {
-        if (databaseCreated) {
-          await admin.command({ query: `DROP DATABASE ${quotedDatabase}` });
-        }
-      } finally {
-        await admin.close();
-      }
-    }
+    await cleanupTemporaryDatabase({
+      admin,
+      client,
+      quotedDatabase,
+      databaseCreationAttempted,
+    });
   }
 });

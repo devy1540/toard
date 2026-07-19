@@ -1830,6 +1830,9 @@ export class ClickHouseStorage implements StorageBackend {
              WHERE id = $1`,
             [batch.id],
           );
+          if (batchRows.rows.some((row) => row.cost_status === "unpriced")) {
+            await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
+          }
           await client.query("COMMIT");
           batches++;
           rows += batchRows.rowCount ?? 0;

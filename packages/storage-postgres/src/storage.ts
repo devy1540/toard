@@ -125,6 +125,7 @@ export class PostgresStorage implements StorageBackend {
         events.map((e) => e.userId).filter((x): x is string => !!x),
       );
       let inserted = 0;
+      let insertedUnpriced = false;
       for (const e of events) {
         const r = await client.query(
           `INSERT INTO usage_events
@@ -144,8 +145,12 @@ export class PostgresStorage implements StorageBackend {
         );
         if (r.rowCount === 1) {
           inserted++;
+          insertedUnpriced ||= e.costStatus === "unpriced";
           if (e.userId) await this.bumpDailyUser(client, e);
         }
+      }
+      if (insertedUnpriced) {
+        await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
       }
       await client.query("COMMIT");
       return { inserted, deduped: events.length - inserted };

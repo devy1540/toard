@@ -246,6 +246,21 @@ test("Windows shim CI verifies GUI helper subsystem and scheduled action", () =>
   assert.match(e2e, /\$taskInfo\.LastTaskResult\s*-ne\s*0/);
 });
 
+test("shim release publishes the Windows no-console helper", () => {
+  const workflow = repoSource(".github/workflows/shim-release.yml");
+
+  assert.match(workflow, /toard-shim-background-x86_64-pc-windows-msvc\.exe/);
+  assert.match(workflow, /target\/\$t\/release\/toard-shim-background\.exe/);
+  assert.match(workflow, /sha256sum toard-shim-\*/);
+  assert.match(workflow, /targets: x86_64-pc-windows-msvc/);
+  assert.match(
+    workflow,
+    /cp "target\/\$t\/release\/toard-shim-background\.exe"\s*\\\s*\n\s*"\.\.\/\.\.\/dist\/toard-shim-background-\$t\.exe"/,
+  );
+  assert.match(workflow, /path: dist\/toard-shim-\*/);
+  assert.match(workflow, /gh release create[\s\S]*dist\/toard-shim-\*/);
+});
+
 test("device onboarding uses OS-aware wizard and separate management", () => {
   const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
   const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");

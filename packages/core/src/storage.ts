@@ -236,6 +236,24 @@ export type LeaderScope = "user" | "team";
 export type TimeseriesScope = "all" | "team";
 export type LeaderOrder = "cost" | "tokens";
 
+/** 조직 dashboard가 한 번에 읽는 현재/비교 기간과 leaderboard 옵션. */
+export interface OrganizationDashboardQuery {
+  current: PeriodQuery & BucketOptions;
+  previous: PeriodQuery;
+  includeTeamLeaderboard: boolean;
+  leaderboardOrder: LeaderOrder;
+}
+
+/** 조직 dashboard 화면이 필요로 하는 집계 snapshot. */
+export interface OrganizationDashboardData {
+  overview: OverviewStats;
+  previousOverview: OverviewStats;
+  daily: DailyPoint[];
+  topUsers: LeaderRow[];
+  topTeams: LeaderRow[];
+  providerBreakdown: ProviderBreakdown[];
+}
+
 export interface SaveResult {
   inserted: number;
   deduped: number;

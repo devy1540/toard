@@ -5,6 +5,7 @@ import { getTranslations } from "next-intl/server";
 import { assignUserRoleWithPool } from "@/lib/admin-members";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session-user";
+import { changeUserTeam, TeamMembershipError } from "@/lib/team-membership";
 
 export type TeamState = { error?: string; ok?: boolean };
 
@@ -41,30 +42,42 @@ export async function deleteTeamAction(id: string): Promise<TeamState> {
   if (guard) return guard;
 
   const t = await getTranslations("admin");
-  const r = await getPool().query<{ members: string; has_events: boolean }>(
+  const r = await getPool().query<{ members: string; has_events: boolean; has_assignments: boolean }>(
     `SELECT (SELECT count(*) FROM users WHERE team_id = $1) AS members,
-            EXISTS(SELECT 1 FROM usage_events WHERE team_id = $1) AS has_events`,
+            EXISTS(SELECT 1 FROM usage_events WHERE team_id = $1) AS has_events,
+            EXISTS(SELECT 1 FROM user_team_assignments WHERE team_id = $1) AS has_assignments`,
     [id],
   );
   const members = Number(r.rows[0]?.members ?? 0);
   if (members > 0) return { error: t("errors.teamHasMembers") };
-  if (r.rows[0]?.has_events) return { error: t("errors.teamHasEvents") };
+  if (r.rows[0]?.has_events || r.rows[0]?.has_assignments) return { error: t("errors.teamHasEvents") };
 
   await getPool().query("DELETE FROM teams WHERE id = $1", [id]);
   revalidatePath("/admin");
   return { ok: true };
 }
 
-/** 멤버 팀 배정/해제 — 이후 수집분부터 반영(이벤트는 수집 시점 귀속, §4.3). */
+/** 멤버 팀 배정/해제 — 최초 배정만 미배정 이력을 소급하고 이후 변경은 시점 귀속. */
 export async function assignTeamAction(
   userId: string,
   teamId: string | null,
 ): Promise<TeamState> {
-  const guard = await requireAdmin();
-  if (guard) return guard;
-
-  await getPool().query("UPDATE users SET team_id = $2 WHERE id = $1", [userId, teamId]);
+  const me = await getSessionUser();
+  const t = await getTranslations("admin");
+  if (!me || me.role !== "admin") return { error: t("errors.onlyAdmin") };
+  try {
+    await changeUserTeam(getPool(), { userId, teamId, actorId: me.id });
+  } catch (error) {
+    if (error instanceof TeamMembershipError) {
+      if (error.code === "TEAM_NOT_FOUND") return { error: t("errors.teamNotFound") };
+      if (error.code === "USER_NOT_FOUND") return { error: t("errors.userNotFound") };
+    }
+    throw error;
+  }
   revalidatePath("/admin");
+  revalidatePath("/org");
+  revalidatePath("/org/teams");
+  revalidatePath("/org/team");
   return { ok: true };
 }
 

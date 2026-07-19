@@ -121,6 +121,41 @@ assert_log_not_contains() {
   fi
 }
 
+assert_text_matches() {
+  local description="$1"
+  local text="$2"
+  local pattern="$3"
+
+  if ! grep -Eq -- "$pattern" <<<"$text"; then
+    fail "$description"
+    return 1
+  fi
+}
+
+first_matching_line() {
+  local text="$1"
+  local pattern="$2"
+
+  grep -nE -- "$pattern" <<<"$text" | head -n 1 | cut -d: -f1 || true
+}
+
+assert_text_order() {
+  local description="$1"
+  local text="$2"
+  local first_pattern="$3"
+  local second_pattern="$4"
+  local first_line
+  local second_line
+
+  first_line="$(first_matching_line "$text" "$first_pattern")"
+  second_line="$(first_matching_line "$text" "$second_pattern")"
+
+  if [[ ! "$first_line" =~ ^[0-9]+$ || ! "$second_line" =~ ^[0-9]+$ || "$first_line" -ge "$second_line" ]]; then
+    fail "$description"
+    return 1
+  fi
+}
+
 run_helper() {
   local scenario="$1"
   local helper="$2"
@@ -202,8 +237,37 @@ test_tunnel_helper() {
   assert_log_not_contains "tunnel helper must not call apply" " apply " || true
 }
 
+test_deploy_tunnel_token_rotation_contract() {
+  local rotation_block
+
+  rotation_block="$(awk '
+    /^Tunnel token 회전은 최초 설치 helper를 재사용하지 않고/ { seen_rotation_text = 1; next }
+    seen_rotation_text && /^```bash$/ { in_block = 1; next }
+    in_block && /^```$/ { exit }
+    in_block { print }
+  ' "$repo_root/docs/DEPLOY.md")"
+
+  assert_text_matches "token rotation must run in a subshell" "$rotation_block" '^[[:space:]]*\([[:space:]]*$' || true
+  assert_text_matches "token rotation subshell must enable strict mode" "$rotation_block" '^[[:space:]]*set -euo pipefail[[:space:]]*$' || true
+  assert_text_matches "token rotation must create a temporary token file" "$rotation_block" '^token_file="\$\(mktemp ' || true
+  assert_text_matches "token rotation must create a 0600 token file" "$rotation_block" '^[[:space:]]*chmod 600 "\$token_file"[[:space:]]*$' || true
+  assert_text_matches "token rotation must clean up the token file on EXIT" "$rotation_block" '^[[:space:]]*trap .* EXIT[[:space:]]*$' || true
+  assert_text_matches "token rotation must fetch the token through a pipeline" "$rotation_block" '^[[:space:]]*cloudflared tunnel token macmini-k8s \| tr -d .* >"\$token_file"[[:space:]]*$' || true
+  assert_text_matches "token rotation must reject an empty token file" "$rotation_block" '^\[\[ -s "\$token_file" \]\] \|\| \{ echo .* >&2; exit 1; \}[[:space:]]*$' || true
+  assert_text_matches "token rotation must apply the replacement Secret" "$rotation_block" 'kubectl -n cloudflare-tunnel create secret generic tunnel-token' || true
+  assert_text_matches "token rotation must restart cloudflared" "$rotation_block" 'kubectl -n cloudflare-tunnel rollout restart deployment/cloudflared' || true
+  assert_text_matches "token rotation must wait for cloudflared rollout" "$rotation_block" 'kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m' || true
+  assert_text_matches "token rotation must close its subshell" "$rotation_block" '^[[:space:]]*\)[[:space:]]*$' || true
+  assert_text_order "strict mode must be enabled inside the token rotation subshell" "$rotation_block" '^[[:space:]]*\([[:space:]]*$' '^[[:space:]]*set -euo pipefail[[:space:]]*$' || true
+  assert_text_order "temporary token file permissions must be set before cleanup" "$rotation_block" '^[[:space:]]*chmod 600 "\$token_file"[[:space:]]*$' '^[[:space:]]*trap .* EXIT[[:space:]]*$' || true
+  assert_text_order "token validation must precede Secret apply" "$rotation_block" '^\[\[ -s "\$token_file" \]\]' 'kubectl -n cloudflare-tunnel create secret generic tunnel-token' || true
+  assert_text_order "Secret apply must precede cloudflared restart" "$rotation_block" 'kubectl -n cloudflare-tunnel create secret generic tunnel-token' 'kubectl -n cloudflare-tunnel rollout restart deployment/cloudflared' || true
+  assert_text_order "cloudflared restart must precede rollout status" "$rotation_block" 'kubectl -n cloudflare-tunnel rollout restart deployment/cloudflared' 'kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m' || true
+}
+
 test_toard_helper
 test_tunnel_helper
+test_deploy_tunnel_token_rotation_contract
 
 if (( failures > 0 )); then
   echo "secret helper behavioral tests failed: $failures" >&2

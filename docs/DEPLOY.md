@@ -191,14 +191,20 @@ Tunnel token 회전은 최초 설치 helper를 재사용하지 않고 별도 운
 받아 기존 Secret을 갱신한다. 그 뒤 cloudflared를 재시작하고 rollout 완료까지 확인한다.
 
 ```bash
+(
+set -euo pipefail
+
 token_file="$(mktemp "${TMPDIR:-/tmp}/cloudflare-tunnel-token-rotate.XXXXXX")"
 chmod 600 "$token_file"
 trap 'rm -f -- "$token_file"' EXIT
 cloudflared tunnel token macmini-k8s | tr -d '\r\n' >"$token_file"
+[[ -s "$token_file" ]] || { echo "Tunnel token fetch returned an empty token." >&2; exit 1; }
+
 kubectl -n cloudflare-tunnel create secret generic tunnel-token \
   --from-file=token="$token_file" --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n cloudflare-tunnel rollout restart deployment/cloudflared
 kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m
+)
 ```
 
 Tunnel이 Healthy가 된 뒤 Cloudflare Dashboard의 **Networking > Tunnels > macmini-k8s > Routes > Add route >

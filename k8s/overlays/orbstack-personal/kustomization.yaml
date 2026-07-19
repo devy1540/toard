@@ -10,10 +10,10 @@ replicas:
 images:
   - name: toard
     newName: ghcr.io/devy1540/toard
-    newTag: 0.15.36
+    newTag: 0.15.37
   - name: toard-migrate
     newName: ghcr.io/devy1540/toard-migrate
-    newTag: 0.15.36
+    newTag: 0.15.37
 patches:
   - target:
       kind: ConfigMap

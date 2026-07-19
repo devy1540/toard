@@ -37,10 +37,14 @@ const TARGET: &str = "x86_64-unknown-linux-gnu";
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
 const TARGET: &str = "x86_64-pc-windows-msvc";
 
-/// 릴리스 자산명 — Windows 만 `.exe` 접미(릴리스 워크플로 명명과 계약).
-fn asset_name() -> String {
-    let ext = if cfg!(windows) { ".exe" } else { "" };
-    format!("toard-shim-{TARGET}{ext}")
+/// 릴리스 자산명 — Windows 는 main shim 과 background helper 를 함께 갱신한다.
+fn release_asset_names(target: &str, windows: bool) -> Vec<String> {
+    let ext = if windows { ".exe" } else { "" };
+    let mut assets = vec![format!("toard-shim-{target}{ext}")];
+    if windows {
+        assets.push(format!("toard-shim-background-{target}.exe"));
+    }
+    assets
 }
 
 /// wrap 경로에서 호출 — exec 직전, 논블로킹.
@@ -148,6 +152,93 @@ fn sha256_file(path: &std::path::Path) -> Result<String, String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+fn fetch_sums(base: &str) -> Result<String, String> {
+    let output = Command::new("curl")
+        .args(["-fsSL", "--max-time", "30", &format!("{base}/SHA256SUMS")])
+        .output()
+        .map_err(|error| format!("curl 실행 불가: {error}"))?;
+    if !output.status.success() {
+        return Err("SHA256SUMS 다운로드 실패".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn download_asset(
+    base: &str,
+    asset: &str,
+    dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let path = dir.join(format!(".{asset}.update-{}", std::process::id()));
+    let status = match Command::new("curl")
+        .args(["-fsSL", "--max-time", "120", "-o"])
+        .arg(&path)
+        .arg(format!("{base}/{asset}"))
+        .status()
+    {
+        Ok(status) => status,
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(format!("curl 실행 불가: {error}"));
+        }
+    };
+    if !status.success() {
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("바이너리 다운로드 실패: {base}/{asset}"));
+    }
+    Ok(path)
+}
+
+fn verify_asset(path: &std::path::Path, asset: &str, sums: &str) -> Result<(), String> {
+    let expected =
+        parse_sha_entry(sums, asset).ok_or_else(|| format!("SHA256SUMS 에 {asset} 항목 없음"))?;
+    let actual = sha256_file(path)?;
+    if expected != actual {
+        return Err(format!(
+            "체크섬 불일치 — 교체 중단 (asset={asset} expected={expected} got={actual})"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn background_install_path(main: &std::path::Path) -> std::path::PathBuf {
+    if let Some(raw) = main.to_str() {
+        if let Some(separator) = raw.rfind(['/', '\\']) {
+            return std::path::PathBuf::from(format!(
+                "{}toard-shim-background.exe",
+                &raw[..=separator]
+            ));
+        }
+    }
+    main.with_file_name("toard-shim-background.exe")
+}
+
+fn cleanup_downloads(downloads: &[(String, std::path::PathBuf)]) {
+    for (_, path) in downloads {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(any(windows, test))]
+fn replace_windows_file(
+    tmp: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    let old = destination.with_extension("exe.old");
+    let _ = std::fs::remove_file(&old);
+    let moved_old = destination.is_file();
+    if moved_old {
+        std::fs::rename(destination, &old)
+            .map_err(|error| format!("기존 helper 비켜두기 실패: {error}"))?;
+    }
+    std::fs::rename(tmp, destination).map_err(|error| {
+        if moved_old {
+            let _ = std::fs::rename(&old, destination);
+        }
+        format!("helper 교체 실패: {error}")
+    })
+}
+
 /// 다운로드 → SHA256 검증 → chmod 755 → rename 으로 자기 자신 교체(원자적).
 fn download_and_replace(latest: &str) -> Result<String, String> {
     let exe = env::current_exe()
@@ -155,42 +246,44 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
         .map_err(|e| format!("설치 경로 확인 실패: {e}"))?;
     let dir = exe.parent().ok_or("설치 디렉토리를 알 수 없습니다")?;
     let base = format!("{}/{}/releases/download/v{latest}", release_host(), repo());
-    let asset = asset_name();
-    let tmp = dir.join(format!(".{asset}.update-{}", std::process::id()));
+    let assets = release_asset_names(TARGET, cfg!(windows));
+    let sums = fetch_sums(&base)?;
+    let mut downloads = Vec::with_capacity(assets.len());
 
-    let dl = Command::new("curl")
-        .args(["-fsSL", "--max-time", "120", "-o"])
-        .arg(&tmp)
-        .arg(format!("{base}/{asset}"))
-        .status()
-        .map_err(|e| format!("curl 실행 불가: {e}"))?;
-    if !dl.success() {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(format!("바이너리 다운로드 실패: {base}/{asset}"));
+    for asset in &assets {
+        let path = match download_asset(&base, asset, dir) {
+            Ok(path) => path,
+            Err(error) => {
+                cleanup_downloads(&downloads);
+                return Err(error);
+            }
+        };
+        if let Err(error) = verify_asset(&path, asset, &sums) {
+            let _ = std::fs::remove_file(&path);
+            cleanup_downloads(&downloads);
+            return Err(error);
+        }
+        downloads.push((asset.clone(), path));
     }
 
-    let sums_out = Command::new("curl")
-        .args(["-fsSL", "--max-time", "30", &format!("{base}/SHA256SUMS")])
-        .output()
-        .map_err(|e| format!("curl 실행 불가: {e}"))?;
-    let cleanup_err = |msg: String| {
-        let _ = std::fs::remove_file(&tmp);
-        msg
-    };
-    if !sums_out.status.success() {
-        return Err(cleanup_err("SHA256SUMS 다운로드 실패".into()));
-    }
-    let expected = parse_sha_entry(&String::from_utf8_lossy(&sums_out.stdout), &asset)
-        .ok_or_else(|| cleanup_err(format!("SHA256SUMS 에 {asset} 항목 없음")))?;
-    let actual = sha256_file(&tmp).map_err(cleanup_err)?;
-    if expected != actual {
-        return Err(cleanup_err(format!(
-            "체크섬 불일치 — 교체 중단 (expected={expected} got={actual})"
-        )));
+    for (_, path) in &downloads {
+        if let Err(error) = crate::fsx::set_mode(path, 0o755) {
+            cleanup_downloads(&downloads);
+            return Err(format!("권한 설정 실패: {error}"));
+        }
     }
 
-    crate::fsx::set_mode(&tmp, 0o755).map_err(|e| cleanup_err(format!("권한 설정 실패: {e}")))?;
-    replace_exe(&tmp, &exe).map_err(cleanup_err)?;
+    #[cfg(windows)]
+    if let Some((_, helper_tmp)) = downloads.get(1) {
+        if let Err(error) = replace_windows_file(helper_tmp, &background_install_path(&exe)) {
+            cleanup_downloads(&downloads);
+            return Err(error);
+        }
+    }
+    if let Err(error) = replace_exe(&downloads[0].1, &exe) {
+        cleanup_downloads(&downloads);
+        return Err(error);
+    }
     #[cfg(windows)]
     sync_sibling_copies(&exe);
     Ok(exe.display().to_string())
@@ -246,6 +339,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unix_update_keeps_the_single_asset_contract() {
+        assert_eq!(
+            release_asset_names("aarch64-apple-darwin", false),
+            vec!["toard-shim-aarch64-apple-darwin".to_string()]
+        );
+    }
+
+    #[test]
+    fn windows_update_requires_main_and_background_assets() {
+        assert_eq!(
+            release_asset_names("x86_64-pc-windows-msvc", true),
+            vec![
+                "toard-shim-x86_64-pc-windows-msvc.exe".to_string(),
+                "toard-shim-background-x86_64-pc-windows-msvc.exe".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn background_install_path_is_a_sibling_of_the_main_shim() {
+        assert_eq!(
+            background_install_path(std::path::Path::new(
+                r"C:\Users\GA\.toard\bin\toard-shim.exe"
+            )),
+            std::path::PathBuf::from(r"C:\Users\GA\.toard\bin\toard-shim-background.exe")
+        );
+    }
+
+    #[test]
     fn parses_location_header() {
         let headers = "HTTP/2 302\r\nserver: GitHub.com\r\nLocation: https://github.com/devy1540/toard/releases/tag/v0.3.1\r\n\r\n";
         assert_eq!(parse_latest_from_headers(headers).as_deref(), Some("0.3.1"));
@@ -260,6 +382,95 @@ mod tests {
             Some("abc123")
         );
         assert_eq!(parse_sha_entry(sums, "toard-shim-missing"), None);
+    }
+
+    #[test]
+    fn parses_both_windows_sha_entries_exactly() {
+        let sums = concat!(
+            "aaa  toard-shim-x86_64-pc-windows-msvc.exe\n",
+            "bbb  toard-shim-background-x86_64-pc-windows-msvc.exe\n",
+        );
+        assert_eq!(
+            parse_sha_entry(sums, "toard-shim-x86_64-pc-windows-msvc.exe").as_deref(),
+            Some("aaa")
+        );
+        assert_eq!(
+            parse_sha_entry(sums, "toard-shim-background-x86_64-pc-windows-msvc.exe").as_deref(),
+            Some("bbb")
+        );
+    }
+
+    #[test]
+    fn cleanup_downloads_removes_every_temporary_asset() {
+        let downloads: Vec<_> = ["main", "background"]
+            .into_iter()
+            .map(|name| {
+                let path = std::env::temp_dir().join(format!(
+                    "toard-shim-{name}-cleanup-test-{}",
+                    std::process::id()
+                ));
+                std::fs::write(&path, name).unwrap();
+                (name.to_string(), path)
+            })
+            .collect();
+
+        cleanup_downloads(&downloads);
+
+        assert!(downloads.iter().all(|(_, path)| !path.exists()));
+    }
+
+    #[test]
+    fn helper_replace_failure_restores_the_installed_helper() {
+        let destination = std::env::temp_dir().join(format!(
+            "toard-shim-background-rollback-test-{}.exe",
+            std::process::id()
+        ));
+        let missing_tmp = destination.with_extension("missing");
+        let old = destination.with_extension("exe.old");
+        let _ = std::fs::remove_file(&missing_tmp);
+        let _ = std::fs::remove_file(&old);
+        std::fs::write(&destination, b"installed helper").unwrap();
+
+        let error = replace_windows_file(&missing_tmp, &destination).unwrap_err();
+
+        assert!(error.starts_with("helper 교체 실패:"));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"installed helper");
+        assert!(!old.exists());
+        std::fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn helper_replace_installs_when_no_previous_helper_exists() {
+        let destination = std::env::temp_dir().join(format!(
+            "toard-shim-background-first-install-test-{}.exe",
+            std::process::id()
+        ));
+        let tmp = destination.with_extension("download");
+        let old = destination.with_extension("exe.old");
+        let _ = std::fs::remove_file(&destination);
+        let _ = std::fs::remove_file(&old);
+        std::fs::write(&tmp, b"new helper").unwrap();
+
+        replace_windows_file(&tmp, &destination).unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new helper");
+        assert!(!tmp.exists());
+        assert!(!old.exists());
+        std::fs::remove_file(destination).unwrap();
+    }
+
+    #[test]
+    fn verify_asset_rejects_a_checksum_mismatch() {
+        let asset = "toard-shim-background-x86_64-pc-windows-msvc.exe";
+        let path =
+            std::env::temp_dir().join(format!("toard-shim-checksum-test-{}", std::process::id()));
+        std::fs::write(&path, b"downloaded helper").unwrap();
+        let sums = format!("deadbeef  {asset}\n");
+
+        let error = verify_asset(&path, asset, &sums).unwrap_err();
+
+        assert!(error.contains(&format!("asset={asset}")));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

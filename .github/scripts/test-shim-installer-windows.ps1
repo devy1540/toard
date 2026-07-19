@@ -65,6 +65,13 @@ try {
   )
   [IO.File]::WriteAllText((Join-Path $legacyToardDir 'state/content-since'), "123`n")
   [IO.File]::WriteAllText((Join-Path $legacyToardDir 'state/tool-since'), "456`n")
+  if (Test-Path $scheduledToardDir) {
+    throw "scheduled-task profile already contains toard state: $scheduledToardDir"
+  }
+  # Task Scheduler does not inherit this process's test-only USERPROFILE.
+  # Isolate its real profile before any registered task can start.
+  New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir | Out-Null
+  $scheduledHomeLinkCreated = $true
   $legacyTaskAction = New-ScheduledTaskAction -Execute $legacyShim -Argument 'collect --quiet'
   $legacyTaskTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddYears(1)
   Register-ScheduledTask -TaskName 'toard-collect' -Action $legacyTaskAction -Trigger $legacyTaskTrigger -Force | Out-Null
@@ -87,13 +94,6 @@ try {
 
   $binDir = Join-Path $homeDir '.toard/bin'
   $toardDir = Join-Path $homeDir '.toard'
-  if (Test-Path $scheduledToardDir) {
-    throw "scheduled-task profile already contains toard state: $scheduledToardDir"
-  }
-  # Task Scheduler creates a fresh user environment instead of inheriting this
-  # process's test-only USERPROFILE. Point that profile at the isolated E2E state.
-  New-Item -ItemType Junction -Path $scheduledToardDir -Target $toardDir | Out-Null
-  $scheduledHomeLinkCreated = $true
   if (Test-Path (Join-Path $toardDir 'credentials')) { throw 'legacy credentials must be migrated' }
   $targetDirs = @(Get-ChildItem -Directory (Join-Path $toardDir 'targets'))
   if ($targetDirs.Count -ne 2) { throw "expected two target directories, got $($targetDirs.Count)" }

@@ -257,6 +257,14 @@ test("Windows installer E2E migrates an existing legacy scheduled task", () => {
   );
   assert.match(e2e, /New-ScheduledTaskTrigger -Once -At \(Get-Date\)\.AddYears\(1\)/);
   assert.match(e2e, /Register-ScheduledTask -TaskName 'toard-collect'/);
+  const scheduledProfileJunction =
+    "New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir";
+  assert.ok(e2e.includes(scheduledProfileJunction));
+  assert.ok(
+    e2e.indexOf(scheduledProfileJunction) <
+      e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'"),
+    "the isolated scheduled-task profile must exist before the legacy task can run",
+  );
   assert.ok(
     e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'") < e2e.indexOf("& $installer"),
   );

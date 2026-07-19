@@ -7,6 +7,7 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
   type FinalizedUsageEvent,
+  type OrganizationDashboardQuery,
   type PricingRepairResolver,
 } from "@toard/core";
 import type { Pool, PoolClient } from "pg";
@@ -223,7 +224,7 @@ function sourceRouterFixture({
   coverageBuckets?: Date[];
   dirtyBucket?: Date | null;
   failRegistryOnce?: boolean;
-  jsonRows?: Array<Record<string, unknown>>;
+  jsonRows?: Array<Record<string, unknown>> | ((query: string) => Array<Record<string, unknown>>);
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
   readRollup?: boolean | "auto";
@@ -286,7 +287,7 @@ function sourceRouterFixture({
     command: async () => undefined,
     query: async (args: { query: string; query_params: Record<string, unknown> }) => {
       queries.push({ query: args.query, params: args.query_params });
-      return { json: async () => jsonRows };
+      return { json: async () => typeof jsonRows === "function" ? jsonRows(args.query) : jsonRows };
     },
   } as unknown as ClickHouseClient;
   return {
@@ -298,6 +299,528 @@ function sourceRouterFixture({
     pgQueries,
   };
 }
+
+type DashboardUsageBundleRow = {
+  result_kind: string;
+  day: string | null;
+  sessions: string;
+  active_users: string;
+  cost: string;
+  input: string;
+  output: string;
+  cache_read: string;
+  cache_creation: string;
+  priced_events: string;
+  unpriced_events: string;
+  legacy_events: string;
+};
+
+type DashboardBreakdownBundleRow = {
+  result_kind: string;
+  key: string;
+  cost: string;
+  tokens: string;
+  sessions: string;
+  priced_events: string;
+  unpriced_events: string;
+  legacy_events: string;
+};
+
+function organizationDashboardQuery(
+  overrides: Partial<Pick<OrganizationDashboardQuery, "includeTeamLeaderboard" | "leaderboardOrder">> = {},
+): OrganizationDashboardQuery {
+  return {
+    current: {
+      from: new Date("2026-07-01T00:00:00.000Z"),
+      to: new Date("2026-07-08T00:00:00.000Z"),
+      bucket: "day",
+      timezone: "UTC",
+    },
+    previous: {
+      from: new Date("2026-06-24T00:00:00.000Z"),
+      to: new Date("2026-07-01T00:00:00.000Z"),
+    },
+    includeTeamLeaderboard: true,
+    leaderboardOrder: "tokens",
+    ...overrides,
+  };
+}
+
+function dashboardUsageBundleRows(): DashboardUsageBundleRow[] {
+  return [
+    {
+      result_kind: "daily",
+      day: "2026-07-02",
+      sessions: "1",
+      active_users: "1",
+      cost: "0.4",
+      input: "4",
+      output: "2",
+      cache_read: "1",
+      cache_creation: "0",
+      priced_events: "1",
+      unpriced_events: "0",
+      legacy_events: "0",
+    },
+    {
+      result_kind: "current_overview",
+      day: null,
+      sessions: "2",
+      active_users: "1",
+      cost: "1",
+      input: "10",
+      output: "5",
+      cache_read: "2",
+      cache_creation: "1",
+      priced_events: "2",
+      unpriced_events: "3",
+      legacy_events: "4",
+    },
+    {
+      result_kind: "previous_overview",
+      day: null,
+      sessions: "1",
+      active_users: "1",
+      cost: "0.5",
+      input: "5",
+      output: "2",
+      cache_read: "0",
+      cache_creation: "0",
+      priced_events: "1",
+      unpriced_events: "0",
+      legacy_events: "1",
+    },
+    {
+      result_kind: "daily",
+      day: "2026-07-01",
+      sessions: "1",
+      active_users: "1",
+      cost: "0.6",
+      input: "6",
+      output: "3",
+      cache_read: "1",
+      cache_creation: "1",
+      priced_events: "1",
+      unpriced_events: "3",
+      legacy_events: "4",
+    },
+  ];
+}
+
+function dashboardBreakdownBundleRows(includeTeam = true): DashboardBreakdownBundleRow[] {
+  return [
+    {
+      result_kind: "user_leader",
+      key: "user-1",
+      cost: "1",
+      tokens: "18",
+      sessions: "2",
+      priced_events: "2",
+      unpriced_events: "0",
+      legacy_events: "0",
+    },
+    {
+      result_kind: "user_leader",
+      key: "user-without-label",
+      cost: "0.25",
+      tokens: "9",
+      sessions: "1",
+      priced_events: "0",
+      unpriced_events: "1",
+      legacy_events: "1",
+    },
+    ...(includeTeam ? [{
+      result_kind: "team_leader",
+      key: "team-1",
+      cost: "1",
+      tokens: "18",
+      sessions: "2",
+      priced_events: "2",
+      unpriced_events: "0",
+      legacy_events: "0",
+    }] : []),
+    {
+      result_kind: "provider",
+      key: "codex",
+      cost: "1",
+      tokens: "18",
+      sessions: "2",
+      priced_events: "1",
+      unpriced_events: "1",
+      legacy_events: "0",
+    },
+  ];
+}
+
+function dashboardBundleRows(query: string, includeTeam = true): Array<Record<string, unknown>> {
+  if (query.includes("organization-dashboard-usage")) return dashboardUsageBundleRows();
+  if (query.includes("organization-dashboard-breakdown")) return dashboardBreakdownBundleRows(includeTeam);
+  return [];
+}
+
+function dashboardFixture(options: {
+  usageRows?: DashboardUsageBundleRow[];
+  breakdownRows?: DashboardBreakdownBundleRow[];
+} = {}) {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const operations: string[] = [];
+  const usageRows = options.usageRows ?? dashboardUsageBundleRows();
+  const breakdownRows = options.breakdownRows ?? dashboardBreakdownBundleRows();
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      const rows = args.query.includes("organization-dashboard-usage") ? usageRows : breakdownRows;
+      return { json: async () => rows };
+    },
+  } as unknown as ClickHouseClient;
+  const pg = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push({ sql, params });
+      if (sql.includes("FROM users")) {
+        return { rows: [{ id: "user-1", label: "User 1" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM teams")) {
+        return { rows: [{ id: "team-1", label: "Team 1" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as Pool;
+  const operationRunner = {
+    run: async <T>(operation: string, action: () => Promise<T>): Promise<T> => {
+      operations.push(operation);
+      return action();
+    },
+  };
+  return {
+    storage: new ClickHouseStorage(ch, pg, {
+      readRollup: false,
+      read15mV2Rollup: false,
+      operationRunner,
+    }),
+    operations,
+    pgQueries,
+    queries,
+  };
+}
+
+test("ClickHouse 조직 dashboard는 두 JSON read로 기존 공개 결과를 조립한다", async () => {
+  const fixture = dashboardFixture();
+
+  const result = await fixture.storage.getOrganizationDashboard(organizationDashboardQuery());
+
+  assert.equal(fixture.queries.length, 2);
+  assert.equal(
+    fixture.queries.filter(({ query }) => query.includes("organization-dashboard-usage")).length,
+    1,
+  );
+  assert.equal(
+    fixture.queries.filter(({ query }) => query.includes("organization-dashboard-breakdown")).length,
+    1,
+  );
+  assert.deepEqual(
+    fixture.operations.filter((operation) => operation.startsWith("organization_dashboard_")),
+    ["organization_dashboard_usage", "organization_dashboard_breakdown"],
+  );
+  assert.deepEqual(result, {
+    overview: {
+      totalSessions: 2,
+      activeUsers: 1,
+      totalCostUsd: 1,
+      totalInputTokens: 10,
+      totalOutputTokens: 5,
+      totalCacheReadTokens: 2,
+      totalCacheCreationTokens: 1,
+      costCoverage: { pricedEvents: 2, unpricedEvents: 3, legacyEvents: 4 },
+    },
+    previousOverview: {
+      totalSessions: 1,
+      activeUsers: 1,
+      totalCostUsd: 0.5,
+      totalInputTokens: 5,
+      totalOutputTokens: 2,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 1 },
+    },
+    daily: [
+      {
+        day: "2026-07-01",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 0.6,
+        inputTokens: 6,
+        outputTokens: 3,
+        cacheReadTokens: 1,
+        cacheCreationTokens: 1,
+      },
+      {
+        day: "2026-07-02",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 0.4,
+        inputTokens: 4,
+        outputTokens: 2,
+        cacheReadTokens: 1,
+        cacheCreationTokens: 0,
+      },
+    ],
+    topUsers: [
+      {
+        key: "user-1",
+        label: "User 1",
+        costUsd: 1,
+        totalTokens: 18,
+        sessions: 2,
+        costCoverage: { pricedEvents: 2, unpricedEvents: 0, legacyEvents: 0 },
+      },
+      {
+        key: "user-without-label",
+        label: "user-without-label",
+        costUsd: 0.25,
+        totalTokens: 9,
+        sessions: 1,
+        costCoverage: { pricedEvents: 0, unpricedEvents: 1, legacyEvents: 1 },
+      },
+    ],
+    topTeams: [{
+      key: "team-1",
+      label: "Team 1",
+      costUsd: 1,
+      totalTokens: 18,
+      sessions: 2,
+      costCoverage: { pricedEvents: 2, unpricedEvents: 0, legacyEvents: 0 },
+    }],
+    providerBreakdown: [{
+      providerKey: "codex",
+      costUsd: 1,
+      totalTokens: 18,
+      sessions: 2,
+      costCoverage: { pricedEvents: 1, unpricedEvents: 1, legacyEvents: 0 },
+    }],
+  });
+});
+
+test("팀 순위를 숨기면 breakdown SQL branch와 팀 label query를 모두 생략한다", async () => {
+  const fixture = dashboardFixture({ breakdownRows: dashboardBreakdownBundleRows(false) });
+
+  const result = await fixture.storage.getOrganizationDashboard(organizationDashboardQuery({
+    includeTeamLeaderboard: false,
+  }));
+
+  const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+  assert.ok(breakdown);
+  assert.doesNotMatch(breakdown.query, /'team_leader' AS result_kind/);
+  assert.equal(fixture.pgQueries.some(({ sql }) => sql.includes("FROM teams")), false);
+  assert.deepEqual(result.topTeams, []);
+});
+
+test("user leaderboard order는 허용된 cost 또는 tokens column만 SQL에 사용한다", async () => {
+  for (const order of ["cost", "tokens"] as const) {
+    const fixture = dashboardFixture({ breakdownRows: dashboardBreakdownBundleRows(false) });
+    await fixture.storage.getOrganizationDashboard(organizationDashboardQuery({
+      includeTeamLeaderboard: false,
+      leaderboardOrder: order,
+    }));
+
+    const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+    assert.ok(breakdown);
+    assert.match(
+      breakdown.query,
+      new RegExp(`SELECT user_id AS key,[\\s\\S]*?GROUP BY key ORDER BY ${order} DESC LIMIT 100`),
+    );
+  }
+});
+
+test("unknown usage result kind는 fail closed한다", async () => {
+  const fixture = dashboardFixture({
+    usageRows: [
+      ...dashboardUsageBundleRows(),
+      { ...dashboardUsageBundleRows()[0]!, result_kind: "unexpected_usage" },
+    ],
+  });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Unknown organization dashboard usage row kind/,
+  );
+});
+
+test("unknown breakdown result kind는 fail closed한다", async () => {
+  const fixture = dashboardFixture({
+    breakdownRows: [
+      ...dashboardBreakdownBundleRows(),
+      { ...dashboardBreakdownBundleRows()[0]!, result_kind: "unexpected_breakdown" },
+    ],
+  });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Unknown organization dashboard breakdown row kind/,
+  );
+});
+
+test("필수 current 또는 previous overview row가 없으면 fail closed한다", async () => {
+  for (const missing of ["current_overview", "previous_overview"]) {
+    const fixture = dashboardFixture({
+      usageRows: dashboardUsageBundleRows().filter((row) => row.result_kind !== missing),
+    });
+    await assert.rejects(
+      fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+      /Organization dashboard overview row is missing/,
+      missing,
+    );
+  }
+});
+
+test("daily row의 필수 bucket이 없으면 fail closed한다", async () => {
+  const fixture = dashboardFixture({
+    usageRows: dashboardUsageBundleRows().map((row) => row.result_kind === "daily"
+      ? { ...row, day: null }
+      : row),
+  });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Organization dashboard daily row is missing its bucket/,
+  );
+});
+
+test("dashboard current와 previous source parameter namespace는 충돌하지 않는다", async () => {
+  const fixture = dashboardFixture({ breakdownRows: dashboardBreakdownBundleRows(false) });
+  await fixture.storage.getOrganizationDashboard(organizationDashboardQuery({
+    includeTeamLeaderboard: false,
+  }));
+
+  const usage = fixture.queries.find(({ query }) => query.includes("organization-dashboard-usage"));
+  const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+  assert.ok(usage);
+  assert.ok(breakdown);
+  assert.equal(usage.params.dashboard_previous_from, "2026-06-24 00:00:00.000");
+  assert.equal(usage.params.dashboard_previous_to, "2026-07-01 00:00:00.000");
+  assert.equal(usage.params.dashboard_current_from, "2026-07-01 00:00:00.000");
+  assert.equal(usage.params.dashboard_current_to, "2026-07-08 00:00:00.000");
+  assert.equal(usage.params.from, undefined);
+  assert.equal(usage.params.to, undefined);
+  assert.match(usage.query, /\{dashboard_previous_from:DateTime64\(3\)\}/);
+  assert.match(usage.query, /\{dashboard_current_from:DateTime64\(3\)\}/);
+  assert.deepEqual(breakdown.params, {
+    dashboard_current_from: "2026-07-01 00:00:00.000",
+    dashboard_current_to: "2026-07-08 00:00:00.000",
+  });
+});
+
+test("dashboard는 current timezone cache와 previous exact source를 같은 coverage schema로 묶는다", async () => {
+  const current = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const fixture = sourceRouterFixture({
+    watermark: current.to,
+    jobs: current.jobs,
+    read15mV2Rollup: false,
+    jsonRows: (query) => dashboardBundleRows(query, false),
+  });
+
+  await fixture.storage.getOrganizationDashboard({
+    current: { ...current, bucket: "day", timezone: "Asia/Seoul" },
+    previous: {
+      from: new Date("2026-06-01T00:00:00.000Z"),
+      to: new Date("2026-06-02T00:00:00.000Z"),
+    },
+    includeTeamLeaderboard: false,
+    leaderboardOrder: "tokens",
+  });
+
+  const usage = fixture.queries.find(({ query }) => query.includes("organization-dashboard-usage"));
+  const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+  assert.ok(usage);
+  assert.ok(breakdown);
+  assert.match(usage.query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(usage.query, /usage_events/);
+  assert.match(breakdown.query, /usage_daily_timezone_rollup FINAL/);
+  assert.doesNotMatch(breakdown.query, /usage_events/);
+  assert.match(usage.query, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost/);
+  assert.match(usage.query, /sumIf\(event_count, cost_status = 'legacy'\) AS legacy_events/);
+  assert.ok("dashboard_current_timezone" in usage.params);
+  assert.ok("dashboard_previous_from" in usage.params);
+});
+
+test("dashboard raw fallback도 두 source와 기존 coverage 식을 보존한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const fixture = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+    jsonRows: (query) => dashboardBundleRows(query, false),
+  });
+
+  await fixture.storage.getOrganizationDashboard({
+    current: { ...range, bucket: "day", timezone: "UTC" },
+    previous: {
+      from: new Date("2026-06-30T00:00:00.000Z"),
+      to: new Date("2026-07-01T00:00:00.000Z"),
+    },
+    includeTeamLeaderboard: false,
+    leaderboardOrder: "cost",
+  });
+
+  assert.equal(fixture.queries.length, 2);
+  for (const { query } of fixture.queries) {
+    assert.match(query, /usage_events/);
+    assert.doesNotMatch(query, /usage_(?:15m|hourly|daily)_.*rollup/);
+    assert.match(query, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost/);
+    assert.match(query, /sumIf\(event_count, cost_status = 'unpriced'\) AS unpriced_events/);
+  }
+});
+
+test("dashboard snapshot과 background usage read가 겹쳐도 JSON read 동시성은 4 이하이다", async () => {
+  let active = 0;
+  let maxActive = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (active > 6) {
+        const error = new Error("Too many simultaneous queries") as Error & { code: string };
+        error.code = "202";
+        throw error;
+      }
+      if (active === 3) release();
+      await gate;
+      active -= 1;
+      return { json: async () => dashboardBundleRows(query, false) };
+    },
+  } as unknown as ClickHouseClient;
+  const pg = {
+    query: async (sql: string) => sql.includes("FROM users")
+      ? { rows: [{ id: "user-1", label: "User 1" }], rowCount: 1 }
+      : { rows: [], rowCount: 0 },
+  } as unknown as Pool;
+  const runner = new ClickHouseOperationController({ maxConcurrent: 4, queueTimeoutMs: 1_000 });
+  const storage = new ClickHouseStorage(ch, pg, {
+    readRollup: false,
+    read15mV2Rollup: false,
+    operationRunner: runner,
+  });
+
+  await Promise.all([
+    storage.getOrganizationDashboard(organizationDashboardQuery({ includeTeamLeaderboard: false })),
+    storage.getOrganizationUtilizationUsage({
+      from: new Date("2026-07-01T00:00:00.000Z"),
+      to: new Date("2026-07-08T00:00:00.000Z"),
+      timezone: "UTC",
+    }),
+  ]);
+
+  assert.equal(queries.filter((query) => query.includes("organization-dashboard-")).length, 2);
+  assert.ok(maxActive <= 4, `observed max active ${maxActive}`);
+});
 
 test("legacy rollup flag는 deprecated alias이며 새 flag의 명시값이 우선하고 경고는 process당 한 번이다", () => {
   const warnings: string[] = [];

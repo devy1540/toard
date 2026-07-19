@@ -16,6 +16,8 @@ import type {
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
+  OrganizationDashboardData,
+  OrganizationDashboardQuery,
   OverviewStats,
   PeriodQuery,
   PricingRecoveryBatchResult,
@@ -248,6 +250,19 @@ interface AggRow extends CostCoverageRow {
   output?: string;
   cache_read?: string;
   cache_creation?: string;
+}
+
+interface OrganizationUsageBundleRow extends AggRow {
+  result_kind: string;
+  day: string | null;
+}
+
+interface OrganizationBreakdownBundleRow extends CostCoverageRow {
+  result_kind: string;
+  key: string;
+  cost?: string;
+  tokens?: string;
+  sessions?: string;
 }
 
 const costCoverage = (row: CostCoverageRow | undefined): UsageCostCoverage => ({
@@ -2564,6 +2579,197 @@ export class ClickHouseStorage implements StorageBackend {
 
   getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
     return this.utilizationUsageQuery(q);
+  }
+
+  async getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData> {
+    const timezone = safeTimezone(q.current.timezone, this.tz);
+    const [currentSourceRaw, previousSourceRaw] = await Promise.all([
+      this.resolveTimeseriesSource(q.current, q.current.bucket, timezone),
+      this.resolveTimeseriesSource(q.previous, undefined, this.tz),
+    ]);
+    const current = this.namespaceTimeseriesSource(currentSourceRaw, "dashboard_current");
+    const previous = this.namespaceTimeseriesSource(previousSourceRaw, "dashboard_previous");
+    const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                     cost_usd, cost_status, event_count`;
+    const tagged = `(
+      SELECT 'previous' AS period, ${columns} FROM ${previous.source}
+      UNION ALL
+      SELECT 'current' AS period, ${columns} FROM ${current.source}
+    )`;
+    const params = { ...previous.params, ...current.params };
+    const bucketExpr = this.bucketExpr(q.current.bucket, "ts", timezone);
+    const orderColumn = q.leaderboardOrder === "tokens" ? "tokens" : "cost";
+
+    const usageSql = `WITH '/* organization-dashboard-usage */' AS query_tag,
+tagged AS ${tagged}
+SELECT 'current_overview' AS result_kind, CAST(NULL AS Nullable(String)) AS day,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       uniqExactIf(user_id, user_id != '') AS active_users,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens) AS input, sum(output_tokens) AS output,
+       sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM tagged WHERE period = 'current'
+UNION ALL
+SELECT 'previous_overview' AS result_kind, CAST(NULL AS Nullable(String)) AS day,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       uniqExactIf(user_id, user_id != '') AS active_users,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens) AS input, sum(output_tokens) AS output,
+       sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM tagged WHERE period = 'previous'
+UNION ALL
+SELECT 'daily' AS result_kind, CAST(${bucketExpr} AS Nullable(String)) AS day,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       uniqExactIf(user_id, user_id != '') AS active_users,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens) AS input, sum(output_tokens) AS output,
+       sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM tagged WHERE period = 'current'
+GROUP BY day ORDER BY result_kind, day`;
+
+    const teamBranch = q.includeTeamLeaderboard ? `
+UNION ALL
+SELECT 'team_leader' AS result_kind, key, cost, tokens, sessions,
+       priced_events, unpriced_events, legacy_events
+FROM (
+  SELECT team_id AS key,
+         sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+         sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+         uniqExactIf(session_id, session_id != '') AS sessions,
+         sumIf(event_count, cost_status = 'priced') AS priced_events,
+         sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+         sumIf(event_count, cost_status = 'legacy') AS legacy_events
+  FROM ${current.source} WHERE team_id != ''
+  GROUP BY key ORDER BY cost DESC LIMIT 100
+)` : "";
+
+    const breakdownSql = `WITH '/* organization-dashboard-breakdown */' AS query_tag
+SELECT 'user_leader' AS result_kind, key, cost, tokens, sessions,
+       priced_events, unpriced_events, legacy_events
+FROM (
+  SELECT user_id AS key,
+         sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+         sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+         uniqExactIf(session_id, session_id != '') AS sessions,
+         sumIf(event_count, cost_status = 'priced') AS priced_events,
+         sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+         sumIf(event_count, cost_status = 'legacy') AS legacy_events
+  FROM ${current.source} WHERE user_id != ''
+  GROUP BY key ORDER BY ${orderColumn} DESC LIMIT 100
+)
+${teamBranch}
+UNION ALL
+SELECT 'provider' AS result_kind, provider_key AS key,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM ${current.source}
+GROUP BY provider_key ORDER BY tokens DESC`;
+
+    const [usageRows, breakdownRows] = await Promise.all([
+      this.queryJson<OrganizationUsageBundleRow>(
+        usageSql,
+        params,
+        undefined,
+        "organization_dashboard_usage",
+      ),
+      this.queryJson<OrganizationBreakdownBundleRow>(
+        breakdownSql,
+        current.params,
+        undefined,
+        "organization_dashboard_breakdown",
+      ),
+    ]);
+
+    const usageKinds = new Set(["current_overview", "previous_overview", "daily"]);
+    if (usageRows.some((row) => !usageKinds.has(row.result_kind))) {
+      throw new Error("Unknown organization dashboard usage row kind");
+    }
+    const currentRow = usageRows.find((row) => row.result_kind === "current_overview");
+    const previousRow = usageRows.find((row) => row.result_kind === "previous_overview");
+    if (!currentRow || !previousRow) {
+      throw new Error("Organization dashboard overview row is missing");
+    }
+    if (usageRows.some((row) => row.result_kind === "daily" && row.day == null)) {
+      throw new Error("Organization dashboard daily row is missing its bucket");
+    }
+
+    const toOverview = (row: OrganizationUsageBundleRow): OverviewStats => ({
+      totalSessions: n(row.sessions),
+      activeUsers: n(row.active_users),
+      totalCostUsd: n(row.cost),
+      totalInputTokens: n(row.input),
+      totalOutputTokens: n(row.output),
+      totalCacheReadTokens: n(row.cache_read),
+      totalCacheCreationTokens: n(row.cache_creation),
+      costCoverage: costCoverage(row),
+    });
+    const daily = usageRows
+      .filter((row) => row.result_kind === "daily")
+      .map((row) => ({
+        day: row.day!,
+        sessions: n(row.sessions),
+        activeUsers: n(row.active_users),
+        costUsd: n(row.cost),
+        inputTokens: n(row.input),
+        outputTokens: n(row.output),
+        cacheReadTokens: n(row.cache_read),
+        cacheCreationTokens: n(row.cache_creation),
+      }))
+      .sort((a, b) => a.day.localeCompare(b.day));
+
+    const breakdownKinds = new Set(["user_leader", "team_leader", "provider"]);
+    if (breakdownRows.some((row) => !breakdownKinds.has(row.result_kind))) {
+      throw new Error("Unknown organization dashboard breakdown row kind");
+    }
+    const userRows = breakdownRows.filter((row) => row.result_kind === "user_leader");
+    const teamRows = breakdownRows.filter((row) => row.result_kind === "team_leader");
+    const providerRows = breakdownRows.filter((row) => row.result_kind === "provider");
+    const [userLabels, teamLabels] = await Promise.all([
+      this.labelMap("user", userRows.map((row) => row.key)),
+      q.includeTeamLeaderboard
+        ? this.labelMap("team", teamRows.map((row) => row.key))
+        : Promise.resolve(new Map<string, string>()),
+    ]);
+    const toLeader = (
+      row: OrganizationBreakdownBundleRow,
+      labels: Map<string, string>,
+    ): LeaderRow => ({
+      key: row.key,
+      label: labels.get(row.key) ?? row.key,
+      costUsd: n(row.cost),
+      totalTokens: n(row.tokens),
+      sessions: n(row.sessions),
+      costCoverage: costCoverage(row),
+    });
+
+    return {
+      overview: toOverview(currentRow),
+      previousOverview: toOverview(previousRow),
+      daily,
+      topUsers: userRows.map((row) => toLeader(row, userLabels)),
+      topTeams: teamRows.map((row) => toLeader(row, teamLabels)),
+      providerBreakdown: providerRows.map((row) => ({
+        providerKey: row.key,
+        costUsd: n(row.cost),
+        totalTokens: n(row.tokens),
+        sessions: n(row.sessions),
+        costCoverage: costCoverage(row),
+      })),
+    };
   }
 
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {

@@ -373,6 +373,8 @@ export interface StorageBackend {
   getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
   /** AI 활용 지수 — 익명 조직 집계를 만들기 위한 사용자별 일별 사용량 feature. */
   getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
+  /** 조직 dashboard의 현재·비교 기간과 breakdown을 일관된 snapshot으로 읽는다. */
+  getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */

@@ -7,15 +7,15 @@ pub const DEFAULT_ENDPOINT: &str = "http://localhost:3000/api";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContentCollectionMode {
     Off,
-    ServerV1,
-    E2eeV1,
+    ServerManaged,
+    LegacyE2eeV1,
 }
 
 impl ContentCollectionMode {
     pub fn parse(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "e2ee_v1" => Self::E2eeV1,
-            "1" | "true" | "on" | "yes" | "server_v1" => Self::ServerV1,
+            "e2ee_v1" => Self::LegacyE2eeV1,
+            "1" | "true" | "on" | "yes" | "server_v1" | "managed_v1" => Self::ServerManaged,
             _ => Self::Off,
         }
     }
@@ -183,8 +183,8 @@ pub fn serialize(credentials: &Credentials) -> String {
     output.push_str("collect_content=");
     output.push_str(match credentials.collect_content {
         ContentCollectionMode::Off => "off",
-        ContentCollectionMode::ServerV1 => "server_v1",
-        ContentCollectionMode::E2eeV1 => "e2ee_v1",
+        ContentCollectionMode::ServerManaged => "server_v1",
+        ContentCollectionMode::LegacyE2eeV1 => "e2ee_v1",
     });
     output.push('\n');
     if let Some(since) = credentials.collect_content_since.as_deref() {
@@ -287,19 +287,31 @@ mod tests {
     fn parse_collect_content_flag() {
         assert_eq!(
             parse("agent_key=t\ncollect_content=true\n").collect_content,
-            ContentCollectionMode::ServerV1
+            ContentCollectionMode::ServerManaged
         );
         assert_eq!(
             parse("collect_content=1\n").collect_content,
-            ContentCollectionMode::ServerV1
+            ContentCollectionMode::ServerManaged
         );
         assert_eq!(
             parse("collect_content=on\n").collect_content,
-            ContentCollectionMode::ServerV1
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            parse("collect_content=yes\n").collect_content,
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            parse("collect_content=server_v1\n").collect_content,
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            parse("collect_content=managed_v1\n").collect_content,
+            ContentCollectionMode::ServerManaged
         );
         assert_eq!(
             parse("collect_content=e2ee_v1\n").collect_content,
-            ContentCollectionMode::E2eeV1
+            ContentCollectionMode::LegacyE2eeV1
         );
         assert_eq!(
             parse("agent_key=t\n").collect_content,
@@ -361,7 +373,10 @@ mod tests {
             personal.endpoint.as_deref(),
             Some("https://personal.example/api")
         );
-        assert_eq!(personal.collect_content, ContentCollectionMode::ServerV1);
+        assert_eq!(
+            personal.collect_content,
+            ContentCollectionMode::ServerManaged
+        );
         assert!(!personal.collect_tools);
     }
 
@@ -370,7 +385,7 @@ mod tests {
         let original = Credentials {
             token: Some("secret".into()),
             endpoint: Some("https://toard.example/api".into()),
-            collect_content: ContentCollectionMode::E2eeV1,
+            collect_content: ContentCollectionMode::LegacyE2eeV1,
             collect_content_since: Some("all".into()),
             collect_tools: false,
             content_owner_id: Some("owner-1".into()),

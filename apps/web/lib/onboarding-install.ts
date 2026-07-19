@@ -45,7 +45,7 @@ function quotePosix(value: string): string {
 }
 
 export function buildInstallCommand(input: InstallCommandInput): string {
-  const collect = input.collectContent ? "e2ee_v1" : "0";
+  const collect = input.collectContent ? "1" : "0";
   const baseUrl = trimBaseUrl(input.baseUrl);
 
   if (input.platform === "windows") {

@@ -82,28 +82,7 @@ export function OnboardingWizard({
     };
   }, [state.step, state.tokenId]);
 
-  useEffect(() => {
-    if (state.step !== "recovery") return;
-    let active = true;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const poll = async () => {
-      try {
-        const response = await fetch("/api/content/status", { cache: "no-store" });
-        const status = response.ok ? await response.json() as { state?: string } : null;
-        if (active && status?.state === "active") {
-          dispatch({ type: "recovery-confirmed" });
-          return;
-        }
-      } catch {
-        // setup CLI가 끝날 때까지 같은 화면에서 다시 확인한다.
-      }
-      if (active) timer = setTimeout(poll, POLL_MS);
-    };
-    void poll();
-    return () => { active = false; if (timer) clearTimeout(timer); };
-  }, [state.step]);
-
-  const totalSteps = collectContent ? 4 : 3;
+  const totalSteps = 3;
 
   const installCommand = useMemo(() => {
     if (!state.platform || !state.token) return "";
@@ -165,10 +144,7 @@ export function OnboardingWizard({
             {t("wizard.introPrivacyMetadata")}
           </p>
         )}
-        <Button className="w-full sm:w-auto" onClick={() => {
-          dispatch({ type: "set-e2ee", enabled: collectContent });
-          dispatch({ type: "start" });
-        }}>
+        <Button className="w-full sm:w-auto" onClick={() => dispatch({ type: "start" })}>
           {t("wizard.start")}
         </Button>
       </div>
@@ -234,22 +210,6 @@ export function OnboardingWizard({
         <p className="text-muted-foreground text-sm">{t("wizard.verifyDescription")}</p>
         <div className="bg-muted/50 rounded-lg p-5 text-center text-sm" role="status">
           {t("wizard.waiting")}
-        </div>
-      </WizardStep>
-    );
-  }
-
-  if (state.step === "recovery") {
-    return (
-      <WizardStep current={4} total={4} label={t("wizard.progress", { current: 4, total: 4 })}>
-        <h2 className="text-lg font-semibold">{t("wizard.recoveryTitle")}</h2>
-        <p className="text-muted-foreground text-sm">{t("wizard.recoveryDescription")}</p>
-        <pre className="bg-muted max-w-full overflow-x-auto rounded-lg p-3 text-left text-xs">
-          <code>toard-shim e2ee setup</code>
-        </pre>
-        <p className="text-muted-foreground text-xs">{t("wizard.recoveryPrivacy")}</p>
-        <div className="bg-muted/50 rounded-lg p-5 text-center text-sm" role="status">
-          {t("wizard.recoveryWaiting")}
         </div>
       </WizardStep>
     );

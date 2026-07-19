@@ -556,15 +556,17 @@ test("organization page uses anonymous tool summary without drilldown", () => {
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
 });
 
-test("history security exposes legacy migration counts and bilingual copy", () => {
+test("history security uses managed status and keeps legacy E2EE conditional", () => {
   const panel = source("app/(dashboard)/settings/history-security-panel.tsx");
   const ko = JSON.parse(source("messages/ko/settings.json"));
   const en = JSON.parse(source("messages/en/settings.json"));
-  assert.match(panel, /encryption_scheme/);
-  assert.match(panel, /legacy_records/);
-  assert.match(panel, /octet_length\(ciphertext\)/);
+  assert.match(panel, /getUserHistorySecurityStatus/);
+  assert.match(panel, /status\?\.legacy/);
+  assert.doesNotMatch(panel, /E2EE_MAX_CIPHERTEXT_BYTES|withUserContext|encryption_scheme/);
   for (const messages of [ko, en]) {
-    assert.equal(typeof messages.historySecurity.legacyProtecting, "string");
+    assert.equal(typeof messages.historySecurity.managedEncryption, "string");
+    assert.equal(typeof messages.historySecurity.privacyBoundary, "string");
+    assert.equal(typeof messages.historySecurity.legacyMigrating, "string");
     assert.equal(typeof messages.historySecurity.legacyComplete, "string");
     assert.equal(typeof messages.historySecurity.legacyBlocked, "string");
   }

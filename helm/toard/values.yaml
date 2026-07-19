@@ -12,6 +12,10 @@ image:
     repository: toard-migrate # docker build --target migrator
     tag: latest
     pullPolicy: IfNotPresent
+  contentAdmin:
+    repository: toard-content-admin # docker build --target content-admin
+    tag: latest
+    pullPolicy: IfNotPresent
 imagePullSecrets: []
 
 replicaCount: 2
@@ -61,10 +65,52 @@ postgres:
     limits:
       memory: 1Gi
 
-# 마이그레이션 — pre-install/pre-upgrade 훅으로 앱 롤아웃 전에 완료 보장.
+# 마이그레이션 — 결정적 completion ID별 일반 Job. migrate+seed+exact marker 전에는 새 app이 not-ready다.
 migrate:
   enabled: true
+  releaseId: "" # GitOps는 release마다 바뀌는 stable Git SHA/semver를 반드시 지정. 빈 값은 Helm revision fallback.
   seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
+  backoffLimit: 4
+  ttlSecondsAfterFinished: 86400
+  # 앱이 toard_app(SELECT-only marker)일 때 migration owner DATABASE_URL을 별도 Secret key로 지정한다.
+  databaseSecret:
+    name: "" # 비우면 secrets.existingSecret/chart-managed Secret과 DATABASE_URL key 사용
+    key: DATABASE_URL
+  serviceAccount:
+    create: true
+    name: ""
+
+# 앱과 opt-in content-admin Job이 사용하는 Kubernetes ServiceAccount.
+# IRSA/GCP Workload Identity/Azure Workload Identity annotation은 여기에 둔다.
+# migration/seed는 별도 non-KMS ServiceAccount를 사용한다.
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  podLabels: {}
+
+# 본문 암호화 provider의 비민감 설정과 secret 파일 경로만 둔다.
+# token/key material 자체를 values에 넣지 않는다.
+encryption:
+  provider: "" # local | aws-kms | gcp-kms | azure-key-vault | vault-transit | openbao-transit
+  cacheTtlSeconds: 1800
+  active: {}
+  migration: {} # provider와 provider별 설정; 비어 있으면 migration provider 없음
+  workloadIdentity:
+    aws: {}
+    gcp: {}
+    azure: {}
+  cost:
+    per10000Usd: ""
+    monthlyKeyUsd: ""
+  # 기존 Kubernetes Secret의 key를 read-only 파일로 투영한다.
+  # item: {name, secretName, mountPath, items: [{key, path}]}
+  secretMounts: []
+
+# 명시적으로 enable할 때만 생성되는 one-shot Job. Helm hook이 아니다.
+contentAdmin:
+  enabled: false
+  command: ["encryption", "status"]
 
 service:
   type: ClusterIP

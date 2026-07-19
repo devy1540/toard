@@ -327,7 +327,7 @@ impl TargetStore {
                     "stored target identity is invalid",
                 ));
             }
-            credentials.collect_content = credentials::ContentCollectionMode::E2eeV1;
+            credentials.collect_content = credentials::ContentCollectionMode::LegacyE2eeV1;
             credentials.content_owner_id = Some(owner_id.to_string());
             credentials.content_key_version = Some(key_version);
             credentials.content_device_id = Some(device_id.to_string());
@@ -574,8 +574,9 @@ fn merge_unmentioned_legacy_fields(
     incoming: &mut Credentials,
     existing: &Credentials,
 ) {
-    let preserve_e2ee = existing.collect_content == credentials::ContentCollectionMode::E2eeV1
-        && incoming.collect_content != credentials::ContentCollectionMode::E2eeV1;
+    let preserve_e2ee = existing.collect_content
+        == credentials::ContentCollectionMode::LegacyE2eeV1
+        && incoming.collect_content != credentials::ContentCollectionMode::LegacyE2eeV1;
     if !has_key(source, "collect_content") {
         incoming.collect_content = existing.collect_content;
     }
@@ -595,7 +596,7 @@ fn merge_unmentioned_legacy_fields(
         incoming.content_device_id = existing.content_device_id.clone();
     }
     if preserve_e2ee {
-        incoming.collect_content = credentials::ContentCollectionMode::E2eeV1;
+        incoming.collect_content = credentials::ContentCollectionMode::LegacyE2eeV1;
         incoming.collect_content_since = existing.collect_content_since.clone();
         incoming.content_owner_id = existing.content_owner_id.clone();
         incoming.content_key_version = existing.content_key_version;
@@ -836,7 +837,7 @@ mod tests {
         let temp = TempRoot::new("enable-since");
         let store = TargetStore::from_root(temp.path().join(".toard"));
         let mut enabled = credentials("company", "https://company.example/api");
-        enabled.collect_content = crate::credentials::ContentCollectionMode::ServerV1;
+        enabled.collect_content = crate::credentials::ContentCollectionMode::ServerManaged;
 
         let target = store.upsert(enabled.clone()).unwrap();
         let content_since = fs::read_to_string(target.state_dir.join("content-since")).unwrap();
@@ -862,7 +863,7 @@ mod tests {
         let temp = TempRoot::new("enable-since-ms");
         let state = temp.path().join("state");
         let mut enabled = credentials("company", "https://company.example/api");
-        enabled.collect_content = crate::credentials::ContentCollectionMode::ServerV1;
+        enabled.collect_content = crate::credentials::ContentCollectionMode::ServerManaged;
 
         initialize_enabled_since_at(&state, &enabled, 1_700_000_000_987).unwrap();
 
@@ -1027,7 +1028,7 @@ mod tests {
         let root = temp.path().join(".toard");
         let store = TargetStore::from_root(root.clone());
         let mut active = credentials("company-old", "https://company.example/api");
-        active.collect_content = crate::credentials::ContentCollectionMode::E2eeV1;
+        active.collect_content = crate::credentials::ContentCollectionMode::LegacyE2eeV1;
         active.collect_content_since = Some("all".into());
         active.collect_tools = false;
         active.content_owner_id = Some("owner-1".into());
@@ -1045,7 +1046,7 @@ mod tests {
         assert_eq!(targets[0].credentials.token.as_deref(), Some("company-new"));
         assert_eq!(
             targets[0].credentials.collect_content,
-            crate::credentials::ContentCollectionMode::E2eeV1
+            crate::credentials::ContentCollectionMode::LegacyE2eeV1
         );
         assert_eq!(
             targets[0].credentials.collect_content_since.as_deref(),

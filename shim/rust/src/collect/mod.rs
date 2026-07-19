@@ -81,7 +81,8 @@ pub struct RawUsage {
 }
 
 /// 어댑터가 로그에서 뽑는 원시 본문 레코드 (프롬프트/응답 텍스트).
-/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집된다. e2ee_v1에서는 전송 전 로컬 암호화한다.
+/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집된다. 신규 연결은 서버 관리형 암호화를
+/// 사용하고, 기존 e2ee_v1 자격 증명은 전송 전 로컬 암호화를 계속 사용한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawContent {
     pub ts_ms: i64,
@@ -412,17 +413,41 @@ fn reconciliation_keys(
 /// env(TOARD_SHIM_COLLECT_CONTENT)가 명시되면 그 값이 우선하고, 미설정이면
 /// legacy/env 호환 credentials의 `collect_content` 플래그를 따른다.
 /// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
-pub fn content_enabled() -> bool {
+#[cfg(test)]
+fn content_enabled() -> bool {
     content_collection_mode().is_enabled()
 }
 
-pub fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
-    use crate::credentials::ContentCollectionMode;
+#[cfg(test)]
+fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
     let stored = read_credentials().collect_content;
-    match std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref() {
-        Some("1" | "true" | "on" | "yes") if stored == ContentCollectionMode::E2eeV1 => stored,
-        Some(value) => ContentCollectionMode::parse(value),
-        _ => stored,
+    let configured = std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok();
+    resolve_content_collection_mode(stored, configured.as_deref())
+}
+
+#[cfg(test)]
+fn resolve_content_collection_mode(
+    stored: crate::credentials::ContentCollectionMode,
+    configured: Option<&str>,
+) -> crate::credentials::ContentCollectionMode {
+    use crate::credentials::ContentCollectionMode;
+    let Some(value) = configured else {
+        return stored;
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    if stored == ContentCollectionMode::LegacyE2eeV1
+        && matches!(normalized.as_str(), "1" | "true" | "on" | "yes")
+    {
+        return stored;
+    }
+    ContentCollectionMode::parse(&normalized)
+}
+
+fn content_collection_label(mode: crate::credentials::ContentCollectionMode) -> &'static str {
+    match mode {
+        crate::credentials::ContentCollectionMode::ServerManaged => "managed_v1",
+        crate::credentials::ContentCollectionMode::LegacyE2eeV1 => "legacy-e2ee-v1",
+        crate::credentials::ContentCollectionMode::Off => "off",
     }
 }
 
@@ -1324,6 +1349,7 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         global_state,
         diagnostics,
     } = context;
+    let content_mode = target_content_mode(credentials);
     let key = adapter.key();
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
     let secure = endpoint_is_secure(endpoint);
@@ -1383,11 +1409,7 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
     }
 
     if *dry_run {
-        let scheme = match credentials.collect_content {
-            crate::credentials::ContentCollectionMode::E2eeV1 => "e2ee_v1",
-            crate::credentials::ContentCollectionMode::ServerV1 => "server_v1",
-            crate::credentials::ContentCollectionMode::Off => "off",
-        };
+        let scheme = content_collection_label(content_mode);
         println!(
             "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 · {scheme} (since {}) [dry-run]",
             files.len(),
@@ -1412,8 +1434,8 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         }
     } else {
         use crate::content_keys::{ContentKeyStore, SystemContentKeyStore};
-        let e2ee_material = match credentials.collect_content {
-            crate::credentials::ContentCollectionMode::E2eeV1 => {
+        let e2ee_material = match content_mode {
+            crate::credentials::ContentCollectionMode::LegacyE2eeV1 => {
                 let Some(owner_id) = credentials.content_owner_id.as_deref() else {
                     diagnostics.fail(
                         crate::delivery::DeliveryKind::ServerError,
@@ -1442,7 +1464,7 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
                 };
                 Some((owner_id, key_version, uck))
             }
-            crate::credentials::ContentCollectionMode::ServerV1 => None,
+            crate::credentials::ContentCollectionMode::ServerManaged => None,
             crate::credentials::ContentCollectionMode::Off => return false,
         };
         let token = token.expect("dry_run 아니면 토큰 존재");
@@ -1934,7 +1956,7 @@ mod tests {
         let credentials = |token: &str, endpoint: &str| crate::credentials::Credentials {
             token: Some(token.into()),
             endpoint: Some(endpoint.into()),
-            collect_content: crate::credentials::ContentCollectionMode::ServerV1,
+            collect_content: crate::credentials::ContentCollectionMode::ServerManaged,
             collect_content_since: Some("all".into()),
             collect_tools: false,
             ..crate::credentials::Credentials::default()
@@ -2041,7 +2063,7 @@ mod tests {
             .upsert(crate::credentials::Credentials {
                 token: Some("personal-token".into()),
                 endpoint: Some("https://personal.example/api".into()),
-                collect_content: crate::credentials::ContentCollectionMode::ServerV1,
+                collect_content: crate::credentials::ContentCollectionMode::ServerManaged,
                 collect_content_since: Some("all".into()),
                 collect_tools: false,
                 ..crate::credentials::Credentials::default()
@@ -2209,7 +2231,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 1);
         assert_eq!(value["dedupKeys"].as_array().unwrap().len(), 2);
-        assert!(body.find("session").is_none());
+        assert!(!body.contains("session"));
     }
 
     #[test]
@@ -2377,6 +2399,46 @@ mod tests {
         assert!(value[0]["ciphertext"]
             .as_str()
             .is_some_and(|value| !value.is_empty()));
+    }
+
+    #[test]
+    fn content_collection_labels_distinguish_managed_and_legacy_e2ee() {
+        use crate::credentials::ContentCollectionMode;
+
+        assert_eq!(
+            content_collection_label(ContentCollectionMode::ServerManaged),
+            "managed_v1"
+        );
+        assert_eq!(
+            content_collection_label(ContentCollectionMode::LegacyE2eeV1),
+            "legacy-e2ee-v1"
+        );
+        assert_eq!(content_collection_label(ContentCollectionMode::Off), "off");
+    }
+
+    #[test]
+    fn implicit_enable_preserves_existing_legacy_e2ee_but_explicit_managed_can_switch() {
+        use crate::credentials::ContentCollectionMode;
+
+        assert_eq!(
+            resolve_content_collection_mode(ContentCollectionMode::LegacyE2eeV1, Some("TRUE")),
+            ContentCollectionMode::LegacyE2eeV1
+        );
+        assert_eq!(
+            resolve_content_collection_mode(
+                ContentCollectionMode::LegacyE2eeV1,
+                Some("managed_v1")
+            ),
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            resolve_content_collection_mode(ContentCollectionMode::LegacyE2eeV1, Some("off")),
+            ContentCollectionMode::Off
+        );
+        assert_eq!(
+            resolve_content_collection_mode(ContentCollectionMode::Off, Some("yes")),
+            ContentCollectionMode::ServerManaged
+        );
     }
 
     #[test]

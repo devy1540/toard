@@ -182,7 +182,7 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
     }
     let expected = parse_sha_entry(&String::from_utf8_lossy(&sums_out.stdout), &asset)
         .ok_or_else(|| cleanup_err(format!("SHA256SUMS 에 {asset} 항목 없음")))?;
-    let actual = sha256_file(&tmp).map_err(&cleanup_err)?;
+    let actual = sha256_file(&tmp).map_err(cleanup_err)?;
     if expected != actual {
         return Err(cleanup_err(format!(
             "체크섬 불일치 — 교체 중단 (expected={expected} got={actual})"
@@ -190,7 +190,7 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
     }
 
     crate::fsx::set_mode(&tmp, 0o755).map_err(|e| cleanup_err(format!("권한 설정 실패: {e}")))?;
-    replace_exe(&tmp, &exe).map_err(&cleanup_err)?;
+    replace_exe(&tmp, &exe).map_err(cleanup_err)?;
     #[cfg(windows)]
     sync_sibling_copies(&exe);
     Ok(exe.display().to_string())

@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
-import { ArrowLeft, Inbox, Sparkles, Terminal } from "lucide-react";
+import { ArrowLeft, Inbox, Lock, Sparkles, Terminal } from "lucide-react";
 import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
@@ -51,7 +51,30 @@ export async function SessionDetail({
   const fmtDay = (ts: Date): string =>
     new Intl.DateTimeFormat(locale, { timeZone: tz, dateStyle: "medium" }).format(ts);
 
-  const { session } = await getMyHistorySession(userId, sessionKey);
+  const {
+    enabled,
+    hasManagedContent,
+    hasLegacyContent,
+    session,
+  } = await getMyHistorySession(userId, sessionKey);
+  if (!enabled) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <Lock />
+          </EmptyMedia>
+          <EmptyTitle>{t("history.disabledTitle")}</EmptyTitle>
+          <EmptyDescription>{t("history.disabledDescription")}</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button asChild size="sm" variant="outline">
+            <Link href={backHref}>{t("history.backToList")}</Link>
+          </Button>
+        </EmptyContent>
+      </Empty>
+    );
+  }
   if (!session) {
     return (
       <Empty>
@@ -104,6 +127,12 @@ export async function SessionDetail({
 
   return (
     <div className="space-y-4">
+      <div className="text-muted-foreground space-y-1 text-xs">
+        <p>{t("history.privacyNote")}</p>
+        {hasManagedContent ? <p>{t("history.managedPrivacyNote")}</p> : null}
+        {hasLegacyContent ? <p>{t("history.legacyPrivacyNote")}</p> : null}
+      </div>
+
       <div>
         <Button asChild size="sm" variant="ghost" className="text-muted-foreground -ml-2">
           <Link href={backHref}>

@@ -5,6 +5,7 @@ import {
   parseLegacyBackupRetentionDays,
   type LegacyRetirementStateInput,
 } from "./e2ee-legacy-retirement";
+import { legacyContentKeyConfigured } from "./legacy-content-crypto";
 
 const now = new Date("2026-07-14T12:00:00.000Z");
 const zeroObservedAt = new Date("2026-07-01T00:00:00.000Z");
@@ -75,4 +76,28 @@ test("0건 최초 관측 전에는 관측 상태를 반환한다", () => {
   const result = deriveLegacyRetirementState(input({ zeroObservedAt: null }));
   assert.equal(result.state, "zero_observation_required");
   assert.equal(result.eligibleAt, null);
+});
+
+test("legacy retirement의 KEK 판단은 managed provider 설정과 독립적이다", () => {
+  const legacyKek = Buffer.alloc(32, 7).toString("base64");
+  assert.equal(legacyContentKeyConfigured({}), false);
+  assert.equal(
+    legacyContentKeyConfigured({
+      TOARD_KEY_ACTIVE_PROVIDER: "local",
+      TOARD_KEY_ACTIVE_LOCAL_KEK_FILE: "/run/secrets/toard-local-kek",
+    }),
+    false,
+  );
+  assert.equal(
+    legacyContentKeyConfigured({ TOARD_CONTENT_KEK_B64: legacyKek }),
+    true,
+  );
+  assert.equal(
+    legacyContentKeyConfigured({
+      TOARD_CONTENT_KEK_B64: legacyKek,
+      TOARD_KEY_ACTIVE_PROVIDER: "local",
+      TOARD_KEY_ACTIVE_LOCAL_KEK_FILE: "/run/secrets/toard-local-kek",
+    }),
+    true,
+  );
 });

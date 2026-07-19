@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
-import { contentCollectionEnabled } from "./content-crypto";
 import { getPool } from "./db";
+import { legacyContentKeyConfigured } from "./legacy-content-crypto";
 
 export type LegacyRetirementState =
   | "migrating"
@@ -118,7 +118,9 @@ function runtime(options: RetirementOptions) {
   return {
     now: options.now ?? new Date(),
     retentionDays: parseLegacyBackupRetentionDays(options.env ?? process.env),
-    kekConfigured: options.kekConfigured ?? contentCollectionEnabled(),
+    kekConfigured:
+      options.kekConfigured
+      ?? legacyContentKeyConfigured(options.env ?? process.env),
   };
 }
 

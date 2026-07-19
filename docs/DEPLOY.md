@@ -10,19 +10,27 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 
 ## 이미지
 
-멀티 타깃 `Dockerfile` — 두 이미지:
+멀티 타깃 `Dockerfile` — 운영 이미지 네 개:
 
 | 타깃 | 용도 | 실행 |
 |---|---|---|
 | `runner` | Next.js standalone 앱 | `node apps/web/server.js` |
 | `migrator` | 마이그레이션·시드 | `pnpm migrate` / `pnpm seed` |
+| `content-admin` | 암호화 상태·전환 one-shot 도구 | `encryption status` 등 |
+| `updater` | Compose 자가 업데이트 agent | `node packages/updater/src/server.mjs` |
 
-CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`·`ghcr.io/devy1540/toard-migrate`를 자동 게시한다(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
+CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`,
+`ghcr.io/devy1540/toard-migrate`, `ghcr.io/devy1540/toard-content-admin`,
+`ghcr.io/devy1540/toard-updater`를 자동 게시한다
+(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
 
 ```bash
 docker build --target runner   -t REG/toard:TAG .
 docker build --target migrator  -t REG/toard-migrate:TAG .
-docker push REG/toard:TAG && docker push REG/toard-migrate:TAG
+docker build --target content-admin -t REG/toard-content-admin:TAG .
+docker build --target updater -t REG/toard-updater:TAG .
+docker push REG/toard:TAG && docker push REG/toard-migrate:TAG \
+  && docker push REG/toard-content-admin:TAG && docker push REG/toard-updater:TAG
 ```
 
 헬스: `GET /api/health`(liveness, 무의존) · `GET /api/ready`(readiness, DB ping).
@@ -263,27 +271,71 @@ helm install toard ./helm/toard \
 - `postgres.enabled=false` + `secrets.databaseUrl=...` → 외부 DB.
 - `migrate.seedOnInstall=true` + `secrets.bootstrapAdmin.*` → 최초 설치 시 providers·admin 시드(post-install 훅).
 - `ingress.enabled=true --set ingress.host=toard.corp.com` → Ingress.
-- 업그레이드: `helm upgrade toard ./helm/toard ...` — 앱 initContainer 가 마이그레이션을 멱등 적용.
+- 일반 migration Job은 `migrate → baseline seed → completion marker` 순서로 실행된다. Job 이름, 앱 Pod
+  annotation, 앱/Job env, DB marker는 모두 동일한 64자리 release completion ID를 사용한다. 이 ID는
+  namespace/release, effective release ID, expected schema, migrator 이미지, DB Secret 이름/key 및 주요 Job
+  spec을 SHA-256으로 묶은 비밀이 아닌 배포 식별자다. 별도 Kubernetes Secret을 만들지 않는다.
+- Helm CLI에서 `migrate.releaseId=""`이면 `.Release.Revision`이 fallback 입력이다. Argo CD·Flux 같은 GitOps는
+  Helm revision이 실제 desired-state 변경과 일치하지 않을 수 있으므로 `migrate.releaseId`를 반드시 지정한다.
+  동일 desired state에는 동일 값을 유지하고, 새 배포마다 변경되는 안정적인 Git commit SHA 또는 semver를
+  사용한다. migrator에는 `latest` 같은 mutable tag(가변 태그)를 쓰지 말고 digest나 immutable tag를 쓴다.
+  같은 desired state의 migration을 force rerun(강제 재실행)하려면 `migrate.releaseId`를 새 값으로 바꾼다.
+- `/api/ready`는 새 파드의 deployment ID·completion ID·expected schema와 정확히 일치하는 DB marker가
+  생기기 전까지 503이다. 따라서 migrate/seed/marker 중 하나라도 실패하면 새 파드는 트래픽을 받지 않고,
+  `maxUnavailable=0`인 기존 파드는 자신의 과거 marker로 계속 ready다. 완료된 Job은 TTL 뒤 정리하지만
+  과거 DB marker는 보존한다. Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 쓴다.
+- 롤백은 이전 이미지와 이전 `migrate.releaseId`를 포함한 이전 desired state를 그대로 복원한다. 그러면 같은
+  completion ID와 보존된 과거 marker를 다시 사용한다. 단 DB migration은 forward-only이므로 이전 앱이
+  현재 스키마와 호환될 때만 안전하다. DB 스키마 자체를 자동 downgrade하지 않는다.
+- 앱 `DATABASE_URL`을 `toard_app`처럼 marker table SELECT-only 롤로 운영하면 migration/seed/marker Job에는
+  owner 연결을 별도 Secret으로 주입한다: `migrate.databaseSecret.name`과 `migrate.databaseSecret.key`.
+  비우면 호환성을 위해 앱과 같은 `DATABASE_URL`을 사용하므로 그 연결은 migration owner여야 한다.
 
 ## 본문 수집 활성화 (선택 — 프롬프트/응답 저장)
 
 기본은 usage(토큰·비용)만 수집한다. 프롬프트·응답 **본문**까지 저장하려면 아래 둘이 필요하고, 안 하면 기능은 완전히 비활성이다.
 
-**1) 앱 암호화 키(KEK).** 본문은 서버에서 봉투 암호화(at-rest)되어 저장된다 — DB 엔 암호문만 남는다.
-```sh
-TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)   # 앱 env 로 주입, DB 밖에 보관
-```
-미설정이면 `POST /api/v1/prompts` 가 503 → 수집 비활성. 키를 잃으면 기존 본문은 복호화 불가이므로 **백업 시 KEK 를 별도 보관**한다.
+**1) 서버 관리형 key provider.** 신규 본문은 설치 전체에서 선택한 KMS/Transit/local provider로 사용자별
+UCK를 감싼 `managed_v1`으로 저장한다. provider env, workload identity/secret file, Compose/Helm one-shot
+명령과 회전 절차는 [본문 암호화 운영 런북](content-encryption-runbook.md)을 따른다. `TOARD_CONTENT_KEK_B64`는
+잔여 `server_v1` 전환에만 사용하고 `serverRecords=0`과 백업 보존 확인 전 제거하지 않는다.
 
-**2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 단 **RLS 는 앱이 비-superuser 롤로 접속할 때만 강제**된다(superuser 는 우회). 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
+**2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 앱은 bootstrap으로 만든 exact `toard_app` 롤에 직접 로그인해야 한다. readiness는 superuser/BYPASSRLS/CREATEDB/CREATEROLE/REPLICATION, 다른 role membership, `SET ROLE` 세션, RLS relation owner를 모두 거부한다. 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
 ```sh
-psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/bootstrap-app-role.sql   # 비밀번호는 따옴표 없이 원문
+# owner-only (0600) psql input file은 secret manager가 생성한다.
+# 이 파일에는 PSQL-quoted app_password 변수와 bootstrap script의 absolute \i 경로만 둔다.
+# 비밀번호를 terminal, shell env, process argv, repository에 넣지 않는다.
+psql "$ADMIN_DATABASE_URL" -f /secure/bootstrap-app-role.psql
 # 이후 앱:  DATABASE_URL=postgres://toard_app:<비밀번호>@host:5432/db
 # 마이그레이션·seed 는 계속 관리(슈퍼유저) 롤로.
 ```
 그리고 각 사용자가 shim 에서 `TOARD_SHIM_COLLECT_CONTENT=1` 로 opt-in 하면 본문이 쌓이고, 본인만 `/history` 에서 조회한다.
 
-> ⚠️ **"관리자도 못 봄"은 관리자 ≠ DB/서버 접근자일 때만 성립한다.** KEK 를 쥔 운영자나 superuser 접속은 여전히 볼 수 있다(E2EE 아님). 감사·거버넌스가 필요한 조직이라면 이 기능을 켜지 않는 편이 낫다.
+Compose에서는 migration owner와 앱 role을 다음 순서로 분리한다. URL이나 비밀번호를 터미널 출력·이슈·CI artifact에 남기지 않는다.
+
+```sh
+# 1. owner 연결(MIGRATION_DATABASE_URL)로 schema를 먼저 준비한다.
+docker compose up -d postgres migrate
+
+# 2. 같은 owner 연결로 앱 role을 생성한다.
+# owner-only (0600) psql input file은 secret manager가 생성하며 PSQL-quoted app_password와
+# scripts/bootstrap-app-role.sql의 absolute \i 경로만 포함한다. 비밀번호를 argv로 전달하지 않는다.
+psql "$MIGRATION_DATABASE_URL" -f /secure/bootstrap-app-role.psql
+
+# 3. APP_DATABASE_URL은 toard_app role로, MIGRATION_DATABASE_URL은 owner로 유지한 뒤 앱을 시작/재시작한다.
+docker compose up -d app
+```
+
+관리형 본문을 켠 상태에서 `APP_DATABASE_URL`이 직접 로그인한 exact `toard_app` 안전 롤이 아니면 `/api/ready`는 503을 반환한다. owner 연결을 `SET ROLE toard_app`으로 감싼 것도 허용하지 않는다. 관리형 본문을 사용하지 않는 기존 Compose 설치는 두 URL을 설정하지 않아도 기존 기본 연결로 동작한다.
+
+> 일반 관리자 UI와 타 사용자는 RLS 때문에 타 사용자 평문/행을 읽지 못한다. DB superuser는 ciphertext와
+> wrapper를 볼 수 있으나 DB dump만으로 평문을 복구할 수 없다. 다만 DB와 KMS/Transit/local KEK 권한을
+> 함께 가진 서버 운영자는 앱 복호화 경로를 실행할 수 있으므로 E2EE는 아니다.
+
+신규 E2EE setup/activation endpoint는 `410 E2EE_SETUP_RETIRED`로 차단된다. 기존 `e2ee_v1` 또는 blocked
+migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed migration API를 유지하며 자동 삭제는 하지 않는다.
+계정이 없거나 계정만 있고 legacy 행이 없는 사용자는 이 API도 body 처리 전에 410으로 종료한다. capability 조회
+오류는 `500 E2EE_LEGACY_GATE_FAILED`와 `Cache-Control: no-store`로 fail-closed한다.
 
 ## 무중단 배포 노트 (ADR-001)
 
@@ -295,8 +347,9 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 
 ## 스키마 마이그레이션 (expand → contract)
 
-무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. 새 파드의 `migrate` initContainer 가 스키마를
-먼저 올리므로, 그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
+무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. Helm은 release completion ID별 migration Job이
+스키마를 먼저 올리고, raw Kubernetes 배포는 새 파드의 `migrate` initContainer가 이를 수행한다.
+그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
 마이그레이션은 현재 돌고 있는(구) 코드와 하위호환**이어야 한다. `migrations/` 는 forward-only
 (node-pg-migrate) — 파괴적 변경은 여러 배포에 걸쳐 나눈다.
 

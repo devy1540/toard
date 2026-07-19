@@ -89,3 +89,15 @@ test("Codex reconciliation은 Content-Length 초과를 body 읽기 전에 거부
   }));
   assert.equal(response.status, 413);
 });
+
+test("Codex reconciliation은 authenticated malformed UTF-8을 safe 400으로 반환한다", async () => {
+  const handler = POST.withDependencies({
+    authenticateIngestToken: async () => ({ userId: "user-1", tokenId: "token-1" }),
+  });
+  const response = await handler(new Request("http://localhost/api/v1/events/reconcile", {
+    method: "POST", headers: { authorization: "Bearer token" },
+    body: new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]),
+  }));
+  assert.equal(response.status, 400);
+  assert.equal((await response.text()).includes("ff"), false);
+});

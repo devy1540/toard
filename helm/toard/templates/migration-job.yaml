@@ -1,0 +1,66 @@
+{{- if .Values.migrate.enabled }}
+# deterministic completion ID마다 새 이름으로 실행되는 일반 Job이다. Helm hook이 아니며,
+# app readiness가 migrate+seed 뒤 exact release marker 생성 전/실패 시 traffic을 차단한다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "toard.migrationJobName" . }}
+  labels:
+    {{- include "toard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migration
+spec:
+  backoffLimit: {{ .Values.migrate.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.migrate.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "toard.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      serviceAccountName: {{ include "toard.migrationServiceAccountName" . }}
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if .Values.postgres.enabled }}
+      initContainers:
+        - name: wait-for-postgres
+          image: {{ .Values.postgres.image }}
+          command: ["sh", "-c", "until pg_isready -h {{ include "toard.postgresHost" . }} -U {{ .Values.postgres.auth.user }}; do sleep 2; done"]
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.image.migrate.repository }}:{{ .Values.image.migrate.tag }}"
+          imagePullPolicy: {{ .Values.image.migrate.pullPolicy }}
+          command: ["sh", "-c", "pnpm migrate && pnpm seed && pnpm mark:deployment-release"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.migrationDatabaseSecretName" . }}
+                  key: {{ .Values.migrate.databaseSecret.key }}
+            - name: TOARD_DEPLOYMENT_ID
+              value: {{ include "toard.deploymentId" . | quote }}
+            - name: TOARD_RELEASE_COMPLETION_ID
+              value: {{ include "toard.releaseCompletionId" . | quote }}
+            - name: TOARD_EXPECTED_SCHEMA_VERSION
+              value: {{ include "toard.expectedSchemaVersion" . | quote }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

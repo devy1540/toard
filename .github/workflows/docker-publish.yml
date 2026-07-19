@@ -1,9 +1,10 @@
 name: docker-publish
 
-# main push 또는 v* 태그(릴리스) 시 서버 이미지 3종을 GHCR 에 멀티아치(amd64·arm64)로 빌드·푸시.
+# main push 또는 v* 태그(릴리스) 시 서버 이미지 4종을 GHCR 에 멀티아치(amd64·arm64)로 빌드·푸시.
 #   ghcr.io/<owner>/toard          (runner  — Next.js standalone)
 #   ghcr.io/<owner>/toard-migrate  (migrator — 마이그레이션·시드)
 #   ghcr.io/<owner>/toard-updater  (updater — Compose 자가 업데이트 agent)
+#   ghcr.io/<owner>/toard-content-admin (content-admin — 암호화 one-shot 관리 도구)
 # arch 별 네이티브 러너에서 분리 빌드(digest push) 후 manifest 병합 — QEMU 에뮬레이션 없음.
 on:
   push:
@@ -20,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     strategy:
       matrix:
-        target: [runner, migrator, updater]
+        target: [runner, migrator, updater, content-admin]
         platform: [linux/amd64, linux/arm64]
         include:
           - target: runner
@@ -29,6 +30,8 @@ jobs:
             image: toard-migrate
           - target: updater
             image: toard-updater
+          - target: content-admin
+            image: toard-content-admin
           - platform: linux/amd64
             runner: ubuntu-latest
             arch: amd64
@@ -102,6 +105,8 @@ jobs:
             image: toard-migrate
           - target: updater
             image: toard-updater
+          - target: content-admin
+            image: toard-content-admin
     steps:
       - name: digest 다운로드
         uses: actions/download-artifact@v4

@@ -86,3 +86,72 @@ test("bounded JSON reader는 stream이 상한을 넘는 즉시 취소한다", as
   assert.equal(cancelled, true);
   assert.ok(pulls < 10);
 });
+
+test("bounded JSON reader는 decode/JSON 오류를 safe SyntaxError로 바꾸고 internal bytes만 지운다", async () => {
+  const raw = new Uint8Array([0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]);
+  const invalidJson = new Uint8Array([0x7b]);
+  const filled: Uint8Array[] = [];
+  const originalFill = Uint8Array.prototype.fill;
+  Uint8Array.prototype.fill = function (...args: Parameters<Uint8Array["fill"]>) {
+    filled.push(this);
+    return originalFill.apply(this, args);
+  };
+  try {
+    await assert.rejects(
+      readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+        start(controller) { controller.enqueue(raw); controller.close(); },
+      }), duplex: "half" } as RequestInit), 1024),
+      (error: unknown) => error instanceof SyntaxError && error.message === "INVALID_JSON",
+    );
+    await assert.rejects(
+      readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+        start(controller) { controller.enqueue(invalidJson); controller.close(); },
+      }), duplex: "half" } as RequestInit), 1024),
+      (error: unknown) => error instanceof SyntaxError && error.message === "INVALID_JSON",
+    );
+  } finally { Uint8Array.prototype.fill = originalFill; }
+  assert.equal(filled.includes(raw), false, "caller-owned chunk is never wiped or mutated");
+  assert.ok(filled.filter((value) => value !== raw && value.byteLength === raw.byteLength).length >= 2,
+    "internal chunk copy and merged bytes are wiped");
+  assert.deepEqual([...raw], [0x7b, 0x22, 0xff, 0x22, 0x3a, 0x31, 0x7d]);
+  assert.deepEqual([...invalidJson], [0x7b]);
+  assert.ok(filled.filter((value) => value !== invalidJson && value.byteLength === 1).length >= 2,
+    "JSON parse error internal chunk and merged bytes are wiped");
+  assert.equal(toolIngestClientError(new SyntaxError("INVALID_JSON"))?.status, 400);
+});
+
+test("bounded JSON reader는 success/read-error/overflow에서 caller bytes를 보존하고 internal copies를 지운다", async () => {
+  const success = new TextEncoder().encode('{"ok":true}');
+  const first = new Uint8Array([1, 1, 1, 1]);
+  const overflow = new Uint8Array([2, 2, 2, 2]);
+  const readErrorChunk = new Uint8Array([9, 9, 9]);
+  const filled: Uint8Array[] = [];
+  const originalFill = Uint8Array.prototype.fill;
+  Uint8Array.prototype.fill = function (...args: Parameters<Uint8Array["fill"]>) {
+    filled.push(this);
+    return originalFill.apply(this, args);
+  };
+  try {
+    const parsed = await readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+      start(controller) { controller.enqueue(success); controller.close(); },
+    }), duplex: "half" } as RequestInit), 1024);
+    assert.deepEqual(parsed, { ok: true });
+    await assert.rejects(readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+      start(controller) { controller.enqueue(first); controller.enqueue(overflow); controller.close(); },
+    }), duplex: "half" } as RequestInit), 5), RangeError);
+    let pulled = false;
+    await assert.rejects(readBoundedJson(new Request("http://localhost", { method: "POST", body: new ReadableStream({
+      pull(controller) {
+        if (!pulled) { pulled = true; controller.enqueue(readErrorChunk); return; }
+        controller.error(new Error("stream failed"));
+      },
+    }), duplex: "half" } as RequestInit), 1024), /stream failed/);
+  } finally { Uint8Array.prototype.fill = originalFill; }
+  assert.equal(new TextDecoder().decode(success), '{"ok":true}');
+  assert.deepEqual([...first], [1, 1, 1, 1]);
+  assert.deepEqual([...overflow], [2, 2, 2, 2]);
+  assert.deepEqual([...readErrorChunk], [9, 9, 9]);
+  for (const callerOwned of [success, first, overflow, readErrorChunk]) assert.equal(filled.includes(callerOwned), false);
+  assert.ok(filled.some((value) => value.byteLength === first.byteLength), "overflow prior internal copy is wiped");
+  assert.ok(filled.some((value) => value.byteLength === readErrorChunk.byteLength), "read-error internal copy is wiped");
+});

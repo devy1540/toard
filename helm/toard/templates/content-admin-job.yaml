@@ -1,0 +1,85 @@
+{{- if .Values.contentAdmin.enabled }}
+{{- if not .Values.encryption.provider }}
+{{- fail "contentAdmin.enabled requires encryption.provider" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "toard.fullname" . }}-content-admin
+  labels:
+    {{- include "toard.labels" . | nindent 4 }}
+    app.kubernetes.io/component: content-admin
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        {{- include "toard.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: content-admin
+        {{- with .Values.serviceAccount.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "toard.serviceAccountName" . }}
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: content-admin
+          image: "{{ .Values.image.contentAdmin.repository }}:{{ .Values.image.contentAdmin.tag }}"
+          imagePullPolicy: {{ .Values.image.contentAdmin.pullPolicy }}
+          # Docker image ENTRYPOINT (pnpm toard-admin)은 유지하고 하위 명령만 교체한다.
+          args:
+            {{- toYaml .Values.contentAdmin.command | nindent 12 }}
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: DATABASE_URL
+          envFrom:
+            - configMapRef:
+                name: {{ include "toard.fullname" . }}-encryption-config
+          {{- with .Values.encryption.secretMounts }}
+          volumeMounts:
+            {{- range . }}
+            - name: {{ .name }}
+              mountPath: {{ .mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.encryption.secretMounts }}
+      volumes:
+        {{- range . }}
+        - name: {{ .name }}
+          secret:
+            secretName: {{ .secretName }}
+            defaultMode: 0440
+            items:
+              {{- range .items }}
+              - key: {{ .key }}
+                path: {{ .path }}
+              {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

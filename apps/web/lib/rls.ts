@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import { getPool } from "@/lib/db";
+import { getPool } from "./db";
 
 /**
  * RLS 컨텍스트(app.current_user_id) 안에서 콜백을 실행한다.

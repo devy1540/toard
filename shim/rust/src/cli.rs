@@ -12,6 +12,9 @@ use crate::credentials::{
 use crate::fsx;
 use crate::resolve::{find_real_binary, first_in_path, is_shim_executable_path};
 
+const LEGACY_E2EE_WARNING: &str =
+    "toard-shim: legacy E2EE 호환 명령입니다. 신규 연결에는 필요하지 않습니다.";
+
 /// 릴리스 빌드는 CI 가 태그를 주입(TOARD_SHIM_BUILD_VERSION), 개발 빌드는 0.0.0.
 pub fn version() -> &'static str {
     option_env!("TOARD_SHIM_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
@@ -48,7 +51,11 @@ pub fn run(args: &[String]) -> ! {
 }
 
 fn print_usage() {
-    println!(
+    println!("{}", usage_text());
+}
+
+fn usage_text() -> String {
+    format!(
         "toard-shim {} — toard 수집 shim 관리 CLI
 
 사용법: toard-shim <command>
@@ -63,21 +70,22 @@ fn print_usage() {
   collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
           [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
           [--quiet]            무변경 시 무출력 (데몬 주기 실행용 — 전송·오류는 출력)
-                               본문 수집은 opt-in(기본 off). e2ee setup 후 로컬 암호화하여
-                               /v1/prompts 로 전송. 기존 true 설정은 server_v1 호환 모드
+                               본문 수집은 opt-in(기본 off). 신규 연결은 평문을 HTTPS로
+                               /v1/prompts에 전송하고 서버 관리형 암호화로 저장
   daemon install|uninstall|status
                                주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
                                install --interval <초> (기본 300, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
-  e2ee setup                   Recovery Kit를 저장·확인하고 E2EE 본문 수집 활성화
-  e2ee status                  로컬 E2EE 모드와 보안 저장소 키 상태 확인
-  e2ee approve [--request ID]  브라우저의 6자리 코드를 로컬에서 확인해 승인
+  [legacy-e2ee — 기존 사용자 호환]
+  e2ee setup                   기존 E2EE Recovery Kit 설정·복구
+  e2ee status                  기존 로컬 E2EE 모드와 보안 저장소 키 상태 확인
+  e2ee approve [--request ID]  기존 E2EE 기기 승인
   update                       최신 릴리스로 즉시 업데이트
                                (평소엔 2h 주기 백그라운드 자동 — TOARD_SHIM_AUTO_UPDATE=0 으로 끔)
   version                      버전 출력
   help                         이 도움말",
         version()
-    );
+    )
 }
 
 fn installer_env(name: &str) -> Result<String, &'static str> {
@@ -109,8 +117,8 @@ fn targets_cmd(args: &[String]) -> i32 {
     for target in targets {
         let content = match target.credentials.collect_content {
             ContentCollectionMode::Off => "off",
-            ContentCollectionMode::ServerV1 => "server_v1",
-            ContentCollectionMode::E2eeV1 => "e2ee_v1",
+            ContentCollectionMode::ServerManaged => "server_v1",
+            ContentCollectionMode::LegacyE2eeV1 => "e2ee_v1",
         };
         let tools = if target.credentials.collect_tools {
             "on"
@@ -243,6 +251,7 @@ fn target_remove_machine() -> i32 {
 }
 
 fn e2ee_cmd(args: &[String]) -> i32 {
+    eprintln!("{LEGACY_E2EE_WARNING}");
     match args.first().map(String::as_str) {
         Some("setup") if args.len() == 1 => crate::e2ee_setup::run(),
         Some("status") if args.len() == 1 => crate::e2ee_setup::status(),
@@ -767,4 +776,27 @@ fn probe_ingest(endpoint: &str, token: &str) -> Result<u16, String> {
                 String::from_utf8_lossy(&out.stderr).trim()
             )
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_e2ee_warning_says_new_connections_do_not_need_it() {
+        assert_eq!(
+            LEGACY_E2EE_WARNING,
+            "toard-shim: legacy E2EE 호환 명령입니다. 신규 연결에는 필요하지 않습니다."
+        );
+    }
+
+    #[test]
+    fn default_help_keeps_e2ee_only_in_the_legacy_section() {
+        let usage = usage_text();
+        let legacy_section = usage.find("[legacy-e2ee").expect("legacy section");
+
+        assert!(usage[..legacy_section].contains("서버 관리형 암호화"));
+        assert!(!usage[..legacy_section].contains("e2ee setup"));
+        assert!(usage[legacy_section..].contains("e2ee setup"));
+    }
 }

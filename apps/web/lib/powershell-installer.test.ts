@@ -64,7 +64,7 @@ test("PowerShell installer escapes endpoint and delegates all target policies", 
   assert.match(script, /TOARD_SHIM_COLLECT_CONTENT_SINCE/);
   assert.doesNotMatch(
     script,
-    /e2ee_setup_requested|mnemonic|recovery_secret|content_owner_id=|agent_key=/i,
+    /e2ee_v1|e2ee_setup_requested|e2ee setup|mnemonic|recovery_secret|content_owner_id=|agent_key=/i,
   );
 });
 

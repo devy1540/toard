@@ -223,7 +223,7 @@ pub fn status() -> i32 {
         }
     };
     let credentials = target.credentials;
-    if credentials.collect_content != ContentCollectionMode::E2eeV1 {
+    if credentials.collect_content != ContentCollectionMode::LegacyE2eeV1 {
         println!("toard-shim: E2EE 비활성 (본문 수집 off)");
         return 1;
     }
@@ -242,10 +242,7 @@ pub fn status() -> i32 {
         eprintln!("toard-shim: E2EE 키를 운영체제 보안 저장소에서 찾을 수 없습니다");
         return 1;
     }
-    println!(
-        "toard-shim: E2EE 활성 · 키 버전 {} · 기기 {}",
-        key_version, device_id
-    );
+    println!("toard-shim: E2EE 활성 · 키 버전 {key_version} · 기기 {device_id}");
     0
 }
 
@@ -340,7 +337,7 @@ fn setup() -> Result<(), SetupError> {
     let target_id = target.id.clone();
     let target_revision = target.revision.clone();
     let credentials = target.credentials;
-    if credentials.collect_content == ContentCollectionMode::E2eeV1 {
+    if credentials.collect_content == ContentCollectionMode::LegacyE2eeV1 {
         return Ok(());
     }
     let token = credentials

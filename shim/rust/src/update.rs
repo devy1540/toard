@@ -137,10 +137,12 @@ fn parse_latest_from_headers(headers: &str) -> Option<String> {
 }
 
 fn parse_sha_entry(sums: &str, asset: &str) -> Option<String> {
-    sums.lines()
-        .find(|l| l.trim_end().ends_with(asset))
-        .and_then(|l| l.split_whitespace().next())
-        .map(str::to_string)
+    sums.lines().find_map(|line| {
+        let (checksum, filename) = line.split_once(char::is_whitespace)?;
+        let filename = filename.trim_start();
+        let filename = filename.strip_prefix('*').unwrap_or(filename);
+        (filename == asset).then(|| checksum.to_string())
+    })
 }
 
 /// 다운로드 파일 SHA256 — 외부 sha256sum/shasum 없이 내장(sha2) 계산이라 OS 무관.
@@ -398,6 +400,17 @@ mod tests {
             parse_sha_entry(sums, "toard-shim-background-x86_64-pc-windows-msvc.exe").as_deref(),
             Some("bbb")
         );
+    }
+
+    #[test]
+    fn parse_sha_entry_rejects_a_prefixed_filename_and_accepts_a_binary_marker() {
+        let asset = "toard-shim-x86_64-pc-windows-msvc.exe";
+        let sums = concat!(
+            "evil  evil-toard-shim-x86_64-pc-windows-msvc.exe\n",
+            "good *toard-shim-x86_64-pc-windows-msvc.exe\n",
+        );
+
+        assert_eq!(parse_sha_entry(sums, asset).as_deref(), Some("good"));
     }
 
     #[test]

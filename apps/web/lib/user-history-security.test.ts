@@ -221,3 +221,17 @@ test("managed records without a configured provider require attention", async ()
     managedRecords: 1,
   });
 });
+
+test("malformed key state fails closed instead of reporting a transition", async () => {
+  const context = fixtureContext({
+    keys: [{ state: null, key_version: 1 }],
+  });
+
+  await assert.rejects(
+    getUserHistorySecurityStatus(USER_ID, {
+      env: managedEnv,
+      runInContext: context.runInContext,
+    }),
+    /USER_HISTORY_SECURITY_INVALID_KEY_STATE/,
+  );
+});

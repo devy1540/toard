@@ -100,6 +100,18 @@ function parseNullableState<T extends string>(
   return value as T;
 }
 
+function parseRequiredState<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field: string,
+): T {
+  const state = parseNullableState(value, allowed, field);
+  if (state === null) {
+    throw new Error(`USER_HISTORY_SECURITY_INVALID_${field.toUpperCase()}`);
+  }
+  return state;
+}
+
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error(`USER_HISTORY_SECURITY_INVALID_${field.toUpperCase()}`);
@@ -169,11 +181,11 @@ export async function getUserHistorySecurityStatus(
       [userId],
     );
     const keys = keyResult.rows.map((row) => ({
-      state: parseNullableState(
+      state: parseRequiredState(
         row.state,
         ["active", "pending", "retiring"] as const,
         "key_state",
-      ) as KeyState,
+      ),
       keyVersion: parsePositiveInteger(row.key_version, "key_version"),
     }));
 

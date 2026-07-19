@@ -131,27 +131,61 @@ try {
     if (-not (Test-Path (Join-Path $binDir $name))) { throw "missing installed binary: $name" }
   }
 
-  $taskXml = schtasks.exe /Query /TN toard-collect /XML | Out-String
+  $taskXmlText = schtasks.exe /Query /TN toard-collect /XML | Out-String
   if ($LASTEXITCODE -ne 0) { throw 'scheduled task was not registered' }
-  if ($taskXml -notmatch [regex]::Escape($background)) {
+  [xml]$taskXml = $taskXmlText
+  if ([string]$taskXml.Task.Actions.Exec.Command -ne $background) {
     throw 'scheduled task does not use the no-console helper'
   }
-  if ($taskXml -match '<Arguments>collect --quiet</Arguments>') {
-    throw 'scheduled task still invokes the console shim directly'
+  if (-not [string]::IsNullOrWhiteSpace([string]$taskXml.Task.Actions.Exec.Arguments)) {
+    throw 'scheduled task helper action must not have arguments'
   }
-  $taskInfoBefore = Get-ScheduledTaskInfo -TaskName 'toard-collect'
+  $taskRunBaseline = Get-ScheduledTaskInfo -TaskName 'toard-collect'
   Start-ScheduledTask -TaskName 'toard-collect'
   $taskCompleted = $false
+  $stableTerminalSnapshots = 0
+  $terminalLastRunTime = $null
+  $terminalLastTaskResult = $null
   for ($i = 0; $i -lt 100; $i++) {
+    $infoBefore = Get-ScheduledTaskInfo -TaskName 'toard-collect'
     $state = (Get-ScheduledTask -TaskName 'toard-collect').State
-    $taskInfo = Get-ScheduledTaskInfo -TaskName 'toard-collect'
-    if ($taskInfo.LastRunTime -gt $taskInfoBefore.LastRunTime -and $state -ne 'Running') {
-      $taskCompleted = $true
-      break
+    $infoAfter = Get-ScheduledTaskInfo -TaskName 'toard-collect'
+    $sameInfoSnapshot = -not (
+      $infoBefore.LastRunTime -ne $infoAfter.LastRunTime -or
+      $infoBefore.LastTaskResult -ne $infoAfter.LastTaskResult
+    )
+    $isTerminalSnapshot = (
+      $sameInfoSnapshot -and
+      $infoAfter.LastRunTime -gt $taskRunBaseline.LastRunTime -and
+      $state -ne 'Running' -and
+      $infoAfter.LastTaskResult -ne 0x41301
+    )
+    if ($isTerminalSnapshot) {
+      if (
+        $infoAfter.LastRunTime -eq $terminalLastRunTime -and
+        $infoAfter.LastTaskResult -eq $terminalLastTaskResult
+      ) {
+        $stableTerminalSnapshots++
+      } else {
+        $stableTerminalSnapshots = 1
+        $terminalLastRunTime = $infoAfter.LastRunTime
+        $terminalLastTaskResult = $infoAfter.LastTaskResult
+      }
+      if ($stableTerminalSnapshots -ge 2) {
+        $taskInfo = $infoAfter
+        $taskCompleted = $true
+        break
+      }
+    } else {
+      $stableTerminalSnapshots = 0
+      $terminalLastRunTime = $null
+      $terminalLastTaskResult = $null
     }
     Start-Sleep -Milliseconds 100
   }
-  if (-not $taskCompleted) { throw 'scheduled helper did not complete within 10 seconds' }
+  if (-not $taskCompleted) {
+    throw "scheduled helper did not reach a stable terminal snapshot within 10 seconds (state=$state, lastRunTime=$($infoAfter.LastRunTime), lastTaskResult=$($infoAfter.LastTaskResult))"
+  }
   if ($taskInfo.LastTaskResult -ne 0) {
     throw "scheduled helper failed with result $($taskInfo.LastTaskResult)"
   }

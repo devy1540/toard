@@ -226,6 +226,17 @@ test("Windows shim CI verifies GUI helper subsystem and scheduled action", () =>
   assert.match(e2e, /toard-shim-background\.exe/);
   assert.match(e2e, /\/Query.*\/XML/s);
   assert.match(e2e, /Start-ScheduledTask/);
+  assert.match(e2e, /\[xml\]\$taskXml/);
+  assert.match(e2e, /Task\.Actions\.Exec\.Command\s*-ne\s*\$background/);
+  assert.match(e2e, /IsNullOrWhiteSpace.*Task\.Actions\.Exec\.Arguments/s);
+  assert.match(
+    e2e,
+    /\$infoBefore\s*=\s*Get-ScheduledTaskInfo[\s\S]*\$state\s*=\s*\(Get-ScheduledTask[\s\S]*\$infoAfter\s*=\s*Get-ScheduledTaskInfo/,
+  );
+  assert.match(e2e, /LastRunTime\s*-ne\s*\$infoAfter\.LastRunTime/);
+  assert.match(e2e, /LastTaskResult\s*-ne\s*\$infoAfter\.LastTaskResult/);
+  assert.match(e2e, /0x41301/);
+  assert.match(e2e, /stableTerminalSnapshots[\s\S]*-ge 2/);
 });
 
 test("device onboarding uses OS-aware wizard and separate management", () => {

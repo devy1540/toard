@@ -244,7 +244,8 @@ function classify(error: unknown): ClickHouseOperationLog["errorClass"] {
 }
 
 function isOverloadError(error: unknown): boolean {
-  return errorCodes(error).includes("202");
+  const codes = errorCodes(error);
+  return codes.includes("202") || codes.includes("TOO_MANY_SIMULTANEOUS_QUERIES");
 }
 
 function isTransientNetworkError(error: unknown): boolean {
@@ -259,12 +260,18 @@ function errorCode(error: unknown): string | undefined {
 }
 
 function errorCodes(error: unknown): string[] {
-  if (!error || typeof error !== "object") return [];
-  const candidate = error as { code?: unknown; cause?: unknown };
-  const own = typeof candidate.code === "string" || typeof candidate.code === "number"
-    ? [String(candidate.code)]
-    : [];
-  return [...own, ...errorCodes(candidate.cause)];
+  const codes: string[] = [];
+  const visited = new Set<object>();
+  let current = error;
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (typeof candidate.code === "string" || typeof candidate.code === "number") {
+      codes.push(String(candidate.code));
+    }
+    current = candidate.cause;
+  }
+  return codes;
 }
 
 export const defaultClickHouseOperationController =

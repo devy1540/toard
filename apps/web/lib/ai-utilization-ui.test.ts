@@ -83,11 +83,13 @@ test("활용 지수 실험 태그는 한국어와 영어 문구를 제공한다"
 
 test("조직 활용 지수 UI는 최소 표본을 지키고 개인 식별자를 받지 않는다", () => {
   const page = source("app/(dashboard)/org/page.tsx");
+  const loader = source("lib/org-dashboard-data.ts");
   const card = source("components/dashboard/org-utilization-card.tsx");
   const ko = source("messages/ko/org.json");
   const en = source("messages/en/org.json");
 
-  assert.match(page, /getCachedOrganizationUtilization\(\)/);
+  assert.match(page, /loadOrganizationDashboardData/);
+  assert.match(loader, /getCachedOrganizationUtilization/);
   assert.match(card, /result\.state === "suppressed"/);
   assert.doesNotMatch(card, /userId|email|individualScores|leaderboard/i);
   assert.match(ko, /활성 사용자 5명/);

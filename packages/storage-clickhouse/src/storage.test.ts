@@ -637,7 +637,7 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
   assert.equal(enqueueIndexes.length, 1);
   const outboxDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET delivered_at = now()"));
   const batchDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET status = 'delivered'"));
-  const deliveryCommitIndex = pgQueries.findLastIndex(({ sql }) => sql === "COMMIT");
+  const deliveryCommitIndex = pgQueries.map(({ sql }) => sql).lastIndexOf("COMMIT");
   assert.ok(enqueueIndexes[0]! > outboxDeliveredIndex);
   assert.ok(enqueueIndexes[0]! > batchDeliveredIndex);
   assert.ok(deliveryCommitIndex > enqueueIndexes[0]!);

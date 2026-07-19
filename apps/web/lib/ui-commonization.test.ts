@@ -554,7 +554,7 @@ test("organization page uses anonymous tool summary without drilldown", () => {
   const org = source("app/(dashboard)/org/page.tsx");
   const loader = source("lib/org-dashboard-data.ts");
   assert.match(org, /loadOrganizationDashboardData/);
-  assert.match(loader, /getOrgToolSummary/);
+  assert.match(loader, /getToolActivity:\s*(?:\([^)]*\)\s*=>\s*)?getOrgToolSummary\b/);
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
 });
 

@@ -89,7 +89,7 @@ test("조직 활용 지수 UI는 최소 표본을 지키고 개인 식별자를 
   const en = source("messages/en/org.json");
 
   assert.match(page, /loadOrganizationDashboardData/);
-  assert.match(loader, /getCachedOrganizationUtilization/);
+  assert.match(loader, /getUtilization:\s*(?:\(\)\s*=>\s*)?getCachedOrganizationUtilization\b/);
   assert.match(card, /result\.state === "suppressed"/);
   assert.doesNotMatch(card, /userId|email|individualScores|leaderboard/i);
   assert.match(ko, /활성 사용자 5명/);

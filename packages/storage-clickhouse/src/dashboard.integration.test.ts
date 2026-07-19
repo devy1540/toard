@@ -178,6 +178,50 @@ async function cleanupTemporaryDatabase({
   }
 }
 
+async function withTemporaryDatabase<T>({
+  admin,
+  quotedDatabase,
+  createDatabaseClient,
+  run,
+}: {
+  admin: CleanupAdmin;
+  quotedDatabase: string;
+  createDatabaseClient: () => ClickHouseClient;
+  run: (client: ClickHouseClient) => Promise<T>;
+}): Promise<T> {
+  let client: ClickHouseClient | undefined;
+  let hasPrimaryError = false;
+  let primaryError: unknown;
+  try {
+    await admin.command({ query: `CREATE DATABASE ${quotedDatabase}` });
+    client = createDatabaseClient();
+    return await run(client);
+  } catch (error) {
+    hasPrimaryError = true;
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await cleanupTemporaryDatabase({
+        admin,
+        client,
+        quotedDatabase,
+        databaseCreationAttempted: true,
+      });
+    } catch (cleanupError) {
+      if (!hasPrimaryError) throw cleanupError;
+      const cleanupErrors = cleanupError instanceof AggregateError
+        ? cleanupError.errors
+        : [cleanupError];
+      throw new AggregateError(
+        [primaryError, ...cleanupErrors],
+        "Temporary ClickHouse database lifecycle failed",
+        { cause: primaryError },
+      );
+    }
+  }
+}
+
 test("integration URL은 client 생성 전에 config-bearing URL과 non-loopback을 거부한다", () => {
   const original = process.env.CLICKHOUSE_URL;
   const invalidUrls = [
@@ -214,6 +258,7 @@ test("integration URL은 client 생성 전에 config-bearing URL과 non-loopback
 test("CREATE 응답이 유실되어도 생성 시도한 UUID database를 exact DROP IF EXISTS로 정리한다", async () => {
   const database = "toard_dashboard_0123456789abcdef0123456789abcdef";
   const quotedDatabase = `\`${database}\``;
+  const primaryError = new Error("CREATE response lost");
   const commands: string[] = [];
   let adminClosed = false;
   let databaseExists = false;
@@ -222,7 +267,7 @@ test("CREATE 응답이 유실되어도 생성 시도한 UUID database를 exact D
       commands.push(query);
       if (query === `CREATE DATABASE ${quotedDatabase}`) {
         databaseExists = true;
-        throw new Error("CREATE response lost");
+        throw primaryError;
       }
       if (query === `DROP DATABASE IF EXISTS ${quotedDatabase}`) {
         databaseExists = false;
@@ -234,21 +279,20 @@ test("CREATE 응답이 유실되어도 생성 시도한 UUID database를 exact D
       adminClosed = true;
     },
   } as unknown as Pick<ClickHouseClient, "command" | "close">;
-  let databaseCreationAttempted = false;
 
-  await assert.rejects(async () => {
-    try {
-      databaseCreationAttempted = true;
-      await admin.command({ query: `CREATE DATABASE ${quotedDatabase}` });
-    } finally {
-      await cleanupTemporaryDatabase({
-        admin,
-        client: undefined,
-        quotedDatabase,
-        databaseCreationAttempted,
-      });
-    }
-  }, /CREATE response lost/);
+  await assert.rejects(
+    withTemporaryDatabase({
+      admin,
+      quotedDatabase,
+      createDatabaseClient: () => {
+        throw new Error("client creation must not run");
+      },
+      run: async () => {
+        throw new Error("run must not execute");
+      },
+    }),
+    (error: unknown) => error === primaryError,
+  );
 
   assert.deepEqual(commands, [
     `CREATE DATABASE ${quotedDatabase}`,
@@ -260,33 +304,136 @@ test("CREATE 응답이 유실되어도 생성 시도한 UUID database를 exact D
 
 test("temporary database cleanup은 client close, DROP, admin close 실패를 서로 격리한다", async () => {
   const operations: string[] = [];
+  const clientCloseError = new Error("client close failed");
+  const dropError = new Error("drop failed");
+  const adminCloseError = new Error("admin close failed");
   const client = {
     close: async () => {
       operations.push("client.close");
-      throw new Error("client close failed");
+      throw clientCloseError;
     },
   } as unknown as Pick<ClickHouseClient, "close">;
   const admin = {
-    command: async () => {
+    command: async ({ query }: { query: string }) => {
+      if (query.startsWith("CREATE DATABASE ")) {
+        operations.push("admin.create");
+        return;
+      }
       operations.push("admin.drop");
-      throw new Error("drop failed");
+      throw dropError;
     },
     close: async () => {
       operations.push("admin.close");
-      throw new Error("admin close failed");
+      throw adminCloseError;
     },
   } as unknown as Pick<ClickHouseClient, "command" | "close">;
 
   await assert.rejects(
-    cleanupTemporaryDatabase({
+    withTemporaryDatabase({
       admin,
-      client,
       quotedDatabase: "`toard_dashboard_0123456789abcdef0123456789abcdef`",
-      databaseCreationAttempted: true,
+      createDatabaseClient: () => client as ClickHouseClient,
+      run: async () => {
+        operations.push("run");
+      },
     }),
-    AggregateError,
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, [clientCloseError, dropError, adminCloseError]);
+      return true;
+    },
   );
-  assert.deepEqual(operations, ["client.close", "admin.drop", "admin.close"]);
+  assert.deepEqual(operations, [
+    "admin.create",
+    "run",
+    "client.close",
+    "admin.drop",
+    "admin.close",
+  ]);
+});
+
+test("temporary database lifecycle은 CREATE primary와 복수 cleanup 오류를 함께 보존한다", async () => {
+  const database = "toard_dashboard_0123456789abcdef0123456789abcdef";
+  const quotedDatabase = `\`${database}\``;
+  const primaryError = new Error("CREATE response lost");
+  const dropError = new Error("DROP response lost");
+  const adminCloseError = new Error("admin close failed");
+  const operations: string[] = [];
+  const admin = {
+    command: async ({ query }: { query: string }) => {
+      if (query === `CREATE DATABASE ${quotedDatabase}`) {
+        operations.push("admin.create");
+        throw primaryError;
+      }
+      if (query === `DROP DATABASE IF EXISTS ${quotedDatabase}`) {
+        operations.push("admin.drop");
+        throw dropError;
+      }
+      throw new Error("unexpected command");
+    },
+    close: async () => {
+      operations.push("admin.close");
+      throw adminCloseError;
+    },
+  } as unknown as CleanupAdmin;
+
+  await assert.rejects(
+    withTemporaryDatabase({
+      admin,
+      quotedDatabase,
+      createDatabaseClient: () => {
+        operations.push("client.create");
+        throw new Error("client creation must not run");
+      },
+      run: async () => {
+        operations.push("run");
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.strictEqual(error.errors[0], primaryError);
+      assert.deepEqual(error.errors.slice(1), [dropError, adminCloseError]);
+      assert.strictEqual(error.cause, primaryError);
+      return true;
+    },
+  );
+  assert.deepEqual(operations, ["admin.create", "admin.drop", "admin.close"]);
+});
+
+test("temporary database lifecycle은 primary와 cleanup 오류가 없으면 결과를 반환한다", async () => {
+  const operations: string[] = [];
+  const client = {
+    close: async () => {
+      operations.push("client.close");
+    },
+  } as unknown as ClickHouseClient;
+  const admin = {
+    command: async ({ query }: { query: string }) => {
+      operations.push(query.startsWith("CREATE DATABASE ") ? "admin.create" : "admin.drop");
+    },
+    close: async () => {
+      operations.push("admin.close");
+    },
+  } as unknown as CleanupAdmin;
+
+  const result = await withTemporaryDatabase({
+    admin,
+    quotedDatabase: "`toard_dashboard_0123456789abcdef0123456789abcdef`",
+    createDatabaseClient: () => client,
+    run: async () => {
+      operations.push("run");
+      return "ok";
+    },
+  });
+
+  assert.equal(result, "ok");
+  assert.deepEqual(operations, [
+    "admin.create",
+    "run",
+    "client.close",
+    "admin.drop",
+    "admin.close",
+  ]);
 });
 
 test("실제 ClickHouse에서 dashboard snapshot은 기존 개별 결과와 동일하다", {
@@ -305,13 +452,12 @@ test("실제 ClickHouse에서 dashboard snapshot은 기존 개별 결과와 동�
     password: process.env.CLICKHOUSE_PASSWORD ?? "toard",
   };
   const admin = createClient(connection);
-  let client: ClickHouseClient | undefined;
-  let databaseCreationAttempted = false;
 
-  try {
-    databaseCreationAttempted = true;
-    await admin.command({ query: `CREATE DATABASE ${quotedDatabase}` });
-    client = createClient({ ...connection, database });
+  await withTemporaryDatabase({
+    admin,
+    quotedDatabase,
+    createDatabaseClient: () => createClient({ ...connection, database }),
+    run: async (client) => {
     const effectiveDatabase = await client.query({
       query: "SELECT currentDatabase() AS database",
       format: "JSONEachRow",
@@ -489,12 +635,6 @@ test("실제 ClickHouse에서 dashboard snapshot은 기존 개별 결과와 동�
         costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 0 },
       },
     ]);
-  } finally {
-    await cleanupTemporaryDatabase({
-      admin,
-      client,
-      quotedDatabase,
-      databaseCreationAttempted,
-    });
-  }
+    },
+  });
 });

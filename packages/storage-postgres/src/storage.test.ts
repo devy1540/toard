@@ -163,6 +163,80 @@ test("Postgres usage_events는 pricing revision과 모든 cost status를 보존�
   );
 });
 
+test("Postgres는 실제 삽입된 unpriced batch를 transaction 안에서 한 번만 복구 예약한다", async () => {
+  const calls: Array<{ sql: string; params: unknown[] }> = [];
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      calls.push({ sql, params });
+      if (sql.includes("INSERT INTO usage_events")) {
+        return { rows: [], rowCount: params[0] === "duplicate" ? 0 : 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const storage = new PostgresStorage({ connect: async () => client } as unknown as Pool);
+
+  assert.deepEqual(await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "priced" }),
+    finalizedEvent({ dedupKey: "late", pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    finalizedEvent({ dedupKey: "duplicate", pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+  ]), { inserted: 2, deduped: 1 });
+
+  const enqueueIndexes = calls.flatMap(({ sql }, index) =>
+    sql.includes("enqueue_pricing_repair") ? [index] : []
+  );
+  assert.equal(enqueueIndexes.length, 1);
+  const commitIndex = calls.findIndex(({ sql }) => sql === "COMMIT");
+  assert.ok(commitIndex > enqueueIndexes[0]!);
+});
+
+test("Postgres는 priced·legacy·deduped unpriced만 있으면 복구를 예약하지 않는다", async () => {
+  const calls: string[] = [];
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      calls.push(sql);
+      if (sql.includes("INSERT INTO usage_events")) {
+        return { rows: [], rowCount: params[0] === "duplicate" ? 0 : 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const storage = new PostgresStorage({ connect: async () => client } as unknown as Pool);
+
+  await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "priced" }),
+    finalizedEvent({ dedupKey: "legacy", pricingRevisionId: null, costStatus: "legacy" }),
+    finalizedEvent({ dedupKey: "duplicate", pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+  ]);
+
+  assert.equal(calls.some((sql) => sql.includes("enqueue_pricing_repair")), false);
+});
+
+test("Postgres 복구 예약 실패는 usage insert와 함께 rollback한다", async () => {
+  const calls: string[] = [];
+  const client = {
+    query: async (sql: string) => {
+      calls.push(sql);
+      if (sql.includes("INSERT INTO usage_events")) return { rows: [], rowCount: 1 };
+      if (sql.includes("enqueue_pricing_repair")) throw new Error("enqueue unavailable");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const storage = new PostgresStorage({ connect: async () => client } as unknown as Pool);
+
+  await assert.rejects(
+    storage.saveUsageEvents([
+      finalizedEvent({ pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    ]),
+    /enqueue unavailable/,
+  );
+  assert.equal(calls.includes("ROLLBACK"), true);
+  assert.equal(calls.includes("COMMIT"), false);
+});
+
 test("Postgres overview는 priced+unpriced+legacy coverage와 확정 비용만 같은 query에서 집계한다", async () => {
   let capturedSql = "";
   const pool = {

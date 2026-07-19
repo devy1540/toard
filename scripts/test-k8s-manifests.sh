@@ -69,7 +69,30 @@ test_app() {
 }
 
 test_cloudflare() {
-  kubectl kustomize k8s/overlays/orbstack-cloudflare >/dev/null
+  local overlay
+
+  overlay="$(kubectl kustomize k8s/overlays/orbstack-cloudflare)"
+
+  assert_not_kind "$overlay" Secret
+  assert_contains "$overlay" "kind: Namespace"
+  assert_contains "$overlay" "name: cloudflare-tunnel"
+  assert_contains "$overlay" "kind: Deployment"
+  assert_contains "$overlay" "name: cloudflared"
+  assert_contains "$overlay" "replicas: 2"
+  assert_contains "$overlay" "image: cloudflare/cloudflared:2026.7.2"
+  assert_contains "$overlay" "- cloudflared"
+  assert_contains "$overlay" "- tunnel"
+  assert_contains "$overlay" "- --no-autoupdate"
+  assert_contains "$overlay" "- --loglevel"
+  assert_contains "$overlay" "- info"
+  assert_contains "$overlay" "- --metrics"
+  assert_contains "$overlay" "- 0.0.0.0:2000"
+  assert_contains "$overlay" "- run"
+  assert_contains "$overlay" "name: TUNNEL_TOKEN"
+  assert_contains "$overlay" "name: tunnel-token"
+  assert_contains "$overlay" "key: token"
+  assert_contains "$overlay" "path: /ready"
+  assert_contains "$overlay" "port: 2000"
 }
 
 main() {

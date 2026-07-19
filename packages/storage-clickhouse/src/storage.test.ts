@@ -194,8 +194,11 @@ function v2CompactorFixture(options: {
       inserts.push({ table, values });
     },
   } as unknown as ClickHouseClient;
+  const operationRunner = options.failAggregate
+    ? new ClickHouseOperationController({ log: () => undefined })
+    : undefined;
   return {
-    storage: new ClickHouseStorage(ch, pg),
+    storage: new ClickHouseStorage(ch, pg, operationRunner ? { operationRunner } : {}),
     aggregateQueries,
     aggregateParams,
     inserts,
@@ -1110,6 +1113,105 @@ async function schemaCommands(
   });
   return commands;
 }
+
+test("첫 schema DDL ECONNRESET은 재시도한 뒤 JSON read를 계속한다", async () => {
+  let firstDdl: string | undefined;
+  let firstDdlAttempts = 0;
+  let readAttempts = 0;
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      firstDdl ??= query;
+      if (query !== firstDdl) return;
+      firstDdlAttempts += 1;
+      if (firstDdlAttempts === 1) {
+        throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+      }
+    },
+    query: async () => {
+      readAttempts += 1;
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const operationRunner = new ClickHouseOperationController({
+    sleep: async () => undefined,
+    log: () => undefined,
+  });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner });
+
+  assert.deepEqual(await storage.getUserHosts("user-1"), []);
+  assert.equal(firstDdlAttempts, 2);
+  assert.equal(readAttempts, 1);
+});
+
+test("schema DDL network 오류가 계속되면 정확히 5 attempts 뒤 중단한다", async () => {
+  let attempts = 0;
+  const networkError = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+  const ch = {
+    command: async () => {
+      attempts += 1;
+      throw networkError;
+    },
+  } as unknown as ClickHouseClient;
+  const operationRunner = new ClickHouseOperationController({
+    sleep: async () => undefined,
+    log: () => undefined,
+  });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner });
+
+  await assert.rejects(
+    storage.getUserHosts("user-1"),
+    (error: unknown) => error === networkError,
+  );
+  assert.equal(attempts, 5);
+});
+
+test("schema DDL backoff 동안 outer read slot 없이 다른 작업을 허용한다", async () => {
+  let ddlAttempts = 0;
+  let readAttempts = 0;
+  let sleepStarted = false;
+  let releaseSleep!: () => void;
+  const ch = {
+    command: async () => {
+      ddlAttempts += 1;
+      if (ddlAttempts === 1) {
+        throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+      }
+    },
+    query: async () => {
+      readAttempts += 1;
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const operationRunner = new ClickHouseOperationController({
+    maxConcurrent: 1,
+    sleep: () => new Promise<void>((resolve) => {
+      sleepStarted = true;
+      releaseSleep = resolve;
+    }),
+    log: () => undefined,
+  });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner });
+  const reading = storage.getUserHosts("user-1");
+  const outcome = reading.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  let otherResult: string | undefined;
+  if (sleepStarted) {
+    otherResult = await operationRunner.run("other", async () => "other");
+    releaseSleep();
+  }
+  const settled = await outcome;
+
+  assert.equal(sleepStarted, true);
+  assert.equal(otherResult, "other");
+  assert.equal(settled.ok, true);
+  if (settled.ok) assert.deepEqual(settled.value, []);
+  assert.equal(ddlAttempts > 1, true);
+  assert.equal(readAttempts, 1);
+});
 
 test("인사이트 query log 표식은 SQL 주석 제거 후에도 남는 문자열 리터럴이다", async () => {
   const queries: string[] = [];
@@ -2938,7 +3040,11 @@ test("ClickHouse client 호출과 readiness ping은 operation controller를 거�
 
   assert.ok(clientCalls.length > 0);
   assert.equal(guardedCalls.length, clientCalls.length);
-  assert.equal([...source.matchAll(/retryTransient:\s*true/g)].length, 2);
+  assert.equal([...source.matchAll(/retryTransient:\s*true/g)].length, 3);
+  assert.match(
+    source,
+    /runSchemaCommand[\s\S]*?operationRunner\.run\(\s*"ensure_schema",[\s\S]*?\{\s*retryTransient:\s*true\s*}\s*\)/,
+  );
   assert.match(
     source,
     /defaultClickHouseOperationController\.run\(\s*"readiness_ping",[\s\S]*?\{\s*retryTransient:\s*true\s*}\s*\)/,

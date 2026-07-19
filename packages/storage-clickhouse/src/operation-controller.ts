@@ -116,7 +116,7 @@ export class ClickHouseOperationController implements ClickHouseOperationRunner 
           lease.release();
         }
       } catch (error) {
-        if (options.retryTransient && isOverloadError(error)) {
+        if (isOverloadError(error)) {
           overloadFailures += 1;
           if (overloadFailures < OVERLOAD_ATTEMPTS) {
             await this.sleep(100 + Math.floor(this.random() * 200));
@@ -140,17 +140,21 @@ export class ClickHouseOperationController implements ClickHouseOperationRunner 
         const inFlight = admission?.inFlight ?? lastLease?.inFlight ?? this.active;
         const code = errorCode(finalError);
 
-        this.log({
-          event: "clickhouse_operation_failed",
-          backend: "clickhouse",
-          operation,
-          errorClass: classify(finalError),
-          ...(code ? { errorCode: code } : {}),
-          attempt,
-          durationMs: Date.now() - startedAt,
-          queueWaitMs,
-          inFlight,
-        });
+        try {
+          this.log({
+            event: "clickhouse_operation_failed",
+            backend: "clickhouse",
+            operation,
+            errorClass: classify(finalError),
+            ...(code ? { errorCode: code } : {}),
+            attempt,
+            durationMs: Date.now() - startedAt,
+            queueWaitMs,
+            inFlight,
+          });
+        } catch {
+          // Logging is best effort and must never replace the operation failure.
+        }
         throw finalError;
       }
     }
@@ -244,35 +248,52 @@ function classify(error: unknown): ClickHouseOperationLog["errorClass"] {
 }
 
 function isOverloadError(error: unknown): boolean {
-  const codes = errorCodes(error);
-  return codes.includes("202") || codes.includes("TOO_MANY_SIMULTANEOUS_QUERIES");
+  const identifiers = errorIdentifiers(error).map(({ value }) => value);
+  return identifiers.includes("202")
+    || identifiers.includes("TOO_MANY_SIMULTANEOUS_QUERIES");
 }
 
 function isTransientNetworkError(error: unknown): boolean {
-  const codes = errorCodes(error);
+  const codes = errorIdentifiers(error).map(({ value }) => value);
   if (codes.some((code) => TRANSIENT_NETWORK_ERROR_CODES.has(code))) return true;
   const message = String(error instanceof Error ? error.message : error);
   return [...TRANSIENT_NETWORK_ERROR_CODES].some((code) => message.includes(code));
 }
 
 function errorCode(error: unknown): string | undefined {
-  return errorCodes(error)[0];
+  const identifiers = errorIdentifiers(error);
+  return identifiers.find(({ kind, value }) => kind === "code" && /^\d+$/.test(value))?.value
+    ?? identifiers.find(({ kind }) => kind === "code")?.value
+    ?? identifiers.find(({ kind }) => kind === "type")?.value;
 }
 
-function errorCodes(error: unknown): string[] {
-  const codes: string[] = [];
+type ErrorIdentifier = {
+  kind: "code" | "type";
+  value: string;
+};
+
+function errorIdentifiers(error: unknown): ErrorIdentifier[] {
+  const identifiers: ErrorIdentifier[] = [];
   const visited = new Set<object>();
   let current = error;
   while (current && typeof current === "object" && !visited.has(current)) {
     visited.add(current);
-    const candidate = current as { code?: unknown; cause?: unknown };
+    const candidate = current as { code?: unknown; type?: unknown; cause?: unknown };
     if (typeof candidate.code === "string" || typeof candidate.code === "number") {
-      codes.push(String(candidate.code));
+      identifiers.push({ kind: "code", value: String(candidate.code) });
+    }
+    if (typeof candidate.type === "string") {
+      identifiers.push({ kind: "type", value: candidate.type.trim().toUpperCase() });
     }
     current = candidate.cause;
   }
-  return codes;
+  return identifiers;
 }
 
-export const defaultClickHouseOperationController =
-  new ClickHouseOperationController({ maxConcurrent: 4, queueTimeoutMs: 5_000 });
+const DEFAULT_CONTROLLER_KEY = Symbol.for("toard.clickhouse.operation-controller");
+const processRegistry = globalThis as unknown as Record<PropertyKey, unknown>;
+
+export const defaultClickHouseOperationController = (
+  processRegistry[DEFAULT_CONTROLLER_KEY] ??=
+    new ClickHouseOperationController({ maxConcurrent: 4, queueTimeoutMs: 5_000 })
+) as ClickHouseOperationController;

@@ -1400,14 +1400,19 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async ensureClickHouseSchema(): Promise<void> {
     for (const query of CLICKHOUSE_SCHEMA_DDL) {
-      await this.operationRunner.run("ensure_schema", () => this.ch.command({ query }));
+      await this.runSchemaCommand(query);
     }
     if (this.enforceRetentionTtl) {
-      await this.operationRunner.run(
-        "ensure_schema",
-        () => this.ch.command({ query: CLICKHOUSE_RAW_RETENTION_DDL }),
-      );
+      await this.runSchemaCommand(CLICKHOUSE_RAW_RETENTION_DDL);
     }
+  }
+
+  private async runSchemaCommand(query: string): Promise<void> {
+    await this.operationRunner.run(
+      "ensure_schema",
+      () => this.ch.command({ query }),
+      { retryTransient: true },
+    );
   }
 
   private ensureSchema(): Promise<void> {

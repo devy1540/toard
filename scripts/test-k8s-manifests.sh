@@ -38,12 +38,12 @@ assert_not_kind() {
   fi
 }
 
-assert_file_contains() {
-  local file="$1"
-  local expected="$2"
+assert_not_contains() {
+  local rendered="$1"
+  local unexpected="$2"
 
-  if ! grep -Fq -- "$expected" "$file"; then
-    echo "required file contract is missing from $file: $expected" >&2
+  if grep -Fq -- "$unexpected" <<<"$rendered"; then
+    echo "rendered manifest must not include: $unexpected" >&2
     exit 1
   fi
 }
@@ -57,9 +57,28 @@ prepare_raw_secret() {
 
 test_app() {
   local overlay
+  local overlay_kustomization="k8s/overlays/orbstack-personal/kustomization.yaml"
+  local image_tag_count
+  local app_image_tag
+  local migrate_image_tag
+  local semver_pattern='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?(\+([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$'
 
-  assert_file_contains scripts/k8s-create-toard-secret.sh 'kubectl --namespace "$namespace" get secret toard-secrets'
-  assert_file_contains scripts/k8s-create-toard-secret.sh 'refusing to replace it; this helper is for first-time installation only'
+  image_tag_count="$(awk '$1 == "newTag:" { count++ } END { print count + 0 }' "$overlay_kustomization")"
+  if [[ "$image_tag_count" != "2" ]]; then
+    echo "personal overlay must define exactly two image newTag values" >&2
+    exit 1
+  fi
+
+  app_image_tag="$(awk '$1 == "newTag:" { print $2; exit }' "$overlay_kustomization")"
+  migrate_image_tag="$(awk '$1 == "newTag:" { count++; if (count == 2) { print $2; exit } }' "$overlay_kustomization")"
+  if [[ "$app_image_tag" != "$migrate_image_tag" ]]; then
+    echo "personal overlay app and migrator image tags must match" >&2
+    exit 1
+  fi
+  if [[ ! "$app_image_tag" =~ $semver_pattern ]]; then
+    echo "personal overlay image tag must be semver" >&2
+    exit 1
+  fi
 
   prepare_raw_secret
   kubectl kustomize k8s/base >/dev/null
@@ -67,6 +86,8 @@ test_app() {
 
   assert_not_kind "$overlay" Secret
   assert_not_kind "$overlay" Ingress
+  assert_not_contains "$overlay" "type: NodePort"
+  assert_not_contains "$overlay" "type: LoadBalancer"
   assert_contains "$overlay" "namespace: toard-personal"
   assert_contains "$overlay" "TOARD_PUBLIC_URL: https://toard.devy1540.com"
   assert_contains "$overlay" "replicas: 2"
@@ -75,8 +96,8 @@ test_app() {
   assert_contains "$overlay" "maxSurge: 1"
   assert_contains "$overlay" "type: ClusterIP"
   assert_contains "$overlay" "storage: 10Gi"
-  assert_contains "$overlay" "image: ghcr.io/devy1540/toard:0.15.36"
-  assert_contains "$overlay" "image: ghcr.io/devy1540/toard-migrate:0.15.36"
+  assert_contains "$overlay" "image: ghcr.io/devy1540/toard:$app_image_tag"
+  assert_contains "$overlay" "image: ghcr.io/devy1540/toard-migrate:$app_image_tag"
 
   kubectl kustomize k8s >/dev/null
 }

@@ -235,8 +235,15 @@ test("Windows shim CI verifies GUI helper subsystem and scheduled action", () =>
   );
   assert.match(e2e, /LastRunTime\s*-ne\s*\$infoAfter\.LastRunTime/);
   assert.match(e2e, /LastTaskResult\s*-ne\s*\$infoAfter\.LastTaskResult/);
+  assert.match(e2e, /LastRunTime\s*-gt\s*\$taskRunBaseline\.LastRunTime/);
+  assert.match(e2e, /\$state\s*-ne\s*'Running'/);
   assert.match(e2e, /0x41301/);
+  assert.match(e2e, /LastRunTime\s*-eq\s*\$terminalLastRunTime/);
+  assert.match(e2e, /LastTaskResult\s*-eq\s*\$terminalLastTaskResult/);
   assert.match(e2e, /stableTerminalSnapshots[\s\S]*-ge 2/);
+  assert.match(e2e, /Start-Sleep -Milliseconds 100/);
+  assert.match(e2e, /did not reach a stable terminal snapshot within 10 seconds/);
+  assert.match(e2e, /\$taskInfo\.LastTaskResult\s*-ne\s*0/);
 });
 
 test("device onboarding uses OS-aware wizard and separate management", () => {

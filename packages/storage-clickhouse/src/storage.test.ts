@@ -44,6 +44,7 @@ function finalizedEvent(
 function storageWithInsertedRows(
   inserts: InsertedRows[],
   pgQueries: Array<{ sql: string; params: unknown[] }> = [],
+  options: { failEnqueue?: boolean; failInsert?: boolean } = {},
 ): ClickHouseStorage {
   const outboxRows: Array<Record<string, unknown>> = [];
   let pendingBatch = true;
@@ -86,6 +87,16 @@ function storageWithInsertedRows(
       if (normalized.startsWith("SELECT dedup_key")) {
         return { rows: outboxRows, rowCount: outboxRows.length };
       }
+      if (normalized.includes("enqueue_pricing_repair")) {
+        if (options.failEnqueue) throw new Error("enqueue unavailable");
+        return { rows: [], rowCount: 1 };
+      }
+      if (
+        normalized.startsWith("UPDATE clickhouse_usage_batches")
+        && normalized.includes("SET status = 'pending'")
+      ) {
+        pendingBatch = true;
+      }
       return { rows: [], rowCount: 0 };
     },
     release: () => undefined,
@@ -96,6 +107,7 @@ function storageWithInsertedRows(
   const ch = {
     command: async () => undefined,
     insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      if (options.failInsert && table === "usage_events") throw new Error("clickhouse unavailable");
       inserts.push({ table, values });
     },
   } as unknown as ClickHouseClient;
@@ -619,6 +631,71 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
       .map(({ params }) => params[0]),
     ["usage_15m", "usage_15m_v2"],
   );
+  const enqueueIndexes = pgQueries.flatMap(({ sql }, index) =>
+    sql.includes("enqueue_pricing_repair") ? [index] : []
+  );
+  assert.equal(enqueueIndexes.length, 1);
+  const outboxDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET delivered_at = now()"));
+  const batchDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET status = 'delivered'"));
+  const deliveryCommitIndex = pgQueries.findLastIndex(({ sql }) => sql === "COMMIT");
+  assert.ok(enqueueIndexes[0]! > outboxDeliveredIndex);
+  assert.ok(enqueueIndexes[0]! > batchDeliveredIndex);
+  assert.ok(deliveryCommitIndex > enqueueIndexes[0]!);
+});
+
+test("ClickHouse는 priced·legacy delivery만 있으면 가격 복구를 예약하지 않는다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries);
+
+  await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "priced" }),
+    finalizedEvent({ dedupKey: "legacy", pricingRevisionId: null, costStatus: "legacy" }),
+  ]);
+
+  assert.equal(pgQueries.some(({ sql }) => sql.includes("enqueue_pricing_repair")), false);
+});
+
+test("ClickHouse delivery의 가격 복구 예약 실패는 outbox batch를 pending으로 되돌린다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, { failEnqueue: true });
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+
+  try {
+    await storage.saveUsageEvents([
+      finalizedEvent({ pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    ]);
+    await assert.rejects(storage.flushUsageOutbox(), /enqueue unavailable/);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(pgQueries.some(({ sql }) =>
+    sql.includes("SET status = 'pending'")
+  ), true);
+  assert.equal(pgQueries.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(warnings.some((warning) => warning.includes("queued rows retained")), true);
+});
+
+test("ClickHouse raw insert 실패 전에는 가격 복구를 예약하지 않는다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, { failInsert: true });
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+
+  try {
+    await storage.saveUsageEvents([
+      finalizedEvent({ pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    ]);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(pgQueries.some(({ sql }) => sql.includes("enqueue_pricing_repair")), false);
+  assert.equal(pgQueries.some(({ sql }) => sql.includes("SET status = 'pending'")), true);
+  assert.equal(warnings.some((warning) => warning.includes("queued rows retained")), true);
 });
 
 test("ClickHouse 가격 복구는 unpriced와 legacy를 dirty 먼저 기록하고 priced 버전을 결정적으로 삽입한다", async () => {

@@ -3,7 +3,8 @@
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 ALTER TABLE user_team_assignments
-  DROP CONSTRAINT user_team_assignments_user_id_effective_from_key;
+  DROP CONSTRAINT IF EXISTS user_team_assignments_user_id_effective_from_key,
+  DROP CONSTRAINT IF EXISTS user_department_assignments_user_id_effective_from_key;
 
 ALTER TABLE user_team_assignments
   ALTER COLUMN effective_from TYPE TIMESTAMPTZ
@@ -159,4 +160,3 @@ ALTER TABLE user_team_assignments
 ALTER TABLE user_team_assignments
   ADD CONSTRAINT user_team_assignments_user_id_effective_from_key
     UNIQUE (user_id, effective_from);
-

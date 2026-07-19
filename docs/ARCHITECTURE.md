@@ -230,13 +230,16 @@ CREATE TABLE users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 팀 이동 이력(1차 비활성, users.team_id로 운영)
+-- 이벤트 발생 시각 기준 팀 소속 원장. 기간은 [effective_from, effective_to).
 CREATE TABLE user_team_assignments (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id),
   team_id UUID NOT NULL REFERENCES teams(id),
-  effective_from DATE NOT NULL, effective_to DATE,
-  UNIQUE (user_id, effective_from)
+  effective_from TIMESTAMPTZ NOT NULL,
+  effective_to TIMESTAMPTZ,
+  assignment_kind TEXT NOT NULL,                 -- 'onboarding' | 'admin' | 'legacy_seed'
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE providers (
@@ -325,11 +328,11 @@ CREATE INDEX ON usage_daily_team (day, provider_key);
 ```
 
 ### 4.3 ClickHouse 모드 (옵트인)
-메타는 PG에 그대로. 이벤트·집계만 CH. **팀 시점 귀속을 위해 수집 시점의 `team_id`를 비정규화**한다.
+메타는 PG에 그대로. 이벤트·집계만 CH. **이벤트 발생 시각에 유효한 소속 이력을 조회한 `team_id`를 비정규화**한다.
 ```sql
 CREATE TABLE usage_events (
   dedup_key String, provider_key LowCardinality(String),
-  user_id String, team_id String,           -- 수집 시점 스냅샷(시점 귀속)
+  user_id String, team_id String,           -- 이벤트 발생 시각 기준 소속
   session_id String, model LowCardinality(String),
   ts DateTime64(3,'UTC'),
   input_tokens UInt64, output_tokens UInt64, cache_read_tokens UInt64, cache_creation_tokens UInt64,
@@ -342,7 +345,7 @@ SELECT user_id, toDate(ts, <ORG_TIMEZONE>) AS day, provider_key,   -- 조직 타
   uniqState(session_id) AS sessions, sum(input_tokens) AS input_tokens, /* … */ sum(cost_usd) AS cost_usd
 FROM usage_events GROUP BY user_id, day, provider_key;
 ```
-> CH는 `team_id`를 이벤트에 동봉하므로 팀 GROUP BY가 PG 모드와 **동일 의미**(시점 귀속)로 성립한다. 리더보드 라벨(이름)만 PG에서 머지. 팀별 DISTINCT(`active_users`·`sessions`)는 `usage_daily_team_mv`(AggregatingMergeTree, `uniqState(user_id)`/`uniqState(session_id)`, `team_id` GROUP BY) 또는 `usage_events`에서 `uniq()` 직접 쿼리로 산출.
+> CH는 `team_id`를 이벤트에 동봉하므로 팀 GROUP BY가 PG 모드와 **동일 의미**(이벤트 시각 귀속)로 성립한다. 리더보드 라벨(이름)만 PG에서 머지. 팀별 DISTINCT(`active_users`·`sessions`)는 `usage_daily_team_mv`(AggregatingMergeTree, `uniqState(user_id)`/`uniqState(session_id)`, `team_id` GROUP BY) 또는 `usage_events`에서 `uniq()` 직접 쿼리로 산출.
 
 ### 4.4 핵심 설계 노트
 
@@ -356,11 +359,12 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 | **데이터 보존(TTL)** | `raw_events`=처리 후 14일. `usage_events`=365일(파티션 드롭). Mart=영속. |
 | **타임존** | `ts`=UTC `timestamptz`. 일별 `day`=`(ts AT TIME ZONE <ORG_TIMEZONE>)::date` — 타임존은 **`ORG_TIMEZONE` 설정(기본 UTC)을 앱이 검증 후 `StorageBackend` 생성자로 주입**(SQL에 서버 TZ 비의존, ADR-008). 필터의 조직 타임존→UTC 환산은 앱이 책임. |
 | **사용자 매칭** | **인증 토큰의 user_id가 유일·최종 권위.** resource attribute의 user.id/email은 **신뢰하지 않음**(토큰 없을 때만 email로 임시 귀속 후 등록 시 소급). §10.1과 일치. |
+| **팀 귀속** | 신규 이벤트는 수집 시각의 현재 팀이 아니라 이벤트 `ts`에 유효한 `user_team_assignments` 기간으로 귀속한다. 최초 `팀 없음 → 팀`은 아직 미배정인 과거 사용량을 durable worker가 소급 귀속하고, 이후 이동·해제·재배정은 변경 시각 이후에만 적용한다. 기존 설치의 `legacy_seed` 사용자는 관리자가 preview를 확인한 뒤 `legacy_adoption`을 명시 실행해야 한다. |
 
 > **1차 구현 한계 (검증 반영, 2026-06-30)**
 > - **서빙은 event-direct**: 대시보드 쿼리는 `usage_events`를 직접 집계하며 Mart(`usage_daily_*`)·`bumpDailyUser`·`recomputeDaily`는 **미래 서빙 레이어로 현재 미사용**(데이터 규모가 커지면 읽기를 Mart로 전환). 따라서 "당일 증분 vs 마감 재계산 정합"은 현재 사용자 화면과 무관.
 > - **재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성은 2차 목표. 현재 `processed`는 항상 false, `raw_event_id`는 NULL.
-> - **팀 백필 없음**: `team_id` 비정규화는 수집(INSERT) 시점부터 적용되어, 마이그레이션 이전 이벤트는 팀 집계에서 제외(과거 시점 팀을 알 수 없어 NULL 유지).
+> - **팀 귀속 백필**: 최초 팀 배정은 아직 미배정인 과거 이벤트만 batch 백필한다. 작업은 PostgreSQL durable queue에서 재시도되며, ClickHouse rollup-only 보정 중에는 read fence로 영향 기간의 불완전한 팀 집계를 숨긴다. 기존 설치의 현재 팀은 `legacy_seed`로 보존하고 자동 백필하지 않는다.
 > - **기간 프리셋**: 기본 UI 는 뷰어 타임존 기준 캘린더 프리셋(`오늘`·`이번 주`·`이번 달`·`최근 3개월`·`최근 12개월`)을 사용한다. 구 URL 호환용 `period=7|30|90`은 현재 시각 기준 롤링 윈도우로 계속 해석한다.
 
 ---

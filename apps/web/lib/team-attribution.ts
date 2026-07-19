@@ -197,10 +197,10 @@ export class PgTeamAttributionRepository implements TeamAttributionRepository {
             SET status = CASE WHEN $4 THEN 'pending' ELSE 'succeeded' END,
                 processed_events = processed_events + $2,
                 updated_events = updated_events + $3,
-                next_attempt_at = $5,
+                next_attempt_at = $5::timestamptz,
                 last_error = NULL,
-                finished_at = CASE WHEN $4 THEN NULL ELSE $5 END,
-                updated_at = $5
+                finished_at = CASE WHEN $4 THEN NULL ELSE $5::timestamptz END,
+                updated_at = $5::timestamptz
           WHERE id = $1`,
         [jobId, result.processed, result.updated, result.hasMore, result.at],
       );
@@ -221,7 +221,7 @@ export class PgTeamAttributionRepository implements TeamAttributionRepository {
       `UPDATE team_attribution_jobs
           SET status = 'failed',
               last_error = $2,
-              next_attempt_at = $3 + make_interval(
+              next_attempt_at = $3::timestamptz + make_interval(
                 secs => LEAST(300, 5 * power(2, GREATEST(attempts - 1, 0))::integer)
               ),
               updated_at = $3

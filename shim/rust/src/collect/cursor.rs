@@ -10,8 +10,6 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::fsx;
-
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct Cursor {
     #[serde(default)]
@@ -65,23 +63,25 @@ pub fn stamp(path: &Path) -> Option<FileStamp> {
     })
 }
 
-fn cursor_path(adapter: &str) -> Option<PathBuf> {
-    fsx::state_dir().map(|d| d.join("cursors").join(format!("{adapter}.json")))
+fn cursor_path(state_dir: &Path, adapter: &str) -> PathBuf {
+    state_dir.join("cursors").join(format!("{adapter}.json"))
 }
 
-pub fn load(adapter: &str) -> Cursor {
-    cursor_path(adapter)
-        .and_then(|p| std::fs::read_to_string(p).ok())
+pub fn load(state_dir: &Path, adapter: &str) -> Cursor {
+    std::fs::read_to_string(cursor_path(state_dir, adapter))
+        .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default()
 }
 
-pub fn save(adapter: &str, cursor: &Cursor) {
-    let Some(path) = cursor_path(adapter) else {
-        return;
-    };
+pub fn save(state_dir: &Path, adapter: &str, cursor: &Cursor) {
+    let path = cursor_path(state_dir, adapter);
     if let Ok(body) = serde_json::to_string_pretty(cursor) {
-        let _ = fsx::write_atomic(&path, &body, 0o600);
+        if let Some(directory) = path.parent() {
+            let _ = std::fs::create_dir_all(directory);
+            let _ = crate::fsx::set_mode(directory, 0o700);
+        }
+        let _ = crate::fsx::write_atomic(&path, &body, 0o600);
     }
 }
 
@@ -107,6 +107,37 @@ mod tests {
         let s = &back.files["/tmp/a.jsonl"];
         assert_eq!((s.mtime_ms, s.size, s.sent), (1_700_000_000_000, 42, 7));
         assert_eq!(s.sent_hash, "abc");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cursor_directory_and_file_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let state = std::env::temp_dir().join(format!(
+            "toard-cursor-mode-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+
+        save(&state, "codex", &Cursor::default());
+
+        assert_eq!(
+            std::fs::metadata(state.join("cursors"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(state.join("cursors/codex.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(state);
     }
 
     #[test]
@@ -141,5 +172,29 @@ mod tests {
     fn corrupt_state_falls_back_to_default() {
         let c: Cursor = serde_json::from_str("not json").unwrap_or_default();
         assert!(c.files.is_empty());
+    }
+
+    #[test]
+    fn cursor_paths_are_isolated_by_target_state_root() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-cursor-isolation-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let company = root.join("company");
+        let personal = root.join("personal");
+        let cursor = Cursor {
+            reconciliation_version: 1,
+            ..Cursor::default()
+        };
+
+        save(&company, "codex", &cursor);
+
+        assert_eq!(load(&company, "codex").reconciliation_version, 1);
+        assert_eq!(load(&personal, "codex").reconciliation_version, 0);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

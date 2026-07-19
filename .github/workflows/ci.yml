@@ -20,7 +20,13 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.33.9
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test
+      - run: bash -n scripts/test-k8s-manifests.sh scripts/test-k8s-secret-helpers.sh scripts/k8s-create-toard-secret.sh scripts/k8s-create-tunnel-secret.sh
+      - run: ./scripts/test-k8s-secret-helpers.sh
+      - run: ./scripts/test-k8s-manifests.sh all

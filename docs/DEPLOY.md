@@ -89,8 +89,170 @@ kubectl apply -k k8s/
 
 - 마이그레이션은 **앱 파드 initContainer**(`migrate`)가 처리 — 스키마 보장 후 앱 기동. node-pg-migrate
   락으로 멀티파드 안전. `k8s/migrate-job.yaml` 은 선택(CI·수동·시드)이라 기본 kustomization 에서 제외.
-- 외부 관리형 DB: `postgres.yaml` 을 `kustomization.yaml` 에서 빼고 Secret 의 `DATABASE_URL` 만 외부로.
+- 외부 관리형 DB: `postgres.yaml` 을 `k8s/base/kustomization.yaml` 에서 빼고 Secret 의 `DATABASE_URL` 만 외부로.
 - 접속: `kubectl -n toard port-forward svc/toard-app 3000:80` 또는 Ingress(host·TLS 조정).
+
+### OrbStack 개인 Kubernetes 런북
+
+이 경로는 개인용 `toard-personal` namespace와 공유 Cloudflare Tunnel namespace를 분리한다. 앱 Service는
+`ClusterIP`로 유지하며, Ingress·NodePort·LoadBalancer를 만들지 않는다. 배포를 시작하기 전에 GitHub Release와
+GHCR의 app/migrator 이미지가 overlay가 가리키는 버전으로 게시됐는지 확인한다.
+
+#### 1. OrbStack Kubernetes 준비
+
+OrbStack CLI 명령을 가정하지 않는다. OrbStack 앱의 **Settings > Kubernetes**에서 Kubernetes를 활성화한
+다음에만 아래를 실행한다.
+
+```bash
+kubectl config use-context orbstack
+kubectl cluster-info
+kubectl get nodes -o wide
+kubectl get storageclass
+```
+
+node가 `Ready`이고 기본 StorageClass가 표시되는지 확인한다. 기본 StorageClass가 없거나 PVC를 제공하지
+않으면 여기서 중단하고 OrbStack Kubernetes 설정을 해결한다. 이 overlay는 PostgreSQL 데이터에 10Gi PVC를
+요청한다.
+
+#### 2. toard Secret 생성 후 앱 배포
+
+Secret은 Git에 넣지 않으며 helper가 `AUTH_SECRET`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `CRON_SECRET`을
+생성해 클러스터에만 저장한다. helper는 **최초 설치 전용**이다. `toard-secrets`가 이미 있으면 stderr를
+출력하고 non-zero로 중단하며 값을 교체하지 않는다. Secret이 없어도 기존 `statefulset/postgres` 또는
+`persistentvolumeclaim/data-postgres-0`가 있으면 새 DB 비밀번호를 만들지 않고 복구 필요 메시지와 함께
+중단한다. 이 상태는 Secret 유실로 간주하고, 백업해 둔 기존 `AUTH_SECRET`, `POSTGRES_PASSWORD`,
+`DATABASE_URL`, `CRON_SECRET` 값으로 `toard-secrets`를 수동 복원해야 한다. 재적용 시에는 helper를 건너뛰어
+기존 Secret을 보존한다. 비밀번호·시크릿 회전은 별도의 변경 절차로 계획·검증해야 하며, 이 helper로 수행하지
+않는다. **Secret 생성이 성공하기 전에는 overlay를 적용해 app pod를 만들지 않는다.**
+
+```bash
+# namespace를 먼저 명시적으로 생성한다.
+kubectl apply -f k8s/overlays/orbstack-personal/namespace.yaml
+
+# 최초 설치에서만 값을 출력하지 않고 toard-personal/toard-secrets를 만든다.
+./scripts/k8s-create-toard-secret.sh
+
+# Secret 생성 성공 후에만 app·PostgreSQL 리소스를 적용한다.
+kubectl apply -k k8s/overlays/orbstack-personal
+
+kubectl -n toard-personal rollout status statefulset/postgres --timeout=5m
+kubectl -n toard-personal rollout status deployment/toard-app --timeout=10m
+kubectl -n toard-personal get pods,pvc,svc
+```
+
+`toard-app`의 모든 replica가 Ready이고 PostgreSQL PVC가 `Bound`인지 확인한다. 문제가 있으면 namespace나
+PVC를 삭제하지 말고 먼저 `kubectl -n toard-personal get events --sort-by=.lastTimestamp`와 pod/initContainer
+로그를 보존해 원인을 확인한다.
+
+#### 3. 공개 노출 전에 `/setup` 완료
+
+Cloudflare route를 만들기 전에 로컬 포트포워드만으로 초기 관리자를 만든다. 아래 명령을 실행한 터미널은
+열어 둔 채 브라우저에서 `http://localhost:3000/setup`을 열고 관리자 이메일·비밀번호를 직접 입력한다.
+그 뒤 로그아웃/로그인까지 확인한다.
+
+```bash
+kubectl -n toard-personal port-forward svc/toard-app 3000:80
+```
+
+이 단계가 끝나기 전에는 `toard.devy1540.com` published application route를 추가하지 않는다.
+
+#### 4. `macmini-k8s` Cloudflare Tunnel 배포
+
+먼저 기존 Tunnel을 확인한다. 이 Kubernetes workload는 `TUNNEL_TOKEN`을 쓰는 **remotely-managed Tunnel**만
+사용한다. Cloudflare Dashboard의 **Networking > Tunnels**에서 `macmini-k8s`를 연 뒤 remotely-managed로
+구성되어 있고 published application route를 편집할 수 있는지 확인한다. 기존 Tunnel이 local-managed이거나
+Dashboard에서 route를 편집할 수 없다면 이 절차에 재사용하지 않는다.
+
+`macmini-k8s`가 없으면 Dashboard의 **Networking > Tunnels > Create Tunnel**에서 remotely-managed Tunnel을
+만든다. 자동화가 필요하면 Cloudflare API에서 `config_src=cloudflare`로 생성한다. `cloudflared tunnel`의
+`create` 하위 명령은 local-managed Tunnel을 생성하므로 이 배포에 사용하지 않는다. 생성·관리 모델의 차이는
+[Cloudflare Tunnel setup](https://developers.cloudflare.com/tunnel/setup/) 및
+[local management 안내](https://developers.cloudflare.com/tunnel/advanced/local-management/)를 따른다.
+
+```bash
+cloudflared tunnel list --output json
+```
+
+Tunnel token helper는 **최초 설치 전용**이며, 임시 `0600` 파일을 거쳐 Kubernetes Secret으로만 넣는다.
+기존 `tunnel-token` Secret이 있거나 조회에 실패하면 token을 가져오기 전에 중단하고 기존 Secret을 교체하지
+않는다. namespace → token helper → overlay 순서를 지켜 token 없이 `cloudflared` pod가 먼저 기동하지 않게
+한다.
+
+```bash
+kubectl apply -f k8s/overlays/orbstack-cloudflare/namespace.yaml
+./scripts/k8s-create-tunnel-secret.sh
+kubectl apply -k k8s/overlays/orbstack-cloudflare
+
+kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m
+kubectl -n cloudflare-tunnel get pods
+cloudflared tunnel info macmini-k8s
+```
+
+이 workload는 [Cloudflare의 Kubernetes remotely-managed Tunnel 가이드](https://developers.cloudflare.com/tunnel/deployment-guides/kubernetes/)의
+`TUNNEL_TOKEN` 및 두 replica 구성을 따른다. 이미지 버전은 재현 가능한 `cloudflare/cloudflared:2026.7.2`로
+고정했으며, [`cloudflared` 공식 업데이트 안내](https://developers.cloudflare.com/tunnel/downloads/update-cloudflared/)를
+검토한 뒤 별도 변경으로 올린다.
+
+Tunnel token 회전은 최초 설치 helper를 재사용하지 않고 별도 운영 절차로 수행한다. 먼저
+[Cloudflare 공식 Tunnel token 회전 절차](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/)에
+따라 Dashboard에서 token을 회전한 다음, 새 token을 stdout이나 command argv에 넣지 않고 `0600` 임시 파일로
+받아 기존 Secret을 갱신한다. 그 뒤 cloudflared를 재시작하고 rollout 완료까지 확인한다.
+
+```bash
+(
+set -euo pipefail
+
+token_file="$(mktemp "${TMPDIR:-/tmp}/cloudflare-tunnel-token-rotate.XXXXXX")"
+chmod 600 "$token_file"
+trap 'rm -f -- "$token_file"' EXIT
+cloudflared tunnel token macmini-k8s | tr -d '\r\n' >"$token_file"
+[[ -s "$token_file" ]] || { echo "Tunnel token fetch returned an empty token." >&2; exit 1; }
+
+kubectl -n cloudflare-tunnel create secret generic tunnel-token \
+  --from-file=token="$token_file" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n cloudflare-tunnel rollout restart deployment/cloudflared
+kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m
+)
+```
+
+Tunnel이 Healthy가 된 뒤 Cloudflare Dashboard의 **Networking > Tunnels > macmini-k8s > Routes > Add route >
+Published application**에서 아래 값을 추가한다.
+
+| 필드 | 값 |
+|---|---|
+| Hostname | `toard.devy1540.com` |
+| Service URL | `http://toard-app.toard-personal.svc.cluster.local:80` |
+
+Dashboard published application route는 hostname과 클러스터 내부 Service를 함께 매핑하고 DNS도 생성한다.
+`cloudflared tunnel route dns`는 CNAME만 만들며 이 origin Service mapping을 구성하지 않으므로 이 배포 절차의
+대체 수단이 아니다. Cloudflare의 [published application route 설명](https://developers.cloudflare.com/tunnel/setup/#publish-an-application)도
+hostname-to-service mapping을 요구한다.
+
+#### 5. 외부 확인과 이후 업데이트
+
+published route가 전파된 뒤 외부에서 health와 DB readiness를 확인한다.
+
+```bash
+curl -fsS https://toard.devy1540.com/api/health
+curl -fsS https://toard.devy1540.com/api/ready
+```
+
+향후 toard 업데이트는 새 Release와 GHCR app/migrator image 게시을 확인한 뒤 두 이미지를 같은 버전으로
+바꾼다. standalone `kustomize`가 설치된 환경에서는 아래처럼 수정하고, **렌더 테스트 → 적용 → rollout** 순서로
+진행한다.
+
+```bash
+(cd k8s/overlays/orbstack-personal && kustomize edit set image toard=ghcr.io/devy1540/toard:VERSION toard-migrate=ghcr.io/devy1540/toard-migrate:VERSION)
+./scripts/test-k8s-manifests.sh all
+kubectl apply -k k8s/overlays/orbstack-personal
+kubectl -n toard-personal rollout status deployment/toard-app --timeout=10m
+kubectl -n toard-personal get pods
+curl -fsS https://toard.devy1540.com/api/health
+curl -fsS https://toard.devy1540.com/api/ready
+```
+
+각 새 app pod의 `migrate` initContainer가 성공했는지도 확인한다. Kubernetes 배포는 Compose updater를 사용하지
+않는다. 장애 조사나 정리 중에도 PVC 또는 namespace 삭제는 데이터 파괴 작업이므로 별도 확인 없이 실행하지 않는다.
 
 ## 3) Helm
 

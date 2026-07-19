@@ -218,13 +218,16 @@ test("shim CI runs installer E2E on Windows, Linux, and macOS", () => {
 test("device onboarding uses OS-aware wizard and separate management", () => {
   const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
   const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");
+  const commands = source("lib/onboarding-install.ts");
   assert.match(wizard, /detectInstallPlatform/);
   assert.match(wizard, /issueOnboardingTokenAction/);
   assert.match(wizard, /checkTokenConnectionAction/);
   assert.match(wizard, /2_000/);
   assert.match(wizard, /120_000/);
   assert.match(wizard, /href="\/"/);
-  assert.match(panel, /uninstall\.ps1/);
+  assert.match(commands, /uninstall\.ps1/);
+  assert.match(panel, /buildManagementCommands/);
+  assert.doesNotMatch(panel, /\.toard[\\/]credentials|agent_key=/);
   assert.doesNotMatch(panel, /issueOnboardingTokenAction/);
 });
 

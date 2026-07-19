@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: toard-personal
+resources:
+  - ../../base
+  - namespace.yaml
+replicas:
+  - name: toard-app
+    count: 2
+images:
+  - name: toard
+    newName: ghcr.io/devy1540/toard
+    newTag: 0.15.36
+  - name: toard-migrate
+    newName: ghcr.io/devy1540/toard-migrate
+    newTag: 0.15.36
+patches:
+  - target:
+      kind: ConfigMap
+      name: toard-config
+    patch: |-
+      - op: add
+        path: /data/TOARD_PUBLIC_URL
+        value: https://toard.devy1540.com

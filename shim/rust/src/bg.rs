@@ -16,6 +16,13 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+pub fn now_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
 /// 스로틀 판정 — 기록이 없거나 손상됐거나 주기가 지났으면 true.
 /// 미래 시각(시계 역행)은 skip 으로 처리해 폭주를 막는다.
 pub fn is_due(stamp_content: Option<&str>, now: u64, interval_secs: u64) -> bool {

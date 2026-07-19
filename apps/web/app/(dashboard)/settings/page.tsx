@@ -12,7 +12,7 @@ import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims } from "@/lib/host-shims";
-import { getIngestEndpoint, getPublicBaseUrl } from "@/lib/public-url";
+import { getPublicBaseUrl } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
@@ -162,9 +162,8 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [tokens, endpoint, baseUrl, devices, shims, inventories] = await Promise.all([
+  const [tokens, baseUrl, devices, shims, inventories] = await Promise.all([
     listActiveTokens(userId),
-    getIngestEndpoint(),
     getPublicBaseUrl(),
     getStorage().getUserHosts(userId),
     getHostShims(userId),
@@ -201,7 +200,7 @@ async function InstallTab({ userId }: { userId: string }) {
             contentDefaultOn={contentDefaultOn}
           />
           <div className="border-t pt-4">
-            <OnboardingPanel baseUrl={baseUrl} endpoint={endpoint} />
+            <OnboardingPanel baseUrl={baseUrl} />
           </div>
         </CardContent>
       </Card>

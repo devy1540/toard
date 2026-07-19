@@ -3,13 +3,11 @@ kind: Kustomization
 namespace: toard
 
 resources:
+  - base
   - namespace.yaml
-  - configmap.yaml
   - secret.yaml # secret.example.yaml 을 복사해 생성 (gitignored). 실제 시크릿 커밋 금지.
-  - postgres.yaml # 번들 Postgres. 외부 관리형 DB 사용 시 이 파일 제거 + DATABASE_URL 만 교체.
+  # base/postgres.yaml 은 번들 Postgres. 외부 관리형 DB 사용 시 이 항목을 base 에서 제거 + DATABASE_URL 만 교체.
   # migrate-job.yaml 은 기본 제외 — 마이그레이션은 deployment 의 initContainer 가 처리(중복 방지).
-  - deployment.yaml
-  - service.yaml
   - ingress.yaml
 
 # 배포 시 이미지 교체:

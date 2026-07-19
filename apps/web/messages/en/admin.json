@@ -8,7 +8,7 @@
   },
   "members": {
     "cardTitle": "Members ({count})",
-    "cardDescription": "Role changes apply on the next request, and team changes apply from the next collection onward (past events keep the team they were attributed to at the time). If Last received is empty, the shim is not installed or collection is not connected.",
+    "cardDescription": "A first team assignment can include confirmed unassigned history; later team changes apply from the change time onward. If Last received is empty, the shim is not installed or collection is not connected.",
     "colMember": "Member",
     "colRole": "Role",
     "colTeam": "Team",
@@ -41,6 +41,27 @@
     "none": "No team",
     "assignedToast": "Assigned to the \"{name}\" team.",
     "unassignedToast": "Team assignment removed."
+  },
+  "teamAttribution": {
+    "assignmentTitle": "Assign existing usage to the \"{team}\" team too?",
+    "assignmentDescription": "Because this is the first team assignment, previously unassigned usage will be attributed as well. These values are estimates at confirmation time.",
+    "legacyTitle": "Attribute existing unassigned usage to the current team?",
+    "legacyDescription": "Only usage collected before the team was configured on this existing installation will be attributed.",
+    "events": "Events",
+    "period": "Period",
+    "periodUnknown": "No records",
+    "tokens": "Tokens",
+    "cost": "Confirmed cost",
+    "noOtherTeamsChanged": "Usage already attributed to another team and later team transfers will not be changed.",
+    "confirm": "Assign and start",
+    "cancel": "Cancel",
+    "inProgress": "Attributing historical usage · {count} expected",
+    "succeeded": "Historical attribution complete · {count}",
+    "failed": "Historical attribution failed · automatic retry scheduled",
+    "legacyButton": "Attribute existing unassigned usage",
+    "legacyQueued": "Historical usage attribution started.",
+    "readFenceTitle": "Attributing historical usage",
+    "readFenceDescription": "The affected period is temporarily hidden to avoid mixed totals. Refresh again shortly."
   },
   "roleSelect": {
     "label": "Change role",
@@ -359,6 +380,7 @@
     "teamHasEvents": "A team with attributed collection history cannot be deleted.",
     "roleInvalid": "The selected role is not valid.",
     "userNotFound": "The selected member could not be found.",
-    "lastAdminRequired": "The last administrator cannot be changed to member."
+    "lastAdminRequired": "The last administrator cannot be changed to member.",
+    "legacyAttributionNotEligible": "This member is not eligible for existing unassigned usage attribution."
   }
 }

@@ -7,6 +7,7 @@ import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { SummaryTile } from "@/components/dashboard/summary-tile";
+import { TeamAttributionFence } from "@/components/dashboard/team-attribution-fence";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
@@ -15,6 +16,7 @@ import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
+import { findTeamAttributionFence } from "@/lib/team-attribution";
 import { cn } from "@/lib/utils";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -235,6 +237,7 @@ export default async function TeamUsagePage({
 }) {
   const sp = await searchParams;
   const t = await getTranslations("org");
+  const attributionT = await getTranslations("admin");
   const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
   const viewer = await getDashboardViewer();
@@ -242,6 +245,7 @@ export default async function TeamUsagePage({
 
   const isAdmin = viewer.role === "admin";
   if (!isAdmin) redirect(hrefWith(sp, "/org/team"));
+  const attributionFence = await findTeamAttributionFence(period.from, period.to);
 
   return (
     <div className="space-y-6">
@@ -253,7 +257,14 @@ export default async function TeamUsagePage({
         trailing={<AutoRefresh />}
       />
 
-      <AllTeamsOverview period={period} />
+      {attributionFence ? (
+        <TeamAttributionFence
+          title={attributionT("teamAttribution.readFenceTitle")}
+          description={attributionT("teamAttribution.readFenceDescription")}
+        />
+      ) : (
+        <AllTeamsOverview period={period} />
+      )}
     </div>
   );
 }

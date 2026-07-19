@@ -5,9 +5,33 @@ import { getTranslations } from "next-intl/server";
 import { assignUserRoleWithPool } from "@/lib/admin-members";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session-user";
+import { getStorage } from "@/lib/storage";
 import { changeUserTeam, TeamMembershipError } from "@/lib/team-membership";
 
 export type TeamState = { error?: string; ok?: boolean };
+export type TeamAttributionPreviewDto = {
+  events: number;
+  from: string | null;
+  to: string | null;
+  totalTokens: number;
+  costUsd: number;
+};
+export type TeamAssignmentPreviewState = {
+  error?: string;
+  requiresConfirmation: boolean;
+  teamName?: string;
+  preview?: TeamAttributionPreviewDto;
+};
+
+function previewDto(preview: Awaited<ReturnType<ReturnType<typeof getStorage>["previewUnassignedTeamAttribution"]>>): TeamAttributionPreviewDto {
+  return {
+    events: preview.events,
+    from: preview.from?.toISOString() ?? null,
+    to: preview.to?.toISOString() ?? null,
+    totalTokens: preview.totalTokens,
+    costUsd: preview.costUsd,
+  };
+}
 
 async function requireAdmin(): Promise<TeamState | null> {
   const user = await getSessionUser();
@@ -78,6 +102,148 @@ export async function assignTeamAction(
   revalidatePath("/org");
   revalidatePath("/org/teams");
   revalidatePath("/org/team");
+  return { ok: true };
+}
+
+/** 최초 팀 배정일 때만 기존 미배정 사용량의 예상 소급 범위를 반환한다. */
+export async function previewTeamAssignmentAction(
+  userId: string,
+  teamId: string,
+): Promise<TeamAssignmentPreviewState> {
+  const me = await getSessionUser();
+  const t = await getTranslations("admin");
+  if (!me || me.role !== "admin") {
+    return { error: t("errors.onlyAdmin"), requiresConfirmation: false };
+  }
+  const [userResult, teamResult] = await Promise.all([
+    getPool().query<{ team_id: string | null; has_history: boolean }>(
+      `SELECT team_id::text,
+              EXISTS(SELECT 1 FROM user_team_assignments WHERE user_id = users.id) AS has_history
+         FROM users
+        WHERE id = $1`,
+      [userId],
+    ),
+    getPool().query<{ name: string }>("SELECT name FROM teams WHERE id = $1", [teamId]),
+  ]);
+  const user = userResult.rows[0];
+  const team = teamResult.rows[0];
+  if (!user) return { error: t("errors.userNotFound"), requiresConfirmation: false };
+  if (!team) return { error: t("errors.teamNotFound"), requiresConfirmation: false };
+  if (user.team_id !== null || user.has_history) {
+    return { requiresConfirmation: false, teamName: team.name };
+  }
+  const preview = await getStorage().previewUnassignedTeamAttribution({
+    userId,
+    from: null,
+    to: null,
+  });
+  return {
+    requiresConfirmation: preview.events > 0,
+    teamName: team.name,
+    preview: previewDto(preview),
+  };
+}
+
+/** 기존 설치의 legacy seed 사용자가 명시적으로 확인한 경우에만 미배정 이력 귀속 job을 만든다. */
+export async function requestLegacyTeamAttributionAction(userId: string): Promise<TeamState> {
+  const me = await getSessionUser();
+  const t = await getTranslations("admin");
+  if (!me || me.role !== "admin") return { error: t("errors.onlyAdmin") };
+
+  const eligibility = await getPool().query<{
+    team_id: string | null;
+    assignment_id: string | null;
+    legacy_only: boolean;
+  }>(
+    `SELECT users.team_id::text,
+            current_assignment.id::text AS assignment_id,
+            EXISTS(SELECT 1 FROM user_team_assignments WHERE user_id = users.id)
+              AND NOT EXISTS(
+                SELECT 1 FROM user_team_assignments
+                 WHERE user_id = users.id AND assignment_kind <> 'legacy_seed'
+              ) AS legacy_only
+       FROM users
+       LEFT JOIN LATERAL (
+         SELECT id
+           FROM user_team_assignments
+          WHERE user_id = users.id
+            AND team_id = users.team_id
+            AND effective_to IS NULL
+          ORDER BY effective_from DESC
+          LIMIT 1
+       ) AS current_assignment ON true
+      WHERE users.id = $1`,
+    [userId],
+  );
+  const candidate = eligibility.rows[0];
+  if (!candidate) return { error: t("errors.userNotFound") };
+  if (!candidate.team_id || !candidate.assignment_id || !candidate.legacy_only) {
+    return { error: t("errors.legacyAttributionNotEligible") };
+  }
+
+  const preview = await getStorage().previewUnassignedTeamAttribution({
+    userId,
+    from: null,
+    to: null,
+  });
+  if (preview.events === 0) return { ok: true };
+
+  const client = await getPool().connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1540))", [userId]);
+    const locked = await client.query<{
+      team_id: string;
+      assignment_id: string;
+      effective_from: Date | string;
+      effective_to: Date | null;
+      legacy_only: boolean;
+    }>(
+      `SELECT users.team_id::text,
+              assignment.id::text AS assignment_id,
+              assignment.effective_from,
+              assignment.effective_to,
+              NOT EXISTS(
+                SELECT 1 FROM user_team_assignments history
+                 WHERE history.user_id = users.id
+                   AND history.assignment_kind <> 'legacy_seed'
+              ) AS legacy_only
+         FROM users
+         JOIN user_team_assignments assignment
+           ON assignment.user_id = users.id
+          AND assignment.team_id = users.team_id
+          AND assignment.effective_to IS NULL
+        WHERE users.id = $1
+        FOR UPDATE OF users, assignment`,
+      [userId],
+    );
+    const row = locked.rows[0];
+    if (
+      !row
+      || !row.legacy_only
+      || row.team_id !== candidate.team_id
+      || row.assignment_id !== candidate.assignment_id
+    ) {
+      await client.query("ROLLBACK");
+      return { error: t("errors.legacyAttributionNotEligible") };
+    }
+    await client.query(
+      `INSERT INTO team_attribution_jobs
+         (assignment_id, user_id, team_id, kind, status, from_ts, to_ts, matched_events)
+       VALUES ($1, $2, $3, 'legacy_adoption', 'pending', $4, $5, $6)
+       ON CONFLICT (assignment_id, kind) DO UPDATE
+         SET matched_events = GREATEST(team_attribution_jobs.matched_events, EXCLUDED.matched_events),
+             updated_at = now()`,
+      [row.assignment_id, userId, row.team_id, row.effective_from, row.effective_to, preview.events],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  revalidatePath("/admin");
   return { ok: true };
 }
 

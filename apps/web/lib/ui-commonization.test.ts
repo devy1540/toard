@@ -123,6 +123,55 @@ test("rollup 운영 문서는 고정 T0 자동 전환과 TTL 분리를 안내한
   assert.match(compose, /CLICKHOUSE_READ_TIMEZONE_ROLLUP:.*비상.*override/);
 });
 
+test("최초 팀 배정은 과거 귀속 preview 확인과 진행 상태 및 조직 read fence를 제공한다", () => {
+  const actions = source("app/(dashboard)/admin/team-actions.ts");
+  const select = source("app/(dashboard)/admin/team-select.tsx");
+  const page = source("app/(dashboard)/admin/page.tsx");
+  const org = source("app/(dashboard)/org/page.tsx");
+  const teams = source("app/(dashboard)/org/teams/page.tsx");
+  const team = source("app/(dashboard)/org/team/page.tsx");
+  const ko = JSON.parse(source("messages/ko/admin.json")) as Record<string, unknown>;
+  const en = JSON.parse(source("messages/en/admin.json")) as Record<string, unknown>;
+  const koAttribution = ko.teamAttribution as Record<string, unknown> | undefined;
+
+  assert.match(actions, /previewTeamAssignmentAction/);
+  assert.match(actions, /requestLegacyTeamAttributionAction/);
+  assert.match(actions, /previewUnassignedTeamAttribution/);
+  assert.match(actions, /kind, 'legacy_adoption'|legacy_adoption/);
+  assert.match(select, /AlertDialog/);
+  assert.match(select, /preview\.events/);
+  assert.match(select, /preview\.from/);
+  assert.match(select, /preview\.to/);
+  assert.match(select, /preview\.totalTokens/);
+  assert.match(select, /preview\.costUsd/);
+  assert.match(select, /noOtherTeamsChanged/);
+  assert.match(select, /requestLegacyTeamAttributionAction/);
+  assert.match(page, /getTeamAttributionStatus/);
+  assert.match(page, /legacyPreview/);
+  assert.doesNotMatch(select, /status\.lastError/);
+  for (const orgPage of [org, teams, team]) {
+    assert.match(orgPage, /findTeamAttributionFence/);
+    assert.match(orgPage, /TeamAttributionFence/);
+  }
+  assert.deepEqual(messageShape(ko), messageShape(en));
+  for (const key of [
+    "assignmentTitle",
+    "events",
+    "period",
+    "tokens",
+    "cost",
+    "noOtherTeamsChanged",
+    "inProgress",
+    "succeeded",
+    "failed",
+    "legacyButton",
+    "readFenceTitle",
+    "readFenceDescription",
+  ]) {
+    assert.equal(typeof koAttribution?.[key], "string", `missing admin.teamAttribution.${key}`);
+  }
+});
+
 test("dashboard disclosures use the shared disclosure wrapper", () => {
   assert.match(source("components/ui/disclosure.tsx"), /function Disclosure/);
   assert.match(source("app/(dashboard)/history/session-detail.tsx"), /@\/components\/ui\/disclosure/);

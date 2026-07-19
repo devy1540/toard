@@ -13,6 +13,7 @@ import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { SummaryTile } from "@/components/dashboard/summary-tile";
 import { SupportingMetric } from "@/components/dashboard/supporting-metric";
+import { TeamAttributionFence } from "@/components/dashboard/team-attribution-fence";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -34,6 +35,7 @@ import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
+import { findTeamAttributionFence } from "@/lib/team-attribution";
 import { getOrgToolSummary } from "@/lib/tool-metadata";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -387,11 +389,13 @@ export default async function OrgPage({
   const sp = await searchParams;
   const t = await getTranslations("org");
   const navT = await getTranslations("nav");
+  const attributionT = await getTranslations("admin");
   if (sp.tab === "ranking") redirect(legacyRankingHref(sp));
   const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
   const viewer = await getDashboardViewer();
   const canSeeTeamRanking = viewer?.role === "admin";
+  const attributionFence = await findTeamAttributionFence(period.from, period.to);
 
   return (
     <div className="space-y-6">
@@ -405,7 +409,14 @@ export default async function OrgPage({
         trailing={<AutoRefresh />}
       />
 
-      <OverviewTab sp={sp} period={period} providers={providers} canSeeTeamRanking={canSeeTeamRanking} />
+      {attributionFence ? (
+        <TeamAttributionFence
+          title={attributionT("teamAttribution.readFenceTitle")}
+          description={attributionT("teamAttribution.readFenceDescription")}
+        />
+      ) : (
+        <OverviewTab sp={sp} period={period} providers={providers} canSeeTeamRanking={canSeeTeamRanking} />
+      )}
     </div>
   );
 }

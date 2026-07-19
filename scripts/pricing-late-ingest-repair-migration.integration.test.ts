@@ -4,7 +4,8 @@ import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { promisify } from "node:util";
-import { Client } from "pg";
+import { Client, type Pool } from "pg";
+import { PgPricingRepairRepository } from "../apps/web/lib/pricing-repair";
 
 const execFileAsync = promisify(execFile);
 const MIGRATION = "migrations/1700000041_late_unpriced_ingest_repair.sql";
@@ -191,6 +192,57 @@ test("migration 41은 늦게 수집된 미확정 사용량을 실행 중 generat
     assert.deepEqual(restarted.rows[0]?.unresolved_models, []);
     assert.equal(restarted.rows[0]?.consecutive_failures, 0);
     assert.equal(restarted.rows[0]?.last_error, null);
+
+    const claimGeneration = new Date("2026-07-19T09:05:00.000Z");
+    const claimTarget = new Date("2026-07-19T09:05:10.000Z");
+    const queuedTarget = new Date("2026-07-19T09:05:20.000Z");
+    await client.query(`
+      UPDATE pricing_repair_status
+      SET state = 'pending', generation = $1, target_to = $2,
+          queued_target_to = $3, eligible_since = $1, next_attempt_at = $1
+      WHERE singleton
+    `, [claimGeneration, claimTarget, queuedTarget]);
+    const repository = new PgPricingRepairRepository(client as unknown as Pool);
+    const claimed = await repository.claim(new Date("2026-07-19T09:05:30.000Z"));
+    assert.equal(claimed?.state, "running");
+    assert.equal(claimed?.targetTo?.toISOString(), queuedTarget.toISOString());
+    const claimedRow = await client.query<{ target_to: Date; queued_target_to: Date | null }>(`
+      SELECT target_to, queued_target_to FROM pricing_repair_status WHERE singleton
+    `);
+    assert.equal(claimedRow.rows[0]?.target_to.toISOString(), queuedTarget.toISOString());
+    assert.equal(claimedRow.rows[0]?.queued_target_to, null);
+
+    const concurrentTarget = new Date("2026-07-19T09:06:00.000Z");
+    const progressAt = new Date("2026-07-19T09:05:40.000Z");
+    await client.query("SELECT enqueue_pricing_repair($1)", [concurrentTarget]);
+    assert.equal(await repository.markProgress({
+      generation: claimed!.generation!,
+      state: "idle",
+      processed: 0,
+      recovered: 0,
+      reconciled: 0,
+      repricedLegacy: 0,
+      remaining: 0,
+      remainingLegacy: 0,
+      unresolvedModels: [],
+      adaptiveLimit: 100,
+      loadState: "normal",
+      nextAttemptAt: null,
+      at: progressAt,
+    }), true);
+    const progressed = await client.query<{
+      state: string;
+      target_to: Date;
+      queued_target_to: Date | null;
+      next_attempt_at: Date;
+    }>(`
+      SELECT state, target_to, queued_target_to, next_attempt_at
+      FROM pricing_repair_status WHERE singleton
+    `);
+    assert.equal(progressed.rows[0]?.state, "pending");
+    assert.equal(progressed.rows[0]?.target_to.toISOString(), concurrentTarget.toISOString());
+    assert.equal(progressed.rows[0]?.queued_target_to, null);
+    assert.equal(progressed.rows[0]?.next_attempt_at.toISOString(), progressAt.toISOString());
 
     await client.query(migration.down);
     const column = await client.query(`

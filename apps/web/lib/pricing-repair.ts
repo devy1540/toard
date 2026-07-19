@@ -147,6 +147,8 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
     const result = await this.pool.query<PricingRepairStatusRow>(
       `UPDATE pricing_repair_status
        SET state = 'running',
+           target_to = GREATEST(target_to, queued_target_to),
+           queued_target_to = NULL,
            last_started_at = $1,
            eligible_since = COALESCE(eligible_since, $1),
            updated_at = $1
@@ -173,7 +175,8 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
   async markProgress(input: PricingRepairProgress): Promise<boolean> {
     const result = await this.pool.query(
       `UPDATE pricing_repair_status
-       SET state = $2,
+       SET state = CASE WHEN queued_target_to IS NOT NULL THEN 'pending' ELSE $2 END,
+           target_to = GREATEST(target_to, queued_target_to),
            processed_events = processed_events + $3,
            recovered_events = recovered_events + $4,
            reconciled_events = reconciled_events + $5,
@@ -185,8 +188,12 @@ export class PgPricingRepairRepository implements PricingRepairRepository {
            last_error = NULL,
            adaptive_limit = $11,
            load_state = $12,
-           eligible_since = CASE WHEN $2 = 'pending' THEN COALESCE(eligible_since, $10) ELSE NULL END,
-           next_attempt_at = $13,
+           eligible_since = CASE
+             WHEN queued_target_to IS NOT NULL OR $2 = 'pending' THEN COALESCE(eligible_since, $10)
+             ELSE NULL
+           END,
+           next_attempt_at = CASE WHEN queued_target_to IS NOT NULL THEN $10 ELSE $13 END,
+           queued_target_to = NULL,
            consecutive_failures = 0,
            updated_at = $10
        WHERE singleton AND generation = $1::timestamptz

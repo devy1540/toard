@@ -109,9 +109,24 @@ jobs:
       - name: build (release)
         working-directory: shim/rust
         run: cargo build --release
+      - name: verify Windows PE subsystems
+        shell: pwsh
+        run: |
+          function Get-PeSubsystem([string]$Path) {
+            $bytes = [IO.File]::ReadAllBytes($Path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            return [BitConverter]::ToUInt16($bytes, $peOffset + 4 + 20 + 68)
+          }
+          $main = Get-PeSubsystem 'shim/rust/target/release/shim.exe'
+          $background = Get-PeSubsystem 'shim/rust/target/release/toard-shim-background.exe'
+          if ($main -ne 3) { throw "expected Windows CUI subsystem 3, got $main" }
+          if ($background -ne 2) { throw "expected Windows GUI subsystem 2, got $background" }
       - name: installer E2E (Windows)
         shell: pwsh
-        run: .github/scripts/test-shim-installer-windows.ps1 -Binary shim/rust/target/release/shim.exe
+        run: >-
+          .github/scripts/test-shim-installer-windows.ps1
+          -Binary shim/rust/target/release/shim.exe
+          -BackgroundBinary shim/rust/target/release/toard-shim-background.exe
 
   check-macos:
     runs-on: macos-latest

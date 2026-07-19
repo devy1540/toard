@@ -215,6 +215,19 @@ test("shim CI runs installer E2E on Windows, Linux, and macOS", () => {
   assert.match(workflow, /test-shim-installer-unix\.sh/);
 });
 
+test("Windows shim CI verifies GUI helper subsystem and scheduled action", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+
+  assert.match(workflow, /toard-shim-background\.exe/);
+  assert.match(workflow, /Get-PeSubsystem/);
+  assert.match(workflow, /expected Windows GUI subsystem 2/);
+  assert.match(e2e, /BackgroundBinary/);
+  assert.match(e2e, /toard-shim-background\.exe/);
+  assert.match(e2e, /\/Query.*\/XML/s);
+  assert.match(e2e, /Start-ScheduledTask/);
+});
+
 test("device onboarding uses OS-aware wizard and separate management", () => {
   const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
   const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");

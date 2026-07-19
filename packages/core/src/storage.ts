@@ -241,6 +241,33 @@ export interface SaveResult {
   deduped: number;
 }
 
+export type TeamAttributionPreview = {
+  events: number;
+  from: Date | null;
+  to: Date | null;
+  totalTokens: number;
+  costUsd: number;
+};
+
+export type TeamAttributionBatchResult = {
+  processed: number;
+  updated: number;
+  affectedBuckets: Date[];
+  hasMore: boolean;
+};
+
+export type TeamAttributionRange = {
+  userId: string;
+  from: Date | null;
+  to: Date | null;
+};
+
+export type TeamAttributionBatchRequest = TeamAttributionRange & {
+  teamId: string;
+  limit: number;
+  jobId: string;
+};
+
 export interface PricingRecoveryModelDiagnostic {
   providerKey: string;
   logAdapter: string | null;
@@ -317,6 +344,14 @@ export interface StorageBackend {
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
   saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  /** 아직 팀이 없는 이벤트 중 지정 사용자·기간에 해당하는 예상 백필 규모. */
+  previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview>;
+  /** 아직 팀이 없는 이벤트만 제한된 batch로 귀속한다. */
+  backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
   /** 저장소에 남은 미확정·이전 가격·비권위 revision 모델별 진단. */

@@ -21,6 +21,10 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TeamAttributionBatchRequest,
+  TeamAttributionBatchResult,
+  TeamAttributionPreview,
+  TeamAttributionRange,
   TeamMemberTimeseriesPoint,
   TimeBucket,
   TimeseriesScope,
@@ -154,6 +158,108 @@ export class PostgresStorage implements StorageBackend {
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview> {
+    const result = await this.pool.query<{
+      events: string | number;
+      from_ts: Date | null;
+      to_ts: Date | null;
+      total_tokens: string | number;
+      cost_usd: string | number;
+    }>(
+      `SELECT COUNT(*) AS events,
+              MIN(ts) AS from_ts,
+              MAX(ts) AS to_ts,
+              COALESCE(SUM(
+                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
+              ), 0) AS total_tokens,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost_usd
+         FROM usage_events
+        WHERE user_id = $1
+          AND team_id IS NULL
+          AND ($2::timestamptz IS NULL OR ts >= $2)
+          AND ($3::timestamptz IS NULL OR ts < $3)`,
+      [input.userId, input.from, input.to],
+    );
+    const row = result.rows[0]!;
+    return {
+      events: n(row.events),
+      from: row.from_ts,
+      to: row.to_ts,
+      totalTokens: n(row.total_tokens),
+      costUsd: n(row.cost_usd),
+    };
+  }
+
+  async backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult> {
+    if (input.limit <= 0) {
+      return { processed: 0, updated: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<{
+        processed: string | number;
+        updated: string | number;
+        affected_days: string[] | null;
+        has_more: boolean;
+      }>(
+        `WITH candidate_probe AS (
+           SELECT id
+             FROM usage_events
+            WHERE user_id = $1
+              AND team_id IS NULL
+              AND ($3::timestamptz IS NULL OR ts >= $3)
+              AND ($4::timestamptz IS NULL OR ts < $4)
+            ORDER BY id
+            LIMIT ($5 + 1)
+            FOR UPDATE SKIP LOCKED
+         ), candidates AS (
+           SELECT id
+             FROM candidate_probe
+            ORDER BY id
+            LIMIT $5
+         ), updated AS (
+           UPDATE usage_events AS event
+              SET team_id = $2
+             FROM candidates
+            WHERE event.id = candidates.id
+              AND event.team_id IS NULL
+           RETURNING event.ts
+         )
+         SELECT (SELECT COUNT(*) FROM candidates) AS processed,
+                (SELECT COUNT(*) FROM updated) AS updated,
+                (SELECT ARRAY_AGG(DISTINCT to_char(
+                   (updated.ts AT TIME ZONE $6)::date,
+                   'YYYY-MM-DD'
+                 )) FROM updated) AS affected_days,
+                (SELECT COUNT(*) > $5 FROM candidate_probe) AS has_more`,
+        [input.userId, input.teamId, input.from, input.to, limit, this.tz],
+      );
+      const row = result.rows[0]!;
+      const days = [...(row.affected_days ?? [])].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        processed: n(row.processed),
+        updated: n(row.updated),
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: row.has_more,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally {
       client.release();
     }

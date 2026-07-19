@@ -13,6 +13,11 @@ require_command() {
 require_command kubectl
 require_command openssl
 
+if kubectl --namespace "$namespace" get secret toard-secrets >/dev/null 2>&1; then
+  echo "toard-secrets already exists in namespace $namespace; refusing to replace it; this helper is for first-time installation only" >&2
+  exit 1
+fi
+
 env_file="$(mktemp "${TMPDIR:-/tmp}/toard-secret.XXXXXX")"
 chmod 600 "$env_file"
 trap 'rm -f -- "$env_file"' EXIT

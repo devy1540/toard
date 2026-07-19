@@ -38,6 +38,16 @@ assert_not_kind() {
   fi
 }
 
+assert_file_contains() {
+  local file="$1"
+  local expected="$2"
+
+  if ! grep -Fq -- "$expected" "$file"; then
+    echo "required file contract is missing from $file: $expected" >&2
+    exit 1
+  fi
+}
+
 prepare_raw_secret() {
   if [[ ! -e "$secret_file" && ! -L "$secret_file" ]]; then
     cp k8s/secret.example.yaml "$secret_file"
@@ -47,6 +57,9 @@ prepare_raw_secret() {
 
 test_app() {
   local overlay
+
+  assert_file_contains scripts/k8s-create-toard-secret.sh 'kubectl --namespace "$namespace" get secret toard-secrets'
+  assert_file_contains scripts/k8s-create-toard-secret.sh 'refusing to replace it; this helper is for first-time installation only'
 
   prepare_raw_secret
   kubectl kustomize k8s/base >/dev/null

@@ -52,6 +52,10 @@ import {
   CLICKHOUSE_RAW_RETENTION_DAYS,
 } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
+import {
+  defaultClickHouseOperationController,
+  type ClickHouseOperationRunner,
+} from "./operation-controller";
 
 /** CH/PG 는 큰 수·Decimal 을 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -155,6 +159,8 @@ export interface ClickHouseStorageOptions {
   read15mV2Rollup?: RollupReadMode;
   /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
   enforceRetentionTtl?: boolean;
+  /** ClickHouse 요청 admission과 transient retry를 제어한다. */
+  operationRunner?: ClickHouseOperationRunner;
 }
 
 export const ROLLUP_STORAGE_TABLES = [
@@ -486,8 +492,6 @@ const CLICKHOUSE_SCHEMA_DDL = [
 const CLICKHOUSE_RAW_RETENTION_DDL =
   `ALTER TABLE usage_events MODIFY TTL toDateTime(ts) + INTERVAL ${CLICKHOUSE_RAW_RETENTION_DAYS} DAY DELETE`;
 
-const CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS = 5;
-const CLICKHOUSE_TRANSIENT_RETRY_BASE_MS = 150;
 const CLICKHOUSE_ROLLUP_DEFAULT_FINALIZE_DELAY_MS = 30 * 60 * 1000;
 const CLICKHOUSE_ROLLUP_DEFAULT_MAX_BUCKETS = 16;
 const TIMEZONE_ROLLUP_MAX_DAYS = 400;
@@ -507,17 +511,6 @@ const USAGE_15M_V2: RollupSpec = {
   sourcePolicy: "canonical_final",
 };
 const USAGE_ROLLUPS = [USAGE_15M, USAGE_15M_V2] as const;
-const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "EPIPE",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ETIMEDOUT",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_SOCKET",
-]);
-
 /**
  * ClickHouse 저장 백엔드 (설계 §4.3, ADR-003 옵트인).
  * 이벤트·집계는 CH(ReplacingMergeTree, 읽기 시 FINAL), 메타(이름)는 PG 에서 머지.
@@ -530,6 +523,7 @@ export class ClickHouseStorage implements StorageBackend {
   private readonly read15mRollup: boolean;
   private readonly read15mV2Rollup: RollupReadMode;
   private readonly enforceRetentionTtl: boolean;
+  private readonly operationRunner: ClickHouseOperationRunner;
   private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
   private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
   private runtimeReadStateCache:
@@ -545,6 +539,7 @@ export class ClickHouseStorage implements StorageBackend {
     private readonly pg: Pool,
     opts: ClickHouseStorageOptions = {},
   ) {
+    this.operationRunner = opts.operationRunner ?? defaultClickHouseOperationController;
     this.tz = safeTimezone(opts.timezone);
     this.usageEventsSource = opts.readFinal ? "usage_events FINAL" : "usage_events";
     this.readRollup = opts.readRollup ?? false;
@@ -602,7 +597,7 @@ export class ClickHouseStorage implements StorageBackend {
     type RangeRow = { from: string | Date | null; to: string | Date | null };
     const settings = { max_execution_time: 2 } as const;
     const [partRows, rangeRows] = await Promise.all([
-      this.ch.query({
+      this.operationRunner.run("get_rollup_storage_stats_parts", () => this.ch.query({
         query: `SELECT table, sum(rows) AS rows, sum(bytes_on_disk) AS bytes
                 FROM system.parts
                 WHERE active = 1
@@ -612,14 +607,14 @@ export class ClickHouseStorage implements StorageBackend {
         query_params: { tables: [...ROLLUP_STORAGE_TABLES] },
         clickhouse_settings: settings,
         format: "JSONEachRow",
-      }).then((result) => result.json<PartRow>()),
-      this.ch.query({
+      }).then((result) => result.json<PartRow>())),
+      this.operationRunner.run("get_rollup_storage_stats_range", () => this.ch.query({
         query: `SELECT if(count() = 0, NULL, min(ts)) AS from,
                        if(count() = 0, NULL, max(ts)) AS to
                 FROM usage_events`,
         clickhouse_settings: settings,
         format: "JSONEachRow",
-      }).then((result) => result.json<RangeRow>()),
+      }).then((result) => result.json<RangeRow>())),
     ]);
 
     const tables = Object.fromEntries(
@@ -1281,10 +1276,13 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async ensureClickHouseSchema(): Promise<void> {
     for (const query of CLICKHOUSE_SCHEMA_DDL) {
-      await this.ch.command({ query });
+      await this.operationRunner.run("ensure_schema", () => this.ch.command({ query }));
     }
     if (this.enforceRetentionTtl) {
-      await this.ch.command({ query: CLICKHOUSE_RAW_RETENTION_DDL });
+      await this.operationRunner.run(
+        "ensure_schema",
+        () => this.ch.command({ query: CLICKHOUSE_RAW_RETENTION_DDL }),
+      );
     }
   }
 
@@ -1300,17 +1298,15 @@ export class ClickHouseStorage implements StorageBackend {
     query: string,
     query_params: Params,
     clickhouse_settings?: ClickHouseSettings,
+    operation = "clickhouse_query",
   ): Promise<T[]> {
-    return retryTransientClickHouseError(async () => {
-      await this.ensureSchema();
-      const rs = await this.ch.query({
+    await this.ensureSchema();
+    return this.operationRunner.run(operation, () => this.ch.query({
         query,
         query_params,
         clickhouse_settings,
         format: "JSONEachRow",
-      });
-      return rs.json<T>();
-    });
+      }).then((rs) => rs.json<T>()), { retryTransient: true });
   }
 
   // ── 쓰기 ──
@@ -1320,11 +1316,11 @@ export class ClickHouseStorage implements StorageBackend {
     await this.ensureSchema();
     // ms 내 단조 증가 시퀀스로 충돌 완화(난수보다 안정적; raw id 하류 의존 없음)
     const id = Date.now() * 1000 + (this.rawSeq++ % 1000);
-    await this.ch.insert({
+    await this.operationRunner.run("save_raw_event", () => this.ch.insert({
       table: "raw_events",
       values: [{ id, provider_key: providerKey, payload: JSON.stringify(payload) }],
       format: "JSONEachRow",
-    });
+    }));
     return id;
   }
 
@@ -1460,12 +1456,12 @@ export class ClickHouseStorage implements StorageBackend {
 
     // 삭제 전 raw fallback을 활성화하고, 삭제 후 다시 표시해 compactor 경합에도 stale cache가 남지 않게 한다.
     await markDirty();
-    await this.ch.command({
+    await this.operationRunner.run("reconcile_codex_replay_usage", () => this.ch.command({
       query: `ALTER TABLE usage_events
               DELETE WHERE dedup_key IN {dedup_keys:Array(String)}`,
       query_params: { dedup_keys: candidates.map((row) => row.dedup_key) },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
     await markDirty();
 
     return {
@@ -1560,7 +1556,7 @@ export class ClickHouseStorage implements StorageBackend {
     };
 
     await markDirty();
-    await this.ch.command({
+    await this.operationRunner.run("reconcile_usage_events", () => this.ch.command({
       query: `ALTER TABLE usage_events
               DELETE WHERE user_id = {user_id:String}
                 AND provider_key = {provider_key:String}
@@ -1573,7 +1569,7 @@ export class ClickHouseStorage implements StorageBackend {
         dedup_keys: candidates.map((row) => row.dedup_key),
       },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
     await markDirty();
 
     return {
@@ -1667,7 +1663,7 @@ export class ClickHouseStorage implements StorageBackend {
       const digest = createHash("sha256")
         .update(`${request.generation}:${sortedKeys}`)
         .digest("hex");
-      await this.ch.insert({
+      await this.operationRunner.run("repair_pricing_usage", () => this.ch.insert({
         table: "usage_events",
         values: replacements.map((row) => ({
           dedup_key: row.dedup_key,
@@ -1691,7 +1687,7 @@ export class ClickHouseStorage implements StorageBackend {
         clickhouse_settings: {
           insert_deduplication_token: `pricing-repair:${digest}`,
         },
-      });
+      }));
     }
 
     const originalStatus = new Map(candidates.map((candidate) => [candidate.dedup_key, candidate.cost_status]));
@@ -1876,24 +1872,24 @@ export class ClickHouseStorage implements StorageBackend {
       log_adapter: e.log_adapter ?? "",
       host: e.host ?? "",
     }));
-    await this.ch.insert({
+    await this.operationRunner.run("flush_usage_outbox_raw", () => this.ch.insert({
       table: "usage_events",
       values: rawRows,
       format: "JSONEachRow",
       clickhouse_settings: {
         insert_deduplication_token: `${batch.insertToken}:raw`,
       },
-    });
+    }));
 
     const rollupRows = this.rollupRows(rows);
-    await this.ch.insert({
+    await this.operationRunner.run("flush_usage_outbox_rollup", () => this.ch.insert({
       table: "usage_hourly_rollup",
       values: rollupRows,
       format: "JSONEachRow",
       clickhouse_settings: {
         insert_deduplication_token: `${batch.insertToken}:rollup`,
       },
-    });
+    }));
   }
 
   private rollupRows(rows: OutboxRow[]): RollupRow[] {
@@ -2076,12 +2072,12 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async deleteRollupBuckets(spec: RollupSpec, buckets: Date[]): Promise<void> {
     if (buckets.length === 0) return;
-    await this.ch.command({
+    await this.operationRunner.run("delete_rollup_buckets", () => this.ch.command({
       query: `ALTER TABLE ${spec.table}
               DELETE WHERE ${spec.bucketColumn} IN {buckets:Array(DateTime64(3))}`,
       query_params: { buckets: buckets.map(chTs) },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
   }
 
   private async invalidateTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
@@ -2188,11 +2184,11 @@ export class ClickHouseStorage implements StorageBackend {
       // ReplacingMergeTree는 키가 바뀐 이전 행을 지우지 못하므로 해당 bucket을 먼저 비운다.
       await this.deleteRollupBuckets(spec, dirty.rows.map(({ bucket }) => bucket));
       if (rollupRows.length > 0) {
-        await this.ch.insert({
+        await this.operationRunner.run("compact_usage_rollup", () => this.ch.insert({
           table: spec.table,
           values: rollupRows,
           format: "JSONEachRow",
-        });
+        }));
       }
       if (spec.name === USAGE_15M_V2.name) {
         await this.invalidateTimezoneRollupJobs(client, buckets);
@@ -2284,17 +2280,17 @@ export class ClickHouseStorage implements StorageBackend {
       ? "usage_hourly_timezone_rollup"
       : "usage_daily_timezone_rollup";
     // 재집계 결과가 0행이어도 이전 차원의 cache는 제거해야 한다.
-    await this.ch.command({
+    await this.operationRunner.run("compact_timezone_rollup_delete", () => this.ch.command({
       query: `ALTER TABLE ${table}
               DELETE WHERE timezone = {timezone:String}
                 AND bucket_start = {bucket:DateTime64(3)}`,
       query_params: { timezone: tz, bucket: chTs(bucket) },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
     if (rows.length === 0) return 0;
 
     const version = Date.now();
-    await this.ch.insert({
+    await this.operationRunner.run("compact_timezone_rollup_insert", () => this.ch.insert({
       table,
       values: rows.map((row) => ({
         timezone: tz,
@@ -2316,7 +2312,7 @@ export class ClickHouseStorage implements StorageBackend {
         version,
       })),
       format: "JSONEachRow",
-    });
+    }));
     return rows.length;
   }
 
@@ -2940,7 +2936,7 @@ export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions
 }
 
 export async function pingClickHouse(): Promise<void> {
-  await retryTransientClickHouseError(async () => {
+  await defaultClickHouseOperationController.run("readiness_ping", async () => {
     const ch = createClickHouseClient();
     try {
       const result = await ch.ping({ select: true });
@@ -2948,28 +2944,7 @@ export async function pingClickHouse(): Promise<void> {
     } finally {
       await ch.close();
     }
-  });
-}
-
-async function retryTransientClickHouseError<T>(op: () => Promise<T>): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS; attempt++) {
-    try {
-      return await op();
-    } catch (err) {
-      lastError = err;
-      if (attempt === CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS - 1 || !isTransientClickHouseError(err)) throw err;
-      await sleep(CLICKHOUSE_TRANSIENT_RETRY_BASE_MS * 2 ** attempt);
-    }
-  }
-  throw lastError;
-}
-
-function isTransientClickHouseError(err: unknown): boolean {
-  const codes = errorCodes(err);
-  if (codes.some((code) => TRANSIENT_CLICKHOUSE_ERROR_CODES.has(code))) return true;
-  const message = String(err instanceof Error ? err.message : err);
-  return [...TRANSIENT_CLICKHOUSE_ERROR_CODES].some((code) => message.includes(code));
+  }, { retryTransient: true });
 }
 
 function readPositiveIntEnv(name: string, defaultValue: number): number {
@@ -2977,15 +2952,4 @@ function readPositiveIntEnv(name: string, defaultValue: number): number {
   if (value == null || value === "") return defaultValue;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : defaultValue;
-}
-
-function errorCodes(err: unknown): string[] {
-  if (!err || typeof err !== "object") return [];
-  const e = err as { code?: unknown; cause?: unknown };
-  const own = typeof e.code === "string" ? [e.code] : [];
-  return [...own, ...errorCodes(e.cause)];
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

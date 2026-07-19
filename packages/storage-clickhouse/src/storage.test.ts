@@ -15,6 +15,7 @@ import {
   clampV2RollupStart,
   resolveClickHouseRollupReadFlag,
 } from "./storage";
+import { ClickHouseOperationController } from "./operation-controller";
 
 type InsertedRows = { table: string; values: Array<Record<string, unknown>> };
 
@@ -2246,6 +2247,54 @@ test("rollup storage snapshot은 active part만 합산하고 raw min/max를 2초
   assert.match(rawRange.query, /min\(ts\)/);
   assert.match(rawRange.query, /max\(ts\)/);
   assert.ok(queries.every(({ clickhouse_settings }) => clickhouse_settings?.max_execution_time === 2));
+});
+
+test("ClickHouseStorage의 동시 JSON read는 네 개를 넘지 않는다", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const releases = new Map<number, () => void>();
+  let nextIndex = 0;
+  const ch = {
+    command: async () => undefined,
+    query: async () => {
+      const index = nextIndex++;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => releases.set(index, resolve));
+      active -= 1;
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const runner = new ClickHouseOperationController({ maxConcurrent: 4, queueTimeoutMs: 1_000 });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner: runner });
+  const jobs = Array.from({ length: 6 }, (_, index) => storage.getUserHosts(`user-${index}`));
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(active, 4);
+  releases.get(0)!();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.get(1)!();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  for (const index of [2, 3, 4, 5]) releases.get(index)!();
+  await Promise.all(jobs);
+
+  assert.equal(maxActive, 4);
+});
+
+test("ClickHouse client 호출과 readiness ping은 operation controller를 거친다", () => {
+  const source = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
+  const clientCalls = [...source.matchAll(/this\.ch\.(?:query|command|insert)\(/g)];
+  const guardedCalls = [...source.matchAll(
+    /this\.operationRunner\.run\(\s*(?:"[^"]+"|operation),\s*(?:async\s*)?\(\)\s*=>\s*this\.ch\.(?:query|command|insert)\(/g,
+  )];
+
+  assert.ok(clientCalls.length > 0);
+  assert.equal(guardedCalls.length, clientCalls.length);
+  assert.equal([...source.matchAll(/retryTransient:\s*true/g)].length, 2);
+  assert.match(
+    source,
+    /defaultClickHouseOperationController\.run\(\s*"readiness_ping",[\s\S]*?\{\s*retryTransient:\s*true\s*}\s*\)/,
+  );
 });
 
 test("ClickHouse runtime/init schema는 timezone cache 2종에 400일 TTL과 exact key를 둔다", async () => {

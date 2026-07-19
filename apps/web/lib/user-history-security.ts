@@ -36,6 +36,7 @@ export type UserHistorySecurityStatus = {
   };
   legacy: null | {
     state: LegacyHistorySecurityState;
+    hasE2eeContext: boolean;
     e2eeRecords: number;
     serverRecords: number;
     recoveryConfirmedAt: Date | null;
@@ -133,6 +134,9 @@ function managedState(input: {
   if (!input.configured && (input.keys.length > 0 || input.managedRecords > 0)) {
     return { state: "attention", activeKeyVersion };
   }
+  if (activeKeyVersion === null && input.managedRecords > 0) {
+    return { state: "attention", activeKeyVersion: null };
+  }
   if (input.keys.some((key) => key.state !== "active")) {
     return { state: "transitioning", activeKeyVersion };
   }
@@ -226,28 +230,25 @@ export async function getUserHistorySecurityStatus(
       ["pending", "running", "blocked", "complete"] as const,
       "migration_state",
     );
-    const recoveryConfirmedAt = parseNullableDate(
-      accountRow.recovery_confirmed_at,
-      "recovery_confirmed_at",
-    );
-
     const managed = managedState({ configured, keys, managedRecords });
-    const hasLegacy = accountState === "pending"
+    const hasE2eeContext = accountState === "pending"
       || accountState === "active"
       || e2eeRecords > 0
-      || serverRecords > 0
       || (migrationState !== null && migrationState !== "complete");
+    const hasLegacy = hasE2eeContext || serverRecords > 0;
 
     if (!hasLegacy) return { managed: { configured, ...managed, managedRecords }, legacy: null };
 
-    const deviceResult = await db.query(
-      `SELECT id, kind, label, platform, last_used_at
-       FROM content_devices
-       WHERE user_id=$1 AND approved_at IS NOT NULL AND revoked_at IS NULL
-       ORDER BY created_at ASC`,
-      [userId],
-    );
-    const devices = deviceResult.rows.map((row) => {
+    const deviceRows = hasE2eeContext
+      ? (await db.query(
+        `SELECT id, kind, label, platform, last_used_at
+         FROM content_devices
+         WHERE user_id=$1 AND approved_at IS NOT NULL AND revoked_at IS NULL
+         ORDER BY created_at ASC`,
+        [userId],
+      )).rows
+      : [];
+    const devices = deviceRows.map((row) => {
       const kind = parseNullableState(
         row.kind,
         ["shim", "browser"] as const,
@@ -267,9 +268,12 @@ export async function getUserHistorySecurityStatus(
       managed: { configured, ...managed, managedRecords },
       legacy: {
         state: legacyState({ accountState, migrationState, e2eeRecords, serverRecords }),
+        hasE2eeContext,
         e2eeRecords,
         serverRecords,
-        recoveryConfirmedAt,
+        recoveryConfirmedAt: hasE2eeContext
+          ? parseNullableDate(accountRow.recovery_confirmed_at, "recovery_confirmed_at")
+          : null,
         devices,
       },
     };

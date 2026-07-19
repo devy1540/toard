@@ -222,6 +222,56 @@ test("managed records without a configured provider require attention", async ()
   });
 });
 
+test("managed records without an active key require attention even when configured", async () => {
+  const context = fixtureContext({
+    counts: {
+      managed_records: "1",
+      e2ee_records: "0",
+      server_records: "0",
+    },
+  });
+
+  const status = await getUserHistorySecurityStatus(USER_ID, {
+    env: managedEnv,
+    runInContext: context.runInContext,
+  });
+
+  assert.deepEqual(status.managed, {
+    configured: true,
+    state: "attention",
+    activeKeyVersion: null,
+    managedRecords: 1,
+  });
+});
+
+test("server-only legacy records do not load or expose E2EE recovery context", async () => {
+  const context = fixtureContext({
+    counts: {
+      managed_records: "0",
+      e2ee_records: "0",
+      server_records: "1",
+    },
+  });
+
+  const status = await getUserHistorySecurityStatus(USER_ID, {
+    env: managedEnv,
+    runInContext: context.runInContext,
+  });
+
+  assert.deepEqual(status.legacy, {
+    state: "migrating",
+    hasE2eeContext: false,
+    e2eeRecords: 0,
+    serverRecords: 1,
+    recoveryConfirmedAt: null,
+    devices: [],
+  });
+  assert.equal(
+    context.calls.some((call) => call.sql.includes("FROM content_devices")),
+    false,
+  );
+});
+
 test("malformed key state fails closed instead of reporting a transition", async () => {
   const context = fixtureContext({
     keys: [{ state: null, key_version: 1 }],

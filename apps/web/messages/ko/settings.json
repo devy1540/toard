@@ -166,10 +166,10 @@
     "notConfigured": "설정되지 않음",
     "historyKey": "히스토리 키",
     "keyAutoCreate": "첫 본문 저장 시 자동 생성",
-    "privacyBoundary": "본문은 저장 전에 암호화되어 DB와 백업에는 암호문으로 저장되며, 다른 사용자의 요청에서는 열리지 않습니다.",
+    "privacyBoundary": "본문은 저장 전에 암호화되어 DB와 백업에는 암호문으로 저장되며, 다른 사용자의 요청에서는 열리지 않습니다. 앱 서버와 KMS 권한을 함께 가진 인프라 운영자는 복호화할 수 있습니다.",
     "statusUnavailable": "현재 암호화 상태를 확인할 수 없습니다. 관리자에게 서버 키 설정을 확인해 달라고 요청하세요.",
-    "legacyTitle": "이전 E2EE 데이터",
-    "legacyDescription": "과거 기기 키로 보호한 데이터가 남아 있을 때만 표시됩니다.",
+    "legacyTitle": "이전 암호화 데이터",
+    "legacyDescription": "서버 관리형 암호화로 전환할 이전 기록이 남아 있을 때만 표시됩니다.",
     "legacyPending": "이전 E2EE 설정이 완료되지 않았습니다.",
     "legacyActive": "이전 E2EE 데이터가 관리형 암호화 전환을 기다리고 있습니다.",
     "legacyMigrating": "이전 데이터 {count}건을 서버 관리형 암호화로 전환하고 있습니다.",
@@ -181,7 +181,7 @@
     "approvedDevices": "승인된 기기",
     "neverUsed": "사용 기록 없음",
     "noDevices": "승인된 기기가 없습니다.",
-    "legacyReadOnly": "이 영역은 이전 E2EE 전환 상태를 확인하기 위한 읽기 전용 정보입니다."
+    "legacyReadOnly": "이 영역은 이전 암호화 기록의 전환 상태를 확인하기 위한 읽기 전용 정보입니다."
   },
   "management": {
     "title": "연결된 컴퓨터 관리",

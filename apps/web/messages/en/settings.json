@@ -166,10 +166,10 @@
     "notConfigured": "Not configured",
     "historyKey": "History key",
     "keyAutoCreate": "Created automatically with the first content",
-    "privacyBoundary": "Content is encrypted before storage, remains ciphertext in the database and backups, and cannot be opened by another user's request.",
+    "privacyBoundary": "Content is encrypted before storage, remains ciphertext in the database and backups, and cannot be opened by another user's request. Infrastructure operators who hold both application server and KMS permissions can decrypt it.",
     "statusUnavailable": "The encryption status is currently unavailable. Ask an administrator to check the server key configuration.",
-    "legacyTitle": "Previous E2EE data",
-    "legacyDescription": "This appears only while data protected by previous device keys remains.",
+    "legacyTitle": "Previous encrypted data",
+    "legacyDescription": "This appears only while previous records remain to be migrated to server-managed encryption.",
     "legacyPending": "The previous E2EE setup was not completed.",
     "legacyActive": "Previous E2EE data is waiting for managed-encryption migration.",
     "legacyMigrating": "Migrating {count} previous records to server-managed encryption.",
@@ -181,7 +181,7 @@
     "approvedDevices": "Approved devices",
     "neverUsed": "Never used",
     "noDevices": "No approved devices.",
-    "legacyReadOnly": "This is read-only information for the previous E2EE migration state."
+    "legacyReadOnly": "This is read-only information for the migration state of previous encrypted records."
   },
   "management": {
     "title": "Manage connected computers",

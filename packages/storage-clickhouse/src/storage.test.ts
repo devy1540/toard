@@ -44,7 +44,11 @@ function finalizedEvent(
 function storageWithInsertedRows(
   inserts: InsertedRows[],
   pgQueries: Array<{ sql: string; params: unknown[] }> = [],
-  options: { failEnqueue?: boolean; failInsert?: boolean } = {},
+  options: {
+    failEnqueue?: boolean;
+    failInsert?: boolean;
+    teamByDedupKey?: Record<string, string>;
+  } = {},
 ): ClickHouseStorage {
   const outboxRows: Array<Record<string, unknown>> = [];
   let pendingBatch = true;
@@ -54,6 +58,12 @@ function storageWithInsertedRows(
       const normalized = sql.replace(/\s+/g, " ").trim();
       if (normalized.startsWith("INSERT INTO clickhouse_usage_batches")) {
         return { rows: [{ id: "batch-1" }], rowCount: 1 };
+      }
+      if (normalized.includes("FROM user_team_assignments")) {
+        const rows = Object.entries(options.teamByDedupKey ?? {}).map(
+          ([dedup_key, team_id]) => ({ dedup_key, team_id }),
+        );
+        return { rows, rowCount: rows.length };
       }
       if (normalized.startsWith("INSERT INTO clickhouse_usage_outbox")) {
         outboxRows.push({
@@ -641,6 +651,31 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
   assert.ok(enqueueIndexes[0]! > outboxDeliveredIndex);
   assert.ok(enqueueIndexes[0]! > batchDeliveredIndex);
   assert.ok(deliveryCommitIndex > enqueueIndexes[0]!);
+});
+
+test("ClickHouse outbox는 이벤트 발생 시각의 유효한 팀을 귀속하고 멤버십 공백은 미배정으로 둔다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, {
+    teamByDedupKey: { "event-a": "team-a", "event-b": "team-b" },
+  });
+
+  await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "event-a", userId: "user-1", ts: new Date("2026-07-10T01:00:00.000Z") }),
+    finalizedEvent({ dedupKey: "event-gap", userId: "user-1", ts: new Date("2026-07-10T02:00:00.000Z") }),
+    finalizedEvent({ dedupKey: "event-b", userId: "user-1", ts: new Date("2026-07-10T03:00:00.000Z") }),
+  ]);
+
+  const attributionQuery = pgQueries.find(({ sql }) => sql.includes("FROM user_team_assignments"));
+  assert.ok(attributionQuery);
+  assert.match(attributionQuery.sql, /effective_from <= requested\.event_ts/);
+  assert.match(attributionQuery.sql, /requested\.event_ts < assignment\.effective_to/);
+  assert.equal(pgQueries.some(({ sql }) => /SELECT id, team_id FROM users/.test(sql)), false);
+  assert.deepEqual(
+    pgQueries
+      .filter(({ sql }) => sql.includes("INSERT INTO clickhouse_usage_outbox"))
+      .map(({ params }) => params[4]),
+    ["team-a", null, "team-b"],
+  );
 });
 
 test("ClickHouse는 priced·legacy delivery만 있으면 가격 복구를 예약하지 않는다", async () => {

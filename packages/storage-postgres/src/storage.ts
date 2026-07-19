@@ -119,11 +119,8 @@ export class PostgresStorage implements StorageBackend {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      // user_id → 현재 team_id 를 이벤트에 비정규화(수집 시점 스냅샷, 설계 §4.3)
-      const deptMap = await this.teamMap(
-        client,
-        events.map((e) => e.userId).filter((x): x is string => !!x),
-      );
+      // 이벤트 발생 시각에 유효한 팀을 비정규화한다.
+      const teamByEvent = await this.teamMapAtEventTime(client, events);
       let inserted = 0;
       let insertedUnpriced = false;
       for (const e of events) {
@@ -136,7 +133,7 @@ export class PostgresStorage implements StorageBackend {
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
-            e.userId ? (deptMap.get(e.userId) ?? null) : null,
+            e.userId ? (teamByEvent.get(e.dedupKey) ?? null) : null,
             e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
             e.logAdapter ?? null, e.host ?? null,
@@ -162,16 +159,40 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
-  /** user_id → 현재 team_id (없으면 제외) */
-  private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const uniq = [...new Set(userIds)];
-    const r = await client.query<{ id: string; team_id: string | null }>(
-      "SELECT id, team_id FROM users WHERE id = ANY($1)",
-      [uniq],
+  /** dedup_key → 이벤트 발생 시각에 유효한 team_id (멤버십 공백은 제외) */
+  private async teamMapAtEventTime(
+    client: PoolClient,
+    events: FinalizedUsageEvent[],
+  ): Promise<Map<string, string>> {
+    const identified = events.filter(
+      (event): event is FinalizedUsageEvent & { userId: string } => !!event.userId,
+    );
+    if (identified.length === 0) return new Map();
+
+    const userIds = [...new Set(identified.map((event) => event.userId))].sort();
+    for (const userId of userIds) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1540))", [userId]);
+    }
+
+    const r = await client.query<{ dedup_key: string; team_id: string }>(
+      `WITH requested(dedup_key, user_id, event_ts) AS (
+         SELECT *
+           FROM unnest($1::text[], $2::uuid[], $3::timestamptz[])
+       )
+       SELECT requested.dedup_key, assignment.team_id
+         FROM user_team_assignments assignment
+         JOIN requested
+           ON requested.user_id = assignment.user_id
+          AND assignment.effective_from <= requested.event_ts
+          AND (assignment.effective_to IS NULL OR requested.event_ts < assignment.effective_to)`,
+      [
+        identified.map((event) => event.dedupKey),
+        identified.map((event) => event.userId),
+        identified.map((event) => event.ts),
+      ],
     );
     const m = new Map<string, string>();
-    for (const row of r.rows) if (row.team_id) m.set(row.id, row.team_id);
+    for (const row of r.rows) m.set(row.dedup_key, row.team_id);
     return m;
   }
 

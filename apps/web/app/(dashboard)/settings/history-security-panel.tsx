@@ -1,109 +1,226 @@
 import { getLocale, getTranslations } from "next-intl/server";
 import { KeyRound, MonitorSmartphone, ShieldCheck } from "lucide-react";
+import * as React from "react";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { E2EE_MAX_CIPHERTEXT_BYTES } from "@/lib/e2ee-contract";
-import { withUserContext } from "@/lib/rls";
+import {
+  getUserHistorySecurityStatus,
+  type UserHistorySecurityStatus,
+} from "@/lib/user-history-security";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
-type SecurityRow = {
-  state: "pending" | "active";
-  active_key_version: number;
-  recovery_confirmed_at: Date | null;
-  device_id: string | null;
-  kind: "shim" | "browser" | null;
-  label: string | null;
-  platform: string | null;
-  last_used_at: Date | null;
-};
+export type HistorySecurityTranslationKey =
+  | "title"
+  | "description"
+  | "protected"
+  | "ready"
+  | "transitioning"
+  | "attention"
+  | "disabled"
+  | "protectionMethod"
+  | "managedEncryption"
+  | "notConfigured"
+  | "historyKey"
+  | "keyAutoCreate"
+  | "privacyBoundary"
+  | "statusUnavailable"
+  | "legacyTitle"
+  | "legacyDescription"
+  | "legacyPending"
+  | "legacyActive"
+  | "legacyMigrating"
+  | "legacyBlocked"
+  | "legacyComplete"
+  | "legacyE2eeRecords"
+  | "legacyServerRecords"
+  | "recoveryConfirmed"
+  | "approvedDevices"
+  | "neverUsed"
+  | "noDevices"
+  | "legacyReadOnly";
 
-export async function HistorySecurityPanel({ userId }: { userId: string }) {
-  const t = await getTranslations("settings.historySecurity");
-  const { rows, legacyRecords, blockedRecords } = await withUserContext(userId, async (tx) => {
-    const result = await tx.query<SecurityRow>(
-      `SELECT account.state, account.active_key_version, account.recovery_confirmed_at,
-              device.id AS device_id, device.kind, device.label, device.platform, device.last_used_at
-       FROM content_accounts account
-       LEFT JOIN content_devices device ON device.user_id = account.user_id
-         AND device.approved_at IS NOT NULL AND device.revoked_at IS NULL
-       WHERE account.user_id = $1
-       ORDER BY device.created_at ASC`,
-      [userId],
-    );
-    const counts = await tx.query<{ legacy_records: string; blocked_records: string }>(
-      `SELECT COUNT(*) FILTER (WHERE encryption_scheme='server_v1')::text AS legacy_records,
-              COUNT(*) FILTER (
-                WHERE encryption_scheme='server_v1' AND octet_length(ciphertext) > $2
-              )::text AS blocked_records
-         FROM prompt_records WHERE user_id=$1`,
-      [userId, E2EE_MAX_CIPHERTEXT_BYTES],
-    );
-    return {
-      rows: result.rows,
-      legacyRecords: Number(counts.rows[0]?.legacy_records ?? 0),
-      blockedRecords: Number(counts.rows[0]?.blocked_records ?? 0),
-    };
-  });
-  const account = rows[0];
-  const locale = await getLocale();
-  const formatter = new Intl.DateTimeFormat(locale, {
-    timeZone: await getViewerTimezone(), dateStyle: "medium", timeStyle: "short",
-  });
+type Translate = (
+  key: HistorySecurityTranslationKey,
+  values?: Record<string, string | number>,
+) => string;
+
+function managedLabel(
+  status: UserHistorySecurityStatus | null,
+  translate: Translate,
+): string {
+  if (!status) return translate("attention");
+  return translate(status.managed.state);
+}
+
+function badgeVariant(
+  status: UserHistorySecurityStatus | null,
+): "secondary" | "outline" | "destructive" {
+  if (!status || status.managed.state === "attention" || status.legacy?.state === "blocked") {
+    return "destructive";
+  }
+  if (status.managed.state === "protected" && status.legacy?.state !== "migrating") {
+    return "secondary";
+  }
+  return "outline";
+}
+
+function legacyMessage(
+  legacy: NonNullable<UserHistorySecurityStatus["legacy"]>,
+  translate: Translate,
+): string {
+  if (legacy.state === "blocked") {
+    return translate("legacyBlocked", { count: legacy.e2eeRecords });
+  }
+  if (legacy.state === "migrating") {
+    return translate("legacyMigrating", {
+      count: legacy.e2eeRecords + legacy.serverRecords,
+    });
+  }
+  if (legacy.state === "pending") return translate("legacyPending");
+  if (legacy.state === "active") return translate("legacyActive");
+  return translate("legacyComplete");
+}
+
+export function HistorySecurityPanelView({
+  status,
+  translate,
+  formatDate,
+}: {
+  status: UserHistorySecurityStatus | null;
+  translate: Translate;
+  formatDate: (date: Date) => string;
+}) {
+  const legacy = status?.legacy ?? null;
 
   return (
     <Card className="min-w-0">
       <CardHeader>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <CardTitle>{t("title")}</CardTitle>
-          <Badge variant={account?.state === "active" ? "secondary" : "outline"}>
-            {account?.state === "active" ? t("active") : account ? t("pending") : t("off")}
-          </Badge>
+          <CardTitle>{translate("title")}</CardTitle>
+          <Badge variant={badgeVariant(status)}>{managedLabel(status, translate)}</Badge>
         </div>
-        <CardDescription>{t("description")}</CardDescription>
+        <CardDescription>{translate("description")}</CardDescription>
       </CardHeader>
       <CardContent className="min-w-0 space-y-4">
-        <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
-          <div className="min-w-0 rounded-lg border p-3">
-            <dt className="text-muted-foreground flex items-center gap-1.5 text-xs"><KeyRound className="size-3.5" />{t("keyVersion")}</dt>
-            <dd className="mt-1 font-medium">{account ? `v${account.active_key_version}` : "—"}</dd>
-          </div>
-          <div className="min-w-0 rounded-lg border p-3">
-            <dt className="text-muted-foreground flex items-center gap-1.5 text-xs"><ShieldCheck className="size-3.5" />{t("recoveryConfirmed")}</dt>
-            <dd className="mt-1 break-words font-medium">
-              {account?.recovery_confirmed_at ? formatter.format(account.recovery_confirmed_at) : "—"}
-            </dd>
-          </div>
-        </dl>
-        {account?.state === "active" ? (
-          <p className="rounded-lg border p-3 text-sm">
-            {legacyRecords > 0 && blockedRecords === legacyRecords
-              ? t("legacyBlocked", { count: blockedRecords })
-              : legacyRecords > 0
-              ? t("legacyProtecting", { count: legacyRecords })
-              : t("legacyComplete")}
+        {status ? (
+          <>
+            <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
+              <div className="min-w-0 rounded-lg border p-3">
+                <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                  <ShieldCheck className="size-3.5" />
+                  {translate("protectionMethod")}
+                </dt>
+                <dd className="mt-1 font-medium">
+                  {status.managed.configured
+                    ? translate("managedEncryption")
+                    : translate("notConfigured")}
+                </dd>
+              </div>
+              <div className="min-w-0 rounded-lg border p-3">
+                <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                  <KeyRound className="size-3.5" />
+                  {translate("historyKey")}
+                </dt>
+                <dd className="mt-1 font-medium">
+                  {status.managed.activeKeyVersion !== null
+                    ? `v${status.managed.activeKeyVersion}`
+                    : status.managed.configured
+                      ? translate("keyAutoCreate")
+                      : "—"}
+                </dd>
+              </div>
+            </dl>
+            {status.managed.state === "attention" ? (
+              <p className="border-destructive/40 bg-destructive/5 rounded-lg border p-3 text-sm">
+                {translate("statusUnavailable")}
+              </p>
+            ) : null}
+            <p className="text-muted-foreground text-xs">{translate("privacyBoundary")}</p>
+          </>
+        ) : (
+          <p className="border-destructive/40 bg-destructive/5 rounded-lg border p-3 text-sm">
+            {translate("statusUnavailable")}
           </p>
+        )}
+
+        {legacy ? (
+          <section className="min-w-0 space-y-3 border-t pt-4">
+            <div>
+              <h3 className="text-sm font-medium">{translate("legacyTitle")}</h3>
+              <p className="text-muted-foreground mt-1 text-xs">
+                {translate("legacyDescription")}
+              </p>
+            </div>
+            <p className="rounded-lg border p-3 text-sm">{legacyMessage(legacy, translate)}</p>
+            <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
+              <div className="min-w-0 rounded-lg border p-3">
+                <dt className="text-muted-foreground text-xs">{translate("legacyE2eeRecords")}</dt>
+                <dd className="mt-1 font-medium">{legacy.e2eeRecords}</dd>
+              </div>
+              <div className="min-w-0 rounded-lg border p-3">
+                <dt className="text-muted-foreground text-xs">{translate("legacyServerRecords")}</dt>
+                <dd className="mt-1 font-medium">{legacy.serverRecords}</dd>
+              </div>
+              <div className="min-w-0 rounded-lg border p-3 sm:col-span-2">
+                <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                  <ShieldCheck className="size-3.5" />
+                  {translate("recoveryConfirmed")}
+                </dt>
+                <dd className="mt-1 break-words font-medium">
+                  {legacy.recoveryConfirmedAt
+                    ? formatDate(legacy.recoveryConfirmedAt)
+                    : "—"}
+                </dd>
+              </div>
+            </dl>
+            <div className="min-w-0">
+              <h3 className="text-sm font-medium">{translate("approvedDevices")}</h3>
+              {legacy.devices.length > 0 ? (
+                <ul className="mt-2 min-w-0 divide-y rounded-lg border">
+                  {legacy.devices.map((device) => (
+                    <li key={device.id} className="flex min-w-0 items-center gap-3 p-3 text-sm">
+                      <MonitorSmartphone className="text-muted-foreground size-4 shrink-0" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">{device.label}</span>
+                        <span className="text-muted-foreground block truncate text-xs">
+                          {device.kind} · {device.platform}
+                        </span>
+                      </span>
+                      <span className="text-muted-foreground shrink-0 text-xs">
+                        {device.lastUsedAt
+                          ? formatDate(device.lastUsedAt)
+                          : translate("neverUsed")}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-muted-foreground mt-2 text-sm">{translate("noDevices")}</p>
+              )}
+            </div>
+            <p className="text-muted-foreground text-xs">{translate("legacyReadOnly")}</p>
+          </section>
         ) : null}
-        <div className="min-w-0">
-          <h3 className="text-sm font-medium">{t("approvedDevices")}</h3>
-          {rows.some((row) => row.device_id) ? (
-            <ul className="mt-2 min-w-0 divide-y rounded-lg border">
-              {rows.filter((row) => row.device_id).map((row) => (
-                <li key={row.device_id!} className="flex min-w-0 items-center gap-3 p-3 text-sm">
-                  <MonitorSmartphone className="text-muted-foreground size-4 shrink-0" />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{row.label}</span>
-                    <span className="text-muted-foreground block truncate text-xs">{row.kind} · {row.platform}</span>
-                  </span>
-                  <span className="text-muted-foreground shrink-0 text-xs">
-                    {row.last_used_at ? formatter.format(row.last_used_at) : t("neverUsed")}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          ) : <p className="text-muted-foreground mt-2 text-sm">{t("noDevices")}</p>}
-        </div>
-        <p className="text-muted-foreground text-xs">{t("noDestructiveActions")}</p>
       </CardContent>
     </Card>
+  );
+}
+
+export async function HistorySecurityPanel({ userId }: { userId: string }) {
+  const t = await getTranslations("settings.historySecurity");
+  const status = await getUserHistorySecurityStatus(userId).catch(() => null);
+  const locale = await getLocale();
+  const formatter = new Intl.DateTimeFormat(locale, {
+    timeZone: await getViewerTimezone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  return (
+    <HistorySecurityPanelView
+      status={status}
+      translate={(key, values) => t(key, values)}
+      formatDate={(date) => formatter.format(date)}
+    />
   );
 }

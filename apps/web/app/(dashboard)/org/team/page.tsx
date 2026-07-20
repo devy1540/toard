@@ -11,6 +11,7 @@ import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { SummaryTile } from "@/components/dashboard/summary-tile";
 import { SupportingMetric } from "@/components/dashboard/supporting-metric";
 import { TeamFilter } from "@/components/dashboard/team-filter";
+import { TeamAttributionFence } from "@/components/dashboard/team-attribution-fence";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getPool } from "@/lib/db";
@@ -22,6 +23,7 @@ import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
+import { findTeamAttributionFence } from "@/lib/team-attribution";
 import { buildTeamMemberSeries, TEAM_MEMBER_COLORS } from "@/lib/team-overview";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -331,6 +333,7 @@ export default async function TeamStatusPage({
 }) {
   const sp = await searchParams;
   const [t, navT] = await Promise.all([getTranslations("org"), getTranslations("nav")]);
+  const attributionT = await getTranslations("admin");
   const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const [providers, viewer] = await Promise.all([getEnabledProviders(), getDashboardViewer()]);
   if (!viewer) redirect("/login");
@@ -343,6 +346,7 @@ export default async function TeamStatusPage({
       ? { id: viewer.teamId, name: viewer.teamName ?? t("myTeamFallbackTitle") }
       : null;
   const title = selectedTeam ? t("myTeamTitle", { team: selectedTeam.name }) : t("myTeamFallbackTitle");
+  const attributionFence = await findTeamAttributionFence(period.from, period.to);
 
   return (
     <div className="space-y-6">
@@ -359,7 +363,14 @@ export default async function TeamStatusPage({
         trailing={<AutoRefresh />}
       />
 
-      <TeamDetailOverview period={period} sp={sp} teamId={selectedTeam?.id ?? null} isAdmin={isAdmin} providers={providers} />
+      {attributionFence ? (
+        <TeamAttributionFence
+          title={attributionT("teamAttribution.readFenceTitle")}
+          description={attributionT("teamAttribution.readFenceDescription")}
+        />
+      ) : (
+        <TeamDetailOverview period={period} sp={sp} teamId={selectedTeam?.id ?? null} isAdmin={isAdmin} providers={providers} />
+      )}
     </div>
   );
 }

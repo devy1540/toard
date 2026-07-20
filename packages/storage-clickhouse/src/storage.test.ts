@@ -46,7 +46,11 @@ function finalizedEvent(
 function storageWithInsertedRows(
   inserts: InsertedRows[],
   pgQueries: Array<{ sql: string; params: unknown[] }> = [],
-  options: { failEnqueue?: boolean; failInsert?: boolean } = {},
+  options: {
+    failEnqueue?: boolean;
+    failInsert?: boolean;
+    teamByDedupKey?: Record<string, string>;
+  } = {},
 ): ClickHouseStorage {
   const outboxRows: Array<Record<string, unknown>> = [];
   let pendingBatch = true;
@@ -56,6 +60,12 @@ function storageWithInsertedRows(
       const normalized = sql.replace(/\s+/g, " ").trim();
       if (normalized.startsWith("INSERT INTO clickhouse_usage_batches")) {
         return { rows: [{ id: "batch-1" }], rowCount: 1 };
+      }
+      if (normalized.includes("FROM user_team_assignments")) {
+        const rows = Object.entries(options.teamByDedupKey ?? {}).map(
+          ([dedup_key, team_id]) => ({ dedup_key, team_id }),
+        );
+        return { rows, rowCount: rows.length };
       }
       if (normalized.startsWith("INSERT INTO clickhouse_usage_outbox")) {
         outboxRows.push({
@@ -1394,6 +1404,294 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
   assert.ok(deliveryCommitIndex > enqueueIndexes[0]!);
 });
 
+test("ClickHouse outbox는 이벤트 발생 시각의 유효한 팀을 귀속하고 멤버십 공백은 미배정으로 둔다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, {
+    teamByDedupKey: { "event-a": "team-a", "event-b": "team-b" },
+  });
+
+  await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "event-a", userId: "user-1", ts: new Date("2026-07-10T01:00:00.000Z") }),
+    finalizedEvent({ dedupKey: "event-gap", userId: "user-1", ts: new Date("2026-07-10T02:00:00.000Z") }),
+    finalizedEvent({ dedupKey: "event-b", userId: "user-1", ts: new Date("2026-07-10T03:00:00.000Z") }),
+  ]);
+
+  const attributionQuery = pgQueries.find(({ sql }) => sql.includes("FROM user_team_assignments"));
+  assert.ok(attributionQuery);
+  assert.match(attributionQuery.sql, /effective_from <= requested\.event_ts/);
+  assert.match(attributionQuery.sql, /requested\.event_ts < assignment\.effective_to/);
+  assert.equal(pgQueries.some(({ sql }) => /SELECT id, team_id FROM users/.test(sql)), false);
+  assert.deepEqual(
+    pgQueries
+      .filter(({ sql }) => sql.includes("INSERT INTO clickhouse_usage_outbox"))
+      .map(({ params }) => params[4]),
+    ["team-a", null, "team-b"],
+  );
+});
+
+test("ClickHouse 팀 귀속 preview는 pending outbox·raw·rollup-only를 중복 없이 합산한다", async () => {
+  const chQueries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      chQueries.push(query);
+      if (query.includes("AS raw_from") && !query.includes("total_tokens")) {
+        return { json: async () => [{ raw_from: "2026-06-01 00:00:00.000" }] };
+      }
+      if (query.includes("FROM usage_15m_rollup_v2")) {
+        return {
+          json: async () => [{
+            events: "3",
+            from_ts: "2026-04-01 00:00:00.000",
+            to_ts: "2026-04-02 00:00:00.000",
+            total_tokens: "300",
+            cost_usd: "3.00",
+          }],
+        };
+      }
+      return {
+        json: async () => [{
+          events: "2",
+          from_ts: "2026-07-01 00:00:00.000",
+          to_ts: "2026-07-02 00:00:00.000",
+          total_tokens: "200",
+          cost_usd: "2.00",
+        }],
+      };
+    },
+  } as unknown as ClickHouseClient;
+  const pg = {
+    query: async (sql: string) => {
+      assert.match(sql, /delivered_at IS NULL/);
+      assert.match(sql, /team_id IS NULL/);
+      return {
+        rows: [{
+          events: "1",
+          from_ts: new Date("2026-07-03T00:00:00.000Z"),
+          to_ts: new Date("2026-07-03T00:00:00.000Z"),
+          total_tokens: "100",
+          cost_usd: "1.00",
+          dedup_keys: ["pending-1"],
+        }],
+      };
+    },
+  } as unknown as Pool;
+
+  const preview = await new ClickHouseStorage(ch, pg).previewUnassignedTeamAttribution({
+    userId: "user-1",
+    from: null,
+    to: null,
+  });
+
+  const rawPreviewSql = chQueries.find((sql) => sql.includes("FROM usage_events FINAL") && sql.includes("team_id = ''")) ?? "";
+  assert.match(rawPreviewSql, /team_id = ''/);
+  assert.match(rawPreviewSql, /ts >= \{raw_full_from/);
+  assert.match(rawPreviewSql, /dedup_key NOT IN/);
+  assert.match(chQueries.find((sql) => sql.includes("FROM usage_15m_rollup_v2")) ?? "", /bucket_15m < \{raw_full_from/);
+  assert.deepEqual(preview, {
+    events: 6,
+    from: new Date("2026-04-01T00:00:00.000Z"),
+    to: new Date("2026-07-03T00:00:00.000Z"),
+    totalTokens: 600,
+    costUsd: 6,
+  });
+});
+
+test("ClickHouse 팀 귀속 batch는 pending outbox를 먼저 고치고 delivered raw를 dirty 후 교체한다", async () => {
+  const actions: string[] = [];
+  const pgCalls: Array<{ sql: string; params: unknown[] }> = [];
+  const inserts: Array<Record<string, unknown>> = [];
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgCalls.push({ sql, params });
+      if (sql.includes("UPDATE clickhouse_usage_outbox AS outbox")) {
+        actions.push("outbox-update");
+        return {
+          rows: [{ processed: "1", updated: "1", affected_ts: [new Date("2026-07-10T10:05:00.000Z")], has_more: false }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets")) actions.push("mark-dirty");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const chQueries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      chQueries.push(query);
+      if (query.includes("SELECT dedup_key") && query.includes("FROM usage_events FINAL")) {
+        actions.push("raw-select");
+        return { json: async () => [{
+          dedup_key: "raw-1",
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          ts: "2026-07-10 10:06:00.000",
+          input_tokens: "100",
+          output_tokens: "20",
+          cache_read_tokens: "5",
+          cache_creation_tokens: "3",
+          cost_usd: "0.01230000",
+          pricing_revision_id: "rev-1",
+          cost_status: "priced",
+          log_adapter: "claude",
+          host: "macbook",
+        }] };
+      }
+      return { json: async () => [] };
+    },
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      if (table === "usage_events") {
+        actions.push("insert-replacement");
+        inserts.push(...values);
+      }
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {
+    connect: async () => client,
+  } as unknown as Pool);
+
+  const result = await storage.backfillUnassignedTeamAttribution({
+    userId: "user-1",
+    teamId: "team-1",
+    from: null,
+    to: null,
+    limit: 10,
+    jobId: "job-1",
+  });
+
+  const outboxUpdate = pgCalls.find(({ sql }) => sql.includes("UPDATE clickhouse_usage_outbox AS outbox"));
+  assert.ok(outboxUpdate);
+  assert.match(outboxUpdate.sql, /delivered_at IS NULL/);
+  assert.match(outboxUpdate.sql, /outbox\.team_id IS NULL/);
+  assert.match(chQueries.find((sql) => sql.includes("SELECT dedup_key")) ?? "", /FROM usage_events FINAL/);
+  assert.match(chQueries.find((sql) => sql.includes("SELECT dedup_key")) ?? "", /team_id = ''/);
+  assert.ok(actions.indexOf("outbox-update") < actions.indexOf("raw-select"));
+  assert.ok(actions.indexOf("mark-dirty") < actions.indexOf("insert-replacement"));
+  assert.equal(inserts[0]?.dedup_key, "raw-1");
+  assert.equal(inserts[0]?.team_id, "team-1");
+  assert.deepEqual(result, {
+    processed: 2,
+    updated: 2,
+    affectedBuckets: [new Date("2026-07-10T10:00:00.000Z")],
+    hasMore: false,
+  });
+});
+
+test("ClickHouse rollup-only 귀속은 staging과 read fence를 만든 뒤 동기 교체하고 검증 후 fence를 해제한다", async () => {
+  const actions: string[] = [];
+  const client = {
+    query: async (sql: string) => {
+      if (sql.includes("INSERT INTO team_attribution_read_fences")) actions.push("create-fence");
+      if (sql.includes("clickhouse_timezone_rollup_jobs")) actions.push("invalidate-timezone");
+      if (sql.includes("complete_team_attribution_fence")) actions.push("complete-fence");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      if (query.includes("INSERT INTO team_attribution_rollup_staging")) actions.push("stage");
+      if (query.includes("DELETE WHERE") && query.includes("team_id = ''")) actions.push("delete-old");
+      if (query.includes("INSERT INTO usage_15m_rollup_v2") && query.includes("team_attribution_rollup_staging")) {
+        actions.push("insert-replacement");
+      }
+      if (query.includes("DELETE WHERE job_id")) actions.push("cleanup-stage");
+    },
+    query: async ({ query }: { query: string }) => {
+      if (query.includes("SELECT dedup_key") && query.includes("usage_events FINAL")) {
+        return { json: async () => [] };
+      }
+      if (query.includes("FROM team_attribution_rollup_staging") && query.includes("SELECT DISTINCT bucket_start")) {
+        return { json: async () => [] };
+      }
+      if (query.includes("SELECT DISTINCT bucket_15m")) {
+        return { json: async () => [{ bucket_start: "2026-04-01 00:00:00.000" }] };
+      }
+      if (query.includes("team-attribution-rollup-verification")) {
+        actions.push("verify");
+        return { json: async () => [{ remaining_old: "0", staged_rows: "1", replacement_rows: "1" }] };
+      }
+      return { json: async () => [] };
+    },
+    insert: async () => undefined,
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, { connect: async () => client } as unknown as Pool);
+
+  const result = await storage.backfillUnassignedTeamAttribution({
+    userId: "user-1",
+    teamId: "team-1",
+    from: null,
+    to: null,
+    limit: 100,
+    jobId: "job-1",
+  });
+
+  for (const action of ["stage", "create-fence", "delete-old", "insert-replacement", "verify", "invalidate-timezone", "complete-fence", "cleanup-stage"]) {
+    assert.notEqual(actions.indexOf(action), -1, `${action} action missing`);
+  }
+  assert.ok(actions.indexOf("stage") < actions.indexOf("create-fence"));
+  assert.ok(actions.indexOf("create-fence") < actions.indexOf("delete-old"));
+  assert.ok(actions.indexOf("delete-old") < actions.indexOf("insert-replacement"));
+  assert.ok(actions.indexOf("insert-replacement") < actions.indexOf("verify"));
+  assert.ok(actions.indexOf("verify") < actions.indexOf("complete-fence"));
+  assert.deepEqual(result, {
+    processed: 1,
+    updated: 1,
+    affectedBuckets: [new Date("2026-04-01T00:00:00.000Z")],
+    hasMore: true,
+  });
+});
+
+test("ClickHouse rollup-only 교체 실패는 fence와 staging을 보존한다", async () => {
+  const actions: string[] = [];
+  const client = {
+    query: async (sql: string) => {
+      if (sql.includes("INSERT INTO team_attribution_read_fences")) actions.push("create-fence");
+      if (sql.includes("complete_team_attribution_fence")) actions.push("complete-fence");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      if (query.includes("INSERT INTO team_attribution_rollup_staging")) actions.push("stage");
+      if (query.includes("INSERT INTO usage_15m_rollup_v2") && query.includes("team_attribution_rollup_staging")) {
+        throw new Error("replacement failed");
+      }
+      if (query.includes("DELETE WHERE job_id")) actions.push("cleanup-stage");
+    },
+    query: async ({ query }: { query: string }) => {
+      if (query.includes("SELECT dedup_key")) return { json: async () => [] };
+      if (query.includes("SELECT DISTINCT bucket_start")) return { json: async () => [] };
+      if (query.includes("SELECT DISTINCT bucket_15m")) {
+        return { json: async () => [{ bucket_start: "2026-04-01 00:00:00.000" }] };
+      }
+      return { json: async () => [] };
+    },
+    insert: async () => undefined,
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, { connect: async () => client } as unknown as Pool);
+
+  await assert.rejects(storage.backfillUnassignedTeamAttribution({
+    userId: "user-1",
+    teamId: "team-1",
+    from: null,
+    to: null,
+    limit: 100,
+    jobId: "job-1",
+  }), /replacement failed/);
+
+  assert.equal(actions.includes("stage"), true);
+  assert.equal(actions.includes("create-fence"), true);
+  assert.equal(actions.includes("complete-fence"), false);
+  assert.equal(actions.includes("cleanup-stage"), false);
+});
+
 test("ClickHouse는 priced·legacy delivery만 있으면 가격 복구를 예약하지 않는다", async () => {
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
   const storage = storageWithInsertedRows([], pgQueries);
@@ -2700,10 +2998,12 @@ test("ClickHouse ensure schema는 가격 상태를 가진 400일 15분 v2 테이
   const rawPricingRevisionDdl = commands.find((query) => /usage_events ADD COLUMN.*pricing_revision_id/.test(query));
   const rawCostStatusDdl = commands.find((query) => /usage_events ADD COLUMN.*cost_status/.test(query));
   const ddl = commands.find((query) => query.includes("usage_15m_rollup_v2"));
+  const stagingDdl = commands.find((query) => query.includes("CREATE TABLE IF NOT EXISTS team_attribution_rollup_staging"));
 
   assert.ok(rawPricingRevisionDdl);
   assert.ok(rawCostStatusDdl);
   assert.ok(ddl);
+  assert.ok(stagingDdl);
   assert.match(ddl, /pricing_revision_id\s+String/);
   assert.match(ddl, /cost_status\s+LowCardinality\(String\)/);
   assert.match(ddl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
@@ -2712,6 +3012,8 @@ test("ClickHouse ensure schema는 가격 상태를 가진 400일 15분 v2 테이
     ddl,
     /ORDER BY\s*\(bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status\)/,
   );
+  assert.match(stagingDdl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
+  assert.match(stagingDdl, /TTL\s+toDateTime\(created_at\)\s*\+\s*INTERVAL\s+7\s+DAY\s+DELETE/);
 });
 
 test("ClickHouse 기본 schema ensure는 opt-in raw TTL을 변경하지 않는다", async () => {

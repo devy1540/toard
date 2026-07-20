@@ -23,6 +23,10 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TeamAttributionBatchRequest,
+  TeamAttributionBatchResult,
+  TeamAttributionPreview,
+  TeamAttributionRange,
   TeamMemberTimeseriesPoint,
   TimeBucket,
   TimeseriesScope,
@@ -121,11 +125,8 @@ export class PostgresStorage implements StorageBackend {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      // user_id → 현재 team_id 를 이벤트에 비정규화(수집 시점 스냅샷, 설계 §4.3)
-      const deptMap = await this.teamMap(
-        client,
-        events.map((e) => e.userId).filter((x): x is string => !!x),
-      );
+      // 이벤트 발생 시각에 유효한 팀을 비정규화한다.
+      const teamByEvent = await this.teamMapAtEventTime(client, events);
       let inserted = 0;
       let insertedUnpriced = false;
       for (const e of events) {
@@ -138,7 +139,7 @@ export class PostgresStorage implements StorageBackend {
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
-            e.userId ? (deptMap.get(e.userId) ?? null) : null,
+            e.userId ? (teamByEvent.get(e.dedupKey) ?? null) : null,
             e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
             e.logAdapter ?? null, e.host ?? null,
@@ -164,16 +165,142 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
-  /** user_id → 현재 team_id (없으면 제외) */
-  private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const uniq = [...new Set(userIds)];
-    const r = await client.query<{ id: string; team_id: string | null }>(
-      "SELECT id, team_id FROM users WHERE id = ANY($1)",
-      [uniq],
+  async previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview> {
+    const result = await this.pool.query<{
+      events: string | number;
+      from_ts: Date | null;
+      to_ts: Date | null;
+      total_tokens: string | number;
+      cost_usd: string | number;
+    }>(
+      `SELECT COUNT(*) AS events,
+              MIN(ts) AS from_ts,
+              MAX(ts) AS to_ts,
+              COALESCE(SUM(
+                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
+              ), 0) AS total_tokens,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost_usd
+         FROM usage_events
+        WHERE user_id = $1
+          AND team_id IS NULL
+          AND ($2::timestamptz IS NULL OR ts >= $2)
+          AND ($3::timestamptz IS NULL OR ts < $3)`,
+      [input.userId, input.from, input.to],
+    );
+    const row = result.rows[0]!;
+    return {
+      events: n(row.events),
+      from: row.from_ts,
+      to: row.to_ts,
+      totalTokens: n(row.total_tokens),
+      costUsd: n(row.cost_usd),
+    };
+  }
+
+  async backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult> {
+    if (input.limit <= 0) {
+      return { processed: 0, updated: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<{
+        processed: string | number;
+        updated: string | number;
+        affected_days: string[] | null;
+        has_more: boolean;
+      }>(
+        `WITH candidate_probe AS (
+           SELECT id
+             FROM usage_events
+            WHERE user_id = $1
+              AND team_id IS NULL
+              AND ($3::timestamptz IS NULL OR ts >= $3)
+              AND ($4::timestamptz IS NULL OR ts < $4)
+            ORDER BY id
+            LIMIT ($5 + 1)
+            FOR UPDATE SKIP LOCKED
+         ), candidates AS (
+           SELECT id
+             FROM candidate_probe
+            ORDER BY id
+            LIMIT $5
+         ), updated AS (
+           UPDATE usage_events AS event
+              SET team_id = $2
+             FROM candidates
+            WHERE event.id = candidates.id
+              AND event.team_id IS NULL
+           RETURNING event.ts
+         )
+         SELECT (SELECT COUNT(*) FROM candidates) AS processed,
+                (SELECT COUNT(*) FROM updated) AS updated,
+                (SELECT ARRAY_AGG(DISTINCT to_char(
+                   (updated.ts AT TIME ZONE $6)::date,
+                   'YYYY-MM-DD'
+                 )) FROM updated) AS affected_days,
+                (SELECT COUNT(*) > $5 FROM candidate_probe) AS has_more`,
+        [input.userId, input.teamId, input.from, input.to, limit, this.tz],
+      );
+      const row = result.rows[0]!;
+      const days = [...(row.affected_days ?? [])].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        processed: n(row.processed),
+        updated: n(row.updated),
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: row.has_more,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** dedup_key → 이벤트 발생 시각에 유효한 team_id (멤버십 공백은 제외) */
+  private async teamMapAtEventTime(
+    client: PoolClient,
+    events: FinalizedUsageEvent[],
+  ): Promise<Map<string, string>> {
+    const identified = events.filter(
+      (event): event is FinalizedUsageEvent & { userId: string } => !!event.userId,
+    );
+    if (identified.length === 0) return new Map();
+
+    const userIds = [...new Set(identified.map((event) => event.userId))].sort();
+    for (const userId of userIds) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1540))", [userId]);
+    }
+
+    const r = await client.query<{ dedup_key: string; team_id: string }>(
+      `WITH requested(dedup_key, user_id, event_ts) AS (
+         SELECT *
+           FROM unnest($1::text[], $2::uuid[], $3::timestamptz[])
+       )
+       SELECT requested.dedup_key, assignment.team_id
+         FROM user_team_assignments assignment
+         JOIN requested
+           ON requested.user_id = assignment.user_id
+          AND assignment.effective_from <= requested.event_ts
+          AND (assignment.effective_to IS NULL OR requested.event_ts < assignment.effective_to)`,
+      [
+        identified.map((event) => event.dedupKey),
+        identified.map((event) => event.userId),
+        identified.map((event) => event.ts),
+      ],
     );
     const m = new Map<string, string>();
-    for (const row of r.rows) if (row.team_id) m.set(row.id, row.team_id);
+    for (const row of r.rows) m.set(row.dedup_key, row.team_id);
     return m;
   }
 

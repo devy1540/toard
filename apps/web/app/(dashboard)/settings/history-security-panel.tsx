@@ -95,7 +95,7 @@ export function HistorySecurityPanelView({
   const state = effectiveState(status);
 
   return (
-    <Card className="min-w-0">
+    <Card id="history-security" className="min-w-0 scroll-mt-6">
       <CardHeader>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <CardTitle>{translate("title")}</CardTitle>

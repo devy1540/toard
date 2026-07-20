@@ -51,12 +51,7 @@ export async function SessionDetail({
   const fmtDay = (ts: Date): string =>
     new Intl.DateTimeFormat(locale, { timeZone: tz, dateStyle: "medium" }).format(ts);
 
-  const {
-    enabled,
-    hasManagedContent,
-    hasLegacyContent,
-    session,
-  } = await getMyHistorySession(userId, sessionKey);
+  const { enabled, session } = await getMyHistorySession(userId, sessionKey);
   if (!enabled) {
     return (
       <Empty>
@@ -127,12 +122,6 @@ export async function SessionDetail({
 
   return (
     <div className="space-y-4">
-      <div className="text-muted-foreground space-y-1 text-xs">
-        <p>{t("history.privacyNote")}</p>
-        {hasManagedContent ? <p>{t("history.managedPrivacyNote")}</p> : null}
-        {hasLegacyContent ? <p>{t("history.legacyPrivacyNote")}</p> : null}
-      </div>
-
       <div>
         <Button asChild size="sm" variant="ghost" className="text-muted-foreground -ml-2">
           <Link href={backHref}>

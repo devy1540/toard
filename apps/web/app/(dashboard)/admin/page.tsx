@@ -20,6 +20,8 @@ import { getLegacyRetirementStatus } from "@/lib/e2ee-legacy-retirement";
 import { getEncryptionAdminStatus } from "@/lib/encryption-admin-status";
 import { getServerUpdateStatus } from "@/lib/server-update";
 import { getSessionUser } from "@/lib/session-user";
+import { getStorage } from "@/lib/storage";
+import { getTeamAttributionStatus } from "@/lib/team-attribution";
 import { getServerVersion } from "@/lib/version";
 import { PricingSyncPanel } from "./pricing-panel";
 import { RoleSelect } from "./role-select";
@@ -43,12 +45,19 @@ interface MemberRow {
   team_id: string | null;
   created_at: Date;
   last_used_at: Date | null;
+  legacy_seed_only: boolean;
 }
 
 /** 멤버 목록 + 활성 토큰의 마지막 수신 시각(수집 연결 상태 확인용) */
 async function listMembers(): Promise<MemberRow[]> {
   const r = await getPool().query<MemberRow>(
-    `SELECT u.id, u.email, u.name, u.role, u.team_id, u.created_at, t.last_used_at
+    `SELECT u.id, u.email, u.name, u.role, u.team_id, u.created_at, t.last_used_at,
+            u.team_id IS NOT NULL
+              AND EXISTS(SELECT 1 FROM user_team_assignments WHERE user_id = u.id)
+              AND NOT EXISTS(
+                SELECT 1 FROM user_team_assignments
+                 WHERE user_id = u.id AND assignment_kind <> 'legacy_seed'
+              ) AS legacy_seed_only
      FROM users u
      LEFT JOIN LATERAL (
        SELECT max(last_used_at) AS last_used_at
@@ -129,6 +138,26 @@ async function MembersTab() {
     getTranslations("admin"),
   ]);
   const deptOptions = teams.map((d) => ({ id: d.id, name: d.name }));
+  const attributionStatus = await getTeamAttributionStatus(members.map((member) => member.id));
+  const storage = getStorage();
+  const legacyPreviews = new Map(
+    (await Promise.all(members.map(async (member) => {
+      if (!member.legacy_seed_only || attributionStatus.has(member.id)) return null;
+      const preview = await storage.previewUnassignedTeamAttribution({
+        userId: member.id,
+        from: null,
+        to: null,
+      });
+      if (preview.events === 0) return null;
+      return [member.id, {
+        events: preview.events,
+        from: preview.from?.toISOString() ?? null,
+        to: preview.to?.toISOString() ?? null,
+        totalTokens: preview.totalTokens,
+        costUsd: preview.costUsd,
+      }] as const;
+    }))).filter((entry) => entry !== null),
+  );
   const serverVersion = getServerVersion();
   // 멤버 행에는 그 멤버 기기들 중 가장 뒤처진 버전을 표시 (기기별 상세는 본인 설정 화면)
   const worst = worstShimByUser(shimRows);
@@ -176,7 +205,13 @@ async function MembersTab() {
                       <RoleSelect userId={m.id} current={role} />
                     </TableCell>
                     <TableCell>
-                      <TeamSelect userId={m.id} current={m.team_id} teams={deptOptions} />
+                      <TeamSelect
+                        userId={m.id}
+                        current={m.team_id}
+                        teams={deptOptions}
+                        status={attributionStatus.get(m.id)}
+                        legacyPreview={legacyPreviews.get(m.id)}
+                      />
                     </TableCell>
                     <TableCell>
                       {v ? (

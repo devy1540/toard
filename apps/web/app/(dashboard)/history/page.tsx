@@ -22,6 +22,7 @@ import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { SessionDetail } from "./session-detail";
 import { E2eeHistoryClient } from "./e2ee-history-client";
+import { HistorySecurityLink } from "./history-security-link";
 import { HistorySessionList } from "./history-session-list";
 import type { HistoryListItem } from "./history-list-view";
 
@@ -128,6 +129,7 @@ export default async function HistoryPage({
       <div className="space-y-6">
         <div className="flex items-center gap-3">
           <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
+          <HistorySecurityLink label={t("history.securityInfo")} className="ml-auto" />
         </div>
         <SessionDetail
           userId={userId}
@@ -142,13 +144,7 @@ export default async function HistoryPage({
   // ── 목록 뷰 ──
   const filter = parseFilters(sp, timezone, "all");
   const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
-  const {
-    enabled,
-    hasManagedContent,
-    hasLegacyContent,
-    sessions,
-    totalSessions,
-  } = await getMyHistorySessions(
+  const { enabled, sessions, totalSessions } = await getMyHistorySessions(
     userId,
     filter,
     page,
@@ -217,16 +213,7 @@ export default async function HistoryPage({
         timezone={timezone}
         title={t("history.title")}
         statusBadge={{ status: "preview", label: navT("badge.preview") }}
-        trailing={
-          <div className="text-muted-foreground flex max-w-xl items-start gap-1.5 text-xs">
-            <Lock className="size-3.5" />
-            <span>
-              {t("history.privacyNote")}
-              {hasManagedContent ? ` ${t("history.managedPrivacyNote")}` : ""}
-              {hasLegacyContent ? ` ${t("history.legacyPrivacyNote")}` : ""}
-            </span>
-          </div>
-        }
+        trailing={<HistorySecurityLink label={t("history.securityInfo")} />}
       />
 
       {totalSessions === 0 ? (

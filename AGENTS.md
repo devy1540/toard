@@ -38,7 +38,7 @@ docker compose ps -a                         # app·postgres = running, migrate 
 ## 3) 수집 연결 (선택)
 
 사용량 수집은 각 개발자 머신에서 셀프 온보딩한다(로그인 → 설정 → 설치 · 토큰 탭 → 한 줄 설치).
-서버만 세우는 작업이라면 이 단계는 사람에게 안내만 하고 종료한다. 상세: README [팀에 배포하기](README.md#-팀에-배포하기).
+서버만 세우는 작업이라면 이 단계는 사람에게 안내만 하고 종료한다. 상세: README [Deploying to a team](README.md#-deploying-to-a-team).
 
 ## 4) 실패 모드
 
@@ -54,4 +54,4 @@ docker compose ps -a                         # app·postgres = running, migrate 
 
 - `docker compose down -v`(볼륨 삭제)는 사용자 확인 없이 실행하지 않는다.
 - 비밀값(`AUTH_SECRET`·비밀번호·토큰)을 로그·채팅에 그대로 출력하지 않는다.
-- 프로덕션 지향 설치라면 `CRON_SECRET` 미설정 상태로 마무리하지 않는다 — README [스케줄러](README.md#-스케줄러-cron) 참조.
+- 프로덕션 지향 설치라면 `CRON_SECRET` 미설정 상태로 마무리하지 않는다 — README [Scheduler](README.md#-scheduler-cron) 참조.

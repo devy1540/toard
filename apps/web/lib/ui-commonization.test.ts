@@ -113,12 +113,15 @@ test("rollup 운영 문서는 고정 T0 자동 전환과 TTL 분리를 안내한
   const readme = repoSource("README.md");
   const compose = repoSource("docker-compose.yml");
 
-  for (const document of [runbook, readme]) {
-    assert.match(document, /고정.*T0|T0.*고정/);
-    assert.match(document, /60분.*자동.*전환|자동.*전환.*60분/s);
-    assert.match(document, /신규 데이터.*전환.*(밀리|초기화).*않/s);
-    assert.match(document, /TTL.*별도|별도.*TTL/s);
-  }
+  assert.match(runbook, /고정.*T0|T0.*고정/);
+  assert.match(runbook, /60분.*자동.*전환|자동.*전환.*60분/s);
+  assert.match(runbook, /신규 데이터.*전환.*(밀리|초기화).*않/s);
+  assert.match(runbook, /TTL.*별도|별도.*TTL/s);
+
+  assert.match(readme, /fixed.*T0|T0.*fixed/is);
+  assert.match(readme, /60.*switch.*automatically/is);
+  assert.match(readme, /new data.*do not postpone cutover or reset the observation window/is);
+  assert.match(readme, /TTL.*separate|separate.*TTL/is);
   assert.match(compose, /CLICKHOUSE_READ_15M_V2_ROLLUP:.*비상.*override/);
   assert.match(compose, /CLICKHOUSE_READ_TIMEZONE_ROLLUP:.*비상.*override/);
 });

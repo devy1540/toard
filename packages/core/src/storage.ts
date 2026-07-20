@@ -236,10 +236,55 @@ export type LeaderScope = "user" | "team";
 export type TimeseriesScope = "all" | "team";
 export type LeaderOrder = "cost" | "tokens";
 
+/** 조직 dashboard가 한 번에 읽는 현재/비교 기간과 leaderboard 옵션. */
+export interface OrganizationDashboardQuery {
+  current: PeriodQuery & BucketOptions;
+  previous: PeriodQuery;
+  includeTeamLeaderboard: boolean;
+  leaderboardOrder: LeaderOrder;
+}
+
+/** 조직 dashboard 화면이 필요로 하는 집계 snapshot. */
+export interface OrganizationDashboardData {
+  overview: OverviewStats;
+  previousOverview: OverviewStats;
+  daily: DailyPoint[];
+  topUsers: LeaderRow[];
+  topTeams: LeaderRow[];
+  providerBreakdown: ProviderBreakdown[];
+}
+
 export interface SaveResult {
   inserted: number;
   deduped: number;
 }
+
+export type TeamAttributionPreview = {
+  events: number;
+  from: Date | null;
+  to: Date | null;
+  totalTokens: number;
+  costUsd: number;
+};
+
+export type TeamAttributionBatchResult = {
+  processed: number;
+  updated: number;
+  affectedBuckets: Date[];
+  hasMore: boolean;
+};
+
+export type TeamAttributionRange = {
+  userId: string;
+  from: Date | null;
+  to: Date | null;
+};
+
+export type TeamAttributionBatchRequest = TeamAttributionRange & {
+  teamId: string;
+  limit: number;
+  jobId: string;
+};
 
 export interface PricingRecoveryModelDiagnostic {
   providerKey: string;
@@ -317,6 +362,14 @@ export interface StorageBackend {
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
   saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  /** 아직 팀이 없는 이벤트 중 지정 사용자·기간에 해당하는 예상 백필 규모. */
+  previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview>;
+  /** 아직 팀이 없는 이벤트만 제한된 batch로 귀속한다. */
+  backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
   /** 저장소에 남은 미확정·이전 가격·비권위 revision 모델별 진단. */
@@ -355,6 +408,8 @@ export interface StorageBackend {
   getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
   /** AI 활용 지수 — 익명 조직 집계를 만들기 위한 사용자별 일별 사용량 feature. */
   getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
+  /** 조직 dashboard의 현재·비교 기간과 breakdown을 일관된 snapshot으로 읽는다. */
+  getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */

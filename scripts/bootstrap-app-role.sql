@@ -128,6 +128,26 @@ BEGIN
     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.deployment_release_completions FROM toard_app';
     EXECUTE 'GRANT SELECT ON TABLE public.deployment_release_completions TO toard_app';
   END IF;
+
+  IF to_regclass('public.user_team_assignments') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.user_team_assignments FROM toard_app';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.user_team_assignments TO toard_app';
+  END IF;
+
+  IF to_regclass('public.team_attribution_jobs') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.team_attribution_jobs FROM toard_app';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.team_attribution_jobs TO toard_app';
+  END IF;
+
+  IF to_regclass('public.team_attribution_read_fences') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.team_attribution_read_fences FROM toard_app';
+    EXECUTE 'GRANT SELECT, INSERT, UPDATE ON TABLE public.team_attribution_read_fences TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.complete_team_attribution_fence(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON FUNCTION public.complete_team_attribution_fence(UUID) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.complete_team_attribution_fence(UUID) TO toard_app';
+  END IF;
 END $$;
 
 -- 3) 이후 마이그레이션이 만드는 객체에도 자동 적용

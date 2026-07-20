@@ -88,6 +88,10 @@
     "users": "활성 사용자",
     "devices": "활성 기기"
   },
+  "sectionUnavailable": {
+    "title": "일시적으로 불러오지 못했습니다",
+    "description": "다른 현황은 계속 사용할 수 있습니다. 잠시 후 다시 시도해 주세요."
+  },
   "utilization": {
     "title": "조직 AI 활용 지수",
     "experiment": "실험",

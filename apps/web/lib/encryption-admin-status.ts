@@ -124,8 +124,10 @@ function parseUnsignedCount(value: unknown): number {
 }
 
 function parseOverrideNumber(value: string | undefined): number | null {
-  if (value === undefined) return null;
-  if (value.trim() !== value || value === "" || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) {
+  // Docker Compose는 `${VAR:-}`로 선언한 미설정 값을 빈 문자열로 전달한다.
+  // 빈 값은 override 미설정과 동일하게 취급하되 공백이나 일부만 설정된 값은 거부한다.
+  if (value === undefined || value === "") return null;
+  if (value.trim() !== value || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) {
     throw new Error("KEY_COST_OVERRIDE_INVALID");
   }
   const parsed = Number(value);

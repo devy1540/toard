@@ -200,11 +200,15 @@ services:
     environment:
       TOARD_UPDATER_SECRET: ${TOARD_UPDATER_SECRET:-}
       TOARD_APP_URL: http://app:3000
-      TOARD_COMPOSE_PROJECT_DIR: /workspace
+      # updater 안에서 실행한 Compose도 호스트 bind source를 같은 절대경로로 해석해야 한다.
+      # 최초 호스트 실행은 PWD를, 이후 updater 내부 실행은 전달받은 값을 재사용한다.
+      TOARD_COMPOSE_PROJECT_DIR: ${TOARD_COMPOSE_PROJECT_DIR:-${PWD}}
       TOARD_COMPOSE_FILE: docker-compose.yml
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - .:/workspace
+      - type: bind
+        source: .
+        target: ${TOARD_COMPOSE_PROJECT_DIR:-${PWD}}
     depends_on:
       app:
         condition: service_started

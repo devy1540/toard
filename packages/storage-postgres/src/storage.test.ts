@@ -845,3 +845,97 @@ test("Postgres 가격 복구 모델 진단은 범위 안 unpriced와 legacy를 �
     lastAt: new Date("2026-07-02T00:00:00Z"),
   }]);
 });
+
+test("Postgres 조직 dashboard adapter는 기존 집계를 같은 입력으로 조합한다", async () => {
+  const storage = new PostgresStorage({} as Pool);
+  const current = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-08T00:00:00.000Z"),
+    providerKey: "codex",
+    bucket: "day" as const,
+    timezone: "Asia/Seoul",
+  };
+  const previous = {
+    from: new Date("2026-06-24T00:00:00.000Z"),
+    to: new Date("2026-07-01T00:00:00.000Z"),
+    providerKey: "codex",
+  };
+  const overview = {
+    totalSessions: 2, activeUsers: 1, totalCostUsd: 1,
+    totalInputTokens: 10, totalOutputTokens: 5,
+    totalCacheReadTokens: 2, totalCacheCreationTokens: 1,
+    costCoverage: { pricedEvents: 2, unpricedEvents: 0, legacyEvents: 0 },
+  };
+  const previousOverview = { ...overview, totalSessions: 1, totalCostUsd: 0.5 };
+  const daily = [{
+    day: "2026-07-01", sessions: 2, activeUsers: 1, costUsd: 1,
+    inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheCreationTokens: 1,
+  }];
+  const topUsers = [{
+    key: "user-1", label: "User 1", costUsd: 1, totalTokens: 18, sessions: 2,
+    costCoverage: overview.costCoverage,
+  }];
+  const topTeams = [{
+    key: "team-1", label: "Team 1", costUsd: 1, totalTokens: 18, sessions: 2,
+    costCoverage: overview.costCoverage,
+  }];
+  const providerBreakdown = [{
+    providerKey: "codex", costUsd: 1, totalTokens: 18, sessions: 2,
+    costCoverage: overview.costCoverage,
+  }];
+  const calls: Array<[string, unknown]> = [];
+
+  storage.getOverview = async (q) => {
+    calls.push(["overview", q]);
+    return q.from === current.from ? overview : previousOverview;
+  };
+  storage.getDailyTimeseries = async (q) => { calls.push(["daily", q]); return daily; };
+  storage.getLeaderboard = async (q) => {
+    calls.push([`leader:${q.scope}`, q]);
+    return q.scope === "user" ? topUsers : topTeams;
+  };
+  storage.getProviderBreakdown = async (q) => { calls.push(["provider", q]); return providerBreakdown; };
+
+  const result = await storage.getOrganizationDashboard({
+    current, previous, includeTeamLeaderboard: true, leaderboardOrder: "tokens",
+  });
+
+  assert.deepEqual(result, { overview, previousOverview, daily, topUsers, topTeams, providerBreakdown });
+  assert.deepEqual(calls.map(([name]) => name), [
+    "overview", "overview", "daily", "leader:user", "leader:team", "provider",
+  ]);
+  assert.equal((calls[3]![1] as { orderBy: string }).orderBy, "tokens");
+});
+
+test("Postgres 조직 dashboard adapter는 팀 순위를 생략할 수 있다", async () => {
+  const storage = new PostgresStorage({} as Pool);
+  const current = {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-08T00:00:00.000Z"),
+  };
+  const overview = {
+    totalSessions: 0, activeUsers: 0, totalCostUsd: 0,
+    totalInputTokens: 0, totalOutputTokens: 0,
+    totalCacheReadTokens: 0, totalCacheCreationTokens: 0,
+    costCoverage: { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 0 },
+  };
+  const calls: string[] = [];
+
+  storage.getOverview = async () => overview;
+  storage.getDailyTimeseries = async () => [];
+  storage.getLeaderboard = async (q) => {
+    calls.push(`leader:${q.scope}`);
+    return [];
+  };
+  storage.getProviderBreakdown = async () => [];
+
+  const result = await storage.getOrganizationDashboard({
+    current,
+    previous: current,
+    includeTeamLeaderboard: false,
+    leaderboardOrder: "cost",
+  });
+
+  assert.deepEqual(calls, ["leader:user"]);
+  assert.deepEqual(result.topTeams, []);
+});

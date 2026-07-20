@@ -88,6 +88,10 @@
     "users": "Active users",
     "devices": "Active devices"
   },
+  "sectionUnavailable": {
+    "title": "Temporarily unavailable",
+    "description": "Other dashboard data remains available. Please try again shortly."
+  },
   "utilization": {
     "title": "Organization AI utilization index",
     "experiment": "Experimental",

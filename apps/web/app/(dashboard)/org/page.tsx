@@ -18,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
-import { getCachedOrganizationUtilization } from "@/lib/ai-utilization";
+import { loadOrganizationDashboardData } from "@/lib/org-dashboard-data";
 import {
   ORG_LEADERBOARD_METRIC,
   cacheSharePercent,
@@ -34,9 +34,7 @@ import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
-import { getStorage } from "@/lib/storage";
 import { findTeamAttributionFence } from "@/lib/team-attribution";
-import { getOrgToolSummary } from "@/lib/tool-metadata";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
 export const dynamic = "force-dynamic";
@@ -55,6 +53,28 @@ const tokenLabelKey = {
   custom: "tokenLabel.custom",
   all: "tokenLabel.all",
 } as const;
+
+function UnavailableSectionCard({
+  sectionTitle,
+  statusTitle,
+  message,
+}: {
+  sectionTitle: string;
+  statusTitle: string;
+  message: string;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{sectionTitle}</CardTitle>
+        <CardDescription>{statusTitle}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <p className="text-muted-foreground text-sm">{message}</p>
+      </CardContent>
+    </Card>
+  );
+}
 
 function usageTitleKey(bucket: OrgPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
   if (bucket === "day") return "dailyUsage";
@@ -434,17 +454,23 @@ async function OverviewTab({
 }) {
   const [t, dashboardT] = await Promise.all([getTranslations("org"), getTranslations("dashboard")]);
   const metric: ChartMetric = getOrgChartMetric(sp.metric);
-  const storage = getStorage();
-  const [overview, prevOverview, daily, topUsers, topTeams, providerBreakdown, toolActivity, utilization] = await Promise.all([
-    storage.getOverview(period),
-    storage.getOverview(previousPeriod(period)),
-    storage.getDailyTimeseries(period),
-    storage.getLeaderboard({ ...period, scope: "user", orderBy: ORG_LEADERBOARD_METRIC }),
-    canSeeTeamRanking ? storage.getLeaderboard({ ...period, scope: "team" }) : Promise.resolve([]),
-    storage.getProviderBreakdown(period),
-    getOrgToolSummary(period),
-    getCachedOrganizationUtilization(),
-  ]);
+  const { dashboard, toolActivity, utilization } = await loadOrganizationDashboardData({
+    dashboard: {
+      current: period,
+      previous: previousPeriod(period),
+      includeTeamLeaderboard: canSeeTeamRanking,
+      leaderboardOrder: ORG_LEADERBOARD_METRIC,
+    },
+    toolPeriod: period,
+  });
+  const {
+    overview,
+    previousOverview: prevOverview,
+    daily,
+    topUsers,
+    topTeams,
+    providerBreakdown,
+  } = dashboard;
 
   const series = fillSeriesGaps(daily, period);
   const costLabels = {
@@ -564,18 +590,34 @@ async function OverviewTab({
         />
       </div>
 
-      <Card>
-        <CardHeader><CardTitle>{t("toolActivity.title")}</CardTitle><CardDescription>{t("toolActivity.description")}</CardDescription></CardHeader>
-        <CardContent className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          <SummaryTile label={t("toolActivity.mcp")} value={fmtNum(toolActivity.mcpCalls)} icon={<Wrench className="size-3.5" />} />
-          <SummaryTile label={t("toolActivity.skills")} value={fmtNum(toolActivity.distinctSkills)} icon={<Blocks className="size-3.5" />} />
-          <SummaryTile label={t("toolActivity.plugins")} value={fmtNum(toolActivity.distinctPlugins)} icon={<Puzzle className="size-3.5" />} />
-          <SummaryTile label={t("toolActivity.users")} value={fmtNum(toolActivity.activeUsers ?? 0)} icon={<Users className="size-3.5" />} />
-          <SummaryTile label={t("toolActivity.devices")} value={fmtNum(toolActivity.activeDevices ?? 0)} />
-        </CardContent>
-      </Card>
+      {toolActivity.state === "available" ? (
+        <Card>
+          <CardHeader><CardTitle>{t("toolActivity.title")}</CardTitle><CardDescription>{t("toolActivity.description")}</CardDescription></CardHeader>
+          <CardContent className="grid gap-4 sm:grid-cols-3 lg:grid-cols-5">
+            <SummaryTile label={t("toolActivity.mcp")} value={fmtNum(toolActivity.value.mcpCalls)} icon={<Wrench className="size-3.5" />} />
+            <SummaryTile label={t("toolActivity.skills")} value={fmtNum(toolActivity.value.distinctSkills)} icon={<Blocks className="size-3.5" />} />
+            <SummaryTile label={t("toolActivity.plugins")} value={fmtNum(toolActivity.value.distinctPlugins)} icon={<Puzzle className="size-3.5" />} />
+            <SummaryTile label={t("toolActivity.users")} value={fmtNum(toolActivity.value.activeUsers ?? 0)} icon={<Users className="size-3.5" />} />
+            <SummaryTile label={t("toolActivity.devices")} value={fmtNum(toolActivity.value.activeDevices ?? 0)} />
+          </CardContent>
+        </Card>
+      ) : (
+        <UnavailableSectionCard
+          sectionTitle={t("toolActivity.title")}
+          statusTitle={t("sectionUnavailable.title")}
+          message={t("sectionUnavailable.description")}
+        />
+      )}
 
-      <OrgUtilizationCard result={utilization} />
+      {utilization.state === "available" ? (
+        <OrgUtilizationCard result={utilization.value} />
+      ) : (
+        <UnavailableSectionCard
+          sectionTitle={t("utilization.title")}
+          statusTitle={t("sectionUnavailable.title")}
+          message={t("sectionUnavailable.description")}
+        />
+      )}
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.5fr)_minmax(0,0.8fr)]">
         <Card className="min-w-0">

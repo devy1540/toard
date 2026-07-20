@@ -10,6 +10,8 @@ import type {
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
+  OrganizationDashboardData,
+  OrganizationDashboardQuery,
   OverviewStats,
   PeriodQuery,
   PricingRecoveryBatchResult,
@@ -1085,6 +1087,20 @@ export class PostgresStorage implements StorageBackend {
       costUsd: n(r.cost_usd),
       costStatus: r.cost_status,
     }));
+  }
+
+  async getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData> {
+    const [overview, previousOverview, daily, topUsers, topTeams, providerBreakdown] = await Promise.all([
+      this.getOverview(q.current),
+      this.getOverview(q.previous),
+      this.getDailyTimeseries(q.current),
+      this.getLeaderboard({ ...q.current, scope: "user", orderBy: q.leaderboardOrder }),
+      q.includeTeamLeaderboard
+        ? this.getLeaderboard({ ...q.current, scope: "team" })
+        : Promise.resolve([]),
+      this.getProviderBreakdown(q.current),
+    ]);
+    return { overview, previousOverview, daily, topUsers, topTeams, providerBreakdown };
   }
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string; orderBy?: "cost" | "tokens" }): Promise<LeaderRow[]> {

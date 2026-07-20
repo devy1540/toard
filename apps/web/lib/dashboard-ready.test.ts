@@ -25,3 +25,19 @@ test("dashboard HTTP 성공 marker는 shell이 아니라 실제 데이터 컴포
     "team marker는 TeamDetailOverview 데이터 query 성공 뒤에만 렌더해야 한다",
   );
 });
+
+test("조직 overview는 하나의 core snapshot loader를 사용하고 선택 섹션 실패에도 ready marker를 유지한다", () => {
+  const org = source("../app/(dashboard)/org/page.tsx");
+  const readyMarker = org.indexOf('data-dashboard-ready="org-overview"');
+  const coreLoader = org.indexOf("loadOrganizationDashboardData(");
+  const toolAvailable = org.indexOf('toolActivity.state === "available"');
+  const utilizationAvailable = org.indexOf('utilization.state === "available"');
+
+  assert.ok(coreLoader >= 0, "org overview는 getOrganizationDashboard 기반 loader를 호출해야 한다");
+  assert.ok(readyMarker > coreLoader, "ready marker는 성공한 core snapshot loading 뒤에 렌더해야 한다");
+  assert.ok(readyMarker < toolAvailable, "tool activity unavailable branch는 core ready marker를 gate하면 안 된다");
+  assert.ok(readyMarker < utilizationAvailable, "utilization unavailable branch는 core ready marker를 gate하면 안 된다");
+  for (const legacyRead of ["getOverview(", "getDailyTimeseries(", "getLeaderboard(", "getProviderBreakdown("]) {
+    assert.equal(org.includes(legacyRead), false, `org overview는 legacy ${legacyRead}를 직접 호출하면 안 된다`);
+  }
+});

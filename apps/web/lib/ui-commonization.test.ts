@@ -601,7 +601,9 @@ test("device inventory is current state, not period activity", () => {
 
 test("organization page uses anonymous tool summary without drilldown", () => {
   const org = source("app/(dashboard)/org/page.tsx");
-  assert.match(org, /getOrgToolSummary/);
+  const loader = source("lib/org-dashboard-data.ts");
+  assert.match(org, /loadOrganizationDashboardData/);
+  assert.match(loader, /getToolActivity:\s*(?:\([^)]*\)\s*=>\s*)?getOrgToolSummary\b/);
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
 });
 

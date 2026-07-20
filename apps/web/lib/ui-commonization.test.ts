@@ -267,6 +267,96 @@ test("shim CI runs installer E2E on Windows, Linux, and macOS", () => {
   assert.match(workflow, /test-shim-installer-unix\.sh/);
 });
 
+test("Windows shim CI verifies GUI helper subsystem and scheduled action", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+
+  assert.match(workflow, /toard-shim-background\.exe/);
+  assert.match(workflow, /Get-PeSubsystem/);
+  assert.match(workflow, /expected Windows GUI subsystem 2/);
+  assert.match(e2e, /BackgroundBinary/);
+  assert.match(e2e, /toard-shim-background\.exe/);
+  assert.match(e2e, /\/Query.*\/XML/s);
+  assert.match(e2e, /Start-ScheduledTask/);
+  assert.match(e2e, /\[xml\]\$taskXml/);
+  assert.match(e2e, /Task\.Actions\.Exec\.Command\s*-ne\s*\$background/);
+  assert.match(e2e, /IsNullOrWhiteSpace.*Task\.Actions\.Exec\.Arguments/s);
+  assert.match(
+    e2e,
+    /\$infoBefore\s*=\s*Get-ScheduledTaskInfo[\s\S]*\$state\s*=\s*\(Get-ScheduledTask[\s\S]*\$infoAfter\s*=\s*Get-ScheduledTaskInfo/,
+  );
+  assert.match(e2e, /LastRunTime\s*-ne\s*\$infoAfter\.LastRunTime/);
+  assert.match(e2e, /LastTaskResult\s*-ne\s*\$infoAfter\.LastTaskResult/);
+  assert.match(e2e, /LastRunTime\s*-gt\s*\$taskRunBaseline\.LastRunTime/);
+  assert.match(e2e, /\$state\s*-ne\s*'Running'/);
+  assert.match(e2e, /0x41301/);
+  assert.match(e2e, /LastRunTime\s*-eq\s*\$terminalLastRunTime/);
+  assert.match(e2e, /LastTaskResult\s*-eq\s*\$terminalLastTaskResult/);
+  assert.match(e2e, /stableTerminalSnapshots[\s\S]*-ge 2/);
+  assert.match(e2e, /Start-Sleep -Milliseconds 100/);
+  assert.match(e2e, /did not reach a stable terminal snapshot within 10 seconds/);
+  assert.match(e2e, /\$taskInfo\.LastTaskResult\s*-ne\s*0/);
+});
+
+test("Windows installer E2E migrates an existing legacy scheduled task", () => {
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+
+  assert.match(e2e, /\$legacyShim\s*=\s*Join-Path \$legacyBinDir 'toard-shim\.exe'/);
+  assert.match(e2e, /Copy-Item -Force \$Binary \$legacyShim/);
+  assert.match(
+    e2e,
+    /New-ScheduledTaskAction -Execute \$legacyShim -Argument 'collect --quiet'/,
+  );
+  assert.match(e2e, /New-ScheduledTaskTrigger -Once -At \(Get-Date\)\.AddYears\(1\)/);
+  assert.match(e2e, /Register-ScheduledTask -TaskName 'toard-collect'/);
+  const scheduledProfileJunction =
+    "New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir";
+  assert.ok(e2e.includes(scheduledProfileJunction));
+  assert.ok(
+    e2e.indexOf(scheduledProfileJunction) <
+      e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'"),
+    "the isolated scheduled-task profile must exist before the legacy task can run",
+  );
+  assert.ok(
+    e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'") < e2e.indexOf("& $installer"),
+  );
+  assert.match(e2e, /finally \{[\s\S]*schtasks\.exe \/Delete \/TN toard-collect \/F/);
+});
+
+test("Windows installer E2E preserves the scheduled-task user's existing profile", () => {
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+  const preserveProfile =
+    "Move-Item -LiteralPath $scheduledToardDir -Destination $scheduledToardBackup";
+  const createJunction =
+    "New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir";
+  const removeJunction = "Remove-Item -Force -ErrorAction Stop $scheduledToardDir";
+  const restoreProfile =
+    "Move-Item -LiteralPath $scheduledToardBackup -Destination $scheduledToardDir";
+
+  for (const contract of [preserveProfile, createJunction, removeJunction, restoreProfile]) {
+    assert.ok(e2e.includes(contract), `missing Windows profile isolation contract: ${contract}`);
+  }
+  assert.ok(e2e.indexOf(preserveProfile) < e2e.indexOf(createJunction));
+  assert.ok(e2e.indexOf(createJunction) < e2e.indexOf("Register-ScheduledTask"));
+  assert.ok(e2e.indexOf("} finally {") < e2e.indexOf(removeJunction));
+  assert.ok(e2e.indexOf(removeJunction) < e2e.indexOf(restoreProfile));
+});
+
+test("shim release publishes the Windows no-console helper", () => {
+  const workflow = repoSource(".github/workflows/shim-release.yml");
+
+  assert.match(workflow, /toard-shim-background-x86_64-pc-windows-msvc\.exe/);
+  assert.match(workflow, /target\/\$t\/release\/toard-shim-background\.exe/);
+  assert.match(workflow, /sha256sum toard-shim-\*/);
+  assert.match(workflow, /targets: x86_64-pc-windows-msvc/);
+  assert.match(
+    workflow,
+    /cp "target\/\$t\/release\/toard-shim-background\.exe"\s*\\\s*\n\s*"\.\.\/\.\.\/dist\/toard-shim-background-\$t\.exe"/,
+  );
+  assert.match(workflow, /path: dist\/toard-shim-\*/);
+  assert.match(workflow, /gh release create[\s\S]*dist\/toard-shim-\*/);
+});
+
 test("device onboarding uses OS-aware wizard and separate management", () => {
   const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
   const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");

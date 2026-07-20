@@ -304,8 +304,20 @@ test("operator override는 두 값 모두 명시된 0 이상 finite 숫자만 �
     excludedRequests: 0,
   });
 
+  const composeDefault = await getEncryptionAdminStatus({
+    env: {
+      TOARD_KEY_ACTIVE_PROVIDER: "aws-kms",
+      TOARD_KEY_COST_PER_10000_USD: "",
+      TOARD_KEY_MONTHLY_KEY_COST_USD: "",
+    },
+    db: database(),
+    runtime: runtime(),
+  });
+  assert.equal(composeDefault.costEstimate?.source, "reference");
+
   for (const env of [
     { TOARD_KEY_COST_PER_10000_USD: "0.04" },
+    { TOARD_KEY_COST_PER_10000_USD: "", TOARD_KEY_MONTHLY_KEY_COST_USD: "1" },
     { TOARD_KEY_COST_PER_10000_USD: "-1", TOARD_KEY_MONTHLY_KEY_COST_USD: "1" },
     { TOARD_KEY_COST_PER_10000_USD: "Infinity", TOARD_KEY_MONTHLY_KEY_COST_USD: "1" },
     { TOARD_KEY_COST_PER_10000_USD: "1x", TOARD_KEY_MONTHLY_KEY_COST_USD: "1" },

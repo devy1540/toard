@@ -16,7 +16,9 @@ $uninstallCompany = Join-Path $work 'uninstall-company.ps1'
 $server = $null
 $originalUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $scheduledToardDir = Join-Path $env:USERPROFILE '.toard'
+$scheduledToardBackup = Join-Path $env:USERPROFILE ('.toard-e2e-backup-' + [guid]::NewGuid())
 $scheduledHomeLinkCreated = $false
+$scheduledToardBackupCreated = $false
 
 New-Item -ItemType Directory -Force -Path $homeDir, $releaseDir | Out-Null
 try {
@@ -66,7 +68,8 @@ try {
   [IO.File]::WriteAllText((Join-Path $legacyToardDir 'state/content-since'), "123`n")
   [IO.File]::WriteAllText((Join-Path $legacyToardDir 'state/tool-since'), "456`n")
   if (Test-Path $scheduledToardDir) {
-    throw "scheduled-task profile already contains toard state: $scheduledToardDir"
+    Move-Item -LiteralPath $scheduledToardDir -Destination $scheduledToardBackup
+    $scheduledToardBackupCreated = $true
   }
   # Task Scheduler does not inherit this process's test-only USERPROFILE.
   # Isolate its real profile before any registered task can start.
@@ -219,8 +222,30 @@ try {
   [Environment]::SetEnvironmentVariable('Path', $originalUserPath, 'User')
   schtasks.exe /Delete /TN toard-collect /F 2>$null | Out-Null
   if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-  if ($scheduledHomeLinkCreated) { Remove-Item -Force -ErrorAction SilentlyContinue $scheduledToardDir }
+  $scheduledProfileCleanupError = $null
+  if ($scheduledHomeLinkCreated) {
+    try {
+      Remove-Item -Force -ErrorAction Stop $scheduledToardDir
+    } catch {
+      $scheduledProfileCleanupError = $_
+    }
+  }
+  if ($scheduledToardBackupCreated) {
+    if (Test-Path $scheduledToardDir) {
+      if (-not $scheduledProfileCleanupError) {
+        $scheduledProfileCleanupError = "scheduled-task profile junction was not removed: $scheduledToardDir"
+      }
+    } else {
+      try {
+        Move-Item -LiteralPath $scheduledToardBackup -Destination $scheduledToardDir
+        $scheduledToardBackupCreated = $false
+      } catch {
+        if (-not $scheduledProfileCleanupError) { $scheduledProfileCleanupError = $_ }
+      }
+    }
+  }
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $work
+  if ($scheduledProfileCleanupError) { throw $scheduledProfileCleanupError }
 }
 
 # 위의 예약 작업 부재 확인과 멱등 정리는 정상적으로도 schtasks 종료코드 1을 남긴다.

@@ -271,6 +271,25 @@ test("Windows installer E2E migrates an existing legacy scheduled task", () => {
   assert.match(e2e, /finally \{[\s\S]*schtasks\.exe \/Delete \/TN toard-collect \/F/);
 });
 
+test("Windows installer E2E preserves the scheduled-task user's existing profile", () => {
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+  const preserveProfile =
+    "Move-Item -LiteralPath $scheduledToardDir -Destination $scheduledToardBackup";
+  const createJunction =
+    "New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir";
+  const removeJunction = "Remove-Item -Force -ErrorAction Stop $scheduledToardDir";
+  const restoreProfile =
+    "Move-Item -LiteralPath $scheduledToardBackup -Destination $scheduledToardDir";
+
+  for (const contract of [preserveProfile, createJunction, removeJunction, restoreProfile]) {
+    assert.ok(e2e.includes(contract), `missing Windows profile isolation contract: ${contract}`);
+  }
+  assert.ok(e2e.indexOf(preserveProfile) < e2e.indexOf(createJunction));
+  assert.ok(e2e.indexOf(createJunction) < e2e.indexOf("Register-ScheduledTask"));
+  assert.ok(e2e.indexOf("} finally {") < e2e.indexOf(removeJunction));
+  assert.ok(e2e.indexOf(removeJunction) < e2e.indexOf(restoreProfile));
+});
+
 test("shim release publishes the Windows no-console helper", () => {
   const workflow = repoSource(".github/workflows/shim-release.yml");
 

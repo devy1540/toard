@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const ROOT = new URL("..", import.meta.url);
+const ROOT_PATH = fileURLToPath(ROOT).replace(/\/$/, "");
 const COMPOSE_ENV = [
   "TOARD_KEY_ACTIVE_PROVIDER",
   "TOARD_KEY_MIGRATION_PROVIDER",
@@ -69,10 +71,11 @@ type ComposeService = {
   volumes?: Array<{ source?: string; target?: string; read_only?: boolean }>;
 };
 
-function composeConfig(): { services: Record<string, ComposeService> } {
+function composeConfig(extraEnv: NodeJS.ProcessEnv = {}): { services: Record<string, ComposeService> } {
   const sentinelEnv = Object.fromEntries(
     COMPOSE_ENV.map((name) => [name, `sentinel-${name.toLowerCase()}`]),
   );
+  const { TOARD_COMPOSE_PROJECT_DIR: _ignoredProjectDir, ...baseEnv } = process.env;
   return JSON.parse(execFileSync(
     "docker",
     ["compose", "--profile", "*", "config", "--format", "json"],
@@ -80,11 +83,13 @@ function composeConfig(): { services: Record<string, ComposeService> } {
       cwd: ROOT,
       encoding: "utf8",
       env: {
-        ...process.env,
+        ...baseEnv,
+        PWD: ROOT_PATH,
         AUTH_SECRET: "dummy",
         APP_DATABASE_URL: "postgres://app-user:dummy@postgres:5432/toard",
         MIGRATION_DATABASE_URL: "postgres://migration-owner:dummy@postgres:5432/toard",
         ...sentinelEnv,
+        ...extraEnv,
       },
     },
   )) as { services: Record<string, ComposeService> };
@@ -186,6 +191,21 @@ test("content-admin은 격리된 one-shot profile 서비스다", () => {
   assert.equal(services.migrate?.build?.target, "migrator");
   assert.equal(services.seed?.build?.target, "migrator");
   assert.equal(services.updater?.build?.target, "updater");
+});
+
+test("updater는 배포 디렉터리를 호스트와 같은 절대경로로 마운트한다", () => {
+  for (const services of [
+    composeConfig().services,
+    composeConfig({ PWD: "", TOARD_COMPOSE_PROJECT_DIR: ROOT_PATH }).services,
+  ]) {
+    const updater = services.updater;
+    assert.ok(updater, "updater service가 필요합니다");
+    assert.equal(updater.environment?.TOARD_COMPOSE_PROJECT_DIR, ROOT_PATH);
+
+    const projectMount = updater.volumes?.find((volume) => volume.target === ROOT_PATH);
+    assert.ok(projectMount, "배포 디렉터리를 동일한 호스트 절대경로에 마운트해야 합니다");
+    assert.equal(projectMount.source, ROOT_PATH);
+  }
 });
 
 test("Dockerfile은 non-root content-admin target과 안전한 기본 명령을 제공한다", () => {

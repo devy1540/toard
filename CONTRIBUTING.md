@@ -15,7 +15,7 @@ Repository collaborators may create a working branch in this repository instead 
 
 ## Development environment
 
-- Node.js 20 or later, pnpm 9 (as defined by `packageManager` in `package.json`), and Docker for local PostgreSQL
+- Node.js 22.13 or later, pnpm 11 (as defined by `packageManager` in `package.json`), and Docker for local PostgreSQL
 
 ```bash
 pnpm install

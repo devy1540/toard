@@ -23,7 +23,7 @@ jobs:
       - uses: azure/setup-kubectl@v4
         with:
           version: v1.33.9
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test

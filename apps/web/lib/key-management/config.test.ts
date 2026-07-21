@@ -546,11 +546,11 @@ test("duplicate identity는 credential mode와 auth file 차이로 우회할 수
   );
 });
 
-test("Azure SDK lockfile graph는 root Node >=20 계약을 유지한다", () => {
+test("Azure SDK lockfile graph는 root Node >=22.13 계약을 유지한다", () => {
   const rootPackage = JSON.parse(
     readFileSync(new URL("../../../../package.json", import.meta.url), "utf8"),
   ) as { engines?: { node?: string } };
-  assert.equal(rootPackage.engines?.node, ">=20");
+  assert.equal(rootPackage.engines?.node, ">=22.13");
 
   const lockfile = readFileSync(
     new URL("../../../../pnpm-lock.yaml", import.meta.url),

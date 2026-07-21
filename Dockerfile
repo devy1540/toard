@@ -13,7 +13,7 @@ ARG NODE_VERSION=22-alpine
 FROM node:${NODE_VERSION} AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-RUN npm install -g pnpm@9.15.0
+RUN npm install -g pnpm@11.15.1
 WORKDIR /app
 
 # ---- deps: 워크스페이스 의존성 설치 (매니페스트만 복사 → 캐시 최대화) ----
@@ -27,7 +27,7 @@ COPY packages/storage-postgres/package.json ./packages/storage-postgres/
 COPY packages/storage-clickhouse/package.json ./packages/storage-clickhouse/
 COPY packages/updater/package.json ./packages/updater/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
 
 # ---- benchmark: source + deps + production build tools ----
 # HTTP SLO 참조 측정은 이 컨테이너 안에서 fixture 준비와 production Next start를 모두 실행한다.

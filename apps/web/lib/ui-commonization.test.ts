@@ -113,14 +113,66 @@ test("rollup 운영 문서는 고정 T0 자동 전환과 TTL 분리를 안내한
   const readme = repoSource("README.md");
   const compose = repoSource("docker-compose.yml");
 
-  for (const document of [runbook, readme]) {
-    assert.match(document, /고정.*T0|T0.*고정/);
-    assert.match(document, /60분.*자동.*전환|자동.*전환.*60분/s);
-    assert.match(document, /신규 데이터.*전환.*(밀리|초기화).*않/s);
-    assert.match(document, /TTL.*별도|별도.*TTL/s);
-  }
+  assert.match(runbook, /고정.*T0|T0.*고정/);
+  assert.match(runbook, /60분.*자동.*전환|자동.*전환.*60분/s);
+  assert.match(runbook, /신규 데이터.*전환.*(밀리|초기화).*않/s);
+  assert.match(runbook, /TTL.*별도|별도.*TTL/s);
+
+  assert.match(readme, /fixed.*T0|T0.*fixed/is);
+  assert.match(readme, /60.*switch.*automatically/is);
+  assert.match(readme, /new data.*do not postpone cutover or reset the observation window/is);
+  assert.match(readme, /TTL.*separate|separate.*TTL/is);
   assert.match(compose, /CLICKHOUSE_READ_15M_V2_ROLLUP:.*비상.*override/);
   assert.match(compose, /CLICKHOUSE_READ_TIMEZONE_ROLLUP:.*비상.*override/);
+});
+
+test("최초 팀 배정은 과거 귀속 preview 확인과 진행 상태 및 조직 read fence를 제공한다", () => {
+  const actions = source("app/(dashboard)/admin/team-actions.ts");
+  const select = source("app/(dashboard)/admin/team-select.tsx");
+  const page = source("app/(dashboard)/admin/page.tsx");
+  const org = source("app/(dashboard)/org/page.tsx");
+  const teams = source("app/(dashboard)/org/teams/page.tsx");
+  const team = source("app/(dashboard)/org/team/page.tsx");
+  const ko = JSON.parse(source("messages/ko/admin.json")) as Record<string, unknown>;
+  const en = JSON.parse(source("messages/en/admin.json")) as Record<string, unknown>;
+  const koAttribution = ko.teamAttribution as Record<string, unknown> | undefined;
+
+  assert.match(actions, /previewTeamAssignmentAction/);
+  assert.match(actions, /requestLegacyTeamAttributionAction/);
+  assert.match(actions, /previewUnassignedTeamAttribution/);
+  assert.match(actions, /kind, 'legacy_adoption'|legacy_adoption/);
+  assert.match(select, /AlertDialog/);
+  assert.match(select, /preview\.events/);
+  assert.match(select, /preview\.from/);
+  assert.match(select, /preview\.to/);
+  assert.match(select, /preview\.totalTokens/);
+  assert.match(select, /preview\.costUsd/);
+  assert.match(select, /noOtherTeamsChanged/);
+  assert.match(select, /requestLegacyTeamAttributionAction/);
+  assert.match(page, /getTeamAttributionStatus/);
+  assert.match(page, /legacyPreview/);
+  assert.doesNotMatch(select, /status\.lastError/);
+  for (const orgPage of [org, teams, team]) {
+    assert.match(orgPage, /findTeamAttributionFence/);
+    assert.match(orgPage, /TeamAttributionFence/);
+  }
+  assert.deepEqual(messageShape(ko), messageShape(en));
+  for (const key of [
+    "assignmentTitle",
+    "events",
+    "period",
+    "tokens",
+    "cost",
+    "noOtherTeamsChanged",
+    "inProgress",
+    "succeeded",
+    "failed",
+    "legacyButton",
+    "readFenceTitle",
+    "readFenceDescription",
+  ]) {
+    assert.equal(typeof koAttribution?.[key], "string", `missing admin.teamAttribution.${key}`);
+  }
 });
 
 test("dashboard disclosures use the shared disclosure wrapper", () => {
@@ -143,7 +195,8 @@ test("dashboard filters delegate their visual shell to the shared toolbar", () =
   assert.match(toolbar, /FeatureStatusBadge/);
   assert.match(toolbar, /splitHeader[\s\S]*filters/);
   assert.match(filters, /<DashboardToolbar[\s\S]*filters=\{filterControls\}/);
-  assert.match(filters, /showCustom[\s\S]*<Input/);
+  assert.match(filters, /showCustom[\s\S]*<DateRangePicker/);
+  assert.match(filters, /<Button size="sm" onClick=\{applyCustom\} disabled=\{!from \|\| !to\}>/);
 });
 
 test("demo open mode can render settings with the dashboard viewer fallback", () => {
@@ -214,16 +267,109 @@ test("shim CI runs installer E2E on Windows, Linux, and macOS", () => {
   assert.match(workflow, /test-shim-installer-unix\.sh/);
 });
 
+test("Windows shim CI verifies GUI helper subsystem and scheduled action", () => {
+  const workflow = repoSource(".github/workflows/shim-ci.yml");
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+
+  assert.match(workflow, /toard-shim-background\.exe/);
+  assert.match(workflow, /Get-PeSubsystem/);
+  assert.match(workflow, /expected Windows GUI subsystem 2/);
+  assert.match(e2e, /BackgroundBinary/);
+  assert.match(e2e, /toard-shim-background\.exe/);
+  assert.match(e2e, /\/Query.*\/XML/s);
+  assert.match(e2e, /Start-ScheduledTask/);
+  assert.match(e2e, /\[xml\]\$taskXml/);
+  assert.match(e2e, /Task\.Actions\.Exec\.Command\s*-ne\s*\$background/);
+  assert.match(e2e, /IsNullOrWhiteSpace.*Task\.Actions\.Exec\.Arguments/s);
+  assert.match(
+    e2e,
+    /\$infoBefore\s*=\s*Get-ScheduledTaskInfo[\s\S]*\$state\s*=\s*\(Get-ScheduledTask[\s\S]*\$infoAfter\s*=\s*Get-ScheduledTaskInfo/,
+  );
+  assert.match(e2e, /LastRunTime\s*-ne\s*\$infoAfter\.LastRunTime/);
+  assert.match(e2e, /LastTaskResult\s*-ne\s*\$infoAfter\.LastTaskResult/);
+  assert.match(e2e, /LastRunTime\s*-gt\s*\$taskRunBaseline\.LastRunTime/);
+  assert.match(e2e, /\$state\s*-ne\s*'Running'/);
+  assert.match(e2e, /0x41301/);
+  assert.match(e2e, /LastRunTime\s*-eq\s*\$terminalLastRunTime/);
+  assert.match(e2e, /LastTaskResult\s*-eq\s*\$terminalLastTaskResult/);
+  assert.match(e2e, /stableTerminalSnapshots[\s\S]*-ge 2/);
+  assert.match(e2e, /Start-Sleep -Milliseconds 100/);
+  assert.match(e2e, /did not reach a stable terminal snapshot within 10 seconds/);
+  assert.match(e2e, /\$taskInfo\.LastTaskResult\s*-ne\s*0/);
+});
+
+test("Windows installer E2E migrates an existing legacy scheduled task", () => {
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+
+  assert.match(e2e, /\$legacyShim\s*=\s*Join-Path \$legacyBinDir 'toard-shim\.exe'/);
+  assert.match(e2e, /Copy-Item -Force \$Binary \$legacyShim/);
+  assert.match(
+    e2e,
+    /New-ScheduledTaskAction -Execute \$legacyShim -Argument 'collect --quiet'/,
+  );
+  assert.match(e2e, /New-ScheduledTaskTrigger -Once -At \(Get-Date\)\.AddYears\(1\)/);
+  assert.match(e2e, /Register-ScheduledTask -TaskName 'toard-collect'/);
+  const scheduledProfileJunction =
+    "New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir";
+  assert.ok(e2e.includes(scheduledProfileJunction));
+  assert.ok(
+    e2e.indexOf(scheduledProfileJunction) <
+      e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'"),
+    "the isolated scheduled-task profile must exist before the legacy task can run",
+  );
+  assert.ok(
+    e2e.indexOf("Register-ScheduledTask -TaskName 'toard-collect'") < e2e.indexOf("& $installer"),
+  );
+  assert.match(e2e, /finally \{[\s\S]*schtasks\.exe \/Delete \/TN toard-collect \/F/);
+});
+
+test("Windows installer E2E preserves the scheduled-task user's existing profile", () => {
+  const e2e = repoSource(".github/scripts/test-shim-installer-windows.ps1");
+  const preserveProfile =
+    "Move-Item -LiteralPath $scheduledToardDir -Destination $scheduledToardBackup";
+  const createJunction =
+    "New-Item -ItemType Junction -Path $scheduledToardDir -Target $legacyToardDir";
+  const removeJunction = "Remove-Item -Force -ErrorAction Stop $scheduledToardDir";
+  const restoreProfile =
+    "Move-Item -LiteralPath $scheduledToardBackup -Destination $scheduledToardDir";
+
+  for (const contract of [preserveProfile, createJunction, removeJunction, restoreProfile]) {
+    assert.ok(e2e.includes(contract), `missing Windows profile isolation contract: ${contract}`);
+  }
+  assert.ok(e2e.indexOf(preserveProfile) < e2e.indexOf(createJunction));
+  assert.ok(e2e.indexOf(createJunction) < e2e.indexOf("Register-ScheduledTask"));
+  assert.ok(e2e.indexOf("} finally {") < e2e.indexOf(removeJunction));
+  assert.ok(e2e.indexOf(removeJunction) < e2e.indexOf(restoreProfile));
+});
+
+test("shim release publishes the Windows no-console helper", () => {
+  const workflow = repoSource(".github/workflows/shim-release.yml");
+
+  assert.match(workflow, /toard-shim-background-x86_64-pc-windows-msvc\.exe/);
+  assert.match(workflow, /target\/\$t\/release\/toard-shim-background\.exe/);
+  assert.match(workflow, /sha256sum toard-shim-\*/);
+  assert.match(workflow, /targets: x86_64-pc-windows-msvc/);
+  assert.match(
+    workflow,
+    /cp "target\/\$t\/release\/toard-shim-background\.exe"\s*\\\s*\n\s*"\.\.\/\.\.\/dist\/toard-shim-background-\$t\.exe"/,
+  );
+  assert.match(workflow, /path: dist\/toard-shim-\*/);
+  assert.match(workflow, /gh release create[\s\S]*dist\/toard-shim-\*/);
+});
+
 test("device onboarding uses OS-aware wizard and separate management", () => {
   const wizard = source("app/(dashboard)/settings/onboarding-wizard.tsx");
   const panel = source("app/(dashboard)/settings/onboarding-panel.tsx");
+  const commands = source("lib/onboarding-install.ts");
   assert.match(wizard, /detectInstallPlatform/);
   assert.match(wizard, /issueOnboardingTokenAction/);
   assert.match(wizard, /checkTokenConnectionAction/);
   assert.match(wizard, /2_000/);
   assert.match(wizard, /120_000/);
   assert.match(wizard, /href="\/"/);
-  assert.match(panel, /uninstall\.ps1/);
+  assert.match(commands, /uninstall\.ps1/);
+  assert.match(panel, /buildManagementCommands/);
+  assert.doesNotMatch(panel, /\.toard[\\/]credentials|agent_key=/);
   assert.doesNotMatch(panel, /issueOnboardingTokenAction/);
 });
 
@@ -329,7 +475,7 @@ test("insights page builds cache arguments from a stable period anchor", () => {
 test("insights page validates provider before reading the comparison cache", () => {
   const page = source("app/(dashboard)/insights/page.tsx");
   const providersIndex = page.indexOf("const providers = await getEnabledProviders()");
-  const comparisonIndex = page.indexOf("const comparison = await getCachedUserInsights(");
+  const comparisonIndex = page.indexOf("getCachedUserInsights(userId, pair, providerKey)");
 
   assert.notEqual(providersIndex, -1);
   assert.notEqual(comparisonIndex, -1);
@@ -412,6 +558,20 @@ test("team status exposes preview status in navigation and the page toolbar", ()
 
   assert.match(nav, /href: "\/org\/team", key: "myTeam", icon: Building2, badge: "preview"/);
   assert.match(page, /statusBadge=\{\{ status: "preview", label: navT\("badge\.preview"\) \}\}/);
+});
+
+test("team overview uses a bounded hero and separated analysis sections", () => {
+  const page = source("app/(dashboard)/org/teams/page.tsx");
+
+  assert.match(page, /function TeamRankingHero/);
+  assert.match(page, /<section className="border-border\/80 bg-card rounded-xl border px-5 py-5">/);
+  assert.match(
+    page,
+    /<TeamRankingHero[\s\S]*totalCost=\{rankedCost\}[\s\S]*coverage=\{coverage\}[\s\S]*costLabels=\{costLabels\}[\s\S]*rankCount=\{rows\.length\}[\s\S]*totalSessions=\{rankedSessions\}[\s\S]*topShare=\{/,
+  );
+  assert.match(page, /data-dashboard-ready="team-overview" className="space-y-6"/);
+  assert.match(page, /grid min-w-0 gap-4 2xl:grid-cols-/);
+  assert.doesNotMatch(page, /data-dashboard-ready="team-overview" className="contents"/);
 });
 
 test("insight comparison chart renders current and previous without animation", () => {
@@ -534,19 +694,23 @@ test("device inventory is current state, not period activity", () => {
 
 test("organization page uses anonymous tool summary without drilldown", () => {
   const org = source("app/(dashboard)/org/page.tsx");
-  assert.match(org, /getOrgToolSummary/);
+  const loader = source("lib/org-dashboard-data.ts");
+  assert.match(org, /loadOrganizationDashboardData/);
+  assert.match(loader, /getToolActivity:\s*(?:\([^)]*\)\s*=>\s*)?getOrgToolSummary\b/);
   assert.doesNotMatch(org, /toolActivity.*(?:itemKey|displayName|sessionId)/s);
 });
 
-test("history security exposes legacy migration counts and bilingual copy", () => {
+test("history security uses managed status and keeps legacy E2EE conditional", () => {
   const panel = source("app/(dashboard)/settings/history-security-panel.tsx");
   const ko = JSON.parse(source("messages/ko/settings.json"));
   const en = JSON.parse(source("messages/en/settings.json"));
-  assert.match(panel, /encryption_scheme/);
-  assert.match(panel, /legacy_records/);
-  assert.match(panel, /octet_length\(ciphertext\)/);
+  assert.match(panel, /getUserHistorySecurityStatus/);
+  assert.match(panel, /status\?\.legacy/);
+  assert.doesNotMatch(panel, /E2EE_MAX_CIPHERTEXT_BYTES|withUserContext|encryption_scheme/);
   for (const messages of [ko, en]) {
-    assert.equal(typeof messages.historySecurity.legacyProtecting, "string");
+    assert.equal(typeof messages.historySecurity.managedEncryption, "string");
+    assert.equal(typeof messages.historySecurity.privacyBoundary, "string");
+    assert.equal(typeof messages.historySecurity.legacyMigrating, "string");
     assert.equal(typeof messages.historySecurity.legacyComplete, "string");
     assert.equal(typeof messages.historySecurity.legacyBlocked, "string");
   }

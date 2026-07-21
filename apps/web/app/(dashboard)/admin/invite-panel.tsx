@@ -4,6 +4,7 @@ import { useActionState, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { CopyButton } from "@/components/dashboard/copy-button";
+import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -96,14 +97,17 @@ export function InvitePanel({
       </form>
 
       {link ? (
-        <div className="rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm">
+        <Alert
+          className="block rounded-md border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm"
+          role={undefined}
+        >
           <p className="font-medium">{t("invites.linkHeading", { email: state.email ?? "" })}</p>
           <div className="mt-2 flex items-center gap-2">
             <code className="bg-muted overflow-x-auto rounded px-2 py-1 text-xs">{link}</code>
             <CopyButton text={link} message={t("invites.linkCopied")} />
           </div>
           <p className="text-muted-foreground mt-1 text-xs">{t("invites.linkExpiry")}</p>
-        </div>
+        </Alert>
       ) : null}
 
       {pending.length > 0 ? (

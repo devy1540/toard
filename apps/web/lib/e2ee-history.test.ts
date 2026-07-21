@@ -118,3 +118,17 @@ test("content status does not expose wrappers or keys", async () => {
   });
   assert.equal(JSON.stringify(status).includes("wrapper"), false);
 });
+
+test("completed E2EE migration exposes migrated state so the server page can switch to managed history", async () => {
+  const db = fakeDb([[
+    {
+      state: "migrated",
+      active_key_version: 1,
+      recovery_confirmed_at: new Date("2026-07-14T00:00:00.000Z"),
+      approved_device_count: "2",
+    },
+  ]]);
+
+  const status = await getE2eeContentStatus("user-1", db);
+  assert.equal(status.state, "migrated");
+});

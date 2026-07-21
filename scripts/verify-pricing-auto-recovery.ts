@@ -393,12 +393,12 @@ function assertAfter(before: Summary, after: Summary, label: string): void {
       legacy: after.legacy,
       totalTokens: after.totalTokens,
     },
-    { events: 5, priced: 3, unpriced: 1, legacy: 1, totalTokens: 750 },
+    { events: 5, priced: 4, unpriced: 1, legacy: 0, totalTokens: 750 },
     `${label} after summary`,
   );
   assert.equal(after.events, before.events, `${label} event count`);
   assert.equal(after.totalTokens, before.totalTokens, `${label} token total`);
-  assert.ok(Math.abs(after.costUsd - 1.0007) < 1e-8, `${label} cost total: ${after.costUsd}`);
+  assert.ok(Math.abs(after.costUsd - 0.7512) < 1e-8, `${label} cost total: ${after.costUsd}`);
 }
 
 async function resetRepairStatus(pool: Pool, fixture: Fixture): Promise<void> {
@@ -409,7 +409,10 @@ async function resetRepairStatus(pool: Pool, fixture: Fixture): Promise<void> {
          target_to = $2,
          processed_events = 0,
          recovered_events = 0,
+         reconciled_events = 0,
+         repriced_legacy_events = 0,
          remaining_unpriced_events = 3,
+         remaining_legacy_events = 1,
          unresolved_models = '[]'::jsonb,
          last_started_at = NULL,
          last_succeeded_at = NULL,
@@ -463,10 +466,14 @@ async function verifyPostgres(pool: Pool, targetTo: Date): Promise<Record<string
   assert.equal(byKey.get(`${prefix}_known_new`)?.pricing_revision_id, fixture.newRevisionId);
   assert.equal(byKey.get(`${prefix}_unsupported`)?.cost_status, "unpriced");
   assert.equal(byKey.get(`${prefix}_priced`)?.cost_usd, "0.75000000");
-  assert.equal(byKey.get(`${prefix}_legacy`)?.cost_status, "legacy");
+  assert.equal(byKey.get(`${prefix}_legacy`)?.cost_status, "priced");
+  assert.equal(byKey.get(`${prefix}_legacy`)?.cost_usd, "0.00050000");
+  assert.equal(byKey.get(`${prefix}_legacy`)?.pricing_revision_id, fixture.newRevisionId);
   const status = await new PgPricingRepairRepository(pool).get();
   assert.equal(status.state, "waiting_for_catalog");
   assert.equal(status.remainingUnpricedEvents, 1);
+  assert.equal(status.repricedLegacyEvents, 1);
+  assert.equal(status.remainingLegacyEvents, 0);
   assert.equal(status.unresolvedModels[0]?.model, fixture.unsupportedModel);
   return { before, after, state: status.state };
 }
@@ -646,8 +653,8 @@ async function verifyClickHouse(
   await client.command({ query: "SYSTEM STOP MERGES usage_events" });
   try {
     await Promise.all([
-      storage.repairUnpricedUsage(request, resolver(fixture.schedule)),
-      storage.repairUnpricedUsage(request, resolver(fixture.schedule)),
+      storage.repairPricingUsage(request, resolver(fixture.schedule)),
+      storage.repairPricingUsage(request, resolver(fixture.schedule)),
     ]);
     const physical = await client.query({
       query: `SELECT count() AS rows
@@ -665,7 +672,7 @@ async function verifyClickHouse(
 
   const after = await clickHouseSummary(client, prefix);
   assertAfter(before, after, "ClickHouse");
-  const remaining = await storage.getUnpricedUsageModels(fixture.from, fixture.to);
+  const remaining = await storage.getPricingRecoveryModels(fixture.from, fixture.to);
   assert.deepEqual(
     remaining.map(({ model, events }) => ({ model, events })),
     [{ model: fixture.unsupportedModel, events: 1 }],

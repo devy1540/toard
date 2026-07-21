@@ -67,6 +67,50 @@
     "title": "No usage data",
     "description": "No cost, session, or token usage was found for the selected period and provider."
   },
+  "utilization": {
+    "title": "AI utilization index",
+    "experiment": "Experimental",
+    "description": "Compares context continuity, execution stability, and recovery burden with your own usual working pattern—not how much AI you used.",
+    "selfBaseline": "Your baseline median is 50.",
+    "unavailable": "There is not enough data to calculate the index",
+    "baseline": "Baseline period: {range}",
+    "currentPeriod": "Current period: {range}",
+    "periodRange": "{from}–{to}",
+    "calculatedAt": "Calculated at {time}",
+    "delay": "Data can be delayed by up to 10 minutes.",
+    "dimensionValues": "Current {current} · baseline {baseline}",
+    "dimensions": {
+      "context_continuity": "Context continuity",
+      "execution_stability": "Execution stability",
+      "recovery_burden": "Recovery burden"
+    },
+    "confidence": {
+      "high": "High confidence",
+      "medium": "Medium confidence",
+      "low": "Low confidence"
+    },
+    "observations": {
+      "title": "Neutral observations",
+      "activeDays": "Active days",
+      "sessions": "Sessions",
+      "toolSessionRate": "Tool-active session rate",
+      "distinctTools": "Maximum daily tool types"
+    },
+    "reasons": {
+      "insufficient_current_days": "The current period has fewer than 3 active days.",
+      "insufficient_current_sessions": "The current period has fewer than 5 sessions.",
+      "insufficient_baseline_days": "The baseline period has fewer than 7 active days.",
+      "unsupported_cache_signal": "The current collector does not report cache signals.",
+      "insufficient_context_days": "There are not enough daily signals for context continuity.",
+      "insufficient_known_tool_calls": "There are fewer than 10 tool calls with a known outcome.",
+      "low_tool_outcome_coverage": "Tool outcome coverage is below 70%.",
+      "insufficient_session_tool_calls": "There are fewer than 10 tool calls with a known session.",
+      "insufficient_valid_dimensions": "Fewer than 2 dimensions can be calculated.",
+      "suppressed_small_cohort": "The organization minimum cohort is not met.",
+      "insufficient_eligible_users": "Too few users meet the confidence threshold.",
+      "mixed_methodology_versions": "Results from different methodology versions are not aggregated."
+    }
+  },
   "rules": {
     "usage": {
       "new": "Usage started after no sessions in the previous period."

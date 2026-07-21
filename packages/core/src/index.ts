@@ -10,3 +10,5 @@ export * from "./tool-wire";
 export * from "./wire";
 export * from "./version";
 export * from "./retention";
+export * from "./utilization";
+export * from "./deployment-release";

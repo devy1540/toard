@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { PoolClient } from "pg";
-import { decryptContent, type EncryptedContent } from "./content-crypto";
+import { decryptContent, type EncryptedContent } from "./legacy-content-crypto";
 import { E2EE_MAX_CIPHERTEXT_BYTES, fromBase64Url } from "./e2ee-contract";
 import {
   LEGACY_MIGRATION_MAX_BATCH_SIZE,

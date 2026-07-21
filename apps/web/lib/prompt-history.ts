@@ -1,10 +1,15 @@
 import { decryptContent, loadKek } from "@/lib/content-crypto";
+import { decryptManagedContent } from "@/lib/managed-content-crypto";
+import {
+  getManagedContentRuntime,
+  type ManagedContentRuntime,
+} from "@/lib/managed-content-runtime";
 import { withUserContext } from "@/lib/rls";
 export { toHistoryPreview } from "@/lib/history-preview";
 import { toHistoryPreview } from "@/lib/history-preview";
 
 // 내 프롬프트/응답 히스토리 조회 — 본인 것만(RLS + 명시 WHERE 이중 방어), 서버에서 복호화.
-// KEK 미설정이면 본문 수집이 서버에서 꺼진 것 → enabled:false 로 알린다.
+// managed runtime과 legacy KEK가 모두 없을 때만 enabled:false 로 알린다.
 //
 // 화면은 목록(세션 요약, 페이지 단위)과 상세(한 세션의 전체 턴)로 분리:
 // 그룹핑·페이지네이션은 SQL 에서 끝내고, 복호화는 화면에 실제로 보이는 행만 한다.
@@ -43,8 +48,10 @@ export interface HistorySessionSummary {
 }
 
 export interface HistorySessionPage {
-  /** 서버에서 본문 수집(KEK)이 설정돼 있는지 */
+  /** managed runtime 또는 legacy KEK 중 하나라도 복호화 가능한지 */
   enabled: boolean;
+  hasManagedContent: boolean;
+  hasLegacyContent: boolean;
   sessions: HistorySessionSummary[];
   /** 필터에 걸린 전체 세션(그룹) 수 — 페이지네이션용 */
   totalSessions: number;
@@ -62,43 +69,187 @@ export interface HistorySessionDetail {
 
 /** 상세 턴 상한 — 복호화 비용 바운드(한 세션이 비정상적으로 길어도 페이지가 죽지 않게) */
 export const DETAIL_TURN_LIMIT = 500;
+const HISTORY_PAGE_SIZE_LIMIT = 20;
 
-/** 복호화 산출물 컬럼 (SELECT 공용) */
-const CIPHER_COLS = "key_version, wrapped_dek, iv, ciphertext, auth_tag";
+/** managed AAD와 두 암호화 scheme 복호화에 필요한 SELECT 공용 컬럼. */
+const CIPHER_COLS = [
+  "encryption_scheme",
+  "content_key_version",
+  "aad_version",
+  "key_version",
+  "wrapped_dek",
+  "dek_wrap_iv",
+  "dek_wrap_auth_tag",
+  "iv",
+  "ciphertext",
+  "auth_tag",
+  "dedup_key",
+  "session_id",
+  "provider_key",
+  "turn_role",
+  "ts",
+].join(", ");
 
-type CipherRow = {
+type HistoryCipherRow = {
+  encryption_scheme: "server_v1" | "managed_v1";
+  content_key_version: number | null;
+  aad_version: number | null;
   key_version: number;
   wrapped_dek: Buffer;
+  dek_wrap_iv: Buffer | null;
+  dek_wrap_auth_tag: Buffer | null;
   iv: Buffer;
   ciphertext: Buffer;
   auth_tag: Buffer;
+  dedup_key: string;
+  session_id: string | null;
+  provider_key: string;
+  turn_role: "user" | "assistant";
+  ts: Date;
 };
 
-function decryptRow(r: CipherRow, kek: Buffer): string {
-  return decryptContent(
-    {
-      keyVersion: r.key_version,
-      wrappedDek: r.wrapped_dek,
-      iv: r.iv,
-      ciphertext: r.ciphertext,
-      authTag: r.auth_tag,
-    },
-    kek,
-  );
+type HistoryDb = {
+  query(
+    sql: string,
+    params?: unknown[],
+  ): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
+};
+
+export type HistoryDependencies = {
+  runtime?: ManagedContentRuntime | null;
+  legacyKek?: Buffer | null;
+  db?: HistoryDb;
+};
+
+type ResolvedHistoryDependencies = {
+  runtime: ManagedContentRuntime | null;
+  legacyKek: Buffer | null;
+  db?: HistoryDb;
+};
+
+async function resolveHistoryDependencies(
+  dependencies: HistoryDependencies,
+): Promise<ResolvedHistoryDependencies> {
+  let runtime: ManagedContentRuntime | null;
+  if (dependencies.runtime !== undefined) {
+    runtime = dependencies.runtime;
+  } else {
+    try {
+      runtime = await getManagedContentRuntime();
+    } catch {
+      runtime = null;
+    }
+  }
+
+  let legacyKek: Buffer | null;
+  if (dependencies.legacyKek !== undefined) {
+    legacyKek = dependencies.legacyKek
+      ? Buffer.from(dependencies.legacyKek)
+      : null;
+  } else {
+    try {
+      legacyKek = loadKek();
+    } catch {
+      legacyKek = null;
+    }
+  }
+  return { runtime, legacyKek, db: dependencies.db };
 }
 
-function tryDecryptRow(r: CipherRow, kek: Buffer): string | null {
-  try {
-    return decryptRow(r, kek);
-  } catch {
-    return null;
+async function decryptHistoryRows(
+  rows: readonly HistoryCipherRow[],
+  userId: string,
+  dependencies: ResolvedHistoryDependencies,
+): Promise<Array<string | null>> {
+  const plaintexts = rows.map(() => null as string | null);
+  const managedByVersion = new Map<
+    number,
+    Array<{ index: number; row: HistoryCipherRow }>
+  >();
+
+  rows.forEach((row, index) => {
+    if (row.encryption_scheme === "server_v1") {
+      if (!dependencies.legacyKek) return;
+      try {
+        plaintexts[index] = decryptContent(
+          {
+            keyVersion: row.key_version,
+            wrappedDek: row.wrapped_dek,
+            iv: row.iv,
+            ciphertext: row.ciphertext,
+            authTag: row.auth_tag,
+          },
+          dependencies.legacyKek,
+        );
+      } catch {
+        plaintexts[index] = null;
+      }
+      return;
+    }
+    if (
+      row.encryption_scheme !== "managed_v1"
+      || !dependencies.runtime
+      || !Number.isSafeInteger(row.content_key_version)
+      || (row.content_key_version ?? 0) < 1
+      || row.aad_version !== 2
+      || !Buffer.isBuffer(row.dek_wrap_iv)
+      || !Buffer.isBuffer(row.dek_wrap_auth_tag)
+    ) {
+      return;
+    }
+    const keyVersion = row.content_key_version!;
+    const group = managedByVersion.get(keyVersion) ?? [];
+    group.push({ index, row });
+    managedByVersion.set(keyVersion, group);
+  });
+
+  // 한 페이지/세션에서 같은 UCK version은 한 번만 unwrap한다. 버전별 호출도
+  // 순차 실행하여 긴 세션이 KMS 동시 요청을 폭증시키지 않게 한다.
+  for (const [keyVersion, group] of managedByVersion) {
+    try {
+      await dependencies.runtime!.userKeys.withUserKeyVersion(
+        userId,
+        keyVersion,
+        (uck) => {
+          for (const { index, row } of group) {
+            try {
+              plaintexts[index] = decryptManagedContent(
+                {
+                  encryptionScheme: "managed_v1",
+                  contentKeyVersion: keyVersion,
+                  aadVersion: 2,
+                  wrappedDek: row.wrapped_dek,
+                  dekWrapIv: row.dek_wrap_iv!,
+                  dekWrapAuthTag: row.dek_wrap_auth_tag!,
+                  iv: row.iv,
+                  ciphertext: row.ciphertext,
+                  authTag: row.auth_tag,
+                  dedupKey: row.dedup_key,
+                  providerKey: row.provider_key,
+                  turnRole: row.turn_role,
+                  ts: row.ts,
+                },
+                uck,
+                dependencies.runtime!.installationId,
+                userId,
+              );
+            } catch {
+              plaintexts[index] = null;
+            }
+          }
+        },
+      );
+    } catch {
+      for (const { index } of group) plaintexts[index] = null;
+    }
   }
+  return plaintexts;
 }
 
 function filterConds(f: HistoryFilter, params: unknown[]): string[] {
   params.push(f.from, f.to);
   const conds = [
-    "encryption_scheme = 'server_v1'",
+    "encryption_scheme IN ('server_v1', 'managed_v1')",
     `ts >= $${params.length - 1}`,
     `ts < $${params.length}`,
   ];
@@ -107,6 +258,15 @@ function filterConds(f: HistoryFilter, params: unknown[]): string[] {
     conds.push(`provider_key = $${params.length}`);
   }
   return conds;
+}
+
+async function runHistoryContext<T>(
+  userId: string,
+  db: HistoryDb | undefined,
+  fn: (tx: HistoryDb) => Promise<T>,
+): Promise<T> {
+  if (db) return fn(db);
+  return withUserContext(userId, (tx) => fn(tx));
 }
 
 /**
@@ -118,13 +278,23 @@ export async function getMyHistorySessions(
   filter: HistoryFilter,
   page: number,
   pageSize = 20,
+  dependencies: HistoryDependencies = {},
 ): Promise<HistorySessionPage> {
-  let kek: Buffer;
-  try {
-    kek = loadKek();
-  } catch {
-    return { enabled: false, sessions: [], totalSessions: 0 };
+  const resolved = await resolveHistoryDependencies(dependencies);
+  if (!resolved.runtime && !resolved.legacyKek) {
+    return {
+      enabled: false,
+      hasManagedContent: false,
+      hasLegacyContent: false,
+      sessions: [],
+      totalSessions: 0,
+    };
   }
+  const boundedPageSize = Math.min(
+    HISTORY_PAGE_SIZE_LIMIT,
+    Math.max(1, Math.trunc(pageSize) || HISTORY_PAGE_SIZE_LIMIT),
+  );
+  const boundedPage = Math.max(0, Math.trunc(page) || 0);
 
   type GroupRow = {
     gkey: string;
@@ -134,124 +304,156 @@ export async function getMyHistorySessions(
     first_ts: Date;
     latest_ts: Date;
     total_groups: string;
+    has_managed_content: boolean;
+    has_legacy_content: boolean;
   };
-  type PreviewRow = CipherRow & { gkey: string };
+  type PreviewRow = HistoryCipherRow & { gkey: string };
 
-  const { groups, previews } = await withUserContext(userId, async (tx) => {
-    const params: unknown[] = [userId];
-    const conds = [`user_id = $1`, ...filterConds(filter, params)];
-    params.push(pageSize, page * pageSize);
-    const groupsRes = await tx.query<GroupRow>(
-      `SELECT COALESCE(session_id, dedup_key)   AS gkey,
-              BOOL_OR(session_id IS NOT NULL)   AS is_session,
-              MIN(provider_key)                 AS provider_key,
-              COUNT(*)                          AS turn_count,
-              MIN(ts)                           AS first_ts,
-              MAX(ts)                           AS latest_ts,
-              COUNT(*) OVER ()                  AS total_groups
-       FROM prompt_records
-       WHERE ${conds.join(" AND ")}
-       GROUP BY gkey
-       ORDER BY latest_ts DESC
-       LIMIT $${params.length - 1} OFFSET $${params.length}`,
-      params,
+  try {
+    const { groups, previews } = await runHistoryContext(userId, resolved.db, async (tx) => {
+      const params: unknown[] = [userId];
+      const conds = [`user_id = $1`, ...filterConds(filter, params)];
+      params.push(boundedPageSize, boundedPage * boundedPageSize);
+      const groupsRes = await tx.query(
+        `SELECT COALESCE(session_id, dedup_key)   AS gkey,
+                BOOL_OR(session_id IS NOT NULL)   AS is_session,
+                MIN(provider_key)                 AS provider_key,
+                COUNT(*)                          AS turn_count,
+                MIN(ts)                           AS first_ts,
+                MAX(ts)                           AS latest_ts,
+                COUNT(*) OVER ()                  AS total_groups,
+                BOOL_OR(encryption_scheme = 'managed_v1') AS has_managed_content,
+                BOOL_OR(encryption_scheme = 'server_v1')  AS has_legacy_content
+         FROM prompt_records
+         WHERE ${conds.join(" AND ")}
+         GROUP BY gkey
+         ORDER BY latest_ts DESC
+         LIMIT $${params.length - 1} OFFSET $${params.length}`,
+        params,
+      );
+      const groups = groupsRes.rows as GroupRow[];
+
+      const keys = groups.map((r) => r.gkey);
+      if (keys.length === 0) return { groups, previews: [] as PreviewRow[] };
+
+      // 그룹별 대표 본문 1건 — 첫 user 턴 우선, 없으면 가장 이른 턴.
+      // keys 는 최대 20개라 복호화 Promise fan-out도 페이지 경계를 넘지 않는다.
+      const pParams: unknown[] = [userId];
+      const pConds = [`user_id = $1`, ...filterConds(filter, pParams)];
+      pParams.push(keys);
+      const previewRes = await tx.query(
+        `SELECT DISTINCT ON (COALESCE(session_id, dedup_key))
+                COALESCE(session_id, dedup_key) AS gkey, ${CIPHER_COLS}
+         FROM prompt_records
+         WHERE ${pConds.join(" AND ")}
+           AND COALESCE(session_id, dedup_key) = ANY($${pParams.length})
+         ORDER BY COALESCE(session_id, dedup_key), (turn_role = 'user') DESC, ts ASC`,
+        pParams,
+      );
+      return { groups, previews: previewRes.rows as PreviewRow[] };
+    });
+
+    const previewTexts = await decryptHistoryRows(previews, userId, resolved);
+    const previewPairs = previews.map(
+      (row, index) =>
+        [
+          row.gkey,
+          previewTexts[index] ? toHistoryPreview(previewTexts[index]!) : "",
+        ] as const,
     );
-
-    const keys = groupsRes.rows.map((r) => r.gkey);
-    if (keys.length === 0) return { groups: groupsRes.rows, previews: [] as PreviewRow[] };
-
-    // 그룹별 대표 본문 1건 — 첫 user 턴 우선, 없으면 가장 이른 턴. 필터를 동일 적용해
-    // 목록의 그룹 구성과 미리보기 후보가 항상 같은 집합에서 나오게 한다.
-    const pParams: unknown[] = [userId];
-    const pConds = [`user_id = $1`, ...filterConds(filter, pParams)];
-    pParams.push(keys);
-    const previewRes = await tx.query<PreviewRow>(
-      `SELECT DISTINCT ON (COALESCE(session_id, dedup_key))
-              COALESCE(session_id, dedup_key) AS gkey, ${CIPHER_COLS}
-       FROM prompt_records
-       WHERE ${pConds.join(" AND ")} AND COALESCE(session_id, dedup_key) = ANY($${pParams.length})
-       ORDER BY COALESCE(session_id, dedup_key), (turn_role = 'user') DESC, ts ASC`,
-      pParams,
-    );
-    return { groups: groupsRes.rows, previews: previewRes.rows };
-  });
-
-  const previewByKey = new Map(
-    previews.map((r) => {
-      const text = tryDecryptRow(r, kek);
-      return [r.gkey, text ? toHistoryPreview(text) : ""];
-    }),
-  );
-  return {
-    enabled: true,
-    totalSessions: groups.length > 0 ? Number(groups[0]!.total_groups) : 0,
-    sessions: groups.map((g) => ({
-      key: g.gkey,
-      isSession: g.is_session,
-      providerKey: g.provider_key,
-      preview: previewByKey.get(g.gkey) ?? "",
-      turnCount: Number(g.turn_count),
-      firstTs: g.first_ts,
-      latestTs: g.latest_ts,
-    })),
-  };
+    const previewByKey = new Map(previewPairs);
+    return {
+      enabled: true,
+      hasManagedContent: groups.some((group) => group.has_managed_content),
+      hasLegacyContent: groups.some((group) => group.has_legacy_content),
+      totalSessions: groups.length > 0 ? Number(groups[0]!.total_groups) : 0,
+      sessions: groups.map((g) => ({
+        key: g.gkey,
+        isSession: g.is_session,
+        providerKey: g.provider_key,
+        preview: previewByKey.get(g.gkey) ?? "",
+        turnCount: Number(g.turn_count),
+        firstTs: g.first_ts,
+        latestTs: g.latest_ts,
+      })),
+    };
+  } finally {
+    resolved.legacyKek?.fill(0);
+  }
 }
 
 /** 한 세션(그룹)의 전체 턴 — 상세 화면용. 없거나 남의 것이면 null (RLS 가 0건으로 접음). */
 export async function getMyHistorySession(
   userId: string,
   key: string,
-): Promise<{ enabled: boolean; session: HistorySessionDetail | null }> {
-  let kek: Buffer;
-  try {
-    kek = loadKek();
-  } catch {
-    return { enabled: false, session: null };
+  dependencies: HistoryDependencies = {},
+): Promise<{
+  enabled: boolean;
+  hasManagedContent: boolean;
+  hasLegacyContent: boolean;
+  session: HistorySessionDetail | null;
+}> {
+  const resolved = await resolveHistoryDependencies(dependencies);
+  if (!resolved.runtime && !resolved.legacyKek) {
+    return {
+      enabled: false,
+      hasManagedContent: false,
+      hasLegacyContent: false,
+      session: null,
+    };
   }
 
-  type Row = CipherRow & {
-    dedup_key: string;
-    session_id: string | null;
-    provider_key: string;
-    turn_role: "user" | "assistant";
-    ts: Date;
-  };
-  const res = await withUserContext(userId, (tx) =>
-    tx.query<Row>(
-      `SELECT dedup_key, session_id, provider_key, turn_role, ts, ${CIPHER_COLS}
-       FROM prompt_records
-       WHERE user_id = $1
-         AND encryption_scheme = 'server_v1'
-         AND (session_id = $2 OR (session_id IS NULL AND dedup_key = $2))
-       ORDER BY ts ASC
-       LIMIT $3`,
-      [userId, key, DETAIL_TURN_LIMIT],
-    ),
-  );
-  if (res.rows.length === 0) return { enabled: true, session: null };
+  try {
+    const res = await runHistoryContext(userId, resolved.db, (tx) =>
+      tx.query(
+        `SELECT ${CIPHER_COLS}
+         FROM prompt_records
+         WHERE user_id = $1
+           AND encryption_scheme IN ('server_v1', 'managed_v1')
+           AND (session_id = $2 OR (session_id IS NULL AND dedup_key = $2))
+         ORDER BY ts ASC
+         LIMIT $3`,
+        [userId, key, DETAIL_TURN_LIMIT],
+      ),
+    );
+    const rows = res.rows as HistoryCipherRow[];
+    if (rows.length === 0) {
+      return {
+        enabled: true,
+        hasManagedContent: false,
+        hasLegacyContent: false,
+        session: null,
+      };
+    }
 
-  const turns = res.rows.map((r) => {
-    const text = tryDecryptRow(r, kek);
+    const plaintexts = await decryptHistoryRows(rows, userId, resolved);
+    const turns = rows.map((row, index) => {
+      const text = plaintexts[index] ?? null;
+      return {
+        dedupKey: row.dedup_key,
+        sessionId: row.session_id,
+        providerKey: row.provider_key,
+        role: row.turn_role,
+        ts: row.ts,
+        text: text ?? "",
+        ...(text === null ? { contentUnavailable: true } : {}),
+      };
+    });
+    const first = turns[0]!;
     return {
-      dedupKey: r.dedup_key,
-      sessionId: r.session_id,
-      providerKey: r.provider_key,
-      role: r.turn_role,
-      ts: r.ts,
-      text: text ?? "",
-      contentUnavailable: text == null,
+      enabled: true,
+      hasManagedContent: rows.some((row) => row.encryption_scheme === "managed_v1"),
+      hasLegacyContent: rows.some((row) => row.encryption_scheme === "server_v1"),
+      session: {
+        key,
+        isSession: first.sessionId !== null,
+        providerKey: first.providerKey,
+        turns,
+        firstTs: first.ts,
+        latestTs: turns[turns.length - 1]!.ts,
+      },
     };
-  });
-  const first = turns[0]!;
-  return {
-    enabled: true,
-    session: {
-      key,
-      isSession: first.sessionId !== null,
-      providerKey: first.providerKey,
-      turns,
-      firstTs: first.ts,
-      latestTs: turns[turns.length - 1]!.ts,
-    },
-  };
+  } finally {
+    resolved.legacyKek?.fill(0);
+  }
 }

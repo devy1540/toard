@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { E2EE_MAX_CIPHERTEXT_BYTES } from "./e2ee-contract";
-import { parsePromptRecordWire } from "./prompt-wire";
+import { VALID_E2EE_RECORD } from "./e2ee-test-fixtures";
+import { parsePromptBatch, parsePromptRecordWire } from "./prompt-wire";
 
 const validRecord = {
   dedupKey: "legacy-1",
@@ -19,5 +20,36 @@ test("legacy prompt text는 E2EE ciphertext와 같은 byte 상한을 사용한�
   assert.throws(
     () => parsePromptRecordWire({ ...validRecord, text: "x".repeat(E2EE_MAX_CIPHERTEXT_BYTES + 1) }),
     /text.*byte/i,
+  );
+});
+
+test("schema 없는 기존 shim payload는 plaintext_v1으로 해석한다", () => {
+  const batch = parsePromptBatch([{ ...validRecord, text: "secret prompt" }]);
+
+  assert.equal(batch.schema, "plaintext_v1");
+  assert.equal(batch.records.length, 1);
+});
+
+test("빈 기존 shim payload도 plaintext_v1으로 해석한다", () => {
+  assert.deepEqual(parsePromptBatch([]), { schema: "plaintext_v1", records: [] });
+});
+
+test("e2ee_v1 exact parser와 혼합 batch fail-closed를 유지한다", () => {
+  assert.equal(parsePromptBatch([VALID_E2EE_RECORD]).schema, "e2ee_v1");
+  assert.throws(
+    () => parsePromptBatch([
+      VALID_E2EE_RECORD,
+      { ...validRecord, text: "secret prompt" },
+    ]),
+    /혼합할 수 없습니다/,
+  );
+});
+
+test("알 수 있는 schema가 있는 plaintext-shaped record는 fail-closed한다", () => {
+  assert.throws(
+    () => parsePromptBatch([
+      { ...validRecord, schema: "managed_v1", text: "secret prompt" },
+    ]),
+    /지원하지 않는 prompt schema/,
   );
 });

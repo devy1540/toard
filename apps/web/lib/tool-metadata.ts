@@ -5,6 +5,7 @@ import type {
   ToolActivityRow,
   ToolActivitySummary,
   ToolInventorySnapshot,
+  UtilizationToolDay,
 } from "@toard/core";
 import { getPool } from "./db";
 
@@ -220,6 +221,82 @@ export async function getOrgToolSummaryWithDb(
 
 export function getOrgToolSummary(query: PeriodQuery): Promise<ToolActivitySummary> {
   return getOrgToolSummaryWithDb(getPool(), query);
+}
+
+export async function getUtilizationToolDaysWithDb(
+  db: ToolMetadataDb,
+  query: PeriodQuery,
+  timezone: string,
+  userId?: string,
+): Promise<UtilizationToolDay[]> {
+  const params: unknown[] = [query.from, query.to, timezone];
+  const userClause = userId ? `AND user_id = $${params.push(userId)}` : "";
+  const result = await db.query(
+    `WITH ordered AS (
+       SELECT user_id, session_id, activity_kind, item_key, outcome, ts, dedup_key,
+              LAG(outcome) OVER (
+                PARTITION BY user_id, session_id, activity_kind, item_key
+                ORDER BY ts, dedup_key
+              ) AS previous_outcome,
+              LAG(ts) OVER (
+                PARTITION BY user_id, session_id, activity_kind, item_key
+                ORDER BY ts, dedup_key
+              ) AS previous_ts
+       FROM tool_activity_events
+       WHERE ts >= $1 AND ts < $2
+         ${userClause}
+     ), tagged AS (
+       SELECT *, to_char((ts AT TIME ZONE $3::text)::date, 'YYYY-MM-DD') AS day
+       FROM ordered
+     )
+     SELECT user_id, day,
+            COUNT(*) FILTER (WHERE outcome = 'success') AS successes,
+            COUNT(*) FILTER (WHERE outcome = 'failure') AS failures,
+            COUNT(*) FILTER (WHERE outcome = 'unknown') AS unknown,
+            COUNT(*) FILTER (
+              WHERE session_id IS NOT NULL
+                AND outcome = 'failure'
+                AND previous_outcome = 'failure'
+                AND ts - previous_ts <= INTERVAL '30 minutes'
+            ) AS repeated_failures,
+            COUNT(*) FILTER (
+              WHERE outcome <> 'unknown' AND session_id IS NOT NULL
+            ) AS session_tool_known_calls,
+            COUNT(DISTINCT session_id) FILTER (
+              WHERE session_id IS NOT NULL
+            ) AS tool_active_sessions,
+            COUNT(DISTINCT (activity_kind, item_key)) AS distinct_tools
+     FROM tagged
+     GROUP BY user_id, day
+     ORDER BY day, user_id`,
+    params,
+  );
+  return result.rows.map((row) => ({
+    userId: String(row.user_id),
+    day: String(row.day),
+    successes: num(row.successes),
+    failures: num(row.failures),
+    unknown: num(row.unknown),
+    repeatedFailures: num(row.repeated_failures),
+    sessionToolKnownCalls: num(row.session_tool_known_calls),
+    toolActiveSessions: num(row.tool_active_sessions),
+    distinctTools: num(row.distinct_tools),
+  }));
+}
+
+export function getUserUtilizationToolDays(
+  userId: string,
+  query: PeriodQuery,
+  timezone: string,
+): Promise<UtilizationToolDay[]> {
+  return getUtilizationToolDaysWithDb(getPool(), query, timezone, userId);
+}
+
+export function getOrganizationUtilizationToolDays(
+  query: PeriodQuery,
+  timezone: string,
+): Promise<UtilizationToolDay[]> {
+  return getUtilizationToolDaysWithDb(getPool(), query, timezone);
 }
 
 export async function getMyDeviceInventoriesWithDb(

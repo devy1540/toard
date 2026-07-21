@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { getLocale, getTranslations } from "next-intl/server";
 import Link from "next/link";
-import { ArrowLeft, Inbox, Sparkles, Terminal } from "lucide-react";
+import { ArrowLeft, Inbox, Lock, Sparkles, Terminal } from "lucide-react";
 import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
@@ -51,7 +51,25 @@ export async function SessionDetail({
   const fmtDay = (ts: Date): string =>
     new Intl.DateTimeFormat(locale, { timeZone: tz, dateStyle: "medium" }).format(ts);
 
-  const { session } = await getMyHistorySession(userId, sessionKey);
+  const { enabled, session } = await getMyHistorySession(userId, sessionKey);
+  if (!enabled) {
+    return (
+      <Empty>
+        <EmptyHeader>
+          <EmptyMedia variant="icon">
+            <Lock />
+          </EmptyMedia>
+          <EmptyTitle>{t("history.disabledTitle")}</EmptyTitle>
+          <EmptyDescription>{t("history.disabledDescription")}</EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <Button asChild size="sm" variant="outline">
+            <Link href={backHref}>{t("history.backToList")}</Link>
+          </Button>
+        </EmptyContent>
+      </Empty>
+    );
+  }
   if (!session) {
     return (
       <Empty>

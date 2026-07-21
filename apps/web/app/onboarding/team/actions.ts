@@ -5,6 +5,7 @@ import { getTranslations } from "next-intl/server";
 import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session-user";
 import { isTeamOnboardingPending } from "@/lib/team-onboarding";
+import { changeUserTeam, TeamMembershipError } from "@/lib/team-membership";
 
 export type TeamOnboardingState = { error?: string };
 
@@ -20,45 +21,21 @@ export async function chooseTeamAction(
   const teamId = String(formData.get("teamId") ?? "");
   if (!teamId) return { error: t("errors.teamRequired") };
 
-  let redirectTo: string | null = null;
-  const client = await getPool().connect();
   try {
-    await client.query("BEGIN");
-    const current = await client.query<{
-      role: string;
-      team_id: string | null;
-      team_onboarding_completed_at: Date | null;
-    }>(
-      "SELECT role, team_id, team_onboarding_completed_at FROM users WHERE id = $1 FOR UPDATE",
-      [user.id],
-    );
-    const row = current.rows[0];
-    if (!row) {
-      await client.query("ROLLBACK");
-      redirectTo = "/login";
-    } else if (row.role !== "member" || row.team_id || row.team_onboarding_completed_at) {
-      await client.query("COMMIT");
-      redirectTo = "/settings?tab=install";
-    } else {
-      const team = await client.query("SELECT 1 FROM teams WHERE id = $1", [teamId]);
-      if ((team.rowCount ?? 0) === 0) {
-        await client.query("ROLLBACK");
-        return { error: t("errors.teamNotFound") };
-      }
-      await client.query(
-        "UPDATE users SET team_id = $2, team_onboarding_completed_at = now() WHERE id = $1",
-        [user.id, teamId],
-      );
-      await client.query("COMMIT");
-      redirectTo = "/settings?tab=install";
+    await changeUserTeam(getPool(), {
+      userId: user.id,
+      teamId,
+      actorId: user.id,
+      completeOnboarding: true,
+    });
+  } catch (error) {
+    if (error instanceof TeamMembershipError) {
+      if (error.code === "TEAM_NOT_FOUND") return { error: t("errors.teamNotFound") };
+      if (error.code === "USER_NOT_FOUND") redirect("/login");
+      return { error: t("errors.teamSaveFailed") };
     }
-  } catch (e) {
-    await client.query("ROLLBACK");
-    throw e;
-  } finally {
-    client.release();
+    throw error;
   }
 
-  if (redirectTo) redirect(redirectTo);
-  return {};
+  redirect("/settings?tab=install");
 }

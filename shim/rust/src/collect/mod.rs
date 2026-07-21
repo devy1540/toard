@@ -5,12 +5,15 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod cursor_usage;
+pub mod fanout;
 pub mod gemini;
 pub mod gemini_family;
 pub mod inventory;
 pub mod post;
 pub mod qwen;
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -20,6 +23,7 @@ use crate::bg;
 use crate::credentials::{read_credentials, DEFAULT_ENDPOINT};
 use crate::fsx;
 use crate::iso;
+use crate::targets::{Target, TargetStore};
 use crate::tool_event::{to_tool_events_body, ToolActivityKind, ToolDetection, ToolOutcome};
 use crate::usage_event::{to_events_body, UsageEvent};
 
@@ -27,6 +31,7 @@ use crate::usage_event::{to_events_body, UsageEvent};
 pub const SPAWN_ARG: &str = "___toard-spawn-collector";
 pub const RUN_ARG: &str = "___toard-collect";
 const DEFAULT_INTERVAL_SECS: u64 = 600;
+const CODEX_REPLAY_RECONCILIATION_VERSION: u32 = 1;
 
 /// wrap 경로에서 호출 — 토큰 있는 머신만, 기본 10분 스로틀로 백그라운드 수집.
 /// 도구를 쓸 때마다 수집이 따라오므로 데몬 관리가 필요 없다. 동시 실행 레이스로
@@ -38,7 +43,11 @@ pub fn maybe_spawn_background() {
     ) {
         return;
     }
-    if read_credentials().token.is_none() {
+    let configured = TargetStore::from_home()
+        .and_then(|store| store.load_or_migrate())
+        .map(|targets| !targets.is_empty())
+        .unwrap_or_else(|_| read_credentials().token.is_some());
+    if !configured {
         return;
     }
     let interval = std::env::var("TOARD_SHIM_COLLECT_INTERVAL")
@@ -73,7 +82,8 @@ pub struct RawUsage {
 }
 
 /// 어댑터가 로그에서 뽑는 원시 본문 레코드 (프롬프트/응답 텍스트).
-/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집된다. e2ee_v1에서는 전송 전 로컬 암호화한다.
+/// opt-in(TOARD_SHIM_COLLECT_CONTENT)일 때만 수집된다. 신규 연결은 서버 관리형 암호화를
+/// 사용하고, 기존 e2ee_v1 자격 증명은 전송 전 로컬 암호화를 계속 사용한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawContent {
     pub ts_ms: i64,
@@ -97,9 +107,12 @@ pub struct RawToolActivity {
     pub detection: ToolDetection,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ParsedLog {
     pub usage: Vec<RawUsage>,
+    /// fork/subagent rollout에 복사되어 과거 parser가 이미 전송한 부모 사용량.
+    /// 기존 dedup key를 그대로 재현해 서버 reconciliation에만 사용한다.
+    pub replayed_usage: Vec<RawUsage>,
     pub content: Vec<RawContent>,
     pub tools: Vec<RawToolActivity>,
 }
@@ -122,6 +135,7 @@ pub trait LogAdapter {
     fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
         ParsedLog {
             usage: self.parse_file(path),
+            replayed_usage: Vec::new(),
             content: if include_content {
                 self.parse_content(path)
             } else {
@@ -136,39 +150,156 @@ pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
     vec![
         Box::new(gemini::Gemini),
         Box::new(qwen::Qwen),
+        Box::new(cursor_usage::CursorUsage),
         Box::new(claude::Claude),
         Box::new(codex::Codex),
     ]
 }
 
-fn seed_tool_baseline(files: &[(String, cursor::FileStamp)]) -> cursor::Cursor {
-    let mut cursor = cursor::Cursor::default();
-    for (path, stamp) in files {
-        cursor.files.insert(
-            path.clone(),
-            cursor::FileState {
-                mtime_ms: stamp.mtime_ms,
-                size: stamp.size,
-                sent: 0,
-                sent_hash: String::new(),
-            },
-        );
-    }
-    cursor
+struct CachedAdapter {
+    key: &'static str,
+    files: Vec<PathBuf>,
+    parsed: HashMap<String, ParsedLog>,
 }
 
-fn tool_since_ms(dry_run: bool) -> i64 {
-    let now = (bg::now_unix() * 1000) as i64;
-    let Some(path) = fsx::state_dir().map(|dir| dir.join("tool-since")) else {
-        return now;
-    };
+impl LogAdapter for CachedAdapter {
+    fn key(&self) -> &'static str {
+        self.key
+    }
+
+    fn discover_files(&self) -> Vec<PathBuf> {
+        self.files.clone()
+    }
+
+    fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
+        self.parsed
+            .get(&path.display().to_string())
+            .map(|batch| batch.usage.clone())
+            .unwrap_or_default()
+    }
+
+    fn parse_content(&self, path: &Path) -> Vec<RawContent> {
+        self.parsed
+            .get(&path.display().to_string())
+            .map(|batch| batch.content.clone())
+            .unwrap_or_default()
+    }
+
+    fn parse_changed(
+        &self,
+        path: &Path,
+        _include_content: bool,
+        _include_tools: bool,
+    ) -> ParsedLog {
+        self.parsed
+            .get(&path.display().to_string())
+            .cloned()
+            .unwrap_or_default()
+    }
+}
+
+fn env_is_false(name: &str) -> bool {
+    matches!(
+        std::env::var(name).ok().as_deref(),
+        Some("0" | "false" | "off" | "no")
+    )
+}
+
+fn target_collect_tools(credentials: &crate::credentials::Credentials) -> bool {
+    credentials.collect_tools && !env_is_false("TOARD_SHIM_COLLECT_TOOLS")
+}
+
+fn target_content_mode(
+    credentials: &crate::credentials::Credentials,
+) -> crate::credentials::ContentCollectionMode {
+    if env_is_false("TOARD_SHIM_COLLECT_CONTENT") {
+        crate::credentials::ContentCollectionMode::Off
+    } else {
+        credentials.collect_content
+    }
+}
+
+fn prepare_cached_adapters(
+    targets: &[Target],
+    source_adapters: Vec<Box<dyn LogAdapter>>,
+    only: Option<&str>,
+    dry_run: bool,
+) -> Vec<Box<dyn LogAdapter>> {
+    let include_content = targets
+        .iter()
+        .any(|target| target_content_mode(&target.credentials).is_enabled());
+    let include_tools = targets
+        .iter()
+        .any(|target| target_collect_tools(&target.credentials));
+    let mut prepared: Vec<Box<dyn LogAdapter>> = Vec::new();
+
+    for adapter in source_adapters {
+        if only.is_some_and(|selected| selected != adapter.key()) {
+            continue;
+        }
+        let files = adapter.discover_files();
+        let mut changed_paths = HashSet::new();
+        for target in targets {
+            let usage_cursor = cursor::load(&target.state_dir, adapter.key());
+            let tool_cursor_key = format!("{}-tools", adapter.key());
+            let tool_cursor = cursor::load(&target.state_dir, &tool_cursor_key);
+            let content_cursor_key = format!("{}-content", adapter.key());
+            let content_cursor = cursor::load(&target.state_dir, &content_cursor_key);
+            let reconciliation_scan = reconciliation_active(
+                adapter.key(),
+                usage_cursor.reconciliation_version,
+                post::unsupported_probe_due(&target.state_dir, "usage-reconciliation"),
+                dry_run,
+            );
+            let tools_active = target_collect_tools(&target.credentials)
+                && post::unsupported_probe_due(&target.state_dir, "tool-events");
+            let content_active = target_content_mode(&target.credentials).is_enabled();
+            for file in &files {
+                let Some(stamp) = cursor::stamp(file) else {
+                    continue;
+                };
+                let path = file.display().to_string();
+                let usage_changed = adapter.collects_usage()
+                    && usage_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
+                let tools_changed = tools_active
+                    && tool_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
+                let content_changed = content_active
+                    && content_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
+                if usage_changed || tools_changed || content_changed || reconciliation_scan {
+                    changed_paths.insert(path);
+                }
+            }
+        }
+        let batches = fanout::parse_discovered_once(
+            adapter.as_ref(),
+            &files,
+            &changed_paths,
+            include_content,
+            include_tools,
+        );
+        let parsed = batches
+            .into_iter()
+            .map(|batch| (batch.path, batch.parsed))
+            .collect();
+        prepared.push(Box::new(CachedAdapter {
+            key: adapter.key(),
+            files,
+            parsed,
+        }));
+    }
+    prepared
+}
+
+fn tool_since_ms(state_dir: &Path, dry_run: bool) -> i64 {
+    let now = bg::now_unix_ms();
+    let path = state_dir.join("tool-since");
     if let Ok(value) = std::fs::read_to_string(&path) {
         if let Ok(parsed) = value.trim().parse::<i64>() {
             return parsed;
         }
     }
     if !dry_run {
-        let _ = fsx::write_atomic(&path, &format!("{now}\n"), 0o644);
+        let _ = fsx::write_atomic(&path, &format!("{now}\n"), 0o600);
     }
     now
 }
@@ -176,11 +307,21 @@ fn tool_since_ms(dry_run: bool) -> i64 {
 fn should_parse_tool_file(
     collect_tools: bool,
     probe_due: bool,
-    first_tool_run: bool,
     usage_same: bool,
     tools_same: bool,
+    reconciliation_scan: bool,
 ) -> bool {
-    !usage_same || (collect_tools && probe_due && !first_tool_run && !tools_same)
+    reconciliation_scan || !usage_same || (collect_tools && probe_due && !tools_same)
+}
+
+fn reconciliation_active(
+    adapter: &str,
+    cursor_version: u32,
+    probe_due: bool,
+    dry_run: bool,
+) -> bool {
+    adapter == "codex"
+        && (dry_run || (cursor_version < CODEX_REPLAY_RECONCILIATION_VERSION && probe_due))
 }
 
 /// 디렉토리를 재귀 순회하며 확장자가 일치하는 파일 수집 (심링크 루프 방지 깊이 캡).
@@ -255,21 +396,60 @@ fn to_usage_event(adapter: &str, r: &RawUsage, host: Option<&str>) -> UsageEvent
     }
 }
 
+fn to_reconciliation_body(dedup_keys: &[String]) -> String {
+    serde_json::json!({ "dedupKeys": dedup_keys }).to_string()
+}
+
+fn reconciliation_keys(
+    replay_keys: Vec<String>,
+    legitimate_keys: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    replay_keys
+        .into_iter()
+        .filter(|key| !legitimate_keys.contains(key) && seen.insert(key.clone()))
+        .collect()
+}
+
 /// 본문 수집 opt-in — 기본 off. 이게 켜져야 shim 이 프롬프트/응답 본문을 담는다.
 /// env(TOARD_SHIM_COLLECT_CONTENT)가 명시되면 그 값이 우선하고, 미설정이면
-/// `~/.toard/credentials` 의 `collect_content` 플래그(install.sh 가 기록)를 따른다.
+/// legacy/env 호환 credentials의 `collect_content` 플래그를 따른다.
 /// (§신뢰경계: shim 의 "본문 안 읽음"을 여는 스위치라 명시적 opt-in)
-pub fn content_enabled() -> bool {
+#[cfg(test)]
+fn content_enabled() -> bool {
     content_collection_mode().is_enabled()
 }
 
-pub fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
-    use crate::credentials::ContentCollectionMode;
+#[cfg(test)]
+fn content_collection_mode() -> crate::credentials::ContentCollectionMode {
     let stored = read_credentials().collect_content;
-    match std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok().as_deref() {
-        Some("1" | "true" | "on" | "yes") if stored == ContentCollectionMode::E2eeV1 => stored,
-        Some(value) => ContentCollectionMode::parse(value),
-        _ => stored,
+    let configured = std::env::var("TOARD_SHIM_COLLECT_CONTENT").ok();
+    resolve_content_collection_mode(stored, configured.as_deref())
+}
+
+#[cfg(test)]
+fn resolve_content_collection_mode(
+    stored: crate::credentials::ContentCollectionMode,
+    configured: Option<&str>,
+) -> crate::credentials::ContentCollectionMode {
+    use crate::credentials::ContentCollectionMode;
+    let Some(value) = configured else {
+        return stored;
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    if stored == ContentCollectionMode::LegacyE2eeV1
+        && matches!(normalized.as_str(), "1" | "true" | "on" | "yes")
+    {
+        return stored;
+    }
+    ContentCollectionMode::parse(&normalized)
+}
+
+fn content_collection_label(mode: crate::credentials::ContentCollectionMode) -> &'static str {
+    match mode {
+        crate::credentials::ContentCollectionMode::ServerManaged => "managed_v1",
+        crate::credentials::ContentCollectionMode::LegacyE2eeV1 => "legacy-e2ee-v1",
+        crate::credentials::ContentCollectionMode::Off => "off",
     }
 }
 
@@ -290,20 +470,26 @@ fn parse_since(s: &str) -> Option<i64> {
 ///   ISO/날짜       → 그 시점부터
 ///   미설정         → "지금부터" = 최초 활성화 시각을 state(`content-since`)에 기록해 안정적으로 사용
 ///                    (dry_run 이면 기록하지 않고 현재 시각으로 미리보기)
+#[cfg(test)]
 fn content_since_ms(since_cfg: Option<&str>, dry_run: bool) -> i64 {
+    let state_dir = fsx::state_dir().unwrap_or_else(|| PathBuf::from(".toard-state-unavailable"));
+    content_since_ms_for_state(&state_dir, since_cfg, dry_run)
+}
+
+fn content_since_ms_for_state(state_dir: &Path, since_cfg: Option<&str>, dry_run: bool) -> i64 {
     match since_cfg.map(str::trim) {
         Some("all") | Some("0") => 0,
-        Some(s) if !s.is_empty() => parse_since(s).unwrap_or_else(|| default_since_ms(dry_run)),
-        _ => default_since_ms(dry_run),
+        Some(s) if !s.is_empty() => {
+            parse_since(s).unwrap_or_else(|| default_since_ms(state_dir, dry_run))
+        }
+        _ => default_since_ms(state_dir, dry_run),
     }
 }
 
 /// 미설정 기본 = 최초 활성화 시각(state 파일에 지속). 없으면 now 를 기록하고 반환.
-fn default_since_ms(dry_run: bool) -> i64 {
+fn default_since_ms(state_dir: &Path, dry_run: bool) -> i64 {
     let now = now_epoch_ms();
-    let Some(path) = fsx::state_dir().map(|d| d.join("content-since")) else {
-        return now;
-    };
+    let path = state_dir.join("content-since");
     if let Ok(s) = std::fs::read_to_string(&path) {
         if let Ok(ms) = s.trim().parse::<i64>() {
             return ms;
@@ -458,36 +644,261 @@ fn rotate_daemon_logs() {
 /// `toard-shim collect` 본체. only=특정 어댑터만, dry_run=파싱 결과만 출력,
 /// quiet=무변경 시 무출력(데몬 주기 실행용 — 전송·오류는 항상 출력).
 pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
-    let creds = read_credentials();
-    let endpoint = creds
-        .endpoint
-        .as_deref()
-        .unwrap_or(DEFAULT_ENDPOINT)
-        .to_string();
-    let token = match (&creds.token, dry_run) {
-        (Some(t), _) => Some(t.clone()),
-        (None, true) => None,
-        (None, false) => {
-            eprintln!("toard-shim: 자격 증명이 없습니다 — ~/.toard/credentials 또는 TOARD_INGEST_TOKEN 설정");
+    let store = match TargetStore::from_home() {
+        Ok(store) => store,
+        Err(error) => {
+            eprintln!("toard-shim: target 저장소를 열 수 없습니다 — {error}");
             return 1;
         }
     };
+    run_with(
+        &store,
+        &post::CurlTransport,
+        adapters(),
+        only,
+        dry_run,
+        quiet,
+    )
+}
 
-    // 전체 수집(어댑터 필터 없음·실전송)은 편승 스로틀과 스탬프를 공유한다 —
-    // 데몬(daemon.rs)이 방금 돌았으면 wrap 편승이 주기 내 중복 실행하지 않도록.
+pub fn run_with(
+    store: &TargetStore,
+    transport: &dyn post::Transport,
+    source_adapters: Vec<Box<dyn LogAdapter>>,
+    only: Option<&str>,
+    dry_run: bool,
+    quiet: bool,
+) -> i32 {
+    let target_result = if dry_run {
+        store.load_readonly()
+    } else {
+        store.load_or_migrate()
+    };
+    let mut targets = match target_result {
+        Ok(targets) => targets,
+        Err(error) => {
+            eprintln!("toard-shim: target 설정을 읽을 수 없습니다 — {error}");
+            return 1;
+        }
+    };
+    let global_state = store.root().join("state");
+    if !dry_run {
+        if let Err(error) = std::fs::create_dir_all(&global_state) {
+            eprintln!("toard-shim: 전역 상태 디렉터리를 만들 수 없습니다 — {error}");
+            return 1;
+        }
+        let _ = crate::fsx::set_mode(&global_state, 0o700);
+    }
+
+    if targets.is_empty() {
+        let mut credentials = read_credentials();
+        let endpoint = credentials.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
+        let endpoint = match crate::targets::normalize_endpoint(endpoint) {
+            Ok(endpoint) => endpoint,
+            Err(error) => {
+                eprintln!("toard-shim: endpoint 설정이 잘못되었습니다 — {error}");
+                return 1;
+            }
+        };
+        if credentials.token.is_none() && !dry_run {
+            eprintln!("toard-shim: 자격 증명이 없습니다 — 설치 스크립트로 target을 추가하세요");
+            return 1;
+        }
+        credentials.endpoint = Some(endpoint.clone());
+        targets.push(Target {
+            id: crate::targets::target_id(&endpoint),
+            revision: String::new(),
+            endpoint,
+            credentials_path: store.root().join("credentials"),
+            state_dir: global_state.clone(),
+            credentials,
+        });
+    }
+
+    let cached_adapters = prepare_cached_adapters(&targets, source_adapters, only, dry_run);
+    if cached_adapters.is_empty() {
+        eprintln!(
+            "toard-shim: 어댑터를 찾을 수 없습니다: {}",
+            only.unwrap_or("?")
+        );
+        return 2;
+    }
+
     if only.is_none() && !dry_run {
         bg::touch("last-collect");
         rotate_daemon_logs();
     }
-
-    // host 라벨은 수집 실행당 1회만 계산(hostname 명령 fork 최소화 — 컴퓨터별 구분, §design-host-breakdown)
     let host = crate::host::host_label();
-    let collect_tools = creds.collect_tools;
-    let tools_since = tool_since_ms(dry_run);
+    let mut failed = false;
+    for target in &targets {
+        if !target_still_exists(target, &global_state) {
+            continue;
+        }
+        if !dry_run {
+            let _ = crate::delivery::record_attempt(&target.state_dir);
+        }
+        let outcome = run_target(
+            target,
+            &global_state,
+            transport,
+            &cached_adapters,
+            only,
+            dry_run,
+            quiet,
+            host.as_deref(),
+        );
+        if outcome.code == 2 {
+            for message in outcome.diagnostics.messages {
+                eprintln!("{message}");
+            }
+            return 2;
+        }
+        if outcome.code == 0 && !outcome.diagnostics.degraded {
+            if !dry_run && target_still_exists(target, &global_state) {
+                let _ = crate::delivery::record_success(&target.state_dir);
+            }
+        } else {
+            failed |= outcome.code != 0;
+            if !dry_run && target_still_exists(target, &global_state) {
+                let kind = outcome
+                    .diagnostics
+                    .kind
+                    .unwrap_or(crate::delivery::DeliveryKind::Disabled);
+                let fingerprint_source = if outcome.diagnostics.messages.is_empty() {
+                    format!("{kind:?}")
+                } else {
+                    outcome.diagnostics.messages.join("\n")
+                };
+                let should_log =
+                    crate::delivery::record_failure(&target.state_dir, kind, &fingerprint_source)
+                        .unwrap_or(true);
+                if should_emit_failure(should_log, quiet) {
+                    for message in &outcome.diagnostics.messages {
+                        eprintln!("{message}");
+                    }
+                }
+            }
+        }
+    }
+    i32::from(failed)
+}
+
+#[derive(Default)]
+struct TargetDiagnostics {
+    kind: Option<crate::delivery::DeliveryKind>,
+    messages: Vec<String>,
+    degraded: bool,
+}
+
+impl TargetDiagnostics {
+    fn fail(&mut self, kind: crate::delivery::DeliveryKind, message: String) {
+        let priority = |kind: &crate::delivery::DeliveryKind| match kind {
+            crate::delivery::DeliveryKind::Unauthorized => 3,
+            crate::delivery::DeliveryKind::Unreachable => 2,
+            crate::delivery::DeliveryKind::Disabled
+            | crate::delivery::DeliveryKind::Unsupported => 0,
+            _ => 1,
+        };
+        if self
+            .kind
+            .as_ref()
+            .is_none_or(|current| priority(&kind) > priority(current))
+        {
+            self.kind = Some(kind);
+        }
+        self.messages.push(message);
+    }
+
+    fn disabled(&mut self, message: String) {
+        self.degraded = true;
+        if self.kind.is_none() {
+            self.kind = Some(crate::delivery::DeliveryKind::Disabled);
+        }
+        self.messages.push(message);
+    }
+
+    fn unsupported(&mut self, message: String) {
+        self.degraded = true;
+        if self.kind.is_none() {
+            self.kind = Some(crate::delivery::DeliveryKind::Unsupported);
+        }
+        self.messages.push(message);
+    }
+}
+
+fn should_emit_failure(rate_limit_allows: bool, quiet: bool) -> bool {
+    rate_limit_allows || !quiet
+}
+
+struct TargetRunResult {
+    code: i32,
+    diagnostics: TargetDiagnostics,
+}
+
+fn classify_transport_error(error: &str) -> crate::delivery::DeliveryKind {
+    if error.contains("토큰이 유효하지") {
+        crate::delivery::DeliveryKind::Unauthorized
+    } else if error.contains("연결 실패")
+        || error.contains("curl 실행 불가")
+        || error.contains("unreachable")
+    {
+        crate::delivery::DeliveryKind::Unreachable
+    } else {
+        crate::delivery::DeliveryKind::ServerError
+    }
+}
+
+fn target_still_exists(target: &Target, global_state: &Path) -> bool {
+    if target.state_dir == global_state {
+        return true;
+    }
+    let Some(target_dir) = target.credentials_path.parent() else {
+        return false;
+    };
+    target.credentials_path.is_file()
+        && std::fs::read_to_string(target_dir.join("revision"))
+            .ok()
+            .is_some_and(|revision| revision.trim() == target.revision)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_target(
+    target: &Target,
+    global_state: &Path,
+    transport: &dyn post::Transport,
+    prepared_adapters: &[Box<dyn LogAdapter>],
+    only: Option<&str>,
+    dry_run: bool,
+    quiet: bool,
+    host: Option<&str>,
+) -> TargetRunResult {
+    let state_dir = &target.state_dir;
+    let creds = &target.credentials;
+    let endpoint = &target.endpoint;
+    let mut diagnostics = TargetDiagnostics::default();
+    let token = match (&creds.token, dry_run) {
+        (Some(t), _) => Some(t.clone()),
+        (None, true) => None,
+        (None, false) => {
+            diagnostics.fail(
+                crate::delivery::DeliveryKind::Unauthorized,
+                format!(
+                    "toard-shim: {} target 자격 증명이 없습니다",
+                    target.endpoint
+                ),
+            );
+            return TargetRunResult {
+                code: 1,
+                diagnostics,
+            };
+        }
+    };
+    let collect_tools = target_collect_tools(creds);
+    let tools_since = tool_since_ms(state_dir, dry_run);
 
     let mut failed = false;
     let mut matched = false;
-    for adapter in adapters() {
+    for adapter in prepared_adapters {
         let key = adapter.key();
         if only.is_some_and(|o| o != key) {
             continue;
@@ -500,28 +911,25 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
         }
 
         let files = adapter.discover_files();
-        let mut cur = cursor::load(key);
+        let mut cur = cursor::load(state_dir, key);
+        let reconciliation_scan = reconciliation_active(
+            key,
+            cur.reconciliation_version,
+            post::unsupported_probe_due(state_dir, "usage-reconciliation"),
+            dry_run,
+        );
         let tool_cursor_key = format!("{key}-tools");
-        let mut tool_cur = cursor::load(&tool_cursor_key);
-        let first_tool_run = collect_tools && tool_cur.files.is_empty();
-        let tool_probe_due = collect_tools && post::unsupported_probe_due("tool-events");
-        let tool_active = tool_probe_due && !first_tool_run;
-        if first_tool_run {
-            let stamps = files
-                .iter()
-                .filter_map(|file| {
-                    cursor::stamp(file).map(|stamp| (file.display().to_string(), stamp))
-                })
-                .collect::<Vec<_>>();
-            tool_cur = seed_tool_baseline(&stamps);
-            if !dry_run {
-                cursor::save(&tool_cursor_key, &tool_cur);
-            }
-        }
+        let mut tool_cur = cursor::load(state_dir, &tool_cursor_key);
+        let tool_probe_due = collect_tools && post::unsupported_probe_due(state_dir, "tool-events");
+        let tool_active = tool_probe_due;
 
         let mut changed = 0usize;
         let mut parsed_total = 0usize;
+        let mut replayed_total = 0usize;
+        let mut replayed_tokens = 0u64;
         let mut events: Vec<UsageEvent> = Vec::new();
+        let mut replay_keys: Vec<String> = Vec::new();
+        let mut legitimate_keys = std::collections::HashSet::new();
         let mut tool_events: Vec<RawToolActivity> = Vec::new();
         let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
         let mut tool_updates: Vec<(String, cursor::FileState)> = Vec::new();
@@ -535,9 +943,9 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             if !should_parse_tool_file(
                 collect_tools,
                 tool_probe_due,
-                first_tool_run,
                 usage_same,
                 tools_same,
+                reconciliation_scan,
             ) {
                 continue;
             }
@@ -546,29 +954,34 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             let file_events: Vec<UsageEvent> = parsed
                 .usage
                 .iter()
-                .map(|raw| to_usage_event(key, raw, host.as_deref()))
+                .map(|raw| to_usage_event(key, raw, host))
                 .collect();
+            legitimate_keys.extend(file_events.iter().map(|event| event.dedup_key.clone()));
+            if reconciliation_scan {
+                replayed_total += parsed.replayed_usage.len();
+                replayed_tokens =
+                    parsed
+                        .replayed_usage
+                        .iter()
+                        .fold(replayed_tokens, |total, usage| {
+                            total.saturating_add(
+                                usage
+                                    .input_tokens
+                                    .saturating_add(usage.output_tokens)
+                                    .saturating_add(usage.cache_read_tokens)
+                                    .saturating_add(usage.cache_creation_tokens),
+                            )
+                        });
+                replay_keys.extend(parsed.replayed_usage.iter().map(|raw| dedup_key(key, raw)));
+            }
             parsed_total += file_events.len();
-            let keys: Vec<&str> = file_events
-                .iter()
-                .map(|event| event.dedup_key.as_str())
-                .collect();
-            let previous = cur.files.get(&path);
-            let start = resume_index(
-                previous.map_or(0, |state| state.sent),
-                previous.map_or("", |state| state.sent_hash.as_str()),
-                &keys,
-            );
-            updates.push((
-                path.clone(),
-                cursor::FileState {
-                    mtime_ms: stamp.mtime_ms,
-                    size: stamp.size,
-                    sent: keys.len() as u64,
-                    sent_hash: keys_hash(&keys),
-                },
-            ));
-            events.extend(file_events.into_iter().skip(start));
+            let keyed_events = file_events
+                .into_iter()
+                .map(|event| (event.dedup_key.clone(), event))
+                .collect::<Vec<_>>();
+            let plan = fanout::plan_records(&path, stamp, &cur, &keyed_events);
+            updates.extend(plan.updates);
+            events.extend(plan.pending);
 
             if tool_active {
                 let file_tools = parsed
@@ -599,11 +1012,12 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 tool_events.extend(file_tools.into_iter().skip(start));
             }
         }
+        let replay_keys = reconciliation_keys(replay_keys, &legitimate_keys);
 
         if dry_run {
             println!(
-                "{key}: 파일 {}개 (변경 {changed}개) → 이벤트 {parsed_total}건, 전송 대상 {}건 [dry-run]",
-                files.len(), events.len()
+                "{key}: 파일 {}개 (변경 {changed}개) → 정상 이벤트 {parsed_total}건, 전송 대상 {}건, 재생 감지 {replayed_total}건 · 재생 토큰 {replayed_tokens} · 철회 키 {}건 [dry-run]",
+                files.len(), events.len(), replay_keys.len()
             );
             if collect_tools {
                 println!("{key} 도구: 전송 대상 {}건 [dry-run]", tool_events.len());
@@ -623,13 +1037,16 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
             let (mut inserted, mut deduped) = (0u64, 0u64);
             for chunk in events.chunks(CHUNK) {
-                match post::post_events(&endpoint, token, &to_events_body(chunk)) {
+                match transport.post_events(endpoint, token, &to_events_body(chunk)) {
                     Ok(result) => {
                         inserted += result.inserted;
                         deduped += result.deduped;
                     }
                     Err(error) => {
-                        eprintln!("toard-shim: {key} 전송 실패 — {error}");
+                        diagnostics.fail(
+                            classify_transport_error(&error),
+                            format!("toard-shim: {key} 전송 실패 — {error}"),
+                        );
                         usage_ok = false;
                         failed = true;
                         break;
@@ -643,7 +1060,62 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 );
             }
         }
-        if usage_ok {
+
+        let mut reconciliation_complete = !reconciliation_scan;
+        if reconciliation_scan {
+            if replay_keys.is_empty() {
+                reconciliation_complete = true;
+            } else {
+                let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
+                let mut reconciled = 0u64;
+                let mut reconciliation_ok = true;
+                for chunk in replay_keys.chunks(CHUNK) {
+                    match transport.post_usage_reconciliation(
+                        endpoint,
+                        token,
+                        &to_reconciliation_body(chunk),
+                    ) {
+                        post::EndpointResult::Ok(result) => reconciled += result.reconciled,
+                        post::EndpointResult::Unsupported => {
+                            if target_still_exists(target, global_state) {
+                                post::mark_unsupported(state_dir, "usage-reconciliation");
+                            }
+                            reconciliation_ok = false;
+                            break;
+                        }
+                        post::EndpointResult::Unauthorized => {
+                            diagnostics.fail(
+                                crate::delivery::DeliveryKind::Unauthorized,
+                                format!(
+                                    "toard-shim: {key} 재생 보정 실패 — 토큰이 유효하지 않습니다"
+                                ),
+                            );
+                            reconciliation_ok = false;
+                            failed = true;
+                            break;
+                        }
+                        post::EndpointResult::Err(error) => {
+                            diagnostics.fail(
+                                classify_transport_error(&error),
+                                format!("toard-shim: {key} 재생 보정 실패 — {error}"),
+                            );
+                            reconciliation_ok = false;
+                            failed = true;
+                            break;
+                        }
+                    }
+                }
+                if reconciliation_ok {
+                    post::clear_unsupported(state_dir, "usage-reconciliation");
+                    println!(
+                        "{key}: 기존 재생 오염 키 {}건 확인 · {reconciled}건 철회",
+                        replay_keys.len()
+                    );
+                    reconciliation_complete = true;
+                }
+            }
+        }
+        if usage_ok && target_still_exists(target, global_state) {
             for (path, state) in updates {
                 cur.files.insert(path, state);
             }
@@ -652,7 +1124,10 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                 .map(|file| file.display().to_string())
                 .collect::<std::collections::HashSet<_>>();
             cur.files.retain(|path, _| alive.contains(path));
-            cursor::save(key, &cur);
+            if reconciliation_scan && reconciliation_complete {
+                cur.reconciliation_version = CODEX_REPLAY_RECONCILIATION_VERSION;
+            }
+            cursor::save(state_dir, key, &cur);
         }
 
         if tool_active {
@@ -660,10 +1135,10 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             if !tool_events.is_empty() {
                 let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
                 for chunk in tool_events.chunks(CHUNK) {
-                    match post::post_tool_events(
-                        &endpoint,
+                    match transport.post_tool_events(
+                        endpoint,
                         token,
-                        &to_tool_events_body(key, host.as_deref(), chunk),
+                        &to_tool_events_body(key, host, chunk),
                     ) {
                         post::EndpointResult::Ok(result) => println!(
                             "{key} 도구: {}건 전송 (신규 {} · 중복 {})",
@@ -672,20 +1147,28 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                             result.deduped
                         ),
                         post::EndpointResult::Unsupported => {
-                            post::mark_unsupported("tool-events");
+                            if target_still_exists(target, global_state) {
+                                post::mark_unsupported(state_dir, "tool-events");
+                            }
                             tools_ok = false;
                             break;
                         }
                         post::EndpointResult::Unauthorized => {
-                            eprintln!(
-                                "toard-shim: {key} 도구 전송 실패 — 토큰이 유효하지 않습니다"
+                            diagnostics.fail(
+                                crate::delivery::DeliveryKind::Unauthorized,
+                                format!(
+                                    "toard-shim: {key} 도구 전송 실패 — 토큰이 유효하지 않습니다"
+                                ),
                             );
                             tools_ok = false;
                             failed = true;
                             break;
                         }
                         post::EndpointResult::Err(error) => {
-                            eprintln!("toard-shim: {key} 도구 전송 실패 — {error}");
+                            diagnostics.fail(
+                                classify_transport_error(&error),
+                                format!("toard-shim: {key} 도구 전송 실패 — {error}"),
+                            );
                             tools_ok = false;
                             failed = true;
                             break;
@@ -693,7 +1176,10 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                     }
                 }
             }
-            if tools_ok {
+            if tools_ok && target_still_exists(target, global_state) {
+                if !tool_events.is_empty() {
+                    post::clear_unsupported(state_dir, "tool-events");
+                }
                 for (path, state) in tool_updates {
                     tool_cur.files.insert(path, state);
                 }
@@ -702,52 +1188,81 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
                     .map(|file| file.display().to_string())
                     .collect::<std::collections::HashSet<_>>();
                 tool_cur.files.retain(|path, _| alive.contains(path));
-                cursor::save(&tool_cursor_key, &tool_cur);
+                cursor::save(state_dir, &tool_cursor_key, &tool_cur);
             }
         }
     }
 
     // 본문 수집(opt-in) — usage 경로와 완전 분리된 커서·엔드포인트. usage 루프는 무영향.
-    if content_enabled() {
+    if target_content_mode(creds).is_enabled() {
         // 백필 컷오프: 미설정=지금부터(최초 활성화 시각 기록), 날짜/all 지정 시 과거 포함.
-        let since_ms = content_since_ms(creds.collect_content_since.as_deref(), dry_run);
-        for adapter in adapters() {
+        let since_ms =
+            content_since_ms_for_state(state_dir, creds.collect_content_since.as_deref(), dry_run);
+        let mut context = ContentRunContext {
+            endpoint,
+            token: token.as_deref(),
+            credentials: creds,
+            dry_run,
+            quiet,
+            since_ms,
+            state_dir,
+            transport,
+            credentials_path: &target.credentials_path,
+            global_state,
+            diagnostics: &mut diagnostics,
+        };
+        for adapter in prepared_adapters {
             let key = adapter.key();
             if only.is_some_and(|o| o != key) {
                 continue;
             }
-            if collect_content_for(
-                adapter.as_ref(),
-                &endpoint,
-                token.as_deref(),
-                &creds,
-                dry_run,
-                quiet,
-                since_ms,
-            ) {
+            if collect_content_for(adapter.as_ref(), &mut context) {
                 failed = true;
             }
         }
     }
 
-    if collect_tools && only.is_none() && post::unsupported_probe_due("tool-inventory") {
-        if let Some(pending) = inventory::prepare_inventory(host.as_deref(), dry_run) {
-            if dry_run {
+    if collect_tools && only.is_none() && post::unsupported_probe_due(state_dir, "tool-inventory") {
+        if let Some(pending) = inventory::prepare_inventory(global_state, host, dry_run) {
+            if inventory::needs_delivery(state_dir, &pending) && dry_run {
                 println!("도구 인벤토리: 변경 감지 → 전송 대상 [dry-run]");
-            } else {
+            } else if inventory::needs_delivery(state_dir, &pending) {
                 let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
-                match post::put_tool_inventory(&endpoint, token, &pending.body) {
+                match transport.put_tool_inventory(endpoint, token, &pending.body) {
                     post::EndpointResult::Ok(_) => {
-                        inventory::commit_inventory(pending);
-                        println!("도구 인벤토리: 최신 스냅샷 전송");
+                        post::clear_unsupported(state_dir, "tool-inventory");
+                        if target_still_exists(target, global_state) {
+                            match inventory::commit_delivery(state_dir, &pending) {
+                                Ok(()) => println!("도구 인벤토리: 최신 스냅샷 전송"),
+                                Err(error) => {
+                                    diagnostics.fail(
+                                        crate::delivery::DeliveryKind::ServerError,
+                                        format!(
+                                            "toard-shim: 도구 인벤토리 상태 저장 실패 — {error}"
+                                        ),
+                                    );
+                                    failed = true;
+                                }
+                            }
+                        }
                     }
-                    post::EndpointResult::Unsupported => post::mark_unsupported("tool-inventory"),
+                    post::EndpointResult::Unsupported => {
+                        if target_still_exists(target, global_state) {
+                            post::mark_unsupported(state_dir, "tool-inventory")
+                        }
+                    }
                     post::EndpointResult::Unauthorized => {
-                        eprintln!("toard-shim: 도구 인벤토리 전송 실패 — 토큰이 유효하지 않습니다");
+                        diagnostics.fail(
+                            crate::delivery::DeliveryKind::Unauthorized,
+                            "toard-shim: 도구 인벤토리 전송 실패 — 토큰이 유효하지 않습니다".into(),
+                        );
                         failed = true;
                     }
                     post::EndpointResult::Err(error) => {
-                        eprintln!("toard-shim: 도구 인벤토리 전송 실패 — {error}");
+                        diagnostics.fail(
+                            classify_transport_error(&error),
+                            format!("toard-shim: 도구 인벤토리 전송 실패 — {error}"),
+                        );
                         failed = true;
                     }
                 }
@@ -756,13 +1271,33 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
     }
 
     if !matched {
-        eprintln!(
-            "toard-shim: 어댑터를 찾을 수 없습니다: {}",
-            only.unwrap_or("?")
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            format!(
+                "toard-shim: 어댑터를 찾을 수 없습니다: {}",
+                only.unwrap_or("?")
+            ),
         );
-        return 2;
+        return TargetRunResult {
+            code: 2,
+            diagnostics,
+        };
     }
-    i32::from(failed)
+    for (name, label, enabled) in [
+        ("usage-reconciliation", "사용량 재생 보정", true),
+        ("tool-events", "도구 활동", collect_tools),
+        ("tool-inventory", "도구 인벤토리", collect_tools),
+    ] {
+        if enabled && post::unsupported_marked(state_dir, name) {
+            diagnostics.unsupported(format!(
+                "toard-shim: {label} endpoint를 서버가 지원하지 않습니다 — 24시간마다 다시 확인합니다"
+            ));
+        }
+    }
+    TargetRunResult {
+        code: i32::from(failed),
+        diagnostics,
+    }
 }
 
 /// 본문 전송용 endpoint 안전성 — https 또는 로컬(localhost/127.0.0.1/[::1])만 허용.
@@ -788,27 +1323,50 @@ fn endpoint_is_secure(endpoint: &str) -> bool {
 
 /// 한 어댑터의 본문 수집: 별도 커서(`{key}-content`)로 변한 파일만 재파싱 →
 /// 봉투 전 평문을 /v1/prompts 로 전송. 반환은 "실패 여부"(true 면 커서 미갱신·재시도).
-fn collect_content_for(
-    adapter: &dyn LogAdapter,
-    endpoint: &str,
-    token: Option<&str>,
-    credentials: &crate::credentials::Credentials,
+struct ContentRunContext<'a> {
+    endpoint: &'a str,
+    token: Option<&'a str>,
+    credentials: &'a crate::credentials::Credentials,
     dry_run: bool,
     quiet: bool,
     since_ms: i64,
-) -> bool {
+    state_dir: &'a Path,
+    transport: &'a dyn post::Transport,
+    credentials_path: &'a Path,
+    global_state: &'a Path,
+    diagnostics: &'a mut TargetDiagnostics,
+}
+
+fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext<'_>) -> bool {
+    let ContentRunContext {
+        endpoint,
+        token,
+        credentials,
+        dry_run,
+        quiet,
+        since_ms,
+        state_dir,
+        transport,
+        credentials_path,
+        global_state,
+        diagnostics,
+    } = context;
+    let content_mode = target_content_mode(credentials);
     let key = adapter.key();
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
     let secure = endpoint_is_secure(endpoint);
-    if !dry_run && !secure {
-        eprintln!(
-            "toard-shim: {key} 본문 수집 건너뜀 — 안전하지 않은 endpoint({endpoint}). 평문 HTTP 로는 본문을 전송하지 않습니다(https 또는 localhost 필요)."
+    if !*dry_run && !secure {
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            format!(
+                "toard-shim: {key} 본문 수집 건너뜀 — 안전하지 않은 endpoint({endpoint}). 평문 HTTP 로는 본문을 전송하지 않습니다(https 또는 localhost 필요)."
+            ),
         );
-        return false;
+        return true;
     }
     let cursor_key = format!("{key}-content");
     let files = adapter.discover_files();
-    let mut cur = cursor::load(&cursor_key);
+    let mut cur = cursor::load(state_dir, &cursor_key);
 
     // usage 루프와 동일한 파일별 전송 필터 — since 는 최초 opt-in 시각으로 고정되므로
     // 컷오프 필터 결과도 파일 내용에 대해 결정적이라 prefix 판정이 유효하다.
@@ -827,7 +1385,7 @@ fn collect_content_for(
         changed += 1;
         let mut file_records = adapter.parse_content(file);
         // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
-        file_records.retain(|r| r.ts_ms >= since_ms);
+        file_records.retain(|r| r.ts_ms >= *since_ms);
         parsed_total += file_records.len();
         let keys: Vec<String> = file_records
             .iter()
@@ -852,20 +1410,16 @@ fn collect_content_for(
         records.extend(file_records.into_iter().skip(start));
     }
 
-    if dry_run {
-        let scheme = match credentials.collect_content {
-            crate::credentials::ContentCollectionMode::E2eeV1 => "e2ee_v1",
-            crate::credentials::ContentCollectionMode::ServerV1 => "server_v1",
-            crate::credentials::ContentCollectionMode::Off => "off",
-        };
+    if *dry_run {
+        let scheme = content_collection_label(content_mode);
         println!(
             "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 · {scheme} (since {}) [dry-run]",
             files.len(),
             records.len(),
-            if since_ms <= 0 {
+            if *since_ms <= 0 {
                 "전체".to_string()
             } else {
-                iso::epoch_ms_to_iso(since_ms)
+                iso::epoch_ms_to_iso(*since_ms)
             }
         );
         if !secure {
@@ -877,31 +1431,42 @@ fn collect_content_for(
     }
 
     if records.is_empty() {
-        if !quiet {
+        if !*quiet {
             println!("{key} 본문: 새 레코드 없음 (변경 {changed}개)");
         }
     } else {
         use crate::content_keys::{ContentKeyStore, SystemContentKeyStore};
-        let e2ee_material = match credentials.collect_content {
-            crate::credentials::ContentCollectionMode::E2eeV1 => {
+        let e2ee_material = match content_mode {
+            crate::credentials::ContentCollectionMode::LegacyE2eeV1 => {
                 let Some(owner_id) = credentials.content_owner_id.as_deref() else {
-                    eprintln!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 소유자 설정이 없습니다");
+                    diagnostics.fail(
+                        crate::delivery::DeliveryKind::ServerError,
+                        format!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 소유자 설정이 없습니다"),
+                    );
                     return true;
                 };
                 let Some(key_version) = credentials.content_key_version else {
-                    eprintln!("toard-shim: {key} E2EE 수집 실패 — 콘텐츠 키 버전 설정이 없습니다");
+                    diagnostics.fail(
+                        crate::delivery::DeliveryKind::ServerError,
+                        format!(
+                            "toard-shim: {key} E2EE 수집 실패 — 콘텐츠 키 버전 설정이 없습니다"
+                        ),
+                    );
                     return true;
                 };
                 let uck = match SystemContentKeyStore.get_uck(owner_id, key_version) {
                     Ok(uck) => uck,
                     Err(_) => {
-                        eprintln!("toard-shim: {key} E2EE 수집 실패 — 운영체제 보안 저장소에서 콘텐츠 키를 불러올 수 없습니다");
+                        diagnostics.fail(
+                            crate::delivery::DeliveryKind::ServerError,
+                            format!("toard-shim: {key} E2EE 수집 실패 — 운영체제 보안 저장소에서 콘텐츠 키를 불러올 수 없습니다"),
+                        );
                         return true;
                     }
                 };
                 Some((owner_id, key_version, uck))
             }
-            crate::credentials::ContentCollectionMode::ServerV1 => None,
+            crate::credentials::ContentCollectionMode::ServerManaged => None,
             crate::credentials::ContentCollectionMode::Off => return false,
         };
         let token = token.expect("dry_run 아니면 토큰 존재");
@@ -912,8 +1477,11 @@ fn collect_content_for(
                     match to_e2ee_prompts_body(key, owner_id, *key_version, uck, chunk) {
                         Ok(body) => body,
                         Err(_) => {
-                            eprintln!(
-                                "toard-shim: {key} E2EE 수집 실패 — 로컬 암호화에 실패했습니다"
+                            diagnostics.fail(
+                                crate::delivery::DeliveryKind::ServerError,
+                                format!(
+                                    "toard-shim: {key} E2EE 수집 실패 — 로컬 암호화에 실패했습니다"
+                                ),
                             );
                             return true;
                         }
@@ -921,18 +1489,23 @@ fn collect_content_for(
                 }
                 None => to_prompts_body(key, chunk),
             };
-            match post::post_prompts(endpoint, token, &body) {
+            match transport.post_prompts(endpoint, token, &body) {
                 Ok(Some(r)) => {
                     inserted += r.inserted;
                     deduped += r.deduped;
                 }
                 Ok(None) => {
                     // 서버에서 본문 수집이 비활성(503) — 실패 아님. 커서 미갱신하고 종료(추후 활성 시 재전송)
-                    println!("{key} 본문: 서버에서 비활성(503) — 건너뜀");
+                    diagnostics.disabled(format!(
+                        "toard-shim: {key} 본문 서버에서 비활성(503) — 커서를 유지하고 건너뜁니다"
+                    ));
                     return false;
                 }
                 Err(e) => {
-                    eprintln!("toard-shim: {key} 본문 전송 실패 — {e}");
+                    diagnostics.fail(
+                        classify_transport_error(&e),
+                        format!("toard-shim: {key} 본문 전송 실패 — {e}"),
+                    );
                     // 커서를 갱신하지 않음 → 다음 실행에서 재시도 (dedup 이 중복 흡수)
                     return true;
                 }
@@ -944,19 +1517,231 @@ fn collect_content_for(
         );
     }
 
+    if *state_dir != *global_state && !credentials_path.is_file() {
+        return false;
+    }
     for (path, state) in updates {
         cur.files.insert(path, state);
     }
     let alive: std::collections::HashSet<String> =
         files.iter().map(|f| f.display().to_string()).collect();
     cur.files.retain(|k, _| alive.contains(k));
-    cursor::save(&cursor_key, &cur);
+    cursor::save(state_dir, &cursor_key, &cur);
     false
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    struct FanoutTestAdapter {
+        file: PathBuf,
+        parse_calls: Rc<Cell<usize>>,
+    }
+
+    struct ContentFanoutTestAdapter {
+        file: PathBuf,
+        parse_calls: Rc<Cell<usize>>,
+    }
+
+    struct ToolFirstRunAdapter {
+        file: PathBuf,
+    }
+
+    impl LogAdapter for ToolFirstRunAdapter {
+        fn key(&self) -> &'static str {
+            "tool_first_run"
+        }
+
+        fn discover_files(&self) -> Vec<PathBuf> {
+            vec![self.file.clone()]
+        }
+
+        fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
+            Vec::new()
+        }
+
+        fn parse_changed(
+            &self,
+            _path: &Path,
+            _include_content: bool,
+            include_tools: bool,
+        ) -> ParsedLog {
+            ParsedLog {
+                tools: include_tools
+                    .then(|| RawToolActivity {
+                        ts_ms: (crate::bg::now_unix() * 1000) as i64 + 1_000,
+                        session_id: Some(Arc::from("session-1")),
+                        call_id: "call-1".into(),
+                        kind: ToolActivityKind::Mcp,
+                        item_key: "demo".into(),
+                        plugin_key: None,
+                        outcome: ToolOutcome::Success,
+                        detection: ToolDetection::Explicit,
+                    })
+                    .into_iter()
+                    .collect(),
+                ..ParsedLog::default()
+            }
+        }
+    }
+
+    impl LogAdapter for ContentFanoutTestAdapter {
+        fn key(&self) -> &'static str {
+            "content_fanout_test"
+        }
+
+        fn collects_usage(&self) -> bool {
+            false
+        }
+
+        fn discover_files(&self) -> Vec<PathBuf> {
+            vec![self.file.clone()]
+        }
+
+        fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
+            Vec::new()
+        }
+
+        fn parse_changed(
+            &self,
+            _path: &Path,
+            include_content: bool,
+            _include_tools: bool,
+        ) -> ParsedLog {
+            self.parse_calls.set(self.parse_calls.get() + 1);
+            ParsedLog {
+                content: include_content
+                    .then(|| RawContent {
+                        ts_ms: 1_700_000_000_000,
+                        session_id: Some("session-1".into()),
+                        message_id: Some("content-1".into()),
+                        role: "user",
+                        text: "prompt".into(),
+                    })
+                    .into_iter()
+                    .collect(),
+                ..ParsedLog::default()
+            }
+        }
+    }
+
+    impl LogAdapter for FanoutTestAdapter {
+        fn key(&self) -> &'static str {
+            "fanout_test"
+        }
+
+        fn discover_files(&self) -> Vec<PathBuf> {
+            vec![self.file.clone()]
+        }
+
+        fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
+            self.parse_calls.set(self.parse_calls.get() + 1);
+            vec![RawUsage {
+                ts_ms: 1_700_000_000_000,
+                session_id: Some("session-1".into()),
+                model: Some("test-model".into()),
+                message_id: Some("message-1".into()),
+                input_tokens: 10,
+                output_tokens: 20,
+                ..RawUsage::default()
+            }]
+        }
+    }
+
+    #[derive(Default)]
+    struct FanoutTestTransport {
+        calls: RefCell<Vec<String>>,
+        fail_company: Cell<bool>,
+        remove_target: RefCell<Option<PathBuf>>,
+        replace_target_revision: RefCell<Option<PathBuf>>,
+        prompt_calls: RefCell<Vec<String>>,
+        tool_calls: RefCell<Vec<String>>,
+        fail_company_prompts: Cell<bool>,
+        disable_prompts: Cell<bool>,
+        support_inventory: Cell<bool>,
+    }
+
+    impl post::Transport for FanoutTestTransport {
+        fn post_events(
+            &self,
+            endpoint: &str,
+            _token: &str,
+            _body: &str,
+        ) -> Result<post::PostResult, String> {
+            self.calls.borrow_mut().push(endpoint.to_string());
+            if let Some(path) = self.remove_target.borrow_mut().take() {
+                std::fs::remove_dir_all(path).unwrap();
+            }
+            if let Some(path) = self.replace_target_revision.borrow_mut().take() {
+                std::fs::write(path.join("revision"), "replacement-revision\n").unwrap();
+            }
+            if endpoint.contains("company") && self.fail_company.get() {
+                Err("unreachable".into())
+            } else {
+                Ok(post::PostResult {
+                    inserted: 1,
+                    ..post::PostResult::default()
+                })
+            }
+        }
+
+        fn post_prompts(
+            &self,
+            endpoint: &str,
+            _token: &str,
+            _body: &str,
+        ) -> Result<Option<post::PostResult>, String> {
+            self.prompt_calls.borrow_mut().push(endpoint.to_string());
+            if self.disable_prompts.get() {
+                Ok(None)
+            } else if endpoint.contains("company") && self.fail_company_prompts.get() {
+                Err("unreachable".into())
+            } else {
+                Ok(Some(post::PostResult {
+                    inserted: 1,
+                    ..post::PostResult::default()
+                }))
+            }
+        }
+
+        fn post_tool_events(
+            &self,
+            endpoint: &str,
+            _token: &str,
+            _body: &str,
+        ) -> post::EndpointResult {
+            self.tool_calls.borrow_mut().push(endpoint.to_string());
+            post::EndpointResult::Ok(post::PostResult {
+                inserted: 1,
+                ..post::PostResult::default()
+            })
+        }
+
+        fn post_usage_reconciliation(
+            &self,
+            _endpoint: &str,
+            _token: &str,
+            _body: &str,
+        ) -> post::EndpointResult {
+            post::EndpointResult::Unsupported
+        }
+
+        fn put_tool_inventory(
+            &self,
+            _endpoint: &str,
+            _token: &str,
+            _body: &str,
+        ) -> post::EndpointResult {
+            if self.support_inventory.get() {
+                post::EndpointResult::Ok(post::PostResult::default())
+            } else {
+                post::EndpointResult::Unsupported
+            }
+        }
+    }
 
     #[test]
     fn parse_since_accepts_date_and_iso() {
@@ -971,6 +1756,433 @@ mod tests {
             iso::iso_to_epoch_ms("2026-07-01T12:00:00Z")
         );
         assert_eq!(parse_since("nonsense"), None);
+    }
+
+    #[test]
+    fn failed_target_does_not_block_or_advance_successful_target() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-fanout-run-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target_credentials = |token: &str, endpoint: &str| crate::credentials::Credentials {
+            token: Some(token.into()),
+            endpoint: Some(endpoint.into()),
+            collect_tools: false,
+            ..crate::credentials::Credentials::default()
+        };
+        let company = store
+            .upsert(target_credentials(
+                "company-token",
+                "https://company.example/api",
+            ))
+            .unwrap();
+        let personal = store
+            .upsert(target_credentials(
+                "personal-token",
+                "https://personal.example/api",
+            ))
+            .unwrap();
+        let parse_calls = Rc::new(Cell::new(0));
+        let transport = FanoutTestTransport::default();
+        transport.fail_company.set(true);
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(FanoutTestAdapter {
+                file,
+                parse_calls: Rc::clone(&parse_calls),
+            })],
+            Some("fanout_test"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 1);
+        assert_eq!(parse_calls.get(), 1);
+        assert!(cursor::load(&company.state_dir, "fanout_test")
+            .files
+            .is_empty());
+        assert_eq!(
+            cursor::load(&personal.state_dir, "fanout_test").files.len(),
+            1
+        );
+        assert_eq!(transport.calls.borrow().len(), 2);
+        assert_eq!(
+            crate::delivery::load(&company.state_dir)
+                .expect("failed target delivery status")
+                .result,
+            crate::delivery::DeliveryKind::Unreachable
+        );
+        assert_eq!(
+            crate::delivery::load(&personal.state_dir)
+                .expect("successful target delivery status")
+                .result,
+            crate::delivery::DeliveryKind::Success
+        );
+
+        transport.fail_company.set(false);
+        transport.calls.borrow_mut().clear();
+        let recovery_code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(FanoutTestAdapter {
+                file: root.join("session.jsonl"),
+                parse_calls: Rc::clone(&parse_calls),
+            })],
+            Some("fanout_test"),
+            false,
+            true,
+        );
+        assert_eq!(recovery_code, 0);
+        assert_eq!(
+            parse_calls.get(),
+            2,
+            "각 collect 실행에서 파일을 한 번만 파싱"
+        );
+        assert_eq!(
+            cursor::load(&company.state_dir, "fanout_test").files.len(),
+            1
+        );
+        assert_eq!(
+            cursor::load(&personal.state_dir, "fanout_test").files.len(),
+            1
+        );
+        assert_eq!(
+            transport.calls.borrow().as_slice(),
+            ["https://company.example/api"],
+            "복구 실행은 실패했던 company suffix만 전송"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn removed_target_is_not_recreated_when_delivery_finishes() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-fanout-remove-race-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: false,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let target_dir = target.state_dir.parent().unwrap().to_path_buf();
+        let transport = FanoutTestTransport::default();
+        *transport.remove_target.borrow_mut() = Some(target_dir.clone());
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(FanoutTestAdapter {
+                file,
+                parse_calls: Rc::new(Cell::new(0)),
+            })],
+            Some("fanout_test"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 0);
+        assert!(!target_dir.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn replaced_same_endpoint_target_never_commits_the_old_delivery_cursor() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-fanout-replace-race-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("old-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: false,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let target_dir = target.state_dir.parent().unwrap().to_path_buf();
+        let transport = FanoutTestTransport::default();
+        *transport.replace_target_revision.borrow_mut() = Some(target_dir);
+
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(FanoutTestAdapter {
+                    file,
+                    parse_calls: Rc::new(Cell::new(0)),
+                })],
+                Some("fanout_test"),
+                false,
+                true,
+            ),
+            0
+        );
+        assert!(cursor::load(&target.state_dir, "fanout_test")
+            .files
+            .is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn content_failure_is_isolated_per_target_after_one_parse() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-content-fanout-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let credentials = |token: &str, endpoint: &str| crate::credentials::Credentials {
+            token: Some(token.into()),
+            endpoint: Some(endpoint.into()),
+            collect_content: crate::credentials::ContentCollectionMode::ServerManaged,
+            collect_content_since: Some("all".into()),
+            collect_tools: false,
+            ..crate::credentials::Credentials::default()
+        };
+        let company = store
+            .upsert(credentials("company-token", "https://company.example/api"))
+            .unwrap();
+        let personal = store
+            .upsert(credentials(
+                "personal-token",
+                "https://personal.example/api",
+            ))
+            .unwrap();
+        let parse_calls = Rc::new(Cell::new(0));
+        let transport = FanoutTestTransport::default();
+        transport.fail_company_prompts.set(true);
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(ContentFanoutTestAdapter {
+                file,
+                parse_calls: Rc::clone(&parse_calls),
+            })],
+            Some("content_fanout_test"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 1);
+        assert_eq!(parse_calls.get(), 1);
+        assert!(
+            cursor::load(&company.state_dir, "content_fanout_test-content")
+                .files
+                .is_empty()
+        );
+        assert_eq!(
+            cursor::load(&personal.state_dir, "content_fanout_test-content")
+                .files
+                .len(),
+            1
+        );
+        assert_eq!(transport.prompt_calls.borrow().len(), 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_collect_sends_tools_created_after_target_registration() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-tool-first-run-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: true,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        assert!(target.state_dir.join("tool-since").is_file());
+        let transport = FanoutTestTransport::default();
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(ToolFirstRunAdapter { file })],
+            Some("tool_first_run"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 0);
+        assert_eq!(
+            transport.tool_calls.borrow().as_slice(),
+            ["https://personal.example/api"]
+        );
+        assert_eq!(
+            cursor::load(&target.state_dir, "tool_first_run-tools")
+                .files
+                .len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disabled_content_keeps_cursor_and_records_disabled_delivery() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-content-disabled-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_content: crate::credentials::ContentCollectionMode::ServerManaged,
+                collect_content_since: Some("all".into()),
+                collect_tools: false,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let transport = FanoutTestTransport::default();
+        transport.disable_prompts.set(true);
+
+        let code = run_with(
+            &store,
+            &transport,
+            vec![Box::new(ContentFanoutTestAdapter {
+                file,
+                parse_calls: Rc::new(Cell::new(0)),
+            })],
+            Some("content_fanout_test"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 0);
+        assert!(
+            cursor::load(&target.state_dir, "content_fanout_test-content")
+                .files
+                .is_empty()
+        );
+        assert_eq!(
+            crate::delivery::load(&target.state_dir).unwrap().result,
+            crate::delivery::DeliveryKind::Disabled
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unsupported_tool_inventory_remains_observable_until_a_probe_succeeds() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-inventory-unsupported-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_tools: true,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let transport = FanoutTestTransport::default();
+
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(ToolFirstRunAdapter { file: file.clone() })],
+                None,
+                false,
+                true,
+            ),
+            0
+        );
+        assert_eq!(
+            crate::delivery::load(&target.state_dir).unwrap().result,
+            crate::delivery::DeliveryKind::Unsupported
+        );
+        assert!(post::unsupported_marked(
+            &target.state_dir,
+            "tool-inventory"
+        ));
+
+        transport.support_inventory.set(true);
+        std::fs::write(target.state_dir.join("unsupported-tool-inventory"), "0\n").unwrap();
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(ToolFirstRunAdapter { file })],
+                None,
+                false,
+                true,
+            ),
+            0
+        );
+        assert_eq!(
+            crate::delivery::load(&target.state_dir).unwrap().result,
+            crate::delivery::DeliveryKind::Success
+        );
+        assert!(!post::unsupported_marked(
+            &target.state_dir,
+            "tool-inventory"
+        ));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn manual_collect_always_emits_the_current_failure() {
+        assert!(!should_emit_failure(false, true));
+        assert!(should_emit_failure(false, false));
+        assert!(should_emit_failure(true, true));
+    }
+
+    #[test]
+    fn real_failure_overrides_degraded_delivery_kind() {
+        let mut diagnostics = TargetDiagnostics::default();
+        diagnostics.disabled("content disabled".into());
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            "inventory failed".into(),
+        );
+        assert_eq!(
+            diagnostics.kind,
+            Some(crate::delivery::DeliveryKind::ServerError)
+        );
     }
 
     #[test]
@@ -1004,6 +2216,36 @@ mod tests {
         assert_eq!(resume_index(2, &keys_hash(&["x1", "x2"]), &keys), 0);
         // 파일이 줄어듦(sent > len) → 처음부터
         assert_eq!(resume_index(9, &h2, &keys), 0);
+    }
+
+    #[test]
+    fn codex_reconciliation_forces_legacy_cursor_scan_only_when_probe_is_due() {
+        assert!(reconciliation_active("codex", 0, true, false));
+        assert!(!reconciliation_active("codex", 0, false, false));
+        assert!(!reconciliation_active("codex", 1, true, false));
+        assert!(!reconciliation_active("claude", 0, true, false));
+        assert!(reconciliation_active("codex", 1, false, true));
+    }
+
+    #[test]
+    fn replay_reconciliation_body_contains_keys_only() {
+        let body = to_reconciliation_body(&["a".repeat(64), "b".repeat(64)]);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 1);
+        assert_eq!(value["dedupKeys"].as_array().unwrap().len(), 2);
+        assert!(!body.contains("session"));
+    }
+
+    #[test]
+    fn reconciliation_never_retracts_a_key_also_seen_as_legitimate() {
+        let legitimate = std::collections::HashSet::from(["keep".to_string()]);
+        assert_eq!(
+            reconciliation_keys(
+                vec!["keep".into(), "remove".into(), "remove".into()],
+                &legitimate,
+            ),
+            vec!["remove".to_string()],
+        );
     }
 
     #[test]
@@ -1162,6 +2404,46 @@ mod tests {
     }
 
     #[test]
+    fn content_collection_labels_distinguish_managed_and_legacy_e2ee() {
+        use crate::credentials::ContentCollectionMode;
+
+        assert_eq!(
+            content_collection_label(ContentCollectionMode::ServerManaged),
+            "managed_v1"
+        );
+        assert_eq!(
+            content_collection_label(ContentCollectionMode::LegacyE2eeV1),
+            "legacy-e2ee-v1"
+        );
+        assert_eq!(content_collection_label(ContentCollectionMode::Off), "off");
+    }
+
+    #[test]
+    fn implicit_enable_preserves_existing_legacy_e2ee_but_explicit_managed_can_switch() {
+        use crate::credentials::ContentCollectionMode;
+
+        assert_eq!(
+            resolve_content_collection_mode(ContentCollectionMode::LegacyE2eeV1, Some("TRUE")),
+            ContentCollectionMode::LegacyE2eeV1
+        );
+        assert_eq!(
+            resolve_content_collection_mode(
+                ContentCollectionMode::LegacyE2eeV1,
+                Some("managed_v1")
+            ),
+            ContentCollectionMode::ServerManaged
+        );
+        assert_eq!(
+            resolve_content_collection_mode(ContentCollectionMode::LegacyE2eeV1, Some("off")),
+            ContentCollectionMode::Off
+        );
+        assert_eq!(
+            resolve_content_collection_mode(ContentCollectionMode::Off, Some("yes")),
+            ContentCollectionMode::ServerManaged
+        );
+    }
+
+    #[test]
     fn content_enabled_env_overrides_credentials() {
         use crate::collect::gemini_family::testutil::EnvGuard;
         use std::ffi::OsStr;
@@ -1176,33 +2458,11 @@ mod tests {
     }
 
     #[test]
-    fn tool_baseline_seeds_stamps_without_events() {
-        let files = vec![
-            (
-                "/tmp/a.jsonl".to_string(),
-                cursor::FileStamp {
-                    mtime_ms: 1,
-                    size: 10,
-                },
-            ),
-            (
-                "/tmp/b.jsonl".to_string(),
-                cursor::FileStamp {
-                    mtime_ms: 2,
-                    size: 20,
-                },
-            ),
-        ];
-        let cursor = seed_tool_baseline(&files);
-        assert_eq!(cursor.files.len(), 2);
-        assert_eq!(cursor.files["/tmp/a.jsonl"].sent, 0);
-    }
-
-    #[test]
     fn unsupported_backoff_skips_tool_parse_until_probe_is_due() {
-        assert!(!should_parse_tool_file(true, false, false, true, false));
-        assert!(should_parse_tool_file(true, true, false, true, false));
-        assert!(!should_parse_tool_file(true, true, false, true, true));
+        assert!(!should_parse_tool_file(true, false, true, false, false));
+        assert!(should_parse_tool_file(true, true, true, false, false));
+        assert!(!should_parse_tool_file(true, true, true, true, false));
+        assert!(should_parse_tool_file(false, false, true, true, true));
     }
 
     #[test]

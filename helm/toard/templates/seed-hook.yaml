@@ -17,7 +17,15 @@ spec:
       labels:
         {{- include "toard.selectorLabels" . | nindent 8 }}
     spec:
+      serviceAccountName: {{ include "toard.migrationServiceAccountName" . }}
+      automountServiceAccountToken: false
       restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
       {{- if .Values.postgres.enabled }}
       initContainers:
         - name: wait-for-postgres
@@ -29,9 +37,34 @@ spec:
           image: "{{ .Values.image.migrate.repository }}:{{ .Values.image.migrate.tag }}"
           imagePullPolicy: {{ .Values.image.migrate.pullPolicy }}
           command: ["sh", "-c", "pnpm migrate && pnpm seed"]
-          envFrom:
-            - secretRef:
-                name: {{ include "toard.secretName" . }}
-            - configMapRef:
-                name: {{ include "toard.fullname" . }}-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.migrationDatabaseSecretName" . }}
+                  key: {{ .Values.migrate.databaseSecret.key }}
+            - name: BOOTSTRAP_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: BOOTSTRAP_ADMIN_EMAIL
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: BOOTSTRAP_ADMIN_PASSWORD
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

@@ -9,7 +9,7 @@
   },
   "members": {
     "cardTitle": "Members ({count})",
-    "cardDescription": "Role changes apply on the next request, and team changes apply from the next collection onward (past events keep the team they were attributed to at the time). If Last received is empty, the shim is not installed or collection is not connected.",
+    "cardDescription": "A first team assignment can include confirmed unassigned history; later team changes apply from the change time onward. If Last received is empty, the shim is not installed or collection is not connected.",
     "colMember": "Member",
     "colRole": "Role",
     "colTeam": "Team",
@@ -22,7 +22,10 @@
     "outdatedBanner": "{count, plural, one {# device runs} other {# devices run}} an outdated shim — auto-update may be stalled"
   },
   "teamRoleSelect": {
-    "label": "Team tool role", "member": "Member", "leader": "Leader", "updated": "Team tool role updated."
+    "label": "Team tool role",
+    "member": "Member",
+    "leader": "Leader",
+    "updated": "Team tool role updated."
   },
   "teams": {
     "cardTitle": "Teams ({count})",
@@ -46,6 +49,27 @@
     "none": "No team",
     "assignedToast": "Assigned to the \"{name}\" team.",
     "unassignedToast": "Team assignment removed."
+  },
+  "teamAttribution": {
+    "assignmentTitle": "Assign existing usage to the \"{team}\" team too?",
+    "assignmentDescription": "Because this is the first team assignment, previously unassigned usage will be attributed as well. These values are estimates at confirmation time.",
+    "legacyTitle": "Attribute existing unassigned usage to the current team?",
+    "legacyDescription": "Only usage collected before the team was configured on this existing installation will be attributed.",
+    "events": "Events",
+    "period": "Period",
+    "periodUnknown": "No records",
+    "tokens": "Tokens",
+    "cost": "Confirmed cost",
+    "noOtherTeamsChanged": "Usage already attributed to another team and later team transfers will not be changed.",
+    "confirm": "Assign and start",
+    "cancel": "Cancel",
+    "inProgress": "Attributing historical usage · {count} expected",
+    "succeeded": "Historical attribution complete · {count}",
+    "failed": "Historical attribution failed · automatic retry scheduled",
+    "legacyButton": "Attribute existing unassigned usage",
+    "legacyQueued": "Historical usage attribution started.",
+    "readFenceTitle": "Attributing historical usage",
+    "readFenceDescription": "The affected period is temporarily hidden to avoid mixed totals. Refresh again shortly."
   },
   "roleSelect": {
     "label": "Change role",
@@ -94,6 +118,46 @@
       "saveFailed": "The status could not be saved."
     }
   },
+  "encryption": {
+    "title": "Managed encryption",
+    "description": "Read-only status for the current provider, key identity, health, 30-day calls, and estimated cost.",
+    "unavailable": "Managed encryption status is temporarily unavailable.",
+    "disabled": "The managed encryption provider is disabled.",
+    "healthy": "Healthy",
+    "unhealthy": "Needs attention",
+    "keyRef": "Key reference",
+    "fingerprint": "Provider fingerprint",
+    "credentialSource": "Credential source",
+    "credentialMode": "Credential mode",
+    "staticCredential": "Static credential",
+    "ambientCredential": "Workload or default credential",
+    "staticCredentialWarning": "Static credentials add rotation and incident-response burden. Prefer workload identity where possible.",
+    "operations30d": "Actual calls across all providers in 30 days",
+    "count": "{count} calls",
+    "cacheHitRate": "30-day cache hit rate across all providers",
+    "records": "Encryption schemes",
+    "recordCounts": "server {serverV1} · E2EE {e2eeV1} · managed {managedV1}",
+    "userKeys": "User keys",
+    "userKeyCounts": "active {active} · pending {pending} · retiring {retiring}",
+    "migrations": "E2EE migration",
+    "migrationCounts": "pending {e2eePending} · blocked {e2eeBlocked}",
+    "providerMigration": "Provider migration and removal decision",
+    "removalReady": "Old provider ready to remove",
+    "removalBlocked": "Old provider must be retained",
+    "migrationReadinessCounts": "old active {oldActive} · target active {targetActive}/{totalActive} · pending {pending} · unexpected active {unexpected}",
+    "oldFingerprint": "Old fingerprint",
+    "targetFingerprint": "Target fingerprint",
+    "wrapperDistribution": "Provider/fingerprint/state distribution",
+    "wrapperDistributionEmpty": "No managed user key wrappers are stored.",
+    "wrapperCount": "{count} wrappers",
+    "estimatedCost": "Estimated monthly cost",
+    "costBreakdown": "requests ${requests} + key ${key}",
+    "referencePricing": "Public reference pricing as of {asOf}",
+    "overridePricing": "Operator-defined pricing",
+    "grossDisclaimer": "Gross reference only; free tier, commitments, tax, and network charges are not deducted.",
+    "costScope": "Based on the current provider and current key only. {included} requests are included; {excluded} migration or previous provider/key requests and those key costs are excluded.",
+    "costUnavailable": "No reference price is available for this provider. Configure an operator price override to show an estimate."
+  },
   "system": {
     "pricingTitle": "Pricing sync",
     "pricingDescription": "Syncs LiteLLM pricing daily and automatically repairs unconfirmed costs. No administrator action is required.",
@@ -110,11 +174,14 @@
       "failed": "Temporary error · retrying automatically"
     },
     "recoveredEvents": "Recovered",
+    "repricedLegacyEvents": "Legacy prices recalculated",
     "reconciledEvents": "Duplicates reconciled",
     "remainingEvents": "Unconfirmed remaining",
+    "remainingLegacyEvents": "Legacy-priced remaining",
     "lastRepair": "Last automatic run",
     "unresolvedModels": "Models without confirmed pricing history for the usage date",
     "unresolvedEvents": "{count} events",
+    "unresolvedEventBreakdown": "{unpriced} unconfirmed · {legacy} legacy-priced",
     "historyTitle": "Automatic historical pricing lookup",
     "historyStates": {
       "pending": "Preparing",
@@ -346,6 +413,7 @@
     "userNotFound": "The selected member could not be found.",
     "lastAdminRequired": "The last administrator cannot be changed to member.",
     "teamRoleInvalid": "The selected team tool role is invalid.",
-    "teamRequiredForLeader": "Only a member assigned to a team can become a leader."
+    "teamRequiredForLeader": "Only a member assigned to a team can become a leader.",
+    "legacyAttributionNotEligible": "This member is not eligible for existing unassigned usage attribution."
   }
 }

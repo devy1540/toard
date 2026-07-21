@@ -1,30 +1,35 @@
-import { loadKek } from "@/lib/content-crypto";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
+import {
+  getManagedContentRuntime,
+  type ManagedContentRuntime,
+} from "@/lib/managed-content-runtime";
 import { parsePromptBatch, PromptWireError } from "@/lib/prompt-wire";
-import { E2eePromptSaveError, saveE2eePromptRecords, savePromptRecords } from "@/lib/prompt-records";
-import { isE2eeContentActive } from "@/lib/content-accounts";
+import { readBoundedJson } from "@/lib/tool-ingest";
+import {
+  E2eePromptSaveError,
+  saveE2eePromptRecords,
+  saveManagedPromptRecords,
+} from "@/lib/prompt-records";
 
 // 프롬프트/응답 본문 수신 — shim 본문 수집 경로 (opt-in, /events 와 분리).
-// 본문은 서버에서 봉투 암호화 후 prompt_records(RLS 소유자전용)에 저장한다.
-// KEK 미설정이면 본문 수집이 서버에서 꺼진 것 → 503.
+// schema 없는 plaintext는 managed 봉투 암호화 후 prompt_records(RLS 소유자전용)에 저장한다.
+// managed key provider 미설정/장애 시 평문은 저장하지 않고 안전한 503 code만 반환한다.
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 배치 상한 4MB (/events 와 동일)
 
 type PromptsPostDeps = {
   authenticateIngestToken: typeof authenticateIngestToken;
   loadProviders: typeof loadProviders;
-  loadKek: typeof loadKek;
-  savePromptRecords: typeof savePromptRecords;
+  getManagedContentRuntime: typeof getManagedContentRuntime;
+  saveManagedPromptRecords: typeof saveManagedPromptRecords;
   saveE2eePromptRecords: typeof saveE2eePromptRecords;
-  isE2eeContentActive: typeof isE2eeContentActive;
 };
 
 const defaultPromptsPostDeps: PromptsPostDeps = {
   authenticateIngestToken,
   loadProviders,
-  loadKek,
-  savePromptRecords,
+  getManagedContentRuntime,
+  saveManagedPromptRecords,
   saveE2eePromptRecords,
-  isE2eeContentActive,
 };
 
 function createPromptsPost(overrides: Partial<PromptsPostDeps> = {}) {
@@ -37,16 +42,14 @@ async function postPrompts(req: Request, deps: PromptsPostDeps): Promise<Respons
   const auth = await deps.authenticateIngestToken(req.headers.get("authorization"));
   if (!auth) return new Response("unauthorized", { status: 401 });
 
-  const text = await req.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
-    return new Response("payload too large (max 4MB)", { status: 413 });
-  }
-
   // 3. 와이어 계약 검증
   let batch;
   try {
-    batch = parsePromptBatch(JSON.parse(text));
+    batch = parsePromptBatch(await readBoundedJson(req, MAX_BODY_BYTES));
   } catch (e) {
+    if (e instanceof RangeError) {
+      return noStoreTextResponse("payload too large (max 4MB)", 413);
+    }
     const msg = e instanceof PromptWireError ? e.message : "본문이 유효한 JSON 이 아닙니다";
     return new Response(msg, { status: 400 });
   }
@@ -60,7 +63,7 @@ async function postPrompts(req: Request, deps: PromptsPostDeps): Promise<Respons
     return new Response(`등록되지 않은 provider: ${unknown.join(", ")}`, { status: 400 });
   }
 
-  // 5. E2EE는 암호문 그대로 저장하고, legacy만 서버 KEK를 사용한다.
+  // 5. transitional E2EE는 암호문 그대로 저장한다.
   if (batch.schema === "e2ee_v1") {
     try {
       return Response.json(await deps.saveE2eePromptRecords(auth.userId, batch.records));
@@ -72,19 +75,43 @@ async function postPrompts(req: Request, deps: PromptsPostDeps): Promise<Respons
     }
   }
 
-  if (await deps.isE2eeContentActive(auth.userId)) {
-    return Response.json({ code: "E2EE_REQUIRED" }, { status: 409 });
-  }
-
-  let kek: Buffer;
+  let runtime: ManagedContentRuntime | null;
   try {
-    kek = deps.loadKek();
+    runtime = await deps.getManagedContentRuntime();
   } catch {
-    return new Response("prompt content collection disabled (TOARD_CONTENT_KEK_B64 미설정)", {
-      status: 503,
-    });
+    return managedUnavailableResponse("CONTENT_KEY_UNAVAILABLE");
   }
-  return Response.json(await deps.savePromptRecords(auth.userId, batch.records, kek));
+  if (!runtime) {
+    return managedUnavailableResponse("CONTENT_COLLECTION_DISABLED");
+  }
+  try {
+    return Response.json(
+      await deps.saveManagedPromptRecords(auth.userId, batch.records, runtime),
+    );
+  } catch {
+    return managedUnavailableResponse("CONTENT_KEY_UNAVAILABLE");
+  }
+}
+
+type ManagedFailureCode =
+  | "CONTENT_COLLECTION_DISABLED"
+  | "CONTENT_KEY_UNAVAILABLE";
+
+function managedUnavailableResponse(code: ManagedFailureCode): Response {
+  return Response.json(
+    { code },
+    {
+      status: 503,
+      headers: { "Cache-Control": "no-store" },
+    },
+  );
+}
+
+function noStoreTextResponse(body: string, status: number): Response {
+  return new Response(body, {
+    status,
+    headers: { "Cache-Control": "no-store" },
+  });
 }
 
 export const POST = Object.assign(createPromptsPost(), {

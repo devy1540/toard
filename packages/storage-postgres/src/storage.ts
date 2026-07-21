@@ -10,9 +10,11 @@ import type {
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
+  OrganizationDashboardData,
+  OrganizationDashboardQuery,
   OverviewStats,
   PeriodQuery,
-  PricingRepairBatchResult,
+  PricingRecoveryBatchResult,
   PricingRepairRequest,
   PricingRepairResolver,
   ProviderBreakdown,
@@ -21,18 +23,26 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TeamAttributionBatchRequest,
+  TeamAttributionBatchResult,
+  TeamAttributionPreview,
+  TeamAttributionRange,
   TeamMemberTimeseriesPoint,
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageEventReconciliationRequest,
+  UsageEventReconciliationResult,
   UsageReplayReconciliationRequest,
   UsageReplayReconciliationResult,
-  UnpricedUsageModelDiagnostic,
+  PricingRecoveryModelDiagnostic,
   UserUsage,
   UserInsightComparison,
+  UtilizationUsageDay,
+  UtilizationUsageQuery,
 } from "@toard/core";
-import { buildUserInsightComparison } from "@toard/core";
+import { buildUserInsightComparison, CACHE_SIGNAL_PROVIDER_KEYS } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
 /** pg 는 NUMERIC/BIGINT 를 string 으로 반환 → number 변환 */
@@ -115,12 +125,10 @@ export class PostgresStorage implements StorageBackend {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      // user_id → 현재 team_id 를 이벤트에 비정규화(수집 시점 스냅샷, 설계 §4.3)
-      const deptMap = await this.teamMap(
-        client,
-        events.map((e) => e.userId).filter((x): x is string => !!x),
-      );
+      // 이벤트 발생 시각에 유효한 팀을 비정규화한다.
+      const teamByEvent = await this.teamMapAtEventTime(client, events);
       let inserted = 0;
+      let insertedUnpriced = false;
       for (const e of events) {
         const r = await client.query(
           `INSERT INTO usage_events
@@ -131,7 +139,7 @@ export class PostgresStorage implements StorageBackend {
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
-            e.userId ? (deptMap.get(e.userId) ?? null) : null,
+            e.userId ? (teamByEvent.get(e.dedupKey) ?? null) : null,
             e.sessionId, e.model, e.ts,
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
             e.logAdapter ?? null, e.host ?? null,
@@ -140,8 +148,12 @@ export class PostgresStorage implements StorageBackend {
         );
         if (r.rowCount === 1) {
           inserted++;
+          insertedUnpriced ||= e.costStatus === "unpriced";
           if (e.userId) await this.bumpDailyUser(client, e);
         }
+      }
+      if (insertedUnpriced) {
+        await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
       }
       await client.query("COMMIT");
       return { inserted, deduped: events.length - inserted };
@@ -153,16 +165,142 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
-  /** user_id → 현재 team_id (없으면 제외) */
-  private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const uniq = [...new Set(userIds)];
-    const r = await client.query<{ id: string; team_id: string | null }>(
-      "SELECT id, team_id FROM users WHERE id = ANY($1)",
-      [uniq],
+  async previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview> {
+    const result = await this.pool.query<{
+      events: string | number;
+      from_ts: Date | null;
+      to_ts: Date | null;
+      total_tokens: string | number;
+      cost_usd: string | number;
+    }>(
+      `SELECT COUNT(*) AS events,
+              MIN(ts) AS from_ts,
+              MAX(ts) AS to_ts,
+              COALESCE(SUM(
+                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
+              ), 0) AS total_tokens,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost_usd
+         FROM usage_events
+        WHERE user_id = $1
+          AND team_id IS NULL
+          AND ($2::timestamptz IS NULL OR ts >= $2)
+          AND ($3::timestamptz IS NULL OR ts < $3)`,
+      [input.userId, input.from, input.to],
+    );
+    const row = result.rows[0]!;
+    return {
+      events: n(row.events),
+      from: row.from_ts,
+      to: row.to_ts,
+      totalTokens: n(row.total_tokens),
+      costUsd: n(row.cost_usd),
+    };
+  }
+
+  async backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult> {
+    if (input.limit <= 0) {
+      return { processed: 0, updated: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 1_000);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<{
+        processed: string | number;
+        updated: string | number;
+        affected_days: string[] | null;
+        has_more: boolean;
+      }>(
+        `WITH candidate_probe AS (
+           SELECT id
+             FROM usage_events
+            WHERE user_id = $1
+              AND team_id IS NULL
+              AND ($3::timestamptz IS NULL OR ts >= $3)
+              AND ($4::timestamptz IS NULL OR ts < $4)
+            ORDER BY id
+            LIMIT ($5 + 1)
+            FOR UPDATE SKIP LOCKED
+         ), candidates AS (
+           SELECT id
+             FROM candidate_probe
+            ORDER BY id
+            LIMIT $5
+         ), updated AS (
+           UPDATE usage_events AS event
+              SET team_id = $2
+             FROM candidates
+            WHERE event.id = candidates.id
+              AND event.team_id IS NULL
+           RETURNING event.ts
+         )
+         SELECT (SELECT COUNT(*) FROM candidates) AS processed,
+                (SELECT COUNT(*) FROM updated) AS updated,
+                (SELECT ARRAY_AGG(DISTINCT to_char(
+                   (updated.ts AT TIME ZONE $6)::date,
+                   'YYYY-MM-DD'
+                 )) FROM updated) AS affected_days,
+                (SELECT COUNT(*) > $5 FROM candidate_probe) AS has_more`,
+        [input.userId, input.teamId, input.from, input.to, limit, this.tz],
+      );
+      const row = result.rows[0]!;
+      const days = [...(row.affected_days ?? [])].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        processed: n(row.processed),
+        updated: n(row.updated),
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+        hasMore: row.has_more,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  /** dedup_key → 이벤트 발생 시각에 유효한 team_id (멤버십 공백은 제외) */
+  private async teamMapAtEventTime(
+    client: PoolClient,
+    events: FinalizedUsageEvent[],
+  ): Promise<Map<string, string>> {
+    const identified = events.filter(
+      (event): event is FinalizedUsageEvent & { userId: string } => !!event.userId,
+    );
+    if (identified.length === 0) return new Map();
+
+    const userIds = [...new Set(identified.map((event) => event.userId))].sort();
+    for (const userId of userIds) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1540))", [userId]);
+    }
+
+    const r = await client.query<{ dedup_key: string; team_id: string }>(
+      `WITH requested(dedup_key, user_id, event_ts) AS (
+         SELECT *
+           FROM unnest($1::text[], $2::uuid[], $3::timestamptz[])
+       )
+       SELECT requested.dedup_key, assignment.team_id
+         FROM user_team_assignments assignment
+         JOIN requested
+           ON requested.user_id = assignment.user_id
+          AND assignment.effective_from <= requested.event_ts
+          AND (assignment.effective_to IS NULL OR requested.event_ts < assignment.effective_to)`,
+      [
+        identified.map((event) => event.dedupKey),
+        identified.map((event) => event.userId),
+        identified.map((event) => event.ts),
+      ],
     );
     const m = new Map<string, string>();
-    for (const row of r.rows) if (row.team_id) m.set(row.id, row.team_id);
+    for (const row of r.rows) m.set(row.dedup_key, row.team_id);
     return m;
   }
 
@@ -238,31 +376,42 @@ export class PostgresStorage implements StorageBackend {
     );
   }
 
-  async getUnpricedUsageModels(
+  async getPricingRecoveryModels(
     from: Date,
     to: Date,
     replaceRevisionIds: string[] = [],
-  ): Promise<UnpricedUsageModelDiagnostic[]> {
+  ): Promise<PricingRecoveryModelDiagnostic[]> {
     const result = await this.pool.query<{
+      provider_key: string;
+      log_adapter: string | null;
       model: string | null;
       events: string | number;
+      unpriced_events: string | number;
+      legacy_events: string | number;
       first_at: Date;
       last_at: Date;
     }>(
-      `SELECT model, count(*) AS events, min(ts) AS first_at, max(ts) AS last_at
+      `SELECT provider_key, log_adapter, model, count(*) AS events,
+              count(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
+              count(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events,
+              min(ts) AS first_at, max(ts) AS last_at
        FROM usage_events
        WHERE ts >= $1 AND ts < $2
          AND (
-           cost_status = 'unpriced'
+           cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id = ANY($3::uuid[])
          )
-       GROUP BY model
+       GROUP BY provider_key, log_adapter, model
        ORDER BY events DESC, model NULLS LAST`,
       [from, to, replaceRevisionIds],
     );
     return result.rows.map((row) => ({
+      providerKey: row.provider_key,
+      logAdapter: row.log_adapter,
       model: row.model,
       events: n(row.events),
+      unpricedEvents: n(row.unpriced_events),
+      legacyEvents: n(row.legacy_events),
       firstAt: row.first_at,
       lastAt: row.last_at,
     }));
@@ -352,12 +501,67 @@ export class PostgresStorage implements StorageBackend {
     }
   }
 
-  async repairUnpricedUsage(
+  async reconcileUsageEvents(
+    request: UsageEventReconciliationRequest,
+  ): Promise<UsageEventReconciliationResult> {
+    const dedupKeys = [...new Set(request.dedupKeys)].slice(0, 1_000);
+    if (dedupKeys.length === 0) {
+      return { reconciled: 0, affectedBuckets: [] };
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const selected = await client.query<{
+        dedup_key: string;
+        ts: Date;
+        local_day: string;
+      }>(
+        `SELECT dedup_key, ts,
+                to_char((ts AT TIME ZONE $5)::date, 'YYYY-MM-DD') AS local_day
+         FROM usage_events
+         WHERE user_id = $1
+           AND provider_key = $2
+           AND log_adapter = $3
+           AND dedup_key = ANY($4::text[])
+         FOR UPDATE`,
+        [request.userId, request.providerKey, request.logAdapter, dedupKeys, this.tz],
+      );
+      const selectedKeys = selected.rows.map((row) => row.dedup_key);
+      let reconciled = 0;
+      if (selectedKeys.length > 0) {
+        const deletion = await client.query(
+          `DELETE FROM usage_events
+           WHERE user_id = $1
+             AND provider_key = $2
+             AND log_adapter = $3
+             AND dedup_key = ANY($4::text[])`,
+          [request.userId, request.providerKey, request.logAdapter, selectedKeys],
+        );
+        reconciled = deletion.rowCount ?? 0;
+      }
+      const days = [...new Set(selected.rows.map((row) => row.local_day))].sort();
+      for (const day of days) {
+        await this.recomputeDailyWithClient(client, day);
+      }
+      await client.query("COMMIT");
+      return {
+        reconciled,
+        affectedBuckets: days.map((day) => new Date(`${day}T00:00:00.000Z`)),
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async repairPricingUsage(
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
-  ): Promise<PricingRepairBatchResult> {
-    if (request.models.length === 0 || request.limit <= 0) {
-      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+  ): Promise<PricingRecoveryBatchResult> {
+    if ((request.models.length === 0 && !request.includeCodexModelFallback) || request.limit <= 0) {
+      return { scanned: 0, recovered: 0, repricedLegacy: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
     const client = await this.pool.connect();
@@ -375,28 +579,46 @@ export class PostgresStorage implements StorageBackend {
         cache_read_tokens: string | number;
         cache_creation_tokens: string | number;
         cost_usd: string | number;
+        cost_status: "priced" | "unpriced" | "legacy";
         log_adapter: string | null;
         host: string | null;
         local_day: string;
       }>(
         `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                cost_usd, log_adapter, host,
+                cost_usd, cost_status, log_adapter, host,
                 to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
          FROM usage_events
          WHERE ts >= $1 AND ts < $2
            AND (
-             cost_status = 'unpriced'
+             cost_status IN ('unpriced', 'legacy')
              OR pricing_revision_id = ANY($4::uuid[])
            )
-           AND model = ANY($3::text[])
+           AND (
+             model = ANY($3::text[])
+             OR (
+               $7::boolean
+               AND provider_key = 'codex'
+               AND log_adapter = 'codex'
+               AND model IS NULL
+             )
+           )
          ORDER BY ts, dedup_key
          FOR UPDATE SKIP LOCKED
          LIMIT $5`,
-        [request.from, request.to, request.models, request.replaceRevisionIds, limit, this.tz],
+        [
+          request.from,
+          request.to,
+          request.models,
+          request.replaceRevisionIds,
+          limit,
+          this.tz,
+          request.includeCodexModelFallback ?? false,
+        ],
       );
 
       let recovered = 0;
+      let repricedLegacy = 0;
       const days = new Set<string>();
       for (const row of selected.rows) {
         const resolved = resolver({
@@ -422,13 +644,14 @@ export class PostgresStorage implements StorageBackend {
                cost_status = 'priced'
            WHERE dedup_key = $1
              AND (
-               cost_status = 'unpriced'
+               cost_status IN ('unpriced', 'legacy')
                OR pricing_revision_id = ANY($4::uuid[])
              )`,
           [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
         );
         if (update.rowCount === 1) {
-          recovered += 1;
+          if (row.cost_status === "legacy") repricedLegacy += 1;
+          else if (row.cost_status === "unpriced") recovered += 1;
           days.add(row.local_day);
         }
       }
@@ -440,6 +663,7 @@ export class PostgresStorage implements StorageBackend {
       return {
         scanned: selected.rows.length,
         recovered,
+        repricedLegacy,
         affectedBuckets: [...days].sort().map((day) => new Date(`${day}T00:00:00.000Z`)),
         hasMore: selected.rows.length >= limit,
       };
@@ -504,6 +728,50 @@ export class PostgresStorage implements StorageBackend {
       day: r.day, sessions: n(r.sessions), activeUsers: n(r.active_users), costUsd: n(r.cost),
       inputTokens: n(r.input), outputTokens: n(r.output),
       cacheReadTokens: n(r.cache_read), cacheCreationTokens: n(r.cache_creation),
+    }));
+  }
+
+  private async utilizationUsageQuery(
+    q: UtilizationUsageQuery,
+    userId?: string,
+  ): Promise<UtilizationUsageDay[]> {
+    const params: unknown[] = [q.from, q.to, q.timezone, [...CACHE_SIGNAL_PROVIDER_KEYS]];
+    const userClause = userId ? `AND user_id = $${params.push(userId)}` : "";
+    const result = await this.pool.query<{
+      user_id: string;
+      day: string;
+      sessions: string | number;
+      input: string | number;
+      cache_read: string | number;
+      cache_creation: string | number;
+      cache_signal_events: string | number;
+      cache_unsupported_events: string | number;
+    }>(
+      `SELECT user_id,
+              to_char((ts AT TIME ZONE $3::text)::date, 'YYYY-MM-DD') AS day,
+              COUNT(DISTINCT session_id) AS sessions,
+              COALESCE(SUM(input_tokens) FILTER (WHERE provider_key = ANY($4::text[])), 0) AS input,
+              COALESCE(SUM(cache_read_tokens) FILTER (WHERE provider_key = ANY($4::text[])), 0) AS cache_read,
+              COALESCE(SUM(cache_creation_tokens) FILTER (WHERE provider_key = ANY($4::text[])), 0) AS cache_creation,
+              COUNT(*) FILTER (WHERE provider_key = ANY($4::text[])) AS cache_signal_events,
+              COUNT(*) FILTER (WHERE NOT (provider_key = ANY($4::text[]))) AS cache_unsupported_events
+       FROM usage_events
+       WHERE ts >= $1 AND ts < $2
+         AND user_id IS NOT NULL
+         ${userClause}
+       GROUP BY user_id, day
+       ORDER BY day, user_id`,
+      params,
+    );
+    return result.rows.map((row) => ({
+      userId: String(row.user_id),
+      day: String(row.day),
+      sessions: n(row.sessions),
+      inputTokens: n(row.input),
+      cacheReadTokens: n(row.cache_read),
+      cacheCreationTokens: n(row.cache_creation),
+      cacheSignalEvents: n(row.cache_signal_events),
+      cacheUnsupportedEvents: n(row.cache_unsupported_events),
     }));
   }
 
@@ -717,6 +985,14 @@ export class PostgresStorage implements StorageBackend {
     return buildUserInsightComparison(aggregates, compositions);
   }
 
+  getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q, userId);
+  }
+
+  getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q);
+  }
+
   // 버킷×모델 시계열 — dailyQuery 와 동일한 버킷 규약에 model 차원 추가 (스탯 뷰 스택 막대)
   async getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]> {
     const { where, params } = this.periodWhere({ ...q, userId });
@@ -811,6 +1087,20 @@ export class PostgresStorage implements StorageBackend {
       costUsd: n(r.cost_usd),
       costStatus: r.cost_status,
     }));
+  }
+
+  async getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData> {
+    const [overview, previousOverview, daily, topUsers, topTeams, providerBreakdown] = await Promise.all([
+      this.getOverview(q.current),
+      this.getOverview(q.previous),
+      this.getDailyTimeseries(q.current),
+      this.getLeaderboard({ ...q.current, scope: "user", orderBy: q.leaderboardOrder }),
+      q.includeTeamLeaderboard
+        ? this.getLeaderboard({ ...q.current, scope: "team" })
+        : Promise.resolve([]),
+      this.getProviderBreakdown(q.current),
+    ]);
+    return { overview, previousOverview, daily, topUsers, topTeams, providerBreakdown };
   }
 
   async getLeaderboard(q: PeriodQuery & { scope: LeaderScope; teamId?: string; orderBy?: "cost" | "tokens" }): Promise<LeaderRow[]> {

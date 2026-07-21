@@ -33,7 +33,7 @@ export type E2eeHistoryDetail = {
 };
 
 export type E2eeContentStatus = {
-  state: "off" | "pending" | "active";
+  state: "off" | "pending" | "active" | "migrated";
   keyVersion: number | null;
   approvedDeviceCount: number;
   recoveryConfirmedAt: string | null;
@@ -167,7 +167,9 @@ export async function getE2eeContentStatus(
   if (!row) {
     return { state: "off", keyVersion: null, approvedDeviceCount: 0, recoveryConfirmedAt: null };
   }
-  if (row.state !== "pending" && row.state !== "active") throw new Error("INVALID_CONTENT_STATE");
+  if (row.state !== "pending" && row.state !== "active" && row.state !== "migrated") {
+    throw new Error("INVALID_CONTENT_STATE");
+  }
   return {
     state: row.state,
     keyVersion: asNumber(row.active_key_version),

@@ -82,13 +82,13 @@ export function parsePromptRecordsBody(body: unknown): PromptRecordWire[] {
 }
 
 export type ParsedPromptBatch =
-  | { schema: "server_v1"; records: PromptRecordWire[] }
+  | { schema: "plaintext_v1"; records: PromptRecordWire[] }
   | { schema: "e2ee_v1"; records: E2eePromptRecordWire[] };
 
-/** 첫 레코드 schema로 배치를 고정하고 평문/E2EE 혼합을 fail-closed 한다. */
+/** 첫 레코드 schema로 배치를 고정하고 plaintext/E2EE 혼합을 fail-closed 한다. */
 export function parsePromptBatch(body: unknown): ParsedPromptBatch {
   if (!Array.isArray(body)) throw new PromptWireError("본문은 PromptRecord 배열이어야 합니다");
-  if (body.length === 0) return { schema: "server_v1", records: [] };
+  if (body.length === 0) return { schema: "plaintext_v1", records: [] };
   const schemas = new Set(
     body.map((item) =>
       typeof item === "object" && item !== null && !Array.isArray(item)
@@ -97,7 +97,7 @@ export function parsePromptBatch(body: unknown): ParsedPromptBatch {
     ),
   );
   if (schemas.has("e2ee_v1") && (schemas.size !== 1 || !schemas.has("e2ee_v1"))) {
-    throw new PromptWireError("server_v1과 e2ee_v1 레코드를 혼합할 수 없습니다");
+    throw new PromptWireError("plaintext_v1과 e2ee_v1 레코드를 혼합할 수 없습니다");
   }
   if (schemas.size === 1 && schemas.has("e2ee_v1")) {
     try {
@@ -110,5 +110,5 @@ export function parsePromptBatch(body: unknown): ParsedPromptBatch {
   if ([...schemas].some((schema) => schema !== undefined)) {
     throw new PromptWireError("지원하지 않는 prompt schema입니다");
   }
-  return { schema: "server_v1", records: parsePromptRecordsBody(body) };
+  return { schema: "plaintext_v1", records: parsePromptRecordsBody(body) };
 }

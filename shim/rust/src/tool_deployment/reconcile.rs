@@ -100,9 +100,8 @@ where
 }
 
 fn device_fingerprint() -> Option<String> {
-    let body = crate::fsx::state_dir()
-        .map(|directory| directory.join("tool-inventory.json"))
-        .and_then(|path| fs::read_to_string(path).ok())?;
+    let store = crate::targets::TargetStore::from_home().ok()?;
+    let body = fs::read_to_string(store.root().join("state/tool-inventory-scan.json")).ok()?;
     let value: serde_json::Value = serde_json::from_str(&body).ok()?;
     value
         .get("device_id")
@@ -500,18 +499,34 @@ pub(crate) fn run_once() -> i32 {
     if cfg!(windows) {
         return 0;
     }
-    let credentials = crate::credentials::read_credentials();
-    let Some(token) = credentials.token.as_deref() else {
-        return 0;
+    let configured_targets = crate::targets::TargetStore::from_home()
+        .and_then(|store| store.load_or_migrate())
+        .unwrap_or_default();
+    let (endpoint, token) = match configured_targets.as_slice() {
+        [target] => {
+            let Some(token) = target.credentials.token.clone() else {
+                return 0;
+            };
+            (target.endpoint.clone(), token)
+        }
+        [] => {
+            let credentials = crate::credentials::read_credentials();
+            let Some(token) = credentials.token else {
+                return 0;
+            };
+            (
+                credentials
+                    .endpoint
+                    .unwrap_or_else(|| crate::credentials::DEFAULT_ENDPOINT.to_owned()),
+                token,
+            )
+        }
+        _ => return 0,
     };
     let Some(fingerprint) = device_fingerprint() else {
         return 0;
     };
-    let endpoint = credentials
-        .endpoint
-        .as_deref()
-        .unwrap_or(crate::credentials::DEFAULT_ENDPOINT);
-    let _ = flush_reports(endpoint, token);
+    let _ = flush_reports(&endpoint, &token);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
@@ -520,8 +535,12 @@ pub(crate) fn run_once() -> i32 {
     if client_state.next_attempt_at > now {
         return 0;
     }
-    let fetched = match fetch_manifest(endpoint, token, &fingerprint, client_state.etag.as_deref())
-    {
+    let fetched = match fetch_manifest(
+        &endpoint,
+        &token,
+        &fingerprint,
+        client_state.etag.as_deref(),
+    ) {
         Ok(value) => value,
         Err(_) => {
             let _ = plan_after_fetch_error(&load_managed_state());
@@ -670,7 +689,7 @@ pub(crate) fn run_once() -> i32 {
     for deployment_report in &mut reports {
         deployment_report.device_fingerprint = fingerprint.clone();
     }
-    let report_failed = enqueue_reports(reports).is_err() || !flush_reports(endpoint, token);
+    let report_failed = enqueue_reports(reports).is_err() || !flush_reports(&endpoint, &token);
     if apply_failed || report_failed {
         client_state.failure_count = client_state.failure_count.saturating_add(1);
         client_state.next_attempt_at =

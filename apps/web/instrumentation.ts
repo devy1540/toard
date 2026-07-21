@@ -8,6 +8,11 @@ export async function register(): Promise<void> {
   if (retentionSchedulerEligible(process.env)) startUsageRetentionCleanup();
   const { startRollupCoordinator } = await import("./lib/rollup-coordinator");
   startRollupCoordinator();
+  const {
+    startTeamAttributionWorker,
+    teamAttributionSchedulerEligible,
+  } = await import("./lib/team-attribution");
+  if (teamAttributionSchedulerEligible(process.env)) startTeamAttributionWorker();
   const { toolDeploymentExperimentalEnabled } = await import("./lib/tool-deployment-feature");
   if (toolDeploymentExperimentalEnabled()) {
     const { startToolRolloutCoordinator } = await import("./lib/tool-rollout-coordinator");

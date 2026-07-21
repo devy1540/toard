@@ -36,7 +36,7 @@ function recordingDb(): ToolDeploymentDb & { calls: Call[]; released: boolean } 
 
 test("migration은 version, 정책, 개인 선택, report, audit 관계를 만든다", () => {
   const sql = readFileSync(
-    new URL("../../../migrations/1700000033_tool_deployment.sql", import.meta.url),
+    new URL("../../../migrations/1700000045_tool_deployment.sql", import.meta.url),
     "utf8",
   );
 

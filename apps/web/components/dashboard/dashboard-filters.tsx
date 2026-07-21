@@ -4,8 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  calendarDateToDateKey,
+  calendarRangeToDateKeys,
+  dateKeysToCalendarRange,
+  type CalendarRange,
+} from "@/lib/date-range";
 import {
   DEFAULT_PERIOD,
   INTRADAY_BUCKETS,
@@ -14,6 +19,7 @@ import {
   parseFilters,
 } from "@/lib/period";
 import type { ProviderOption } from "@/lib/providers";
+import { DateRangePicker } from "./date-range-picker";
 import { DashboardToolbar } from "./dashboard-toolbar";
 import type { FeatureStatus } from "./feature-status-badge";
 
@@ -109,6 +115,7 @@ export function DashboardFilters({
   const [showCustom, setShowCustom] = useState(isCustom);
   const [from, setFrom] = useState(sp.get("from") ?? "");
   const [to, setTo] = useState(sp.get("to") ?? "");
+  const draftRange = useMemo(() => dateKeysToCalendarRange(from, to), [from, to]);
 
   // 기기 타임존은 클라이언트에서만 알 수 있다 — SSR 마크업과의 hydration 불일치를 피해 마운트 후 해석
   const [deviceTz, setDeviceTz] = useState<string | null>(null);
@@ -160,6 +167,17 @@ export function DashboardFilters({
   const applyCustom = () => {
     if (!from || !to) return;
     push({ period: "custom", from, to, bucket: from === to && isIntradayBucket(bucketParam) ? bucketParam : null });
+  };
+
+  const selectCustomRange = (range: CalendarRange | undefined) => {
+    const keys = calendarRangeToDateKeys(range);
+    if (keys) {
+      setFrom(keys.from);
+      setTo(keys.to);
+      return;
+    }
+    setFrom(range?.from ? calendarDateToDateKey(range.from) : "");
+    setTo("");
   };
 
   const filterControls = (
@@ -241,22 +259,12 @@ export function DashboardFilters({
 
       {showCustom && (
         <div className="flex flex-wrap items-center gap-1">
-          <Input
-            type="date"
-            value={from}
-            max={to || undefined}
-            onChange={(e) => setFrom(e.target.value)}
-            className="h-8 w-auto"
-            aria-label={t("filters.startDate")}
-          />
-          <span className="text-muted-foreground text-sm">~</span>
-          <Input
-            type="date"
-            value={to}
-            min={from || undefined}
-            onChange={(e) => setTo(e.target.value)}
-            className="h-8 w-auto"
-            aria-label={t("filters.endDate")}
+          <DateRangePicker
+            range={draftRange}
+            onSelect={selectCustomRange}
+            locale={locale}
+            ariaLabel={t("filters.dateRange")}
+            placeholder={t("filters.selectDateRange")}
           />
           <Button size="sm" onClick={applyCustom} disabled={!from || !to}>
             {t("filters.apply")}

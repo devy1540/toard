@@ -27,7 +27,7 @@
 - `packages/core/src/tool-catalog.ts`: 도메인 타입, 입력 검증, 검색 필터, 인벤토리 설치 상태 계산.
 - `packages/core/src/tool-catalog.test.ts`: 위 순수 함수의 경계값과 보안 규칙.
 - `packages/core/src/index.ts`: 새 도메인 export.
-- `migrations/1700000032_tool_catalog.sql`: 워크스페이스 카탈로그 테이블과 인덱스.
+- `migrations/1700000044_tool_catalog.sql`: 워크스페이스 카탈로그 테이블과 인덱스.
 - `apps/web/lib/tool-catalog-public.ts`: 공식 원본을 확인한 읽기 전용 공개 항목.
 - `apps/web/lib/tool-catalog.ts`: DB row mapping, 목록·상세·작성자 수정·관리자 상태 변경, 공개/DB 병합.
 - `apps/web/lib/tool-catalog.test.ts`: repository SQL, 권한, 병합, migration 계약.
@@ -190,7 +190,7 @@ git commit -m "feat(library): 도구 카탈로그 도메인 추가"
 ### Task 2: PostgreSQL migration and workspace repository
 
 **Files:**
-- Create: `migrations/1700000032_tool_catalog.sql`
+- Create: `migrations/1700000044_tool_catalog.sql`
 - Create: `apps/web/lib/tool-catalog.ts`
 - Create: `apps/web/lib/tool-catalog.test.ts`
 
@@ -207,7 +207,7 @@ import test from "node:test";
 import { createToolCatalogItemWithDb, moderateToolCatalogItemWithDb } from "./tool-catalog";
 
 test("migration constrains trust and lifecycle without storing secrets", () => {
-  const sql = readFileSync(new URL("../../../migrations/1700000032_tool_catalog.sql", import.meta.url), "utf8");
+  const sql = readFileSync(new URL("../../../migrations/1700000044_tool_catalog.sql", import.meta.url), "utf8");
   assert.match(sql, /CREATE TABLE tool_catalog_items/);
   assert.match(sql, /trust_status IN \('community', 'verified'\)/);
   assert.match(sql, /lifecycle_status IN \('published', 'deprecated', 'blocked', 'archived'\)/);
@@ -297,7 +297,7 @@ Expected: all web tests PASS and TypeScript exits 0.
 - [ ] **Step 6: Commit persistence layer**
 
 ```bash
-git add migrations/1700000032_tool_catalog.sql apps/web/lib/tool-catalog.ts apps/web/lib/tool-catalog.test.ts
+git add migrations/1700000044_tool_catalog.sql apps/web/lib/tool-catalog.ts apps/web/lib/tool-catalog.test.ts
 git commit -m "feat(library): 워크스페이스 도구 저장소 추가"
 ```
 
@@ -628,7 +628,7 @@ Expected: both commands exit 0.
 
 Run: `pnpm migrate`
 
-Expected: node-pg-migrate reports `1700000032_tool_catalog` applied. Never run this against production.
+Expected: node-pg-migrate reports `1700000044_tool_catalog` applied. Never run this against production.
 
 - [ ] **Step 4: Start or reuse the local web server and verify health**
 

@@ -3,7 +3,6 @@ import { Inbox, Lock } from "lucide-react";
 import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
-import { Badge } from "@/components/ui/badge";
 import {
   Empty,
   EmptyDescription,
@@ -13,6 +12,7 @@ import {
 } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
 import { getE2eeContentStatus } from "@/lib/e2ee-history";
+import { getE2eeManagedMigrationStatus } from "@/lib/e2ee-to-managed-migration";
 import { fmtUsd } from "@/lib/format";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { formatCostForCoverage } from "@/lib/pricing";
@@ -22,6 +22,7 @@ import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { SessionDetail } from "./session-detail";
 import { E2eeHistoryClient } from "./e2ee-history-client";
+import { HistorySecurityLink } from "./history-security-link";
 import { HistorySessionList } from "./history-session-list";
 import type { HistoryListItem } from "./history-list-view";
 
@@ -48,12 +49,14 @@ interface HistorySearchParams extends DashboardSearchParams {
   session?: string;
   /** 1-기반 페이지 번호 */
   page?: string;
+  /** active E2EE 계정에서 명시적으로 고른 열람 소스 */
+  source?: "e2ee" | "managed";
 }
 
 /** 현재 필터를 보존한 /history URL — overrides 로 일부만 바꾼다(null = 제거). */
 function historyHref(sp: HistorySearchParams, overrides: Record<string, string | null>): string {
   const p = new URLSearchParams();
-  for (const k of ["period", "provider", "from", "to", "page", "session"] as const) {
+  for (const k of ["period", "provider", "from", "to", "page", "session", "source"] as const) {
     const v = sp[k];
     if (v) p.set(k, v);
   }
@@ -104,17 +107,19 @@ export default async function HistoryPage({
   const providerLabel = (key: string): string => providers.find((p) => p.key === key)?.label ?? key;
   const locale = await getLocale();
   const timezone = await getViewerTimezone();
-
   if (e2eeAllowed) {
     const contentStatus = await getE2eeContentStatus(userId);
-    if (contentStatus.state !== "off") {
-      return (
-        <E2eeHistoryClient
-          providers={providers}
-          timezone={timezone}
-          previewBadgeLabel={navT("badge.preview")}
-        />
-      );
+    if (contentStatus.state === "active") {
+      const migrationStatus = await getE2eeManagedMigrationStatus(userId);
+      if (migrationStatus.state !== "complete") {
+        return (
+          <E2eeHistoryClient
+            providers={providers}
+            timezone={timezone}
+            previewBadgeLabel={navT("badge.preview")}
+          />
+        );
+      }
     }
   }
 
@@ -122,8 +127,10 @@ export default async function HistoryPage({
   if (sp.session) {
     return (
       <div className="space-y-6">
-        <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
-        <Badge variant="outline">{t("history.legacyPrivacyNote")}</Badge>
+        <div className="flex items-center gap-3">
+          <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
+          <HistorySecurityLink label={t("history.securityInfo")} className="ml-auto" />
+        </div>
         <SessionDetail
           userId={userId}
           sessionKey={sp.session}
@@ -147,7 +154,9 @@ export default async function HistoryPage({
   if (!enabled) {
     return (
       <div className="space-y-6">
-        <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
+        <div className="flex items-center gap-3">
+          <PageTitle title={t("history.title")} badgeLabel={navT("badge.preview")} />
+        </div>
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">
@@ -204,12 +213,7 @@ export default async function HistoryPage({
         timezone={timezone}
         title={t("history.title")}
         statusBadge={{ status: "preview", label: navT("badge.preview") }}
-        trailing={
-          <span className="text-muted-foreground flex items-center gap-1.5 text-xs">
-            <Lock className="size-3.5" />
-            {t("history.legacyPrivacyNote")}
-          </span>
-        }
+        trailing={<HistorySecurityLink label={t("history.securityInfo")} />}
       />
 
       {totalSessions === 0 ? (

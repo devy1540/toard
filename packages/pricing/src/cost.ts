@@ -2,6 +2,15 @@ import { resolvePricing, resolvePricingRevisions } from "./aliases";
 import type { CostMode, CostResolution, PricingMap, PricingRevision, PricingSchedule } from "./types";
 
 const TIER_THRESHOLD = 200_000;
+const CODEX_AUTO_REVIEW_MODELS = [
+  ["2026-04-23", "gpt-5.5"],
+  ["2026-03-05", "gpt-5.4"],
+  ["2026-02-05", "gpt-5.3-codex"],
+  ["2025-12-11", "gpt-5.2-codex"],
+  ["2025-11-13", "gpt-5.1-codex"],
+  ["2025-09-15", "gpt-5-codex"],
+  ["2025-08-07", "gpt-5"],
+] as const;
 
 /**
  * 구간 누적 비용 (ccusage tiered_cost): 처음 200k 는 기본가, 초과분만 차등가.
@@ -70,9 +79,17 @@ export function resolveCostAt(
   args: Omit<ResolveCostArgs, "pricing"> & {
     occurredAt: Date;
     schedule: PricingSchedule;
+    providerKey?: string | null;
+    logAdapter?: string | null;
   },
 ): CostResolution {
-  const revisions = resolvePricingRevisions(args.model, args.schedule);
+  const occurredOn = args.occurredAt.toISOString().slice(0, 10);
+  const pricingModel = args.model === "codex-auto-review"
+    ? CODEX_AUTO_REVIEW_MODELS.find(([releasedOn]) => occurredOn >= releasedOn)?.[1] ?? "gpt-5"
+    : args.model == null && args.providerKey === "codex" && args.logAdapter === "codex"
+      ? "gpt-5"
+      : args.model;
+  const revisions = resolvePricingRevisions(pricingModel, args.schedule);
   let selected: PricingRevision | undefined;
   for (const revision of revisions ?? []) {
     const withinValidity = revision.validUntil == null || args.occurredAt < revision.validUntil;
@@ -92,6 +109,7 @@ export function resolveCostAt(
   return {
     costUsd: resolveCost({
       ...costArgs,
+      model: pricingModel,
       pricing: new Map([[selected.modelId, selected.pricing]]),
       // FinalizedUsageEvent의 provenance는 선택한 revision이므로 제공 비용으로 덮지 않는다.
       mode: "calculate",

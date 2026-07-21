@@ -1,0 +1,45 @@
+# Final remediation Task 1 report
+
+## RED
+
+- `managed-user-keys.test.ts`에 같은 key version에서 registry-resolvable active 우선, active가 해석되지 않을 때만 deterministic retiring fallback을 추가했다.
+- 같은 테스트에 신규 UCK가 distribution advisory lock → 최신 durable `provider_migration_started` target 조회 → target wrap → insert 순서를 따르고, target registry 누락 때 old provider로 fallback하지 않는 회귀를 추가했다.
+- `content-encryption-readiness.test.ts`에 active/pending snapshot fingerprint가 현 registry에 없으면 close하고, retiring-only old fingerprint는 허용하며 aggregate/snapshot malformed mismatch를 close하는 회귀를 추가했다.
+- `toard-admin.test.ts`에 target canary가 started audit보다 앞서고 started audit transaction에서 lock → actor validation → audit insert 순서임을 추가했다.
+- 최초 RED 실행은 workspace의 pnpm 11이 pnpm 9 lockfile 설정을 거부해 테스트 실행 전 중단됐다. 같은 source test는 의존성 복구 전 readiness 회귀가 기대대로 실패함을 확인했고, 이후 pinned `pnpm@9.15.0` frozen install로 환경만 복구했다. 구현 전 추가한 readiness 회귀는 `MANAGED_KEY_DISTRIBUTION_UNRESOLVABLE`/`MANAGED_KEY_DISTRIBUTION_INVALID` 부재로 실패했다.
+
+## Design invariants
+
+1. Durable write provider fence는 migration profile의 존재가 아니라 마지막 committed `provider_migration_started` audit의 `(provider,fingerprint)`다.
+2. UCK writer와 started audit은 동일한 `lock_managed_content_key_distribution()` transaction lock으로 직렬화한다. start 전 writer는 old row를 commit하고 enumeration에 보이며, start 뒤 writer는 target wrapper만 만든다.
+3. fence target이 current registry에 없으면 old active로 되돌아가지 않고 fail-closed한다. 따라서 abort 후 target profile 유지 또는 reverse migration이 필요하다.
+4. 동일 version read는 resolvable active를 먼저 쓴다. active 자체가 registry-unresolvable일 때만 created_at/id 순서의 resolvable retiring 후보를 사용하며, active unwrap 오류는 fallback 사유가 아니다.
+5. readiness는 `content_encryption_status` count와 `managed_content_key_distribution` snapshot의 exact aggregate를 검사하고, 모든 active/pending identity의 current registry resolution을 요구한다. retiring old identity는 제거 후에도 허용한다.
+6. target wrap/unwrap canary health는 started fence 및 rewrap enumeration 전에 필수이며 zero-wrapper cutover에서도 생략하지 않는다.
+
+## GREEN evidence
+
+- `npx --yes pnpm@9.15.0 --filter @toard/web exec node --import tsx --test 'lib/key-management/*.test.ts'` — 124 passed.
+- `npx --yes pnpm@9.15.0 --filter @toard/web exec node --import tsx --test lib/managed-user-keys.test.ts lib/content-encryption-readiness.test.ts lib/encryption-admin-status.test.ts` — 51 passed.
+- `TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test scripts/toard-admin.test.ts` — 14 passed.
+- `TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test scripts/provider-rewrap.integration.test.ts scripts/provider-migration-audit.integration.test.ts scripts/managed-key-distribution-migration.integration.test.ts scripts/content-key-operations-migration.integration.test.ts` — 4 PostgreSQL/Docker integrations passed, including old-writer/start ordering and target-only restart writer.
+- `npx --yes pnpm@9.15.0 --filter @toard/web typecheck` — passed.
+
+## Concerns
+
+- Shell-default pnpm is 11.9.0 while the repository pins pnpm 9.15.0. It attempts a frozen reinstall and rejects the lockfile override shape; verification commands use `npx --yes pnpm@9.15.0` to match the repository pin.
+- The target-only PostgreSQL regression uses an injected deterministic test provider. No cloud credential or real external KMS activation was created or used; production activation still requires the separately configured real target canary.
+
+## Review fix
+
+- Independent review P1: 일반 사용자 RLS transaction이 `content_key_security_events`를 직접 조회하면 provider migration audit policy 때문에 fence가 null이 되는 것을 확인했다. Migration 40은 fixed `search_path` SECURITY DEFINER `latest_managed_content_write_fence()`를 추가하고 provider/fingerprint 두 필드만 반환한다. PUBLIC execute를 revoke하고 `toard_app`만 execute할 수 있게 했으며, writer는 distribution lock 뒤 이 함수만 조회한다.
+- Independent review P1: `created_at`은 transaction 시작 시각이므로 lock 획득 순서와 역전될 수 있다. migration 40은 advisory lock 아래 직렬화된 `provider_migration_started.id DESC`만 canonical fence revision으로 사용한다.
+- PostgreSQL regression은 (a) 일반 writer가 active=old/migration=target registry에서 target wrapper를 만들고 audit row/actor는 보지 못함, (b) 먼저 BEGIN한 transaction이 나중에 lock을 얻어 더 높은 id target을 기록하면 subsequent writer가 그 target을 선택함을 검증한다.
+- Review-fix verification: focused unit 175개, 관련 PostgreSQL/CLI integration 26개, migration 40 SQL/RLS integration, release/Helm tests, workspace typecheck 모두 통과했다.
+
+## 2nd review fix
+
+- 실제 `NOSUPERUSER NOBYPASSRLS` migration owner에서 `FORCE RLS`가 SECURITY DEFINER function에도 적용되어, 기존 migration 40 fence SELECT가 0행을 반환함을 PostgreSQL integration으로 재현했다.
+- Migration 40은 `pg_catalog.pg_class.relowner`를 `pg_catalog.pg_get_userbyid`로 정확한 role name으로 바꾼 뒤 `current_user`와 일치할 때만 허용하는 `content_key_security_events_fence_owner_select` 정책을 추가했다. role membership이나 app role grant로 넓히지 않았고, app의 audit/actor 직접 조회는 계속 0행이다.
+- 같은 integration에서 schema, audit table, fence function을 모두 해당 non-superuser owner가 소유하게 하고, `toard_app` 함수 호출은 target identity를 받고 신규 writer는 target wrapper를 만든다는 것을 확인했다. Down migration은 fence function과 추가 policy를 함께 제거한다.
+- 2차 review verification: `test:migrations` 41개, 관련 web unit 175개, 전체 workspace typecheck가 모두 통과했다.

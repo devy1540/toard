@@ -101,8 +101,7 @@ case ":$PATH:" in
     ;;
 esac
 echo ""
-echo "자격 증명 설정 → ~/.toard/credentials:"
-echo "  agent_key=<ingest_token>"
-echo "  endpoint=https://toard.example.com/api"
+echo "서버의 설정 → 컴퓨터 연결에서 실행한 경우 이 서버 target은 이어서 자동 등록됩니다."
+echo "바이너리만 직접 설치했다면 서버가 제공하는 install.sh 명령을 실행해 target을 등록하세요."
 echo ""
 echo "설정 후 진단: toard-shim doctor"

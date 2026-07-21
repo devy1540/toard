@@ -164,6 +164,27 @@ test("migration 29는 과거 가격 후보를 canonical revision과 분리한다
       `),
       /pricing_history_one_active_job/,
     );
+
+    const legacyMigration = await readFile(
+      "migrations/1700000032_full_retention_legacy_pricing_recovery.sql",
+      "utf8",
+    );
+    await client.query(legacyMigration.split("-- Down Migration", 1)[0]);
+    const algorithmMigration = await readFile(
+      "migrations/1700000033_pricing_history_algorithm_version.sql",
+      "utf8",
+    );
+    await client.query(algorithmMigration.split("-- Down Migration", 1)[0]);
+    const algorithm = await client.query<{ algorithm_version: number }>(`
+      SELECT algorithm_version FROM pricing_history_jobs WHERE id = $1
+    `, [job.rows[0]?.id]);
+    assert.equal(algorithm.rows[0]?.algorithm_version, 1);
+    const algorithmColumn = await client.query<{ column_default: string }>(`
+      SELECT column_default
+      FROM information_schema.columns
+      WHERE table_name = 'pricing_history_jobs' AND column_name = 'algorithm_version'
+    `);
+    assert.match(algorithmColumn.rows[0]?.column_default ?? "", /1/);
   } finally {
     await client?.end().catch(() => undefined);
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);

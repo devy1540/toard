@@ -116,6 +116,75 @@ test("resolveCostAt은 기존 모델 alias 정규화를 사용한다", () => {
   }), { costUsd: 3, pricingRevisionId: "aliased", status: "priced" });
 });
 
+test("resolveCostAt은 codex-auto-review를 사용 날짜의 최신 Codex 모델로 해석한다", () => {
+  const schedule: PricingSchedule = new Map([
+    ["gpt-5.4", [{
+      id: "gpt-5.4-revision",
+      modelId: "gpt-5.4",
+      effectiveAt: new Date("2026-03-05T00:00:00Z"),
+      pricing: { inputPerM: 4, outputPerM: 20 },
+    }]],
+    ["gpt-5.5", [{
+      id: "gpt-5.5-revision",
+      modelId: "gpt-5.5",
+      effectiveAt: new Date("2026-04-23T00:00:00Z"),
+      pricing: { inputPerM: 5, outputPerM: 25 },
+    }]],
+  ]);
+
+  assert.deepEqual(resolveCostAt({
+    model: "codex-auto-review",
+    occurredAt: new Date("2026-03-10T00:00:00Z"),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule,
+    mode: "calculate",
+  }), { costUsd: 4, pricingRevisionId: "gpt-5.4-revision", status: "priced" });
+
+  assert.deepEqual(resolveCostAt({
+    model: "codex-auto-review",
+    occurredAt: new Date("2026-07-10T00:00:00Z"),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule,
+    mode: "calculate",
+  }), { costUsd: 5, pricingRevisionId: "gpt-5.5-revision", status: "priced" });
+});
+
+test("resolveCostAt은 모델이 없는 과거 Codex 로그만 gpt-5로 제한 해석한다", () => {
+  const schedule: PricingSchedule = new Map([["gpt-5", [{
+    id: "gpt-5-revision",
+    modelId: "gpt-5",
+    effectiveAt: new Date("2025-08-07T00:00:00Z"),
+    pricing: { inputPerM: 2, outputPerM: 10 },
+  }]]]);
+  const baseArgs = {
+    model: null,
+    occurredAt: new Date("2025-09-10T00:00:00Z"),
+    inputTokens: 1_000_000,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    schedule,
+    mode: "calculate" as const,
+  };
+
+  assert.deepEqual(resolveCostAt({
+    ...baseArgs,
+    providerKey: "codex",
+    logAdapter: "codex",
+  }), { costUsd: 2, pricingRevisionId: "gpt-5-revision", status: "priced" });
+  assert.deepEqual(resolveCostAt({
+    ...baseArgs,
+    providerKey: "openai",
+    logAdapter: null,
+  }), { costUsd: 0, pricingRevisionId: null, status: "unpriced" });
+});
+
 test("resolveCostAt은 auto 모드에서도 제공 비용 대신 revision 가격을 확정한다", () => {
   const schedule: PricingSchedule = new Map([["model-a", [
     { id: "rev-1", modelId: "model-a", effectiveAt: new Date("2026-07-01T00:00:00Z"), pricing: { inputPerM: 1, outputPerM: 1 } },

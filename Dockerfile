@@ -2,6 +2,8 @@
 # toard 프로덕션 이미지 (멀티 타깃).
 #   --target runner   → Next.js standalone 앱 (기본)
 #   --target migrator → 마이그레이션/시드 실행용 (node-pg-migrate · tsx)
+#   --target content-admin → 암호화 상태·이전 one-shot 관리 도구
+#   --target updater  → Compose 전용 서버 자가 업데이트 agent
 # pnpm 모노레포 + Next standalone. bcryptjs/pg 는 순수 JS → alpine(musl) 무리 없음.
 ARG NODE_VERSION=22-alpine
 
@@ -11,7 +13,10 @@ ARG NODE_VERSION=22-alpine
 FROM node:${NODE_VERSION} AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
-RUN npm install -g pnpm@9.15.0
+# pnpm 11의 workspace 설정(enableGlobalVirtualStore=true)이 builder 단계에서 deps 레이아웃을
+# 다시 만들려고 하지 않도록 모든 Docker stage에서 ephemeral local virtual store를 강제한다.
+ENV PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=false
+RUN npm install -g pnpm@11.15.1
 WORKDIR /app
 
 # ---- deps: 워크스페이스 의존성 설치 (매니페스트만 복사 → 캐시 최대화) ----
@@ -25,7 +30,7 @@ COPY packages/storage-postgres/package.json ./packages/storage-postgres/
 COPY packages/storage-clickhouse/package.json ./packages/storage-clickhouse/
 COPY packages/updater/package.json ./packages/updater/
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
 
 # ---- benchmark: source + deps + production build tools ----
 # HTTP SLO 참조 측정은 이 컨테이너 안에서 fixture 준비와 production Next start를 모두 실행한다.
@@ -73,7 +78,19 @@ FROM deps AS migrator
 ENV HOME=/tmp
 COPY migrations/ ./migrations/
 COPY scripts/ ./scripts/
+COPY packages/core/ ./packages/core/
 CMD ["pnpm", "migrate"]
+
+# ---- content-admin: 암호화 상태·전환 one-shot 관리 도구 ----
+# provider secret은 런타임 read-only volume/workload identity로만 주입하며 image layer에 넣지 않는다.
+FROM deps AS content-admin
+ENV HOME=/tmp \
+    NODE_ENV=production
+RUN addgroup -g 1001 -S nodejs && adduser -S toardadmin -u 1001 -G nodejs
+COPY . .
+USER toardadmin
+ENTRYPOINT ["pnpm", "toard-admin"]
+CMD ["encryption", "status"]
 
 # ---- updater: Compose 전용 서버 자가 업데이트 agent ----
 # Docker socket 권한은 웹앱이 아니라 이 선택 서비스에만 부여한다.

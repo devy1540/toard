@@ -9,8 +9,11 @@ on:
       - "shim/**"
       - "npm/**"
       - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/lib/shell-installer.ts"
+      - "apps/web/lib/shell-uninstaller.ts"
       - "apps/web/app/install.sh/**"
       - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.sh/**"
       - "apps/web/app/uninstall.ps1/**"
       - ".github/scripts/**"
       - "fixtures/usage-event.golden.json" # UsageEvent 계약 미러 테스트 (§5.6)
@@ -21,8 +24,11 @@ on:
       - "shim/**"
       - "npm/**"
       - "apps/web/lib/powershell-installer.ts"
+      - "apps/web/lib/shell-installer.ts"
+      - "apps/web/lib/shell-uninstaller.ts"
       - "apps/web/app/install.sh/**"
       - "apps/web/app/install.ps1/**"
+      - "apps/web/app/uninstall.sh/**"
       - "apps/web/app/uninstall.ps1/**"
       - ".github/scripts/**"
       - "fixtures/usage-event.golden.json"
@@ -55,11 +61,11 @@ jobs:
         run: cargo build --release
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: pnpm/action-setup@v4
       - name: install workspace dependencies
         working-directory: ${{ github.workspace }}
-        run: pnpm install --frozen-lockfile
+        run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
       - name: ensure cron fallback is available
         working-directory: ${{ github.workspace }}
         run: command -v crontab || (sudo apt-get update && sudo apt-get install -y cron)
@@ -75,14 +81,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: pnpm/action-setup@v4
       - name: install workspace dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
       - name: parse generated PowerShell installers
         shell: pwsh
         run: |
-          pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(join(process.env.RUNNER_TEMP, 'install.ps1'), buildPowerShellInstallScript('https://toard.example/api', false)); writeFileSync(join(process.env.RUNNER_TEMP, 'uninstall.ps1'), buildPowerShellUninstallScript());"
+          pnpm --filter @toard/web exec tsx -e "import { writeFileSync } from 'node:fs'; import { join } from 'node:path'; import { buildPowerShellInstallScript, buildPowerShellUninstallScript } from './lib/powershell-installer.ts'; writeFileSync(join(process.env.RUNNER_TEMP, 'install.ps1'), buildPowerShellInstallScript('https://toard.example/api', false)); writeFileSync(join(process.env.RUNNER_TEMP, 'uninstall.ps1'), buildPowerShellUninstallScript('https://toard.example/api'));"
           [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/install.ps1")) | Out-Null
           [scriptblock]::Create((Get-Content -Raw "$env:RUNNER_TEMP/uninstall.ps1")) | Out-Null
           [scriptblock]::Create((Get-Content -Raw ".github/scripts/test-shim-installer-windows.ps1")) | Out-Null
@@ -103,9 +109,24 @@ jobs:
       - name: build (release)
         working-directory: shim/rust
         run: cargo build --release
+      - name: verify Windows PE subsystems
+        shell: pwsh
+        run: |
+          function Get-PeSubsystem([string]$Path) {
+            $bytes = [IO.File]::ReadAllBytes($Path)
+            $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+            return [BitConverter]::ToUInt16($bytes, $peOffset + 4 + 20 + 68)
+          }
+          $main = Get-PeSubsystem 'shim/rust/target/release/shim.exe'
+          $background = Get-PeSubsystem 'shim/rust/target/release/toard-shim-background.exe'
+          if ($main -ne 3) { throw "expected Windows CUI subsystem 3, got $main" }
+          if ($background -ne 2) { throw "expected Windows GUI subsystem 2, got $background" }
       - name: installer E2E (Windows)
         shell: pwsh
-        run: .github/scripts/test-shim-installer-windows.ps1 -Binary shim/rust/target/release/shim.exe
+        run: >-
+          .github/scripts/test-shim-installer-windows.ps1
+          -Binary shim/rust/target/release/shim.exe
+          -BackgroundBinary shim/rust/target/release/toard-shim-background.exe
 
   check-macos:
     runs-on: macos-latest
@@ -113,10 +134,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - uses: pnpm/action-setup@v4
       - name: install workspace dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

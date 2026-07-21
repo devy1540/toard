@@ -1,12 +1,13 @@
 import { getTranslations } from "next-intl/server";
 import { redirect } from "next/navigation";
-import type { ReactNode } from "react";
 import type { LeaderRow } from "@toard/core";
-import { Activity, DollarSign, Inbox, TrendingUp, Trophy } from "lucide-react";
+import { Activity, Inbox, TrendingUp, Trophy } from "lucide-react";
 import { LeaderboardBarChart } from "@/components/charts/leaderboard-bar-chart";
 import { AutoRefresh } from "@/components/dashboard/auto-refresh";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
+import { SummaryTile } from "@/components/dashboard/summary-tile";
+import { TeamAttributionFence } from "@/components/dashboard/team-attribution-fence";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
@@ -15,6 +16,7 @@ import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
+import { findTeamAttributionFence } from "@/lib/team-attribution";
 import { cn } from "@/lib/utils";
 import { getViewerTimezone } from "@/lib/viewer-time";
 
@@ -35,26 +37,70 @@ function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
   return qs ? `${path}?${qs}` : path;
 }
 
-function SummaryTile({
-  label,
-  value,
-  sub,
-  icon,
+function TeamRankingHero({
+  totalCost,
+  coverage,
+  costLabels,
+  rankCount,
+  totalSessions,
+  topShare,
+  totalCostLabel,
+  totalCostSub,
+  rankCountLabel,
+  rankCountSub,
+  totalSessionsLabel,
+  totalSessionsSub,
+  topShareLabel,
+  topShareSub,
 }: {
-  label: string;
-  value: string;
-  sub?: string;
-  icon?: ReactNode;
+  totalCost: number;
+  coverage: LeaderRow["costCoverage"];
+  costLabels: CostLabels;
+  rankCount: number;
+  totalSessions: number;
+  topShare: string;
+  totalCostLabel: string;
+  totalCostSub: string;
+  rankCountLabel: string;
+  rankCountSub: string;
+  totalSessionsLabel: string;
+  totalSessionsSub: string;
+  topShareLabel: string;
+  topShareSub: string;
 }) {
   return (
-    <div className="border-border/70 min-w-0 border-l pl-3">
-      <div className="text-muted-foreground flex items-center gap-1.5 text-xs tracking-wide uppercase">
-        {icon}
-        {label}
+    <section className="border-border/80 bg-card rounded-xl border px-5 py-5">
+      <div className="flex flex-wrap items-end justify-between gap-6">
+        <div className="min-w-0">
+          <div className="text-muted-foreground text-xs tracking-wide uppercase">{totalCostLabel}</div>
+          <div className="mt-2 text-4xl font-semibold tracking-tight tabular-nums">
+            {formatCostForCoverage(fmtUsd(totalCost), coverage, costLabels)}
+          </div>
+          <div className="text-muted-foreground mt-1 text-xs">{totalCostSub}</div>
+        </div>
+
+        <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
+          <SummaryTile
+            label={rankCountLabel}
+            value={fmtNum(rankCount)}
+            sub={rankCountSub}
+            icon={<Trophy className="size-3.5" />}
+          />
+          <SummaryTile
+            label={totalSessionsLabel}
+            value={fmtNum(totalSessions)}
+            sub={totalSessionsSub}
+            icon={<Activity className="size-3.5" />}
+          />
+          <SummaryTile
+            label={topShareLabel}
+            value={topShare}
+            sub={topShareSub}
+            icon={<TrendingUp className="size-3.5" />}
+          />
+        </div>
       </div>
-      <div className="mt-1 truncate text-xl font-medium tabular-nums">{value}</div>
-      {sub ? <div className="text-muted-foreground mt-0.5 truncate text-xs">{sub}</div> : null}
-    </div>
+    </section>
   );
 }
 
@@ -191,6 +237,7 @@ export default async function TeamUsagePage({
 }) {
   const sp = await searchParams;
   const t = await getTranslations("org");
+  const attributionT = await getTranslations("admin");
   const period = parseDashboardPeriod(sp, await getViewerTimezone());
   const providers = await getEnabledProviders();
   const viewer = await getDashboardViewer();
@@ -198,6 +245,7 @@ export default async function TeamUsagePage({
 
   const isAdmin = viewer.role === "admin";
   if (!isAdmin) redirect(hrefWith(sp, "/org/team"));
+  const attributionFence = await findTeamAttributionFence(period.from, period.to);
 
   return (
     <div className="space-y-6">
@@ -209,7 +257,14 @@ export default async function TeamUsagePage({
         trailing={<AutoRefresh />}
       />
 
-      <AllTeamsOverview period={period} />
+      {attributionFence ? (
+        <TeamAttributionFence
+          title={attributionT("teamAttribution.readFenceTitle")}
+          description={attributionT("teamAttribution.readFenceDescription")}
+        />
+      ) : (
+        <AllTeamsOverview period={period} />
+      )}
     </div>
   );
 }
@@ -242,39 +297,29 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
     : dashboardT("costCoverage.legacyHint", { count: fmtNum(legacyCount) });
 
   return (
-    <div data-dashboard-ready="team-overview" className="contents">
+    <div data-dashboard-ready="team-overview" className="space-y-6">
       <PricingNotice coverage={coverage} />
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryTile
-          label={t("ranking.totalCost")}
-          value={formatCostForCoverage(fmtUsd(rankedCost), coverage, costLabels)}
-          sub={rankedCostSub}
-          icon={<DollarSign className="size-3.5" />}
-        />
-        <SummaryTile
-          label={t("ranking.rankCount")}
-          value={fmtNum(rows.length)}
-          sub={t("ranking.rankCountSub", { scope: scopeLabel })}
-          icon={<Trophy className="size-3.5" />}
-        />
-        <SummaryTile
-          label={t("ranking.totalSessions")}
-          value={fmtNum(rankedSessions)}
-          sub={t("ranking.totalSessionsSub")}
-          icon={<Activity className="size-3.5" />}
-        />
-        <SummaryTile
-          label={t("ranking.topShare")}
-          value={rows[0] && coverage.unpricedEvents === 0 ? shareText(rows[0].costUsd, rankedCost) : "—"}
-          sub={rows[0] ? t("ranking.topShareSub", { name: rows[0].label }) : t("ranking.noLeader")}
-          icon={<TrendingUp className="size-3.5" />}
-        />
-      </div>
+      <TeamRankingHero
+        totalCost={rankedCost}
+        coverage={coverage}
+        costLabels={costLabels}
+        rankCount={rows.length}
+        totalSessions={rankedSessions}
+        topShare={rows[0] && coverage.unpricedEvents === 0 ? shareText(rows[0].costUsd, rankedCost) : "—"}
+        totalCostLabel={t("ranking.totalCost")}
+        totalCostSub={rankedCostSub}
+        rankCountLabel={t("ranking.rankCount")}
+        rankCountSub={t("ranking.rankCountSub", { scope: scopeLabel })}
+        totalSessionsLabel={t("ranking.totalSessions")}
+        totalSessionsSub={t("ranking.totalSessionsSub")}
+        topShareLabel={t("ranking.topShare")}
+        topShareSub={rows[0] ? t("ranking.topShareSub", { name: rows[0].label }) : t("ranking.noLeader")}
+      />
 
       {rows.length > 0 ? (
         <>
-          <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,0.72fr)]">
+          <div className="grid min-w-0 gap-4 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1.08fr)]">
             <Card className="min-w-0 gap-4">
               <CardHeader>
                 <CardTitle>{t("ranking.podiumTitle", { scope: scopeLabel })}</CardTitle>

@@ -7,9 +7,9 @@
 
 # toard
 
-**여러 AI 코딩 도구의 사용량·비용을 한곳에서** — 오픈소스 · 셀프호스팅 · 멀티 프로바이더
+**AI coding-tool usage and cost in one place** — open source · self-hosted · multi-provider
 
-*Track AI coding-tool usage & cost across your org — Claude Code, Codex, and beyond.*
+*Track AI coding-tool usage and cost across your organization — Claude Code, Codex, and beyond.*
 
 [![ci](https://github.com/devy1540/toard/actions/workflows/ci.yml/badge.svg)](https://github.com/devy1540/toard/actions/workflows/ci.yml)
 [![shim-ci](https://github.com/devy1540/toard/actions/workflows/shim-ci.yml/badge.svg)](https://github.com/devy1540/toard/actions/workflows/shim-ci.yml)
@@ -18,310 +18,308 @@
 ![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[빠른 시작](#-빠른-시작) · [팀에 배포하기](#-팀에-배포하기) · [동작 방식](#-동작-방식) · [설계 문서](docs/ARCHITECTURE.md) · [배포 가이드](docs/DEPLOY.md) · [기여하기](CONTRIBUTING.md)
+[Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
 ---
 
-## ✨ 특징
+## ✨ Features
 
-- **🔌 멀티 프로바이더** — Claude Code · Codex · Gemini · Qwen 등을 하나의 대시보드로 수렴
-- **🪶 경량 수집** — shim 이 로컬 세션 파일에서 사용량과 AI 도구 활동을 pull 수집(재시작·env 설정 불필요, 기기별 구분 자동) · 멱등 dedup 내장 · OTLP push 도 experimental 로 지원
-- **🧰 AI 도구 가시성** — MCP·스킬 활동과 기기별 플러그인·스킬·MCP 설치 현황을 메타데이터만으로 확인
-- **💰 정확한 비용** — LiteLLM 가격 기반 비용 엔진: per-million + tiered(200k) + 캐시/fast 요금, 일 단위 자동 동기화
-- **👥 조직 뷰** — 조직/팀 집계 · 리더보드 · 개인 대시보드 · 관리자 패널 · 초대 기반 셀프 온보딩
-- **🗄️ 확장 가능한 저장소** — 기본은 Postgres 단일, 중규모 이상은 ClickHouse 옵트인 (`StorageBackend` 추상화)
-- **🔐 유연한 인증** — OAuth(GitHub/Google) · id/pw · open 모드를 조직 환경에 맞게 선택
-- **🏠 셀프호스팅** — Docker Compose 한 줄부터 Kubernetes/Helm 무중단 배포까지
-- **🌏 타임존 지원** — 화면은 보는 사람의 브라우저 시간대(또는 사용자 설정)로 표출되어 어디서 보든 "오늘"이 정확 — `ORG_TIMEZONE`(IANA)은 마감 집계·폴백 기준
+- **🔌 Multi-provider** — bring Claude Code, Codex, Cursor, Gemini, Qwen, and other tools into one dashboard
+- **🪶 Lightweight collection** — the shim collects usage and AI-tool activity from local session files and Cursor's minimal token hook; devices are identified automatically, idempotent deduplication is built in, and experimental OTLP push ingestion is also available
+- **🧰 AI-tool visibility** — inspect MCP and skill activity, plus plugin, skill, and MCP installation status by device, using metadata only
+- **🧭 AI utilization index** — personal dashboards provide a three-axis score relative to the individual; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
+- **💰 Accurate cost calculation** — a LiteLLM-price-based engine supports per-million, tiered 200k, cache, and fast-mode pricing with daily automatic synchronization
+- **👥 Organization views** — organization and team aggregates, leaderboards, personal dashboards, an admin panel, and invitation-based self-onboarding
+- **🗄️ Scalable storage** — PostgreSQL is the default single backend; ClickHouse is an opt-in option for medium and larger installations through the `StorageBackend` abstraction
+- **🔐 Flexible authentication** — choose OAuth with GitHub or Google, credentials, or open mode to fit your environment
+- **🏠 Self-hosted** — start with one Docker Compose command and scale to zero-downtime Kubernetes or Helm deployments
+- **🌏 Time-zone aware** — screens use the viewer's browser time zone, or their explicit user setting, so “today” is correct wherever they are; `ORG_TIMEZONE` uses an IANA identifier as the aggregation cutoff and fallback
 
-## 🧭 동작 방식
+## 🧭 How it works
 
-개발자 머신의 shim이 `claude`/`codex`를 투명하게 래핑하고, 로컬 세션 파일(`~/.claude`·`~/.codex`)에서 사용량과 AI 도구 활동 메타데이터를 pull 수집해 전송하면, toard가 비용·활동·설치 현황을 대시보드로 보여준다. (OTLP push 는 experimental)
+The shim transparently wraps `claude` and `codex` on each developer machine. It collects usage, opt-in conversation content, and AI-tool activity metadata from local session files under `~/.claude`, `~/.codex`, and `~/.cursor`, plus exact token counts from Cursor's minimal stop hook. Toad presents the resulting cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
 
 ```mermaid
 flowchart LR
-    subgraph dev["개발자 머신"]
+    subgraph dev["Developer machine"]
         CLI["claude / codex"] --> SHIM["toard shim (Rust)"]
-        FILES["~/.claude · ~/.codex<br/>세션 파일"] -. "pull" .-> SHIM
+        FILES["~/.claude · ~/.codex · ~/.cursor<br/>session files"] -. "pull" .-> SHIM
+        CURSOR["Cursor stop hook<br/>exact tokens"] -. "capture" .-> SHIM
     end
-    SHIM -- "UsageEvent(JSON) + Bearer 토큰" --> API["POST /api/v1/events"]
-    subgraph app["toard 앱 (Next.js)"]
-        API --> INGEST["ingest<br/>파싱 · 정규화 · dedup"]
-        INGEST --> PRICE["pricing<br/>LiteLLM 비용 계산"]
+    SHIM -- "UsageEvent (JSON) + bearer token" --> API["POST /api/v1/events"]
+    subgraph app["toard app (Next.js)"]
+        API --> INGEST["ingest<br/>parse · normalize · deduplicate"]
+        INGEST --> PRICE["pricing<br/>LiteLLM cost calculation"]
         PRICE --> SB["StorageBackend"]
     end
-    SB --> PG[("Postgres<br/>(기본)")]
-    SB --> CH[("ClickHouse<br/>(옵트인)")]
-    PG --> DASH["📊 대시보드<br/>조직 · 팀 · 리더보드 · 개인"]
+    SB --> PG[("PostgreSQL<br/>(default)")]
+    SB --> CH[("ClickHouse<br/>(opt-in)")]
+    PG --> DASH["📊 dashboards<br/>organization · team · leaderboard · personal"]
     CH --> DASH
 ```
 
-## 🚀 빠른 시작
+## 🚀 Quick start
 
-가장 빠른 체험은 올인원 Docker Compose(app + Postgres + 마이그레이션) — GHCR 프리빌트 이미지를 받아 바로 기동한다:
+The fastest way to try toard is the all-in-one Docker Compose stack with the app, PostgreSQL, and migrations. It pulls prebuilt images from GHCR and starts immediately:
 
 ```bash
 AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000
 ```
 
-`AUTH_SECRET` 미설정 시 즉시 에러로 실패한다(안전한 기본값 없음). 게시 이미지는 amd64·arm64 멀티아치. 소스에서 직접 빌드하려면 `--build`를 붙이고, 특정 버전 고정은 `TOARD_TAG=v…`. 팀 전체에 실제로 배포하는 절차는 [팀에 배포하기](#-팀에-배포하기) 참조.
+Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=v…` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
-### 🤖 AI 로 설치하기
+### 🤖 Install with an AI agent
 
-Claude Code 등 AI 에이전트에게 아래처럼 요청하면 설치부터 검증까지 자동으로 진행된다 — 에이전트는 [AGENTS.md](AGENTS.md) 런북(비대화형 설치 · 성공 기준 · 실패 대응)을 따른다:
+Ask an AI agent such as Claude Code to install and verify toard. The agent follows the runbook in [AGENTS.md](AGENTS.md), including non-interactive installation, success criteria, and failure handling:
 
-> https://github.com/devy1540/toard 의 AGENTS.md 를 따라 toard 를 설치하고 검증까지 해줘.
-> 관리자 이메일은 me@corp.com, 비밀번호는 내가 직접 입력할게.
+> Follow AGENTS.md in https://github.com/devy1540/toard to install and verify toard.
+> Use me@corp.com as the administrator email; I will enter the password myself.
 
-### 로컬 개발
+### Local development
 
 ```bash
 pnpm install
-cp .env.example .env          # AUTH_SECRET, BOOTSTRAP_ADMIN_EMAIL 채우기
-pnpm db:up                    # 로컬 Postgres (docker)
-pnpm migrate                  # 스키마
-pnpm seed                     # providers + admin + dev ingest token (평문 1회 출력)
+cp .env.example .env          # Fill in AUTH_SECRET and BOOTSTRAP_ADMIN_EMAIL
+pnpm db:up                    # Local PostgreSQL in Docker
+pnpm migrate                  # Apply the schema
+pnpm seed                     # Providers, admin, and a dev ingest token printed once
 pnpm dev                      # http://localhost:3000
 ```
 
-대시보드 레이아웃을 실제 데이터로 확인하려면 로컬 DB에 합성 사용량을 추가한다. `localhost`/`127.0.0.1`
-DB에서만 기본 실행된다. 새 본문 히스토리는 shim에서 암호화하는 `e2ee_v1`을 권장한다. `TOARD_CONTENT_KEK_B64`는 기존 `server_v1` 호환 본문에만 필요하며 E2EE 본문을 복호화할 수 없다. 활성화·복구·기기 승인 절차는 [E2EE 운영 런북](docs/e2ee-prompt-history-runbook.md)을 따른다:
+To inspect the dashboard layout with realistic data, seed synthetic usage into the local database. The command runs by default only against `localhost` or `127.0.0.1` databases. New content history uses server-managed `managed_v1` encryption: the server wraps user keys with the KMS, Transit provider, or local KEK selected for the installation. New E2EE setup and activation have been retired; only recovery and migration paths for existing `e2ee_v1` users remain while legacy ciphertext exists. Follow the [server-managed content encryption runbook](docs/content-encryption-runbook.md) for provider setup, cost, rotation, and recovery. `TOARD_CONTENT_KEK_B64` is required only for legacy `server_v1` content and cannot decrypt managed or E2EE content.
 
-전체 `server_v1` 전환 뒤 서버 KEK를 폐기하려면 실제 백업 정책과 같은 `TOARD_LEGACY_BACKUP_RETENTION_DAYS`를 설정한다. 관리 → 시스템은 전체 0건 확인, 백업 보존 만료, 관리자 확인, KEK 제거 상태를 순서대로 표시한다. legacy 행이 남아 있는데 KEK가 없으면 `/api/ready`가 503으로 배포를 차단한다.
+Before retiring the server KEK after a complete `server_v1` migration, set `TOARD_LEGACY_BACKUP_RETENTION_DAYS` to match the real backup policy. Admin → System reports, in order, that no legacy rows remain, the backup retention period has elapsed, an administrator has confirmed retirement, and the KEK has been removed. If legacy rows remain while the KEK is missing, `/api/ready` returns 503 and blocks deployment.
 
 ```bash
 pnpm seed:dashboard-demo --dry-run
 pnpm seed:dashboard-demo
-# open 모드로 바로 볼 때: AUTH_OPEN_USER_EMAIL=demo.viewer@toard.local pnpm dev
+# To view immediately in open mode:
+AUTH_OPEN_USER_EMAIL=demo.viewer@toard.local pnpm dev
 ```
 
-### 검증
+### Verification
 
 ```bash
-pnpm typecheck     # 전 패키지
-pnpm test          # pricing 단위 테스트 (resolveCost)
+pnpm typecheck     # All packages
+pnpm test          # Pricing unit tests, including resolveCost
 ```
 
-## 🏢 팀에 배포하기
+## 🏢 Deploying to a team
 
-toard 는 **서버 1대 + 각 개발자 머신의 shim** 구조다. 수집은 push 방식이라 서버가 개발자 머신에 접속할 일이 없고, **개발자 → 서버 방향 HTTPS 하나만 열려 있으면** 네트워크가 달라도 된다.
+toard consists of **one server plus a shim on each developer machine**. Collection is pushed from developers to the server, so the server never needs to connect to developer machines. The machines may be on different networks as long as **outbound HTTPS from each developer to the server** is available.
 
-1. **서버 배포** — [빠른 시작](#-빠른-시작)의 compose 를 개발자들이 접근 가능한 주소(사내 DNS/IP)로 올린다. 첫 접속 시 `/setup` 에서 관리자 생성. K8s/Helm 등 상세는 [배포 가이드](docs/DEPLOY.md).
-2. **링크 공유** — 관리자는 toard 주소만 팀에 공유하면 끝.
-3. **셀프 온보딩** — 각자 로그인 → **설정 → 설치 · 토큰 탭**에서 토큰 발급 + 한 줄 설치 → **"연결 확인"** 으로 수신 즉시 점검. 사용량은 본인 계정에 귀속된다([shim 설치](#-shim-설치-사용량-수집) 참조).
+1. **Deploy the server** — run the Compose stack from [Quick start](#-quick-start) at an address reachable by developers, such as an internal DNS name or IP. Create the administrator at `/setup` on first access. See the [deployment guide](docs/DEPLOY.md) for Kubernetes, Helm, and other options.
+2. **Share the link** — the administrator only needs to share the toard URL with the team.
+3. **Self-onboard** — each developer signs in, opens **Settings → Install & Token**, issues a token, runs the one-line installer, and selects **Check connection** to verify ingestion immediately. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
 
-토큰이 Bearer 로 전송되므로 공개망은 TLS 권장. 프록시 뒤라 브라우징 URL 과 수집 URL 이 다를 때만 `TOARD_PUBLIC_URL` 로 설치 스니펫에 들어갈 공개 URL 을 지정한다(미설정 시 요청 host 자동 유추).
+The token is sent as a bearer token, so TLS is recommended on public networks. Set `TOARD_PUBLIC_URL` only when the browser URL and ingestion URL differ behind a proxy; otherwise toard infers the public URL from the request host.
 
-## 📁 구조 (pnpm 모노레포)
+## 📁 Repository structure (pnpm monorepo)
 
+```text
+apps/web                    # Next.js: OTLP/JSON ingestion, dashboards, and Auth.js
+packages/core               # Domain types and StorageBackend interface, with no dependencies
+packages/ingest             # OTLP parsing, provider detection, normalization, and deduplication
+packages/pricing            # LiteLLM cost engine (resolveCost)
+packages/storage-postgres   # Default PostgreSQL StorageBackend implementation
+packages/storage-clickhouse # Opt-in ClickHouse StorageBackend implementation
+shim/                       # Rust CLI wrapper shim and install/uninstall scripts
+migrations/                 # Plain SQL migrations managed by node-pg-migrate
+clickhouse/init/            # ClickHouse schema loaded on first container startup
+scripts/                    # Seed, sample-event, and verification scripts
+docs/                       # Architecture and deployment documentation
 ```
-apps/web                    # Next.js — OTLP/JSON 수신 + 대시보드 + Auth.js
-packages/core               # 도메인 타입 + StorageBackend 인터페이스 (의존성 0)
-packages/ingest             # OTLP 파싱 · provider 식별 · 정규화 · dedup
-packages/pricing            # LiteLLM 비용 엔진 (resolveCost)
-packages/storage-postgres   # StorageBackend PG 구현 (기본)
-packages/storage-clickhouse # StorageBackend CH 구현 (옵트인)
-shim/                       # CLI 래퍼 shim (Rust) + install/uninstall 스크립트
-migrations/                 # 순수 SQL (node-pg-migrate)
-clickhouse/init/            # ClickHouse 스키마 (컨테이너 최초 기동 시 자동 로드)
-scripts/                    # seed · 샘플 이벤트 전송 · 검증 스크립트
-docs/                       # ARCHITECTURE.md · DEPLOY.md
-```
 
-## 📡 수집 테스트 (shim 없이)
+## 📡 Test ingestion without the shim
 
 ```bash
-TOARD_INGEST_TOKEN=<seed 또는 설정→설치 탭에서 발급한 토큰> pnpm exec tsx scripts/send-sample-event.ts
-# → 200 {"inserted":1,"deduped":0} — 현재 시각으로 전송되어 대시보드 "오늘"에 바로 보임
+TOARD_INGEST_TOKEN=<token from seed or Settings → Install & Token> pnpm exec tsx scripts/send-sample-event.ts
+# → 200 {"inserted":1,"deduped":0}; the event uses the current time and appears under “today”
 ```
 
-원시 OTLP 페이로드·멱등(dedup) 확인은 픽스처를 그대로 전송:
+To inspect the raw OTLP payload and idempotent deduplication, send the fixture directly:
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/logs \
-  -H "Authorization: Bearer <토큰>" \
+  -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   --data @fixtures/sample-otlp-logs.json
-# → {"inserted":1,"deduped":0}  (재실행 시 deduped:1 — 멱등)
-# 픽스처 타임스탬프는 과거 고정이라 수집은 되지만 대시보드 기본 기간(오늘)에는 표시되지 않음
+# → {"inserted":1,"deduped":0}; rerunning returns deduped:1
+# The fixture has a fixed historical timestamp, so it is ingested but does not appear in the default “today” range.
 ```
 
-## 🔗 shim 설치 (사용량 수집)
+## 🔗 Install the shim (usage collection)
 
-개발자 머신에서 `claude`/`codex` 를 래핑해 사용량과 AI 도구 활동을 toard 로 전송(OS/arch 자동 감지). 기본 도구 수집은 MCP·스킬·플러그인의 이름·시각·상태 같은 메타데이터만 다루며, **도구 인자·출력·명령·환경변수·절대 경로·원본 payload는 전송하지 않는다**. 필드, 감지 한계, 비활성화 방법은 [AI 도구 메타데이터 수집](docs/tool-metadata-collection.md)에 정리돼 있다.
+The shim wraps `claude` and `codex` on each developer machine and sends usage and AI-tool activity to toard, with automatic OS and architecture detection. Install only one shim and one scheduled collection job per user account. That installation can send independently to **any number of toard server targets**, such as work and personal servers. By default, tool collection handles only metadata such as MCP, skill, and plugin names, timestamps, and status. It **never sends tool arguments, outputs, commands, environment variables, absolute paths, or raw payloads**. See [AI tool metadata collection](docs/tool-metadata-collection.md) for fields, detection limits, and opt-out instructions.
 
-### 도구 설치와 팀 기본 배포
+### Tool installation and team defaults
 
-> **실험 기능:** 기본값은 비활성이다. 검증된 개발 환경에서만 `TOARD_TOOL_DEPLOYMENT_EXPERIMENTAL=1`로 manifest/report API와 rollout worker를 함께 활성화한다. 플래그가 꺼져 있어도 카탈로그 공유와 탐색은 사용할 수 있다.
+> **Experimental:** disabled by default. Enable manifest/report APIs and the rollout worker together with `TOARD_TOOL_DEPLOYMENT_EXPERIMENTAL=1` only in a verified development environment. Catalog sharing and discovery remain available while the flag is off.
 
-라이브러리 상세에서 개인은 이미 immutable manifest 버전이 등록된 Skill·stdio MCP를 모든 기기 또는 선택한 기기에 설치할 수 있다. 팀 리더는 같은 버전을 팀 기본으로 지정할 수 있고 구성원은 계정별로 제외할 수 있다. Plugin·HTTP MCP 자동 설치는 아직 지원하지 않으며 카탈로그 공유만 가능하다. daemon을 등록한 온라인 shim은 기본 60초 간격으로 desired manifest를 확인하며 ETag가 같으면 본문을 다시 받지 않는다. MCP가 요구하는 값은 서버 폼이 아니라 각 기기에서 다음 명령으로 입력한다.
+From a library detail page, an individual can install an already-registered immutable Skill or stdio MCP version on all or selected devices. A team leader can set the same version as a team default, and members may opt out per account. Plugin and HTTP MCP auto-installation are not supported yet; those items can only be shared in the catalog. An online shim checks desired manifests every 60 seconds. To prevent policies from different servers competing for the same local client configuration, automatic tool deployment is skipped when more than one toard target is registered. MCP secrets stay on each device and are configured with `toard-shim tool configure <slug>`.
 
-```bash
-toard-shim tool configure <slug>
-```
-
-| 보관 위치 | 저장하는 정보 | 저장하지 않는 정보 |
+| Location | Stored | Never stored |
 |---|---|---|
-| Git 저장소 | Skill/MCP/Plugin 원본과 tag/commit | 사용자 비밀값 |
-| toard 서버 | immutable manifest, tree digest, 개인·팀 desired state, 상태 report | 원본 파일 영구 복사, MCP 비밀값, GitHub installation token |
-| 사용자 기기 | 설치 파일, managed client config, local secret, last-known-good | 다른 사용자의 정책·비밀값 |
+| Git repository | Skill/MCP/Plugin source and tag or commit | User secrets |
+| toard server | Immutable manifest, tree digest, desired state, and status reports | Permanent source copy, MCP secrets, GitHub installation tokens |
+| User device | Installed files, managed client config, local secrets, and last-known-good state | Other users' policies or secrets |
 
-팀 업데이트는 사전 확인 뒤 최소 1대·10% 카나리 30분, 50% 확대 60분, 100% 순으로 진행한다. 새 버전 실패가 2대 이상이거나 시도 기기의 20% 이상이면 확대를 멈추고 last-known-good로 자동 복구한다. 환경변수 이름, 외부 host, 실행 명령, 구성 요소, 원본 저장소 identity가 늘거나 바뀌면 팀 리더 확인 전까지 배포를 멈춘다. 비상 시 `TOARD_TOOL_ROLLOUT_COORDINATOR=0`으로 서버의 자동 확대만 중단할 수 있으며 이미 설치된 로컬 도구를 삭제하지 않는다.
+Team updates progress through a minimum one-device 10% canary, then 50%, then 100%. Rollout stops and restores last-known-good when at least two devices fail or failures reach 20% of attempted devices. Permission or source-identity expansion requires a team leader to confirm again.
 
-**한 줄 설치(권장)** — 로그인 후 **설정 → 컴퓨터 연결**에서 운영체제를 확인하고 안내된 명령을 복사한다. 이 컴퓨터용 토큰은 자동 발급되며, 설치 후 첫 인증 요청까지 화면이 자동으로 확인한다. 사용량은 로컬 세션 파일 pull로 수집되므로 **Desktop·IDE·CLI 구분 없이 재시작·설정 없이 자동 수집**된다(과거 사용량도 백필).
+**One-line installer (recommended)** — after signing in, open **Settings → Connect a computer**, confirm the operating system, and copy the provided command. A token for that computer is issued automatically, and the page verifies the first authenticated request after installation. Running a command from a new server adds that target without removing existing targets. Rerunning a command for the same server updates only that target's token and policy while preserving its delivery cursor. Legacy single-server installations migrate automatically to the target structure on the first new-version installation. Claude, Codex, Gemini, and Qwen backfill historical usage from local session files. Cursor usage starts after the exact-token stop hook is installed, while existing `.cursor` transcripts are used for opt-in conversation content and MCP or skill activity.
 
 ```bash
-curl -fsSL <toard 주소>/install.sh | TOARD_INGEST_TOKEN=<내 토큰> sh
+curl -fsSL <toard URL>/install.sh | TOARD_INGEST_TOKEN=<my token> sh
 ```
 
-Windows x64에서는 같은 화면이 PowerShell 명령을 제공한다:
+On Windows x64, the same page provides a PowerShell command:
 
 ```powershell
-$env:TOARD_INGEST_TOKEN='<내 토큰>'; irm '<toard 주소>/install.ps1' | iex
+$env:TOARD_INGEST_TOKEN='<my token>'; irm '<toard URL>/install.ps1' | iex
 ```
 
-**직접 설정(고급)** — 설정 화면의 `연결된 컴퓨터 관리`에서 OS별 진단·업데이트·제거 명령과 credentials 경로를 확인한다. 릴리스는 `v*` 태그 push 시 GitHub Actions가 macOS·Linux arm64/x64와 Windows x64 바이너리를 게시한다. Windows는 GitHub Release 바이너리를 PowerShell 설치기가 직접 내려받아 SHA256을 검증하며, Windows 주기 수집 데몬 등록은 아직 지원하지 않는다.
+**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. There is no separate durable outbox, so deleting the original local session logs during an outage makes missing events for that target unrecoverable. A `v*` tag push triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
 
-**제거** — macOS·Linux는 `curl -fsSL <toard>/uninstall.sh | sh`, Windows는 `irm '<toard>/uninstall.ps1' | iex`. toard가 설치한 shim·자격증명·PATH 설정만 제거하고 기존 Claude/Codex는 유지한다.
+**Uninstall** — on macOS and Linux, run `curl -fsSL <toard>/uninstall.sh | sh`. On Windows, run `irm '<toard>/uninstall.ps1' | iex`. The uninstall command from each server removes only that server target. If other targets remain, the shim, scheduled collection, and PATH entry remain installed. Shared installation files are removed only when the final target is deleted. An uninstall command from an unregistered server is a no-op, and existing Claude/Codex installations and original session logs are always preserved.
 
-## 🧊 ClickHouse 모드 (옵트인)
+## 🧊 ClickHouse mode (opt-in)
 
-중규모 이상에서 이벤트·집계만 ClickHouse 로 (메타·인증은 항상 PG, ADR-003).
+For medium and larger installations, store events and aggregates in ClickHouse while metadata and authentication always remain in PostgreSQL, as defined by ADR-003.
 
 ```bash
-pnpm db:up                              # postgres + clickhouse 함께 기동
-STORAGE_BACKEND=clickhouse pnpm dev     # 앱이 CH 백엔드 사용
+pnpm db:up                              # Start PostgreSQL and ClickHouse
+STORAGE_BACKEND=clickhouse pnpm dev     # Use the ClickHouse backend
 ```
 
-기본 접속값: `CLICKHOUSE_URL=http://localhost:8123` · `CLICKHOUSE_USER/PASSWORD/DB=toard`. 스키마는 `clickhouse/init/` 가 컨테이너 최초 기동 시 자동 로드. 스모크 검증: `pnpm exec tsx scripts/verify-clickhouse.ts`.
+Default connection values are `CLICKHOUSE_URL=http://localhost:8123` and `CLICKHOUSE_USER/PASSWORD/DB=toard`. The schema under `clickhouse/init/` is loaded automatically when the container starts for the first time. Run `pnpm exec tsx scripts/verify-clickhouse.ts` for smoke verification.
 
-다중 해상도 rollup은 worker와 읽기를 독립적으로 운영한다. ClickHouse backend에서는 **15분 기준 rollup**과 **시간대별 1시간·1일 rollup** worker가 기본 ON이며, 각 compactor 값을 `0`·`false`·`off`로 명시할 때만 hard disable된다. 읽기 환경변수를 비워 두면 고정된 과거 목표 `T0`까지 백필·검증하고 정상 상태를 60분 누적한 뒤 자동으로 읽기를 전환한다. 정규화 `usage_events`의 97일 TTL만 기본 OFF이며 자동으로 켜지지 않는다.
+Multi-resolution rollups operate their workers and read paths independently. On the ClickHouse backend, the **15-minute base rollup** and the **time-zone-specific hourly and daily rollup** workers are enabled by default. A compactor is hard-disabled only when its value is explicitly set to `0`, `false`, or `off`. When read environment variables are unset, toard backfills and verifies data through a fixed historical target `T0`, accumulates 60 minutes of healthy operation, and then switches reads automatically. Only the 97-day TTL for normalized `usage_events` is disabled by default and never enables itself automatically.
 
-| 환경변수 | 역할 |
+| Environment variable | Purpose |
 |---|---|
-| `CLICKHOUSE_15M_V2_COMPACTOR` | 기본 ON. 가격 revision/status를 보존한 15분 기준 rollup 생성; `0`·`false`·`off`는 hard disable |
-| `CLICKHOUSE_READ_15M_V2_ROLLUP` | 미설정 시 자동. `1`은 비상 강제 ON, `0`은 비상 override OFF; 준비되지 않은 구간은 세밀한 원본으로 대체 조회 |
-| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | 기본 ON. 활성 IANA 시간대별 1시간·1일 rollup 생성; `0`·`false`·`off`는 hard disable |
-| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | 미설정 시 자동. `1`은 비상 강제 ON, `0`은 비상 override OFF; 미완료 구간은 15분 기준 rollup으로 대체 조회 |
-| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | 기본 OFF. 자동 읽기 전환과 별도로 승인한 뒤 정규화 `usage_events`에 90일 논리 보정 기간 + 7일 safety grace(물리 97일) TTL 적용 |
-| `CLICKHOUSE_READ_ROLLUP` | **deprecated alias**. 구 `usage_hourly_rollup`을 읽지 않으며 새 flag가 없을 때만 시간대별 rollup read를 강제한다. migration 후 unset |
+| `CLICKHOUSE_15M_V2_COMPACTOR` | Enabled by default. Builds the 15-minute base rollup while preserving pricing revision and status; `0`, `false`, and `off` hard-disable it. |
+| `CLICKHOUSE_READ_15M_V2_ROLLUP` | Automatic when unset. `1` is an emergency force-on override and `0` is an emergency force-off override. Unready ranges fall back to fine-grained raw data. |
+| `CLICKHOUSE_TIMEZONE_ROLLUP_COMPACTOR` | Enabled by default. Builds hourly and daily rollups for active IANA time zones; `0`, `false`, and `off` hard-disable it. |
+| `CLICKHOUSE_READ_TIMEZONE_ROLLUP` | Automatic when unset. `1` is an emergency force-on override and `0` is an emergency force-off override. Incomplete ranges fall back to the 15-minute base rollup. |
+| `CLICKHOUSE_ENFORCE_RETENTION_TTL` | Disabled by default. After explicit approval, independently of automatic read switching, applies a 90-day logical correction window plus a 7-day safety grace period, for a physical 97-day TTL, to normalized `usage_events`. |
+| `CLICKHOUSE_READ_ROLLUP` | **Deprecated alias.** It never reads the legacy `usage_hourly_rollup` and only forces time-zone rollup reads when the new flags are absent. Unset it after migration. |
 
-전환 순서는 **schema 배포 → worker 자동 백필 → T0 고정 → 원본·rollup 정합성 검증 → 60분 정상 관찰 → 15분 기준 rollup 자동 전환 → 시간대별 1시간·1일 rollup 자동 전환**이다. `T0`는 현재 시각에서 finalize 지연을 뺀 15분 경계로 한 번 고정한다. T0 이후 신규 데이터와 신규 사용자는 실시간 worker가 별도로 처리하므로 자동 전환 시간이 밀리거나 관찰 시간이 초기화되지 않는다. T0 이전에 늦게 도착한 데이터만 해당 버킷을 재계산하는 동안 관찰 누적을 멈췄다가 이어간다.
+The cutover sequence is **deploy schema → automatic worker backfill → fix T0 → verify raw and rollup consistency → observe 60 healthy minutes → switch automatically to the 15-minute base rollup → switch automatically to hourly and daily time-zone rollups**. `T0` is fixed once at the 15-minute boundary obtained by subtracting the finalize delay from the current time. Real-time workers handle new data and users after T0 separately, so they do not postpone cutover or reset the observation window. Late data before T0 pauses and then resumes observation only while the affected bucket is recomputed.
 
-앱은 기동 시 `ORG_TIMEZONE`과 `users.timezone`의 고유 값을 canonicalize·ClickHouse capability-check해 비동기로 등록한다. 신규·coverage-missing bucket만 1일은 최근 400 local days, 1시간은 최근 32 local days를 16-bucket chunk로 prewarm한다. 전역 전환 뒤 새 시간대가 등록되어도 기존 시간대의 읽기를 되돌리지 않는다. 새 시간대만 백필과 대표 hour/day 검증이 끝나 `validated_at`이 기록될 때까지 15분 기준의 정확 경로를 사용한다. 정상 조회는 요청 해상도에 맞는 rollup을 우선 사용하고, coverage가 없거나 재계산이 필요한 구간은 15분 기준 rollup 또는 세밀한 원본으로 자동 대체 조회한다.
+At startup, the app canonicalizes and capability-checks `ORG_TIMEZONE` and distinct `users.timezone` values against ClickHouse and registers them asynchronously. It prewarms only new or coverage-missing buckets: the most recent 400 local days for daily rollups and 32 local days for hourly rollups, in 16-bucket chunks. Registering a new time zone after the global cutover never rolls existing time zones back. Only the new time zone uses the exact 15-minute path until its backfill and representative hour/day verification finish and `validated_at` is recorded. Normal queries prefer the rollup matching the requested resolution and fall back automatically to the 15-minute base rollup or fine-grained raw data when coverage is absent or recomputation is required.
 
-관리자는 **관리자 → 시스템 → Rollup 운영 상태**(`/admin?tab=system`)에서 자동 전환 단계, 고정 T0, 60분 관찰 누적, 실제 조회 source, coordinator heartbeat·최근 작업, worker 진행률·ETA, adaptive batch 상한, 자동 감속 상태와 저장 규모를 확인한다. 화면은 보이는 동안 `GET /api/admin/rollups/status`를 10초마다 호출한다. pause/resume은 관리자 전용 `POST /api/admin/rollups/control`을 사용하며 앱 재시작 뒤에도 유지된다. worker는 최근 batch가 2초 이내이고 한도를 모두 사용하면 처리량을 늘리고, 10초 이상이거나 실패하면 절반으로 줄인다.
+Administrators can inspect the automatic cutover stage, fixed T0, accumulated 60-minute observation window, actual query source, coordinator heartbeat and latest work, worker progress and ETA, adaptive batch ceiling, automatic throttling state, and storage size under **Admin → System → Rollup operations** (`/admin?tab=system`). While visible, the screen calls `GET /api/admin/rollups/status` every 10 seconds. Pause and resume use the administrator-only `POST /api/admin/rollups/control` endpoint and persist across app restarts. A worker increases throughput when its latest batch finished within two seconds and used the full limit; it halves the batch size after a failure or when a batch takes at least 10 seconds.
 
-하나의 coordinator가 replica 전체에서 전역 load slot을 잡고 15분 기준 rollup, 시간대별 rollup, 정합성 검증 중 무거운 작업 하나만 실행한다. 10초마다 완료 후 다음 실행을 예약하고 각 worker는 최소 60초 간격을 지키며, 처리 가능한 상태가 120초를 넘은 worker를 우선해 서로 굶지 않게 한다. 시간대별 작업은 해당 `source_to`까지 15분 watermark가 도달하고 dirty bucket이 없을 때만 처리 가능하다. 그 전에는 오류나 정체가 아니라 `15분 기준 대기`로 표시한다. 처리 중 늦은 데이터가 들어오면 job generation이 바뀌므로 오래된 결과를 완료로 승인하지 않고 새 generation을 다시 처리한다. 반면 신규 수집 outbox는 이 load slot 밖에서 계속 전달된다.
+One coordinator holds a global load slot across all replicas and runs only one heavy operation at a time: a 15-minute base rollup task, a time-zone rollup task, or a consistency verification. It schedules the next run 10 seconds after each completion, while each worker maintains a minimum 60-second interval. Workers that have been runnable for more than 120 seconds receive priority to prevent starvation. A time-zone task is runnable only when the 15-minute watermark has reached its `source_to` and there are no dirty buckets. Until then, the UI reports `waiting for 15-minute base` rather than an error or stall. Late data arriving during processing changes the job generation, so an outdated result is not accepted as complete and the new generation is processed again. The new-ingestion outbox continues delivering outside this load slot.
 
-기존 `CLICKHOUSE_READ_ROLLUP=1` 설치는 schema를 먼저 배포하고 `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0`으로 legacy alias를 차단한 뒤 migration과 worker 상태를 확인한다. 이후 `CLICKHOUSE_READ_ROLLUP`과 새 read override를 모두 unset하면 자동 전환 상태를 사용한다. legacy 값이 남아 있으면 process당 한 번 deprecation 경고를 남기고 `/api/ready`의 `rollups.legacyFlagMigration`이 `deprecated_alias`가 된다.
+For an existing installation with `CLICKHOUSE_READ_ROLLUP=1`, deploy the schema first, then set `CLICKHOUSE_READ_TIMEZONE_ROLLUP=0` to block the legacy alias while validating migrations and worker status. Unset both `CLICKHOUSE_READ_ROLLUP` and the new read override afterward to return to automatic cutover. A remaining legacy value emits one deprecation warning per process and sets `rollups.legacyFlagMigration` in `/api/ready` to `deprecated_alias`.
 
-수집 API의 late-event cutoff와 대시보드 쿼리는 계속 90일을 논리 경계로 사용한다. 물리 raw TTL과 delivered outbox/batch만 97일 보존해 정확히 90일 경계에서 수락된 이벤트가 outbox flush와 v2 compactor를 거칠 7일의 안전 여유를 둔다. 정규화 `usage_events` TTL은 위 opt-in 플래그를 켜기 전에는 init/runtime 어디에서도 적용하지 않는다. 이와 별개로 보조 ClickHouse `raw_events` 7일, legacy hourly·15분 v2·시간대 cache 400일 TTL은 schema에서 자동 적용되고, production non-Vercel 앱은 Postgres `raw_events` 7일·완료 timezone job 7일·outbox/batch 97일·시간대 coverage hour 32 local days/day 400 local days 정리를 매일 실행한다. Postgres raw 정리는 transaction당 최대 1,000행의 참조 분리+삭제 원자성을 유지하면서 batch가 가득 차면 1초 뒤 raw-only batch를 이어가고, 짧은 batch에서 멈춘다. 오류는 60초 backoff 후 재시도하며 같은 process의 drain은 겹치지 않는다.
+The ingestion API's late-event cutoff and dashboard queries continue to use a logical 90-day boundary. The physical raw TTL and delivered outbox/batch retention are 97 days, leaving seven days for an event accepted exactly at the 90-day boundary to pass through outbox flushing and the v2 compactor. The normalized `usage_events` TTL is never applied by initialization or runtime before the opt-in flag above is enabled. Separately, the schema automatically applies a 7-day TTL to auxiliary ClickHouse `raw_events` and a 400-day TTL to the legacy hourly, 15-minute v2, and time-zone caches. In production non-Vercel deployments, the app runs daily cleanup for PostgreSQL `raw_events` after seven days, completed time-zone jobs after seven days, outbox and batch rows after 97 days, hourly time-zone coverage after 32 local days, and daily coverage after 400 local days. PostgreSQL raw cleanup atomically detaches references and deletes up to 1,000 rows per transaction. It continues with another raw-only batch after one second when a batch is full and stops after a short batch. Errors back off for 60 seconds, and drains never overlap within the same process.
 
-exact verifier는 TTL을 바꾸고 fixture를 삽입하므로 기존 localhost 서비스에 직접 실행하지 않는다. 전용 tmpfs Postgres·ClickHouse 생성/정리 명령은 [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md#92-shadow와-성능-gate)을 따른다. HTTP release gate는 자체 전용 Compose project를 만들고 정리한다.
+The exact verifier changes TTLs and inserts fixtures, so never run it against an existing localhost service. Follow the [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md#92-shadow와-성능-gate) to create and remove its dedicated tmpfs PostgreSQL and ClickHouse services. The HTTP release gate creates and cleans up its own isolated Compose project.
 
 ```bash
 pnpm benchmark:dashboard-http
 ```
 
-릴리스 성능 gate는 전용 Compose profile로 app·Postgres·ClickHouse를 실제 기동하고 Docker inspect로 합계 4 vCPU/8 GiB 제한을 확인한 뒤, app 컨테이너 안에서 credentials 로그인 production Next HTTP 응답을 측정한다. 400일·100만 event 고정 fixture는 tmpfs 기반 격리 stack에서 raw → 15분 v2 compactor → 시간대 activation/worker → durable coverage 경로를 통과한다. 다섯 시간대 조직·provider·team·개인의 8개 scenario를 각각 100회 측정하며, 모두 P50 1초 이하·P95 2초 이하일 때만 마지막에 `RELEASE_PASS`를 출력한다. 각 요청은 ClickHouse query/uncompressed/mark cache를 비우고 고유 URL로 앱 응답 cache를 우회한다. `AUTH_MODE=open`은 사용하지 않는다.
+The release performance gate starts real app, PostgreSQL, and ClickHouse containers in a dedicated Compose profile. It confirms a total limit of 4 vCPU and 8 GiB through Docker inspect, then measures authenticated production Next.js HTTP responses from inside the app container. A fixed 400-day, one-million-event fixture passes through raw ingestion, the 15-minute v2 compactor, time-zone activation and workers, and durable coverage in an isolated tmpfs stack. It measures eight organization, provider, team, and personal scenarios across five time zones 100 times each. Only when every scenario meets P50 ≤ 1 second and P95 ≤ 2 seconds does it print `RELEASE_PASS`. Each request clears ClickHouse query, uncompressed, and mark caches and uses a unique URL to bypass the app response cache. It never uses `AUTH_MODE=open`.
 
-`pnpm benchmark:dashboard-http:diagnostic`은 host localhost 측정이라 release PASS 근거가 아니며, `pnpm benchmark:rollup:micro`도 ClickHouse 단일 SQL 진단용이다. 실제 release 명령은 `pnpm benchmark:dashboard-http` 하나이며 app 1.5 vCPU/2 GiB, Postgres 1 vCPU/2 GiB, ClickHouse 1.5 vCPU/4 GiB가 아니면 fixture 생성 전에 실패한다.
+`pnpm benchmark:dashboard-http:diagnostic` measures host-localhost performance and is not evidence for a release pass. `pnpm benchmark:rollup:micro` diagnoses individual ClickHouse SQL statements only. The sole release command is `pnpm benchmark:dashboard-http`, and it fails before fixture generation unless the app has 1.5 vCPU/2 GiB, PostgreSQL has 1 vCPU/2 GiB, and ClickHouse has 1.5 vCPU/4 GiB.
 
-release wrapper는 정상·실패·중단 경로에서 전용 Compose project를 한 번만 정리한다. cleanup 자체가 실패하면 release 성공으로 종료하지 않으며, benchmark와 cleanup이 모두 실패하면 두 오류를 함께 출력한다. `SIGINT`/`SIGTERM`은 실행 중인 child에 전달하고 cleanup 완료를 기다린 뒤 각각 130/143으로 종료한다. 실제 signal 정리 회귀는 `pnpm test:benchmark-dashboard-signal`로 확인한다.
+The release wrapper cleans up its dedicated Compose project exactly once on success, failure, or interruption. A cleanup failure prevents a successful exit; when both the benchmark and cleanup fail, it reports both errors. `SIGINT` and `SIGTERM` are forwarded to the running child process, and the wrapper waits for cleanup before exiting with 130 or 143. Run `pnpm test:benchmark-dashboard-signal` to verify signal-cleanup behavior.
 
-자동 검증에서 실제 데이터 불일치가 한 번 발견되면 즉시 대체 조회로 복귀하고, 일시 연결·지연 오류는 세 번 연속일 때 복귀한다. 추가 비상 차단이 필요하면 해당 `CLICKHOUSE_READ_*`를 `0`으로 설정하고 앱만 재생성한다. 문제를 해결한 뒤 override를 unset하면 새 T0와 60분 관찰을 거쳐 자동 재전환된다. DB·ClickHouse 컨테이너와 rollup 테이블은 건드리지 않는다. TTL 적용은 읽기 전환과 별도 단계이며, 이미 TTL로 삭제된 원본은 읽기 rollback으로 복구되지 않는다.
+If automated verification finds a real data mismatch once, reads immediately fall back to the exact path. Transient connection or latency errors trigger fallback after three consecutive failures. For an additional emergency stop, set the relevant `CLICKHOUSE_READ_*` variable to `0` and recreate only the app. After fixing the problem, unset the override to repeat cutover with a new T0 and a new 60-minute observation window. Do not touch the database or ClickHouse containers or the rollup tables. TTL activation is separate from read cutover, and raw data already removed by TTL cannot be restored by rolling reads back.
 
 ```bash
 docker compose up -d --no-deps --force-recreate app
 ```
 
-세부 검증 SQL, `/api/ready`의 `healthy`/`fallback`/`disabled` 해석, 단계별 rollback은 [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md)에 정리돼 있다.
+See the [ClickHouse Exact Rollup Runbook](docs/clickhouse-exact-rollup-runbook.md) for verification SQL, interpretation of `healthy`, `fallback`, and `disabled` in `/api/ready`, and step-by-step rollback procedures.
 
-## 🔐 로그인 (인증 모드)
+## 🔐 Authentication (login modes)
 
-`AUTH_MODE` 로 조직 환경에 맞게 선택한다(ADR-007, JWT 세션). 로그인 페이지는 `/login`.
+Select the mode appropriate for the organization with `AUTH_MODE`. Authentication uses JWT sessions as defined by ADR-007, and the login page is available at `/login`.
 
-| 모드 | 동작 | 용도 |
+| Mode | Behavior | Intended use |
 |---|---|---|
-| `oauth` (기본) | GitHub/Google OAuth + **id/pw** 로그인·가입 | 외부·조직 |
-| `open` | 인증 없이 접근(첫/지정 user) — **대시보드 공개** | 내부망·단일 조직 |
+| `oauth` (default) | GitHub/Google OAuth plus credentials-based sign-in and registration | Public or organization deployments |
+| `open` | Access without authentication as the first or configured user; **the dashboard is public** | Trusted internal networks or single-organization deployments |
 
-OAuth 와 id/pw 는 함께 켤 수 있다(둘 다 `/login` 에 노출). 이메일 매직링크는 확장 예정.
+OAuth and credentials can be enabled together, and both appear on `/login`. Email magic links are planned.
 
-**id/pw (credentials)** — 기본 활성. 가입은 `/signup`(도메인 게이팅), 비번 변경/설정은 `/settings`:
+**Credentials** — enabled by default. Registration is available at `/signup` with optional domain gating, and passwords can be set or changed at `/settings`:
 
 ```bash
-AUTH_CREDENTIALS_ENABLED=true               # false 로 OAuth 전용
-ALLOWED_EMAIL_DOMAINS=example.com           # (선택) 가입 허용 도메인
-BOOTSTRAP_ADMIN_PASSWORD=...                # (선택) seed 가 admin 비번 해시 저장 → 최초 로그인
+AUTH_CREDENTIALS_ENABLED=true               # Set false for OAuth only
+ALLOWED_EMAIL_DOMAINS=example.com           # Optional registration allowlist
+BOOTSTRAP_ADMIN_PASSWORD=...                # Optional: seed stores an admin password hash
 ```
 
-비번은 bcrypt(cost 12) 해시로만 저장. 기존 OAuth 계정 이메일로는 가입 불가(계정 탈취 방지) — 대신 `/settings` 에서 비번 설정.
+Passwords are stored only as bcrypt hashes with cost 12. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.
 
-**oauth** — 자격이 있는 provider 만 활성화(미설정 dev 는 첫 user 폴백):
+**OAuth** — only providers with configured credentials are enabled. Development without a configured provider falls back to the first user:
 
 ```bash
 AUTH_SECRET=...                             # openssl rand -base64 33
 AUTH_GITHUB_ID=...  AUTH_GITHUB_SECRET=...  # GitHub OAuth App
-AUTH_GOOGLE_ID=...  AUTH_GOOGLE_SECRET=...  # Google OAuth Client (선택)
+AUTH_GOOGLE_ID=...  AUTH_GOOGLE_SECRET=...  # Optional Google OAuth client
 ```
 
-콜백 URL: `http://localhost:3000/api/auth/callback/{github|google}`.
+Callback URL: `http://localhost:3000/api/auth/callback/{github|google}`.
 
-**open** — 대시보드가 인증 없이 열리므로 **신뢰된 내부망에서만**:
+**Open mode** — because the dashboard is available without authentication, use this mode **only on a trusted internal network**:
 
 ```bash
 AUTH_MODE=open
-AUTH_OPEN_USER_EMAIL=admin@example.com      # (선택) 귀속할 user, 미지정 시 첫 user
+AUTH_OPEN_USER_EMAIL=admin@example.com      # Optional; defaults to the first user
 ```
 
-수집 ingest 토큰은 모드와 무관하게 항상 필요(수집 보안 유지).
+Ingest tokens are always required regardless of authentication mode.
 
-## ⏰ 스케줄러 (cron)
+## ⏰ Scheduler (cron)
 
-`sync-pricing`(LiteLLM 가격 일 동기화)은 **self-host 에선 별도 등록이 필요 없다** — 앱이 기동 시
-내장 스케줄러를 등록해 일 1회(조직 타임존 기준) 자동 실행한다(compose·k8s·helm·bare 공통).
-동기화 뒤 보존 범위의 가격 미확정 사용량도 자동으로 다시 계산하며 PostgreSQL·ClickHouse rollup을 함께 갱신한다.
-최근 90일 안의 과거 로그가 늦게 들어왔는데 해당 사용 날짜의 가격 revision이 없으면, toard가 LiteLLM 공개 Git 이력을 백그라운드에서 확인한다. 전체 기간의 근거가 확인된 가격만 한 번에 승격하고 비용을 다시 계산한 뒤 15분·1시간·1일 rollup을 자동 재집계한다. GitHub 장애나 요청 제한은 수집과 조회를 막지 않으며 저장된 cursor와 backoff 시각부터 자동으로 이어진다. 특정 모델이나 월을 코드에 추가하는 방식이 아니므로 6월 등 다른 과거 월과 새 모델에도 같은 흐름이 적용된다.
-관리자 조작은 필요 없고, env `PRICING_AUTO_SYNC=off` 만 인프라 비상 킬스위치로 사용한다. 외부 스케줄러를 쓰는 경우:
+`sync-pricing`, the daily LiteLLM price synchronization, requires **no separate scheduler on self-hosted deployments**. On startup, the app registers an internal scheduler that runs once per day according to the organization time zone across Compose, Kubernetes, Helm, and bare deployments. After synchronization, it automatically recalculates unresolved pricing within the retention window and refreshes both PostgreSQL and ClickHouse rollups.
 
-- **Vercel**: `vercel.json` 의 `crons` 가 자동 실행(Vercel 에선 내장 스케줄러가 자동 비활성) — `CRON_SECRET` env 설정 시 Vercel 이 `Authorization: Bearer` 를 자동 첨부.
-- **GitHub Actions**: `.github/workflows/cron.yml` 이 `secrets.APP_URL`·`secrets.CRON_SECRET` 로 엔드포인트를 호출 — 정시(UTC 18:00) 실행이 필요하면 내장 대신 이걸 쓰고 `PRICING_AUTO_SYNC=off` 로 중복을 피한다.
+When a historical log from the most recent 90 days arrives late and no pricing revision exists for its usage date, toard checks the public LiteLLM Git history in the background. It promotes only prices supported across the complete interval, recalculates costs, and automatically rebuilds 15-minute, hourly, and daily rollups. GitHub outages or rate limits never block ingestion or reads; recovery resumes from the stored cursor and backoff time. Because the process does not hard-code a particular model or month, it applies equally to other historical months and new models.
 
-`CRON_SECRET` 미설정 시 `/api/cron/*` 엔드포인트가 인증 없이 열리므로 **프로덕션에선 반드시 설정**. `recompute` 는 Mart 를 서빙에 쓸 때만 등록(현재 event-direct 라 불필요 — §4.4).
+No administrator action is required. Use `PRICING_AUTO_SYNC=off` only as an infrastructure emergency kill switch. When using an external scheduler:
 
-관리 → 시스템 탭은 모델 수·마지막 동기화·자동 복구 진행 상태를 읽기 전용으로 표시한다. 가격표에 아직 없는 모델은 다음 일 동기화에서 자동 재확인하며, 대시보드는 확정 전 비용을 부분 합계로 명시한다.
+- **Vercel** — the crons in `vercel.json` run automatically, and the internal scheduler disables itself on Vercel. When `CRON_SECRET` is configured, Vercel automatically sends it as an `Authorization: Bearer` header.
+- **GitHub Actions** — `.github/workflows/cron.yml` calls the endpoint with `secrets.APP_URL` and `secrets.CRON_SECRET`. Use this option when an exact schedule such as 18:00 UTC is required, and set `PRICING_AUTO_SYNC=off` to prevent duplicate runs.
 
-격리된 임시 PostgreSQL·ClickHouse에서 과거 가격 변경, 재시작 cursor, 비용 보정, 원본 불변성과 rollup invalidation을 함께 검증하려면 `pnpm verify:historical-pricing`을 실행한다. 이 명령은 테스트 컨테이너만 생성하고 종료 시 삭제한다.
+Without `CRON_SECRET`, `/api/cron/*` endpoints are publicly accessible, so **always configure it in production**. Register `recompute` only when serving from the mart; it is unnecessary for the current event-direct path described in section 4.4.
 
-## 🚢 배포 (Docker · Kubernetes · Helm)
+The Admin → System tab shows the model count, last synchronization, and automatic recovery progress as read-only status. Models not yet present in the price table are checked automatically during the next daily synchronization, and dashboards label pre-resolution cost as a partial total.
 
-컨테이너 배포 산출물 제공 — 상세·옵션은 [docs/DEPLOY.md](docs/DEPLOY.md).
+Run `pnpm verify:historical-pricing` to validate historical price changes, restart cursors, cost correction, raw-data immutability, and rollup invalidation together in isolated temporary PostgreSQL and ClickHouse services. The command creates only test containers and removes them on exit.
 
-- **Docker**: 멀티타깃 `Dockerfile`(runner·migrator) + `docker-compose.yml`(ClickHouse·seed 프로파일)
-- **Kubernetes**: `k8s/`(kustomize) — 무중단 롤링 + 프로브 + preStop 드레인, 마이그레이션은 앱 initContainer
-- **Helm**: `helm/toard` — values 로 이미지·시크릿·번들/외부 DB·Ingress 튜닝
-- 헬스: `/api/health`(liveness) · `/api/ready`(readiness, DB ping)
+## 🚢 Deployment (Docker · Kubernetes · Helm)
 
-## 🧠 핵심 결정
+toard provides container deployment artifacts. See [docs/DEPLOY.md](docs/DEPLOY.md) for complete instructions and options.
 
-| 영역 | 결정 | ADR |
+- **Docker** — a multi-target `Dockerfile` for runner and migrator images, plus `docker-compose.yml` with ClickHouse and seed profiles
+- **Kubernetes** — `k8s/` with Kustomize, zero-downtime rolling updates, probes, preStop draining, and migrations in an app initContainer
+- **Helm** — `helm/toard` values for images, secrets, bundled or external databases, and Ingress tuning
+- **Health endpoints** — `/api/health` for liveness and `/api/ready` for readiness with a database ping
+
+## 🧠 Key decisions
+
+| Area | Decision | ADR |
 |---|---|---|
-| 수집 | shim → 앱이 OTLP/JSON 직접 수신(Collector 없음) · 무중단 배포 필수 | ADR-001 |
-| 저장 | Postgres 단일(기본) · ClickHouse 옵트인 — `StorageBackend` 추상화 | ADR-003 |
-| 비용 | LiteLLM per-million + tiered(200k) + 캐시/fast | ADR-004 |
-| 인증 | Auth.js — OAuth·id/pw·open 모드, JWT 세션 | ADR-007 |
-| 타임존 | 표출 = 뷰어 타임존(브라우저/사용자 설정) · Mart 마감·폴백 = `ORG_TIMEZONE`(IANA, 기본 UTC) | ADR-008 |
+| Ingestion | Shim sends OTLP/JSON directly to the app without a Collector; zero-downtime deployment is required | ADR-001 |
+| Storage | PostgreSQL only by default, with opt-in ClickHouse behind the `StorageBackend` abstraction | ADR-003 |
+| Cost | LiteLLM per-million, tiered 200k, cache, and fast-mode pricing | ADR-004 |
+| Authentication | Auth.js with OAuth, credentials, and open modes using JWT sessions | ADR-007 |
+| Time zones | Display in the viewer's browser or configured user time zone; use `ORG_TIMEZONE`, an IANA identifier defaulting to UTC, for mart cutoffs and fallback | ADR-008 |
 
-자세한 근거·검토 이력은 [설계 문서](docs/ARCHITECTURE.md) §2(ADR) 참조.
+See section 2, ADRs, in the [architecture documentation](docs/ARCHITECTURE.md) for rationale and review history.
 
-## 🤝 기여 · 보안
+## 🤝 Contributing and security
 
-기여는 언제나 환영! 가이드는 [CONTRIBUTING.md](CONTRIBUTING.md), 취약점 신고는 [SECURITY.md](SECURITY.md)(비공개 advisory)를 참고.
+Contributions are always welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution guide and [SECURITY.md](SECURITY.md) to report vulnerabilities through a private advisory.
 
-## 📄 라이선스
+## 📄 License
 
 [MIT](LICENSE)

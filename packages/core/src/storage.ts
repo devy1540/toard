@@ -1,6 +1,8 @@
 // StorageBackend — 수집·대시보드가 의존하는 유일한 데이터 액세스 계약 (설계 §4.1, ADR-003).
 // 메타(users/teams) CRUD·인증은 인터페이스 밖(항상 PG). 여기는 "이벤트 저장 + 분석 쿼리"만.
 
+import type { UtilizationUsageDay, UtilizationUsageQuery } from "./utilization";
+
 export interface PeriodQuery {
   /** UTC, inclusive */
   from: Date;
@@ -234,14 +236,63 @@ export type LeaderScope = "user" | "team";
 export type TimeseriesScope = "all" | "team";
 export type LeaderOrder = "cost" | "tokens";
 
+/** 조직 dashboard가 한 번에 읽는 현재/비교 기간과 leaderboard 옵션. */
+export interface OrganizationDashboardQuery {
+  current: PeriodQuery & BucketOptions;
+  previous: PeriodQuery;
+  includeTeamLeaderboard: boolean;
+  leaderboardOrder: LeaderOrder;
+}
+
+/** 조직 dashboard 화면이 필요로 하는 집계 snapshot. */
+export interface OrganizationDashboardData {
+  overview: OverviewStats;
+  previousOverview: OverviewStats;
+  daily: DailyPoint[];
+  topUsers: LeaderRow[];
+  topTeams: LeaderRow[];
+  providerBreakdown: ProviderBreakdown[];
+}
+
 export interface SaveResult {
   inserted: number;
   deduped: number;
 }
 
-export interface UnpricedUsageModelDiagnostic {
+export type TeamAttributionPreview = {
+  events: number;
+  from: Date | null;
+  to: Date | null;
+  totalTokens: number;
+  costUsd: number;
+};
+
+export type TeamAttributionBatchResult = {
+  processed: number;
+  updated: number;
+  affectedBuckets: Date[];
+  hasMore: boolean;
+};
+
+export type TeamAttributionRange = {
+  userId: string;
+  from: Date | null;
+  to: Date | null;
+};
+
+export type TeamAttributionBatchRequest = TeamAttributionRange & {
+  teamId: string;
+  limit: number;
+  jobId: string;
+};
+
+export interface PricingRecoveryModelDiagnostic {
+  providerKey: string;
+  logAdapter: string | null;
   model: string | null;
   events: number;
+  unpricedEvents: number;
+  legacyEvents: number;
   firstAt: Date;
   lastAt: Date;
 }
@@ -254,15 +305,18 @@ export interface PricingRepairRequest {
   from: Date;
   to: Date;
   models: string[];
+  /** 모델 메타데이터가 없던 초기 Codex 로그만 gpt-5 fallback으로 선택한다. */
+  includeCodexModelFallback?: boolean;
   /** 근거 없는 과거 revision으로 계산되어 authoritative revision으로 교체할 대상. */
   replaceRevisionIds: string[];
   limit: number;
   generation: string;
 }
 
-export interface PricingRepairBatchResult {
+export interface PricingRecoveryBatchResult {
   scanned: number;
   recovered: number;
+  repricedLegacy: number;
   affectedBuckets: Date[];
   hasMore: boolean;
 }
@@ -282,6 +336,18 @@ export interface UsageReplayReconciliationResult {
   hasMore: boolean;
 }
 
+export interface UsageEventReconciliationRequest {
+  userId: string;
+  providerKey: "codex";
+  logAdapter: "codex";
+  dedupKeys: string[];
+}
+
+export interface UsageEventReconciliationResult {
+  reconciled: number;
+  affectedBuckets: Date[];
+}
+
 export interface UserUsage {
   overview: OverviewStats;
   daily: DailyPoint[];
@@ -296,23 +362,35 @@ export interface StorageBackend {
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
   saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  /** 아직 팀이 없는 이벤트 중 지정 사용자·기간에 해당하는 예상 백필 규모. */
+  previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview>;
+  /** 아직 팀이 없는 이벤트만 제한된 batch로 귀속한다. */
+  backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: Array<{ day: string }>): Promise<void>;
-  /** 보존 범위 안에서 아직 가격이 확정되지 않은 모델별 진단. */
-  getUnpricedUsageModels(
+  /** 저장소에 남은 미확정·이전 가격·비권위 revision 모델별 진단. */
+  getPricingRecoveryModels(
     from: Date,
     to: Date,
     replaceRevisionIds?: string[],
-  ): Promise<UnpricedUsageModelDiagnostic[]>;
-  /** 가격표로 확정 가능한 unpriced 이벤트만 제한된 batch로 복구한다. */
-  repairUnpricedUsage(
+  ): Promise<PricingRecoveryModelDiagnostic[]>;
+  /** 권위 가격표로 확정 가능한 가격 복구 대상을 제한된 batch로 처리한다. */
+  repairPricingUsage(
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
-  ): Promise<PricingRepairBatchResult>;
+  ): Promise<PricingRecoveryBatchResult>;
   /** 모델 문맥 전에 재생된 Codex 사용량 중 모델이 있는 원본과 정확히 일치하는 행만 보정한다. */
   reconcileCodexReplayUsage(
     request: UsageReplayReconciliationRequest,
   ): Promise<UsageReplayReconciliationResult>;
+  /** 인증 사용자 범위에서 클라이언트가 재현한 정확한 dedup key만 철회한다. */
+  reconcileUsageEvents(
+    request: UsageEventReconciliationRequest,
+  ): Promise<UsageEventReconciliationResult>;
 
   // ── 읽기 (대시보드) ──
   /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */
@@ -326,6 +404,12 @@ export interface StorageBackend {
   ): Promise<TeamMemberTimeseriesPoint[]>;
   getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage>;
   getUserInsightComparison(userId: string, q: InsightComparisonQuery): Promise<UserInsightComparison>;
+  /** AI 활용 지수 — 개인의 조직 타임존 일별 사용량 feature. */
+  getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
+  /** AI 활용 지수 — 익명 조직 집계를 만들기 위한 사용자별 일별 사용량 feature. */
+  getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]>;
+  /** 조직 dashboard의 현재·비교 기간과 breakdown을 일관된 snapshot으로 읽는다. */
+  getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData>;
   /** 내 사용량 — 버킷×모델 시계열 (스탯 뷰 스택 막대) */
   getUserModelTimeseries(userId: string, q: PeriodQuery & BucketOptions): Promise<ModelDailyPoint[]>;
   /** 내 사용량 — 시간 버킷 고정 시계열 (스탯 뷰 시간대 히트맵 — 기간의 표시 버킷과 무관) */

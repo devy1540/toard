@@ -1,4 +1,3 @@
-import { USAGE_EVENT_LOGICAL_RETENTION_DAYS } from "@toard/core";
 import { resolvePricingEntry, type ModelPricing, type PricingMap } from "@toard/pricing";
 import type { Pool, PoolClient } from "pg";
 import { getPool } from "./db";
@@ -6,15 +5,18 @@ import { dayStartUtc, getOrgTimezone } from "./org-time";
 import { invalidatePricingCache, PRICING_CACHE_VERSION_SETTING_KEY } from "./pricing";
 import {
   GitHubPricingHistorySource,
+  PricingSnapshotInvalidError,
   PricingSourceRateLimitError,
   type PricingHistoryCommitRef,
 } from "./pricing-history-source";
 
 const MAX_MODELS_PER_JOB = 20;
 const MAX_SNAPSHOTS_PER_STEP = 4;
+const INVALID_SNAPSHOT_SKIP_AFTER_FAILURES = 2;
 const SOURCE_RETRY_BASE_MS = 60_000;
 const SOURCE_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_SOURCE = "litellm-git-history";
+const HISTORY_ALGORITHM_VERSION = 2;
 
 export type HistoricalPricingJobState =
   | "pending"
@@ -27,6 +29,7 @@ export type HistoricalPricingJobState =
 
 export type HistoricalPricingJob = {
   id: string;
+  algorithmVersion: number;
   state: HistoricalPricingJobState;
   rangeFrom: Date;
   rangeTo: Date;
@@ -54,6 +57,11 @@ export type HistoricalPricingSnapshot = {
 
 export interface HistoricalPricingRepository {
   getActive(): Promise<HistoricalPricingJob | null>;
+  findCompleted(input: {
+    rangeFrom: Date;
+    rangeTo: Date;
+    models: string[];
+  }): Promise<HistoricalPricingJob | null>;
   create(input: {
     rangeFrom: Date;
     rangeTo: Date;
@@ -68,6 +76,7 @@ export interface HistoricalPricingRepository {
     at: Date,
   ): Promise<HistoricalPricingJob>;
   saveSnapshots(id: string, snapshots: HistoricalPricingSnapshot[], at: Date): Promise<HistoricalPricingJob>;
+  skipSnapshot(id: string, ref: PricingHistoryCommitRef, at: Date): Promise<HistoricalPricingJob>;
   promote(id: string, at: Date): Promise<{ insertedRevisions: number; evidenceFound: boolean }>;
   waitForSource(
     id: string,
@@ -143,6 +152,7 @@ export function historicalPricingStatusFromJob(
 
 type HistoricalPricingJobRow = {
   id: string;
+  algorithm_version: string | number;
   state: HistoricalPricingJobState;
   range_from: Date | string;
   range_to: Date | string;
@@ -189,6 +199,7 @@ function mapJob(row: HistoricalPricingJobRow): HistoricalPricingJob {
     : [];
   return {
     id: row.id,
+    algorithmVersion: Number(row.algorithm_version),
     state: row.state,
     rangeFrom: new Date(row.range_from),
     rangeTo: new Date(row.range_to),
@@ -220,7 +231,6 @@ function nextDate(date: string): string {
 
 function jobInput(
   diagnostics: HistoricalPricingDiagnostic[],
-  now: Date,
   timezone: string,
 ): { rangeFrom: Date; rangeTo: Date; models: string[] } | null {
   const usable = diagnostics
@@ -234,11 +244,8 @@ function jobInput(
   const selected = usable.filter((item) => models.includes(item.model));
   const firstAt = new Date(Math.min(...selected.map((item) => new Date(item.firstAt).getTime())));
   const lastAt = new Date(Math.max(...selected.map((item) => new Date(item.lastAt).getTime())));
-  const retentionAt = new Date(
-    now.getTime() - USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1_000,
-  );
   const rangeFrom = dayStartUtc(
-    localDate(firstAt < retentionAt ? retentionAt : firstAt, timezone),
+    localDate(firstAt, timezone),
     timezone,
   );
   const rangeTo = dayStartUtc(nextDate(localDate(lastAt, timezone)), timezone);
@@ -292,8 +299,12 @@ export async function runHistoricalPricingStepWith(
   const now = dependencies.now();
   let job = await dependencies.repository.getActive();
   if (!job) {
-    const input = jobInput(diagnostics, now, dependencies.timezone);
+    const input = jobInput(diagnostics, dependencies.timezone);
     if (!input) return { state: "no_evidence", nextAttemptAt: new Date(now.getTime() + SOURCE_RETRY_MAX_MS) };
+    const completed = await dependencies.repository.findCompleted(input);
+    if (completed) {
+      return { state: "no_evidence", nextAttemptAt: new Date(now.getTime() + SOURCE_RETRY_MAX_MS) };
+    }
     await dependencies.repository.create({ ...input, at: now });
     return { state: "listing", nextAttemptAt: now };
   }
@@ -352,7 +363,17 @@ export async function runHistoricalPricingStepWith(
       }
       const snapshots: HistoricalPricingSnapshot[] = [];
       for (const ref of refs) {
-        snapshots.push({ ref, pricing: await dependencies.source.fetchSnapshot(ref.sha) });
+        try {
+          snapshots.push({ ref, pricing: await dependencies.source.fetchSnapshot(ref.sha) });
+        } catch (error) {
+          if (!(error instanceof PricingSnapshotInvalidError)) throw error;
+          if (job.consecutiveFailures < INVALID_SNAPSHOT_SKIP_AFTER_FAILURES) throw error;
+          if (snapshots.length > 0) {
+            job = await dependencies.repository.saveSnapshots(job.id, snapshots, now);
+          }
+          await dependencies.repository.skipSnapshot(job.id, ref, now);
+          return { state: "fetching", nextAttemptAt: now };
+        }
       }
       await dependencies.repository.saveSnapshots(job.id, snapshots, now);
       return { state: "fetching", nextAttemptAt: now };
@@ -406,7 +427,7 @@ function candidatePricing(row: OpenCandidateRow): ModelPricing {
   return value;
 }
 
-const JOB_FIELDS = `id, state, range_from, range_to, models, commit_refs, list_page,
+const JOB_FIELDS = `id, algorithm_version, state, range_from, range_to, models, commit_refs, list_page,
   next_commit_index, next_attempt_at, rate_limit_reset_at, consecutive_failures, last_error`;
 
 async function updatedJob(client: Pool | PoolClient, sql: string, params: unknown[]): Promise<HistoricalPricingJob> {
@@ -428,6 +449,24 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
     return result.rows[0] ? mapJob(result.rows[0]) : null;
   }
 
+  async findCompleted(input: {
+    rangeFrom: Date;
+    rangeTo: Date;
+    models: string[];
+  }): Promise<HistoricalPricingJob | null> {
+    const result = await this.pool.query<HistoricalPricingJobRow>(
+      `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
+       WHERE state = 'completed'
+         AND range_from = $1 AND range_to = $2
+         AND models @> $3::jsonb AND models <@ $3::jsonb
+         AND algorithm_version = $4
+       ORDER BY completed_at DESC
+       LIMIT 1`,
+      [input.rangeFrom, input.rangeTo, JSON.stringify(input.models), HISTORY_ALGORITHM_VERSION],
+    );
+    return result.rows[0] ? mapJob(result.rows[0]) : null;
+  }
+
   async getStatus(): Promise<HistoricalPricingStatus> {
     const result = await this.pool.query<HistoricalPricingJobRow>(
       `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
@@ -440,11 +479,11 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
   async create(input: { rangeFrom: Date; rangeTo: Date; models: string[]; at: Date }): Promise<HistoricalPricingJob> {
     const result = await this.pool.query<HistoricalPricingJobRow>(
       `INSERT INTO pricing_history_jobs (
-         state, range_from, range_to, models, last_started_at, updated_at
-       ) VALUES ('pending', $1, $2, $3::jsonb, $4, $4)
+         algorithm_version, state, range_from, range_to, models, last_started_at, updated_at
+       ) VALUES ($5, 'pending', $1, $2, $3::jsonb, $4, $4)
        ON CONFLICT DO NOTHING
        RETURNING ${JOB_FIELDS}`,
-      [input.rangeFrom, input.rangeTo, JSON.stringify(input.models), input.at],
+      [input.rangeFrom, input.rangeTo, JSON.stringify(input.models), input.at, HISTORY_ALGORITHM_VERSION],
     );
     if (result.rows[0]) return mapJob(result.rows[0]);
     const active = await this.getActive();
@@ -489,6 +528,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
     job: HistoricalPricingJob,
     snapshot: HistoricalPricingSnapshot,
     open: Map<string, OpenCandidateRow>,
+    seen: Set<string>,
   ): Promise<void> {
     const committedAt = new Date(snapshot.ref.committedAt);
     if (!Number.isFinite(committedAt.getTime())) throw new Error("invalid pricing history commit time");
@@ -518,7 +558,9 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         }
         open.delete(model);
       }
-      if (!resolved || boundary >= job.rangeTo) continue;
+      // 모델이 가격표에 처음 등장하기 직전 사용량도 비워 두지 않고 첫 확인 가격으로 보정한다.
+      const effectiveAt = seen.has(model) ? boundary : job.rangeFrom;
+      if (!resolved || effectiveAt >= job.rangeTo) continue;
       const value = resolved.pricing;
       await client.query(
         `INSERT INTO pricing_history_candidates (
@@ -544,7 +586,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
           job.id,
           model,
           resolved.modelId,
-          boundary,
+          effectiveAt,
           value.inputPerM,
           value.outputPerM,
           value.cacheReadPerM ?? null,
@@ -559,7 +601,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
       open.set(model, {
         model_id: model,
         source_model_id: resolved.modelId,
-        effective_at: boundary,
+        effective_at: effectiveAt,
         input_price_per_mtok: value.inputPerM,
         output_price_per_mtok: value.outputPerM,
         cache_read_price_per_mtok: value.cacheReadPerM ?? null,
@@ -570,6 +612,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         source_commit_sha: snapshot.ref.sha,
         source_committed_at: committedAt,
       });
+      seen.add(model);
     }
   }
 
@@ -601,7 +644,12 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         [id],
       );
       const open = new Map(rows.rows.map((row) => [row.model_id, row]));
-      for (const snapshot of snapshots) await this.applySnapshot(client, job, snapshot, open);
+      const seenRows = await client.query<{ model_id: string }>(
+        `SELECT DISTINCT model_id FROM pricing_history_candidates WHERE job_id = $1`,
+        [id],
+      );
+      const seen = new Set(seenRows.rows.map((row) => row.model_id));
+      for (const snapshot of snapshots) await this.applySnapshot(client, job, snapshot, open, seen);
       const nextIndex = job.nextCommitIndex + snapshots.length;
       const finished = nextIndex === job.commitRefs.length;
       if (finished) {
@@ -625,6 +673,47 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
          WHERE id = $1 AND state = 'fetching'
          RETURNING ${JOB_FIELDS}`,
         [id, nextIndex, finished, at],
+      );
+      if (!result.rows[0]) throw new Error("historical pricing job update was superseded");
+      await client.query("COMMIT");
+      return mapJob(result.rows[0]);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async skipSnapshot(
+    id: string,
+    ref: PricingHistoryCommitRef,
+    at: Date,
+  ): Promise<HistoricalPricingJob> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const locked = await client.query<HistoricalPricingJobRow>(
+        `SELECT ${JOB_FIELDS} FROM pricing_history_jobs
+         WHERE id = $1 AND state = 'fetching'
+         FOR UPDATE`,
+        [id],
+      );
+      if (!locked.rows[0]) throw new Error("historical pricing job was superseded");
+      const job = mapJob(locked.rows[0]);
+      if (job.commitRefs[job.nextCommitIndex]?.sha !== ref.sha) {
+        throw new Error("historical pricing snapshot cursor mismatch");
+      }
+      const nextIndex = job.nextCommitIndex + 1;
+      const result = await client.query<HistoricalPricingJobRow>(
+        `UPDATE pricing_history_jobs
+         SET state = CASE WHEN $3 THEN 'promoting' ELSE 'fetching' END,
+             next_commit_index = $2, consecutive_failures = 0,
+             next_attempt_at = NULL, rate_limit_reset_at = NULL,
+             last_error = 'invalid pricing snapshot skipped', updated_at = $4
+         WHERE id = $1 AND state = 'fetching'
+         RETURNING ${JOB_FIELDS}`,
+        [id, nextIndex, nextIndex === job.commitRefs.length, at],
       );
       if (!result.rows[0]) throw new Error("historical pricing job update was superseded");
       await client.query("COMMIT");
@@ -684,7 +773,9 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
           `UPDATE pricing_repair_status
            SET generation = $1, state = 'pending', target_to = $2,
                processed_events = 0, recovered_events = 0, reconciled_events = 0,
-               remaining_unpriced_events = 0, unresolved_models = '[]'::jsonb,
+               repriced_legacy_events = 0,
+               remaining_unpriced_events = 0, remaining_legacy_events = 0,
+               unresolved_models = '[]'::jsonb,
                eligible_since = $1, next_attempt_at = $1,
                consecutive_failures = 0, last_error = NULL, updated_at = $1
            WHERE singleton`,

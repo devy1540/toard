@@ -3,11 +3,13 @@ import test from "node:test";
 import type { PricingMap } from "@toard/pricing";
 import {
   historicalPricingStatusFromJob,
+  PgPricingHistoryRepository,
   runHistoricalPricingStepWith,
   type HistoricalPricingJob,
   type HistoricalPricingRepository,
 } from "./pricing-history";
 import {
+  PricingSnapshotInvalidError,
   PricingSourceRateLimitError,
   type PricingHistoryCommitRef,
 } from "./pricing-history-source";
@@ -25,6 +27,7 @@ function commit(index: number): PricingHistoryCommitRef {
 function job(overrides: Partial<HistoricalPricingJob> = {}): HistoricalPricingJob {
   return {
     id: "job-1",
+    algorithmVersion: 2,
     state: "fetching",
     rangeFrom,
     rangeTo,
@@ -48,11 +51,17 @@ class FakeRepository implements HistoricalPricingRepository {
   events: string[] = [];
   canonicalInserts = 0;
   repairPendingCalls = 0;
+  completed: HistoricalPricingJob | null = null;
 
   constructor(public active: HistoricalPricingJob | null) {}
 
   async getActive(): Promise<HistoricalPricingJob | null> {
     return this.active;
+  }
+
+  async findCompleted(): Promise<HistoricalPricingJob | null> {
+    this.events.push("find-completed");
+    return this.completed;
   }
 
   async create(input: {
@@ -106,6 +115,23 @@ class FakeRepository implements HistoricalPricingRepository {
     assert.equal(id, "job-1");
     this.events.push(`save-snapshots:${snapshots.length}`);
     const nextCommitIndex = this.active!.nextCommitIndex + snapshots.length;
+    this.active = {
+      ...this.active!,
+      state: nextCommitIndex === this.active!.commitRefs.length ? "promoting" : "fetching",
+      nextCommitIndex,
+    };
+    return this.active;
+  }
+
+  async skipSnapshot(
+    id: string,
+    ref: PricingHistoryCommitRef,
+    at: Date,
+  ): Promise<HistoricalPricingJob> {
+    assert.equal(id, "job-1");
+    assert.equal(this.active?.commitRefs[this.active.nextCommitIndex]?.sha, ref.sha);
+    this.events.push(`skip-snapshot:${ref.sha}`);
+    const nextCommitIndex = this.active!.nextCommitIndex + 1;
     this.active = {
       ...this.active!,
       state: nextCommitIndex === this.active!.commitRefs.length ? "promoting" : "fetching",
@@ -204,6 +230,108 @@ test("전체 snapshot 전에는 canonical revision과 repair generation을 변�
   assert.deepEqual(repository.events, ["save-snapshots:4"]);
 });
 
+test("90일보다 오래된 보존 이벤트도 실제 최초 시각부터 가격 이력 job을 만든다", async () => {
+  const repository = new FakeRepository(null);
+  const fixture = dependencies(repository);
+
+  const result = await runHistoricalPricingStepWith(fixture.value, [{
+    model: "model-a",
+    events: 3,
+    firstAt: "2025-09-15T12:34:56.000Z",
+    lastAt: "2026-07-10T01:02:03.000Z",
+  }]);
+
+  assert.deepEqual(result, {
+    state: "listing",
+    nextAttemptAt: new Date("2026-07-14T00:00:00.000Z"),
+  });
+  assert.equal(repository.active?.rangeFrom.toISOString(), "2025-09-15T00:00:00.000Z");
+  assert.equal(repository.active?.rangeTo.toISOString(), "2026-07-11T00:00:00.000Z");
+});
+
+test("같은 범위와 모델을 이미 확인한 완료 job은 다시 생성하지 않는다", async () => {
+  const repository = new FakeRepository(null);
+  repository.completed = job({ state: "completed", commitRefs: [], nextCommitIndex: 0 });
+  const fixture = dependencies(repository);
+
+  const result = await runHistoricalPricingStepWith(fixture.value, [{
+    model: "model-a",
+    events: 3,
+    firstAt: "2026-06-01T12:34:56.000Z",
+    lastAt: "2026-06-30T01:02:03.000Z",
+  }]);
+
+  assert.deepEqual(result, {
+    state: "no_evidence",
+    nextAttemptAt: new Date("2026-07-14T01:00:00.000Z"),
+  });
+  assert.deepEqual(repository.events, ["find-completed"]);
+  assert.deepEqual(fixture.sourceCalls, []);
+});
+
+test("범위 중간에 처음 발견된 모델 가격은 해당 복구 범위 시작부터 적용한다", async () => {
+  const queries: Array<{ sql: string; params: unknown[] }> = [];
+  const firstPriceCommit = {
+    sha: "a".repeat(40),
+    committedAt: "2026-06-15T00:00:00.000Z",
+  };
+  const fetching = job({
+    commitRefs: [firstPriceCommit],
+    nextCommitIndex: 0,
+  });
+  const client = {
+    async query(sql: string, params: unknown[] = []) {
+      queries.push({ sql, params });
+      if (sql.includes("FROM pricing_history_jobs") && sql.includes("FOR UPDATE")) {
+        return { rows: [{
+          id: fetching.id,
+          algorithm_version: fetching.algorithmVersion,
+          state: fetching.state,
+          range_from: fetching.rangeFrom,
+          range_to: fetching.rangeTo,
+          models: fetching.models,
+          commit_refs: fetching.commitRefs,
+          list_page: fetching.listPage,
+          next_commit_index: fetching.nextCommitIndex,
+          next_attempt_at: null,
+          rate_limit_reset_at: null,
+          consecutive_failures: 0,
+          last_error: null,
+        }] };
+      }
+      if (sql.includes("FROM pricing_history_candidates")) return { rows: [] };
+      if (sql.includes("UPDATE pricing_history_jobs") && sql.includes("RETURNING")) {
+        return { rows: [{
+          id: fetching.id,
+          algorithm_version: fetching.algorithmVersion,
+          state: "promoting",
+          range_from: fetching.rangeFrom,
+          range_to: fetching.rangeTo,
+          models: fetching.models,
+          commit_refs: fetching.commitRefs,
+          list_page: 0,
+          next_commit_index: 1,
+          next_attempt_at: null,
+          rate_limit_reset_at: null,
+          consecutive_failures: 0,
+          last_error: null,
+        }] };
+      }
+      return { rows: [], rowCount: 1 };
+    },
+    release() {},
+  };
+  const pool = { connect: async () => client };
+
+  await new PgPricingHistoryRepository(pool as never).saveSnapshots(fetching.id, [{
+    ref: firstPriceCommit,
+    pricing: pricing(),
+  }], new Date("2026-07-14T00:00:00.000Z"));
+
+  const candidateInsert = queries.find(({ sql }) => sql.includes("INSERT INTO pricing_history_candidates"));
+  assert.equal((candidateInsert?.params[3] as Date).toISOString(), rangeFrom.toISOString());
+});
+
 test("promotion은 revision·cache version·repair pending을 한 transaction으로 확정한다", async () => {
   const repository = new FakeRepository(job({ state: "promoting", nextCommitIndex: 6 }));
   const fixture = dependencies(repository);
@@ -249,6 +377,52 @@ test("중단 후에는 저장된 cursor부터 최대 4개 snapshot만 재개한�
   assert.deepEqual(fixture.sourceCalls, [commit(3).sha, commit(4).sha, commit(5).sha]);
   assert.equal(repository.active?.state, "promoting");
   assert.equal(repository.active?.nextCommitIndex, 6);
+});
+
+test("복구 불가능한 immutable snapshot은 직전 가격을 유지하며 다음 cursor로 진행한다", async () => {
+  const repository = new FakeRepository(job({ consecutiveFailures: 2 }));
+  const broken = commit(2);
+  const fixture = dependencies(repository, {
+    fetchSnapshot: async (sha) => {
+      if (sha === broken.sha) throw new PricingSnapshotInvalidError(sha);
+      return pricing();
+    },
+  });
+
+  const result = await runHistoricalPricingStepWith(fixture.value, []);
+
+  assert.deepEqual(result, {
+    state: "fetching",
+    nextAttemptAt: new Date("2026-07-14T00:00:00.000Z"),
+  });
+  assert.equal(repository.active?.state, "fetching");
+  assert.equal(repository.active?.nextCommitIndex, 3);
+  assert.deepEqual(repository.events, [
+    "save-snapshots:1",
+    `skip-snapshot:${broken.sha}`,
+  ]);
+  assert.deepEqual(fixture.sourceCalls, [commit(1).sha, broken.sha]);
+});
+
+test("첫 snapshot 파싱 실패는 일시적인 응답 손상을 고려해 재시도한다", async () => {
+  const repository = new FakeRepository(job());
+  const broken = commit(1);
+  const fixture = dependencies(repository, {
+    fetchSnapshot: async (sha) => {
+      throw new PricingSnapshotInvalidError(sha);
+    },
+  });
+
+  const result = await runHistoricalPricingStepWith(fixture.value, []);
+
+  assert.deepEqual(result, {
+    state: "waiting_source",
+    nextAttemptAt: new Date("2026-07-14T00:01:00.000Z"),
+  });
+  assert.equal(repository.active?.nextCommitIndex, 1);
+  assert.equal(repository.active?.consecutiveFailures, 1);
+  assert.deepEqual(repository.events, ["wait-source"]);
+  assert.deepEqual(fixture.sourceCalls, [broken.sha]);
 });
 
 test("429는 durable reset 시각을 저장하고 다음 tick으로 넘긴다", async () => {

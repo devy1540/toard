@@ -16,6 +16,7 @@ const LAUNCHD_LABEL: &str = "dev.toard.collect";
 const SYSTEMD_UNIT: &str = "toard-collect";
 const CRON_MARKER: &str = "# toard-collect";
 const WINDOWS_TASK_NAME: &str = "toard-collect";
+const WINDOWS_BACKGROUND_EXE: &str = "toard-shim-background.exe";
 
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -286,6 +287,8 @@ fn windows_run_elevated(script: &str) -> bool {
 /// UAC는 등록 권한에만 쓰며, 작업 자체는 관리자 권한으로 실행하지 않는다.
 fn windows_registration_script(exe: &str, user_sid: &str, interval: u64) -> String {
     let minutes = interval.div_ceil(60).max(1);
+    let background = windows_background_exe(exe);
+    let background = background.display().to_string();
     format!(
         r#"$ErrorActionPreference = 'Stop'
 Import-Module ScheduledTasks
@@ -322,8 +325,7 @@ Import-Module ScheduledTasks
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>{exe}</Command>
-      <Arguments>collect --quiet</Arguments>
+      <Command>{background}</Command>
     </Exec>
   </Actions>
 </Task>
@@ -332,12 +334,35 @@ $task.Task.Triggers.TimeTrigger.StartBoundary = (Get-Date).AddMinutes(1).ToStrin
 Register-ScheduledTask -TaskName '{task_name}' -Xml $task.OuterXml -Force | Out-Null
 "#,
         user_sid = xml_escape(user_sid),
-        exe = xml_escape(exe),
+        background = xml_escape(&background),
         task_name = WINDOWS_TASK_NAME,
     )
 }
 
+fn windows_background_exe(shim: &str) -> PathBuf {
+    let path = PathBuf::from(shim);
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        return parent.join(WINDOWS_BACKGROUND_EXE);
+    }
+
+    shim.rsplit_once('\\')
+        .filter(|(parent, _)| !parent.is_empty())
+        .map(|(parent, _)| PathBuf::from(format!("{parent}\\{WINDOWS_BACKGROUND_EXE}")))
+        .unwrap_or_else(|| path.with_file_name(WINDOWS_BACKGROUND_EXE))
+}
+
 fn windows_install(exe: &str, interval: u64) -> i32 {
+    let background = windows_background_exe(exe);
+    if !background.is_file() {
+        eprintln!(
+            "toard-shim: Windows 무창 수집 실행 파일이 없습니다: {}",
+            background.display()
+        );
+        return 1;
+    }
     let Some(sid) = windows_identity_sid() else {
         eprintln!("toard-shim: 현재 Windows 사용자 SID를 확인하지 못했습니다");
         return 1;
@@ -852,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_task_uses_current_user_limited_one_minute_schedule() {
+    fn windows_task_uses_background_helper_without_arguments() {
         let script = windows_registration_script(
             r"C:\Users\GA\.toard\bin\toard-shim.exe",
             "S-1-5-21-1234-5678-9012-1001",
@@ -864,8 +889,10 @@ mod tests {
         assert!(script.contains("<UserId>S-1-5-21-1234-5678-9012-1001</UserId>"));
         assert!(script.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(script.contains("<RunLevel>LeastPrivilege</RunLevel>"));
-        assert!(script.contains(r"<Command>C:\Users\GA\.toard\bin\toard-shim.exe</Command>"));
-        assert!(script.contains("<Arguments>collect --quiet</Arguments>"));
+        assert!(
+            script.contains(r"<Command>C:\Users\GA\.toard\bin\toard-shim-background.exe</Command>")
+        );
+        assert!(!script.contains("<Arguments>collect --quiet</Arguments>"));
         assert!(
             !script.contains("agent_key"),
             "예약 작업에 토큰을 넣지 않음"
@@ -877,7 +904,7 @@ mod tests {
         let script =
             windows_registration_script(r"C:\Users\A&B\<toard>\toard-shim.exe", "S-1-5-21-1&2", 61);
 
-        assert!(script.contains(r"C:\Users\A&amp;B\&lt;toard&gt;\toard-shim.exe"));
+        assert!(script.contains(r"C:\Users\A&amp;B\&lt;toard&gt;\toard-shim-background.exe"));
         assert!(script.contains("<UserId>S-1-5-21-1&amp;2</UserId>"));
         assert!(script.contains("<Interval>PT2M</Interval>"), "분 단위 올림");
     }

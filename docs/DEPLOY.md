@@ -10,19 +10,27 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 
 ## 이미지
 
-멀티 타깃 `Dockerfile` — 두 이미지:
+멀티 타깃 `Dockerfile` — 운영 이미지 네 개:
 
 | 타깃 | 용도 | 실행 |
 |---|---|---|
 | `runner` | Next.js standalone 앱 | `node apps/web/server.js` |
 | `migrator` | 마이그레이션·시드 | `pnpm migrate` / `pnpm seed` |
+| `content-admin` | 암호화 상태·전환 one-shot 도구 | `encryption status` 등 |
+| `updater` | Compose 자가 업데이트 agent | `node packages/updater/src/server.mjs` |
 
-CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`·`ghcr.io/devy1540/toard-migrate`를 자동 게시한다(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
+CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`,
+`ghcr.io/devy1540/toard-migrate`, `ghcr.io/devy1540/toard-content-admin`,
+`ghcr.io/devy1540/toard-updater`를 자동 게시한다
+(amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
 
 ```bash
 docker build --target runner   -t REG/toard:TAG .
 docker build --target migrator  -t REG/toard-migrate:TAG .
-docker push REG/toard:TAG && docker push REG/toard-migrate:TAG
+docker build --target content-admin -t REG/toard-content-admin:TAG .
+docker build --target updater -t REG/toard-updater:TAG .
+docker push REG/toard:TAG && docker push REG/toard-migrate:TAG \
+  && docker push REG/toard-content-admin:TAG && docker push REG/toard-updater:TAG
 ```
 
 헬스: `GET /api/health`(liveness, 무의존) · `GET /api/ready`(readiness, DB ping).
@@ -65,6 +73,7 @@ docker compose --profile updater up -d
 
 - **Compose 전용**: Helm/Kubernetes 배포는 이미지 태그·릴리스 관리 방식이 달라 이 updater 를 쓰지 않는다.
 - **권한 주의**: updater 는 `/var/run/docker.sock` 과 배포 디렉터리를 마운트하므로 호스트 Docker 권한과 `.env` 수정 권한을 가진다. 공개 포트를 열지 않고 Compose 내부 네트워크에서만 앱이 shared secret 으로 호출한다.
+- **배포 디렉터리**: updater 컨테이너에는 배포 디렉터리가 호스트와 같은 절대경로로 마운트된다. 반드시 `docker-compose.yml` 이 있는 디렉터리에서 `docker compose --profile updater up -d` 를 실행한다. 다른 디렉터리에서 `-f` 로 실행해야 한다면 `TOARD_COMPOSE_PROJECT_DIR` 에 호스트 배포 디렉터리의 절대경로를 지정한다.
 - **`.env` 필수**: updater 가 같은 배포 디렉터리에서 compose 를 실행하므로 `AUTH_SECRET` 같은 운영 설정은 `.env` 에 고정해 둔다. 업데이트 시 기존 값은 유지하고 `TOARD_TAG` 만 바꾼다.
 - **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패하면 updater 가 변경한 `.env` 는 되돌리지만, 이미 재시작된 컨테이너까지 자동으로 롤백하지는 않는다. 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
 - **과거 가격 revision 호환성**: `v0.15.16`부터 `[effective_at, valid_until)` 가격 구간을 읽는다. 과거 가격 자동 복구가 한 번이라도 revision을 승격한 서버는 `v0.15.15` 이하로 앱만 되돌리지 않는다. `/api/ready`의 `historicalPricingReader.minimumVersion`과 `compatible`을 먼저 확인한다. 로컬 개발 버전 `0.0.0`은 허용된다.
@@ -81,8 +90,170 @@ kubectl apply -k k8s/
 
 - 마이그레이션은 **앱 파드 initContainer**(`migrate`)가 처리 — 스키마 보장 후 앱 기동. node-pg-migrate
   락으로 멀티파드 안전. `k8s/migrate-job.yaml` 은 선택(CI·수동·시드)이라 기본 kustomization 에서 제외.
-- 외부 관리형 DB: `postgres.yaml` 을 `kustomization.yaml` 에서 빼고 Secret 의 `DATABASE_URL` 만 외부로.
+- 외부 관리형 DB: `postgres.yaml` 을 `k8s/base/kustomization.yaml` 에서 빼고 Secret 의 `DATABASE_URL` 만 외부로.
 - 접속: `kubectl -n toard port-forward svc/toard-app 3000:80` 또는 Ingress(host·TLS 조정).
+
+### OrbStack 개인 Kubernetes 런북
+
+이 경로는 개인용 `toard-personal` namespace와 공유 Cloudflare Tunnel namespace를 분리한다. 앱 Service는
+`ClusterIP`로 유지하며, Ingress·NodePort·LoadBalancer를 만들지 않는다. 배포를 시작하기 전에 GitHub Release와
+GHCR의 app/migrator 이미지가 overlay가 가리키는 버전으로 게시됐는지 확인한다.
+
+#### 1. OrbStack Kubernetes 준비
+
+OrbStack CLI 명령을 가정하지 않는다. OrbStack 앱의 **Settings > Kubernetes**에서 Kubernetes를 활성화한
+다음에만 아래를 실행한다.
+
+```bash
+kubectl config use-context orbstack
+kubectl cluster-info
+kubectl get nodes -o wide
+kubectl get storageclass
+```
+
+node가 `Ready`이고 기본 StorageClass가 표시되는지 확인한다. 기본 StorageClass가 없거나 PVC를 제공하지
+않으면 여기서 중단하고 OrbStack Kubernetes 설정을 해결한다. 이 overlay는 PostgreSQL 데이터에 10Gi PVC를
+요청한다.
+
+#### 2. toard Secret 생성 후 앱 배포
+
+Secret은 Git에 넣지 않으며 helper가 `AUTH_SECRET`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `CRON_SECRET`을
+생성해 클러스터에만 저장한다. helper는 **최초 설치 전용**이다. `toard-secrets`가 이미 있으면 stderr를
+출력하고 non-zero로 중단하며 값을 교체하지 않는다. Secret이 없어도 기존 `statefulset/postgres` 또는
+`persistentvolumeclaim/data-postgres-0`가 있으면 새 DB 비밀번호를 만들지 않고 복구 필요 메시지와 함께
+중단한다. 이 상태는 Secret 유실로 간주하고, 백업해 둔 기존 `AUTH_SECRET`, `POSTGRES_PASSWORD`,
+`DATABASE_URL`, `CRON_SECRET` 값으로 `toard-secrets`를 수동 복원해야 한다. 재적용 시에는 helper를 건너뛰어
+기존 Secret을 보존한다. 비밀번호·시크릿 회전은 별도의 변경 절차로 계획·검증해야 하며, 이 helper로 수행하지
+않는다. **Secret 생성이 성공하기 전에는 overlay를 적용해 app pod를 만들지 않는다.**
+
+```bash
+# namespace를 먼저 명시적으로 생성한다.
+kubectl apply -f k8s/overlays/orbstack-personal/namespace.yaml
+
+# 최초 설치에서만 값을 출력하지 않고 toard-personal/toard-secrets를 만든다.
+./scripts/k8s-create-toard-secret.sh
+
+# Secret 생성 성공 후에만 app·PostgreSQL 리소스를 적용한다.
+kubectl apply -k k8s/overlays/orbstack-personal
+
+kubectl -n toard-personal rollout status statefulset/postgres --timeout=5m
+kubectl -n toard-personal rollout status deployment/toard-app --timeout=10m
+kubectl -n toard-personal get pods,pvc,svc
+```
+
+`toard-app`의 모든 replica가 Ready이고 PostgreSQL PVC가 `Bound`인지 확인한다. 문제가 있으면 namespace나
+PVC를 삭제하지 말고 먼저 `kubectl -n toard-personal get events --sort-by=.lastTimestamp`와 pod/initContainer
+로그를 보존해 원인을 확인한다.
+
+#### 3. 공개 노출 전에 `/setup` 완료
+
+Cloudflare route를 만들기 전에 로컬 포트포워드만으로 초기 관리자를 만든다. 아래 명령을 실행한 터미널은
+열어 둔 채 브라우저에서 `http://localhost:3000/setup`을 열고 관리자 이메일·비밀번호를 직접 입력한다.
+그 뒤 로그아웃/로그인까지 확인한다.
+
+```bash
+kubectl -n toard-personal port-forward svc/toard-app 3000:80
+```
+
+이 단계가 끝나기 전에는 `toard.devy1540.com` published application route를 추가하지 않는다.
+
+#### 4. `macmini-k8s` Cloudflare Tunnel 배포
+
+먼저 기존 Tunnel을 확인한다. 이 Kubernetes workload는 `TUNNEL_TOKEN`을 쓰는 **remotely-managed Tunnel**만
+사용한다. Cloudflare Dashboard의 **Networking > Tunnels**에서 `macmini-k8s`를 연 뒤 remotely-managed로
+구성되어 있고 published application route를 편집할 수 있는지 확인한다. 기존 Tunnel이 local-managed이거나
+Dashboard에서 route를 편집할 수 없다면 이 절차에 재사용하지 않는다.
+
+`macmini-k8s`가 없으면 Dashboard의 **Networking > Tunnels > Create Tunnel**에서 remotely-managed Tunnel을
+만든다. 자동화가 필요하면 Cloudflare API에서 `config_src=cloudflare`로 생성한다. `cloudflared tunnel`의
+`create` 하위 명령은 local-managed Tunnel을 생성하므로 이 배포에 사용하지 않는다. 생성·관리 모델의 차이는
+[Cloudflare Tunnel setup](https://developers.cloudflare.com/tunnel/setup/) 및
+[local management 안내](https://developers.cloudflare.com/tunnel/advanced/local-management/)를 따른다.
+
+```bash
+cloudflared tunnel list --output json
+```
+
+Tunnel token helper는 **최초 설치 전용**이며, 임시 `0600` 파일을 거쳐 Kubernetes Secret으로만 넣는다.
+기존 `tunnel-token` Secret이 있거나 조회에 실패하면 token을 가져오기 전에 중단하고 기존 Secret을 교체하지
+않는다. namespace → token helper → overlay 순서를 지켜 token 없이 `cloudflared` pod가 먼저 기동하지 않게
+한다.
+
+```bash
+kubectl apply -f k8s/overlays/orbstack-cloudflare/namespace.yaml
+./scripts/k8s-create-tunnel-secret.sh
+kubectl apply -k k8s/overlays/orbstack-cloudflare
+
+kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m
+kubectl -n cloudflare-tunnel get pods
+cloudflared tunnel info macmini-k8s
+```
+
+이 workload는 [Cloudflare의 Kubernetes remotely-managed Tunnel 가이드](https://developers.cloudflare.com/tunnel/deployment-guides/kubernetes/)의
+`TUNNEL_TOKEN` 및 두 replica 구성을 따른다. 이미지 버전은 재현 가능한 `cloudflare/cloudflared:2026.7.2`로
+고정했으며, [`cloudflared` 공식 업데이트 안내](https://developers.cloudflare.com/tunnel/downloads/update-cloudflared/)를
+검토한 뒤 별도 변경으로 올린다.
+
+Tunnel token 회전은 최초 설치 helper를 재사용하지 않고 별도 운영 절차로 수행한다. 먼저
+[Cloudflare 공식 Tunnel token 회전 절차](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/)에
+따라 Dashboard에서 token을 회전한 다음, 새 token을 stdout이나 command argv에 넣지 않고 `0600` 임시 파일로
+받아 기존 Secret을 갱신한다. 그 뒤 cloudflared를 재시작하고 rollout 완료까지 확인한다.
+
+```bash
+(
+set -euo pipefail
+
+token_file="$(mktemp "${TMPDIR:-/tmp}/cloudflare-tunnel-token-rotate.XXXXXX")"
+chmod 600 "$token_file"
+trap 'rm -f -- "$token_file"' EXIT
+cloudflared tunnel token macmini-k8s | tr -d '\r\n' >"$token_file"
+[[ -s "$token_file" ]] || { echo "Tunnel token fetch returned an empty token." >&2; exit 1; }
+
+kubectl -n cloudflare-tunnel create secret generic tunnel-token \
+  --from-file=token="$token_file" --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n cloudflare-tunnel rollout restart deployment/cloudflared
+kubectl -n cloudflare-tunnel rollout status deployment/cloudflared --timeout=5m
+)
+```
+
+Tunnel이 Healthy가 된 뒤 Cloudflare Dashboard의 **Networking > Tunnels > macmini-k8s > Routes > Add route >
+Published application**에서 아래 값을 추가한다.
+
+| 필드 | 값 |
+|---|---|
+| Hostname | `toard.devy1540.com` |
+| Service URL | `http://toard-app.toard-personal.svc.cluster.local:80` |
+
+Dashboard published application route는 hostname과 클러스터 내부 Service를 함께 매핑하고 DNS도 생성한다.
+`cloudflared tunnel route dns`는 CNAME만 만들며 이 origin Service mapping을 구성하지 않으므로 이 배포 절차의
+대체 수단이 아니다. Cloudflare의 [published application route 설명](https://developers.cloudflare.com/tunnel/setup/#publish-an-application)도
+hostname-to-service mapping을 요구한다.
+
+#### 5. 외부 확인과 이후 업데이트
+
+published route가 전파된 뒤 외부에서 health와 DB readiness를 확인한다.
+
+```bash
+curl -fsS https://toard.devy1540.com/api/health
+curl -fsS https://toard.devy1540.com/api/ready
+```
+
+향후 toard 업데이트는 새 Release와 GHCR app/migrator image 게시을 확인한 뒤 두 이미지를 같은 버전으로
+바꾼다. standalone `kustomize`가 설치된 환경에서는 아래처럼 수정하고, **렌더 테스트 → 적용 → rollout** 순서로
+진행한다.
+
+```bash
+(cd k8s/overlays/orbstack-personal && kustomize edit set image toard=ghcr.io/devy1540/toard:VERSION toard-migrate=ghcr.io/devy1540/toard-migrate:VERSION)
+./scripts/test-k8s-manifests.sh all
+kubectl apply -k k8s/overlays/orbstack-personal
+kubectl -n toard-personal rollout status deployment/toard-app --timeout=10m
+kubectl -n toard-personal get pods
+curl -fsS https://toard.devy1540.com/api/health
+curl -fsS https://toard.devy1540.com/api/ready
+```
+
+각 새 app pod의 `migrate` initContainer가 성공했는지도 확인한다. Kubernetes 배포는 Compose updater를 사용하지
+않는다. 장애 조사나 정리 중에도 PVC 또는 namespace 삭제는 데이터 파괴 작업이므로 별도 확인 없이 실행하지 않는다.
 
 ## 3) Helm
 
@@ -101,27 +272,71 @@ helm install toard ./helm/toard \
 - `postgres.enabled=false` + `secrets.databaseUrl=...` → 외부 DB.
 - `migrate.seedOnInstall=true` + `secrets.bootstrapAdmin.*` → 최초 설치 시 providers·admin 시드(post-install 훅).
 - `ingress.enabled=true --set ingress.host=toard.corp.com` → Ingress.
-- 업그레이드: `helm upgrade toard ./helm/toard ...` — 앱 initContainer 가 마이그레이션을 멱등 적용.
+- 일반 migration Job은 `migrate → baseline seed → completion marker` 순서로 실행된다. Job 이름, 앱 Pod
+  annotation, 앱/Job env, DB marker는 모두 동일한 64자리 release completion ID를 사용한다. 이 ID는
+  namespace/release, effective release ID, expected schema, migrator 이미지, DB Secret 이름/key 및 주요 Job
+  spec을 SHA-256으로 묶은 비밀이 아닌 배포 식별자다. 별도 Kubernetes Secret을 만들지 않는다.
+- Helm CLI에서 `migrate.releaseId=""`이면 `.Release.Revision`이 fallback 입력이다. Argo CD·Flux 같은 GitOps는
+  Helm revision이 실제 desired-state 변경과 일치하지 않을 수 있으므로 `migrate.releaseId`를 반드시 지정한다.
+  동일 desired state에는 동일 값을 유지하고, 새 배포마다 변경되는 안정적인 Git commit SHA 또는 semver를
+  사용한다. migrator에는 `latest` 같은 mutable tag(가변 태그)를 쓰지 말고 digest나 immutable tag를 쓴다.
+  같은 desired state의 migration을 force rerun(강제 재실행)하려면 `migrate.releaseId`를 새 값으로 바꾼다.
+- `/api/ready`는 새 파드의 deployment ID·completion ID·expected schema와 정확히 일치하는 DB marker가
+  생기기 전까지 503이다. 따라서 migrate/seed/marker 중 하나라도 실패하면 새 파드는 트래픽을 받지 않고,
+  `maxUnavailable=0`인 기존 파드는 자신의 과거 marker로 계속 ready다. 완료된 Job은 TTL 뒤 정리하지만
+  과거 DB marker는 보존한다. Helm 명령도 기다리려면 `--wait --wait-for-jobs`를 쓴다.
+- 롤백은 이전 이미지와 이전 `migrate.releaseId`를 포함한 이전 desired state를 그대로 복원한다. 그러면 같은
+  completion ID와 보존된 과거 marker를 다시 사용한다. 단 DB migration은 forward-only이므로 이전 앱이
+  현재 스키마와 호환될 때만 안전하다. DB 스키마 자체를 자동 downgrade하지 않는다.
+- 앱 `DATABASE_URL`을 `toard_app`처럼 marker table SELECT-only 롤로 운영하면 migration/seed/marker Job에는
+  owner 연결을 별도 Secret으로 주입한다: `migrate.databaseSecret.name`과 `migrate.databaseSecret.key`.
+  비우면 호환성을 위해 앱과 같은 `DATABASE_URL`을 사용하므로 그 연결은 migration owner여야 한다.
 
 ## 본문 수집 활성화 (선택 — 프롬프트/응답 저장)
 
 기본은 usage(토큰·비용)만 수집한다. 프롬프트·응답 **본문**까지 저장하려면 아래 둘이 필요하고, 안 하면 기능은 완전히 비활성이다.
 
-**1) 앱 암호화 키(KEK).** 본문은 서버에서 봉투 암호화(at-rest)되어 저장된다 — DB 엔 암호문만 남는다.
-```sh
-TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)   # 앱 env 로 주입, DB 밖에 보관
-```
-미설정이면 `POST /api/v1/prompts` 가 503 → 수집 비활성. 키를 잃으면 기존 본문은 복호화 불가이므로 **백업 시 KEK 를 별도 보관**한다.
+**1) 서버 관리형 key provider.** 신규 본문은 설치 전체에서 선택한 KMS/Transit/local provider로 사용자별
+UCK를 감싼 `managed_v1`으로 저장한다. provider env, workload identity/secret file, Compose/Helm one-shot
+명령과 회전 절차는 [본문 암호화 운영 런북](content-encryption-runbook.md)을 따른다. `TOARD_CONTENT_KEK_B64`는
+잔여 `server_v1` 전환에만 사용하고 `serverRecords=0`과 백업 보존 확인 전 제거하지 않는다.
 
-**2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 단 **RLS 는 앱이 비-superuser 롤로 접속할 때만 강제**된다(superuser 는 우회). 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
+**2) 앱 런타임 롤(RLS 발효).** `prompt_records` 는 소유자 전용 RLS 로 보호된다. 앱은 bootstrap으로 만든 exact `toard_app` 롤에 직접 로그인해야 한다. readiness는 superuser/BYPASSRLS/CREATEDB/CREATEROLE/REPLICATION, 다른 role membership, `SET ROLE` 세션, RLS relation owner를 모두 거부한다. 전용 롤을 만들고 앱 `DATABASE_URL` 만 그 롤로 바꾼다:
 ```sh
-psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/bootstrap-app-role.sql   # 비밀번호는 따옴표 없이 원문
+# owner-only (0600) psql input file은 secret manager가 생성한다.
+# 이 파일에는 PSQL-quoted app_password 변수와 bootstrap script의 absolute \i 경로만 둔다.
+# 비밀번호를 terminal, shell env, process argv, repository에 넣지 않는다.
+psql "$ADMIN_DATABASE_URL" -f /secure/bootstrap-app-role.psql
 # 이후 앱:  DATABASE_URL=postgres://toard_app:<비밀번호>@host:5432/db
 # 마이그레이션·seed 는 계속 관리(슈퍼유저) 롤로.
 ```
 그리고 각 사용자가 shim 에서 `TOARD_SHIM_COLLECT_CONTENT=1` 로 opt-in 하면 본문이 쌓이고, 본인만 `/history` 에서 조회한다.
 
-> ⚠️ **"관리자도 못 봄"은 관리자 ≠ DB/서버 접근자일 때만 성립한다.** KEK 를 쥔 운영자나 superuser 접속은 여전히 볼 수 있다(E2EE 아님). 감사·거버넌스가 필요한 조직이라면 이 기능을 켜지 않는 편이 낫다.
+Compose에서는 migration owner와 앱 role을 다음 순서로 분리한다. URL이나 비밀번호를 터미널 출력·이슈·CI artifact에 남기지 않는다.
+
+```sh
+# 1. owner 연결(MIGRATION_DATABASE_URL)로 schema를 먼저 준비한다.
+docker compose up -d postgres migrate
+
+# 2. 같은 owner 연결로 앱 role을 생성한다.
+# owner-only (0600) psql input file은 secret manager가 생성하며 PSQL-quoted app_password와
+# scripts/bootstrap-app-role.sql의 absolute \i 경로만 포함한다. 비밀번호를 argv로 전달하지 않는다.
+psql "$MIGRATION_DATABASE_URL" -f /secure/bootstrap-app-role.psql
+
+# 3. APP_DATABASE_URL은 toard_app role로, MIGRATION_DATABASE_URL은 owner로 유지한 뒤 앱을 시작/재시작한다.
+docker compose up -d app
+```
+
+관리형 본문을 켠 상태에서 `APP_DATABASE_URL`이 직접 로그인한 exact `toard_app` 안전 롤이 아니면 `/api/ready`는 503을 반환한다. owner 연결을 `SET ROLE toard_app`으로 감싼 것도 허용하지 않는다. 관리형 본문을 사용하지 않는 기존 Compose 설치는 두 URL을 설정하지 않아도 기존 기본 연결로 동작한다.
+
+> 일반 관리자 UI와 타 사용자는 RLS 때문에 타 사용자 평문/행을 읽지 못한다. DB superuser는 ciphertext와
+> wrapper를 볼 수 있으나 DB dump만으로 평문을 복구할 수 없다. 다만 DB와 KMS/Transit/local KEK 권한을
+> 함께 가진 서버 운영자는 앱 복호화 경로를 실행할 수 있으므로 E2EE는 아니다.
+
+신규 E2EE setup/activation endpoint는 `410 E2EE_SETUP_RETIRED`로 차단된다. 기존 `e2ee_v1` 또는 blocked
+migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed migration API를 유지하며 자동 삭제는 하지 않는다.
+계정이 없거나 계정만 있고 legacy 행이 없는 사용자는 이 API도 body 처리 전에 410으로 종료한다. capability 조회
+오류는 `500 E2EE_LEGACY_GATE_FAILED`와 `Cache-Control: no-store`로 fail-closed한다.
 
 ## 무중단 배포 노트 (ADR-001)
 
@@ -133,8 +348,9 @@ psql "$ADMIN_DATABASE_URL" -v app_password="강력한-비밀번호" -f scripts/b
 
 ## 스키마 마이그레이션 (expand → contract)
 
-무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. 새 파드의 `migrate` initContainer 가 스키마를
-먼저 올리므로, 그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
+무중단 롤링 중엔 **구/신 앱 파드가 잠깐 공존**한다. Helm은 release completion ID별 migration Job이
+스키마를 먼저 올리고, raw Kubernetes 배포는 새 파드의 `migrate` initContainer가 이를 수행한다.
+그 시점 DB 는 "신 스키마"인데 구 파드(구 코드)가 아직 돈다. 따라서 **모든
 마이그레이션은 현재 돌고 있는(구) 코드와 하위호환**이어야 한다. `migrations/` 는 forward-only
 (node-pg-migrate) — 파괴적 변경은 여러 배포에 걸쳐 나눈다.
 

@@ -7,6 +7,7 @@ import {
   canonicalTimezoneId,
   firstInstantOfLocalDate,
   type FinalizedUsageEvent,
+  type OrganizationDashboardQuery,
   type PricingRepairResolver,
 } from "@toard/core";
 import type { Pool, PoolClient } from "pg";
@@ -15,6 +16,7 @@ import {
   clampV2RollupStart,
   resolveClickHouseRollupReadFlag,
 } from "./storage";
+import { ClickHouseOperationController } from "./operation-controller";
 
 type InsertedRows = { table: string; values: Array<Record<string, unknown>> };
 
@@ -44,6 +46,11 @@ function finalizedEvent(
 function storageWithInsertedRows(
   inserts: InsertedRows[],
   pgQueries: Array<{ sql: string; params: unknown[] }> = [],
+  options: {
+    failEnqueue?: boolean;
+    failInsert?: boolean;
+    teamByDedupKey?: Record<string, string>;
+  } = {},
 ): ClickHouseStorage {
   const outboxRows: Array<Record<string, unknown>> = [];
   let pendingBatch = true;
@@ -53,6 +60,12 @@ function storageWithInsertedRows(
       const normalized = sql.replace(/\s+/g, " ").trim();
       if (normalized.startsWith("INSERT INTO clickhouse_usage_batches")) {
         return { rows: [{ id: "batch-1" }], rowCount: 1 };
+      }
+      if (normalized.includes("FROM user_team_assignments")) {
+        const rows = Object.entries(options.teamByDedupKey ?? {}).map(
+          ([dedup_key, team_id]) => ({ dedup_key, team_id }),
+        );
+        return { rows, rowCount: rows.length };
       }
       if (normalized.startsWith("INSERT INTO clickhouse_usage_outbox")) {
         outboxRows.push({
@@ -86,6 +99,16 @@ function storageWithInsertedRows(
       if (normalized.startsWith("SELECT dedup_key")) {
         return { rows: outboxRows, rowCount: outboxRows.length };
       }
+      if (normalized.includes("enqueue_pricing_repair")) {
+        if (options.failEnqueue) throw new Error("enqueue unavailable");
+        return { rows: [], rowCount: 1 };
+      }
+      if (
+        normalized.startsWith("UPDATE clickhouse_usage_batches")
+        && normalized.includes("SET status = 'pending'")
+      ) {
+        pendingBatch = true;
+      }
       return { rows: [], rowCount: 0 };
     },
     release: () => undefined,
@@ -96,6 +119,7 @@ function storageWithInsertedRows(
   const ch = {
     command: async () => undefined,
     insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      if (options.failInsert && table === "usage_events") throw new Error("clickhouse unavailable");
       inserts.push({ table, values });
     },
   } as unknown as ClickHouseClient;
@@ -180,8 +204,11 @@ function v2CompactorFixture(options: {
       inserts.push({ table, values });
     },
   } as unknown as ClickHouseClient;
+  const operationRunner = options.failAggregate
+    ? new ClickHouseOperationController({ log: () => undefined })
+    : undefined;
   return {
-    storage: new ClickHouseStorage(ch, pg),
+    storage: new ClickHouseStorage(ch, pg, operationRunner ? { operationRunner } : {}),
     aggregateQueries,
     aggregateParams,
     inserts,
@@ -210,7 +237,7 @@ function sourceRouterFixture({
   coverageBuckets?: Date[];
   dirtyBucket?: Date | null;
   failRegistryOnce?: boolean;
-  jsonRows?: Array<Record<string, unknown>>;
+  jsonRows?: Array<Record<string, unknown>> | ((query: string) => Array<Record<string, unknown>>);
   jobs?: Array<{ bucket: Date; status: RouterJobStatus }>;
   watermark: Date;
   readRollup?: boolean | "auto";
@@ -273,7 +300,7 @@ function sourceRouterFixture({
     command: async () => undefined,
     query: async (args: { query: string; query_params: Record<string, unknown> }) => {
       queries.push({ query: args.query, params: args.query_params });
-      return { json: async () => jsonRows };
+      return { json: async () => typeof jsonRows === "function" ? jsonRows(args.query) : jsonRows };
     },
   } as unknown as ClickHouseClient;
   return {
@@ -285,6 +312,653 @@ function sourceRouterFixture({
     pgQueries,
   };
 }
+
+type DashboardUsageBundleRow = {
+  result_kind: string;
+  day: string | null;
+  sessions: string;
+  active_users: string;
+  cost: string;
+  input: string;
+  output: string;
+  cache_read: string;
+  cache_creation: string;
+  priced_events: string;
+  unpriced_events: string;
+  legacy_events: string;
+};
+
+type DashboardBreakdownBundleRow = {
+  result_kind: string;
+  key: string;
+  cost: string;
+  tokens: string;
+  sessions: string;
+  priced_events: string;
+  unpriced_events: string;
+  legacy_events: string;
+};
+
+function organizationDashboardQuery(
+  overrides: Partial<Pick<OrganizationDashboardQuery, "includeTeamLeaderboard" | "leaderboardOrder">> = {},
+): OrganizationDashboardQuery {
+  return {
+    current: {
+      from: new Date("2026-07-01T00:00:00.000Z"),
+      to: new Date("2026-07-08T00:00:00.000Z"),
+      bucket: "day",
+      timezone: "UTC",
+    },
+    previous: {
+      from: new Date("2026-06-24T00:00:00.000Z"),
+      to: new Date("2026-07-01T00:00:00.000Z"),
+    },
+    includeTeamLeaderboard: true,
+    leaderboardOrder: "tokens",
+    ...overrides,
+  };
+}
+
+function dashboardUsageBundleRows(): DashboardUsageBundleRow[] {
+  return [
+    {
+      result_kind: "daily",
+      day: "2026-07-02",
+      sessions: "1",
+      active_users: "1",
+      cost: "0.4",
+      input: "4",
+      output: "2",
+      cache_read: "1",
+      cache_creation: "0",
+      priced_events: "1",
+      unpriced_events: "0",
+      legacy_events: "0",
+    },
+    {
+      result_kind: "current_overview",
+      day: null,
+      sessions: "2",
+      active_users: "1",
+      cost: "1",
+      input: "10",
+      output: "5",
+      cache_read: "2",
+      cache_creation: "1",
+      priced_events: "2",
+      unpriced_events: "3",
+      legacy_events: "4",
+    },
+    {
+      result_kind: "previous_overview",
+      day: null,
+      sessions: "1",
+      active_users: "1",
+      cost: "0.5",
+      input: "5",
+      output: "2",
+      cache_read: "0",
+      cache_creation: "0",
+      priced_events: "1",
+      unpriced_events: "0",
+      legacy_events: "1",
+    },
+    {
+      result_kind: "daily",
+      day: "2026-07-01",
+      sessions: "1",
+      active_users: "1",
+      cost: "0.6",
+      input: "6",
+      output: "3",
+      cache_read: "1",
+      cache_creation: "1",
+      priced_events: "1",
+      unpriced_events: "3",
+      legacy_events: "4",
+    },
+  ];
+}
+
+function dashboardBreakdownBundleRows(includeTeam = true): DashboardBreakdownBundleRow[] {
+  return [
+    {
+      result_kind: "user_leader",
+      key: "user-1",
+      cost: "1",
+      tokens: "18",
+      sessions: "2",
+      priced_events: "2",
+      unpriced_events: "0",
+      legacy_events: "0",
+    },
+    {
+      result_kind: "user_leader",
+      key: "user-without-label",
+      cost: "0.25",
+      tokens: "9",
+      sessions: "1",
+      priced_events: "0",
+      unpriced_events: "1",
+      legacy_events: "1",
+    },
+    ...(includeTeam ? [{
+      result_kind: "team_leader",
+      key: "team-1",
+      cost: "1",
+      tokens: "18",
+      sessions: "2",
+      priced_events: "2",
+      unpriced_events: "0",
+      legacy_events: "0",
+    }] : []),
+    {
+      result_kind: "provider",
+      key: "codex",
+      cost: "1",
+      tokens: "18",
+      sessions: "2",
+      priced_events: "1",
+      unpriced_events: "1",
+      legacy_events: "0",
+    },
+  ];
+}
+
+function dashboardBundleRows(query: string, includeTeam = true): Array<Record<string, unknown>> {
+  if (query.includes("organization-dashboard-usage")) return dashboardUsageBundleRows();
+  if (query.includes("organization-dashboard-breakdown")) return dashboardBreakdownBundleRows(includeTeam);
+  return [];
+}
+
+function dashboardFixture(options: {
+  usageRows?: Array<Record<string, unknown>>;
+  breakdownRows?: Array<Record<string, unknown>>;
+} = {}) {
+  const queries: Array<{ query: string; params: Record<string, unknown> }> = [];
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const operations: string[] = [];
+  const usageRows = options.usageRows ?? dashboardUsageBundleRows();
+  const breakdownRows = options.breakdownRows ?? dashboardBreakdownBundleRows();
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      queries.push({ query: args.query, params: args.query_params });
+      const rows = args.query.includes("organization-dashboard-usage") ? usageRows : breakdownRows;
+      return { json: async () => rows };
+    },
+  } as unknown as ClickHouseClient;
+  const pg = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgQueries.push({ sql, params });
+      if (sql.includes("FROM users")) {
+        return { rows: [{ id: "user-1", label: "User 1" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM teams")) {
+        return { rows: [{ id: "team-1", label: "Team 1" }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as Pool;
+  const operationRunner = {
+    run: async <T>(operation: string, action: () => Promise<T>): Promise<T> => {
+      operations.push(operation);
+      return action();
+    },
+  };
+  return {
+    storage: new ClickHouseStorage(ch, pg, {
+      readRollup: false,
+      read15mV2Rollup: false,
+      operationRunner,
+    }),
+    operations,
+    pgQueries,
+    queries,
+  };
+}
+
+function dashboardRowWithout<T extends object>(row: T, field: keyof T): Record<string, unknown> {
+  const copy = { ...row } as Record<string, unknown>;
+  delete copy[String(field)];
+  return copy;
+}
+
+test("ClickHouse 조직 dashboard는 두 JSON read로 기존 공개 결과를 조립한다", async () => {
+  const fixture = dashboardFixture();
+
+  const result = await fixture.storage.getOrganizationDashboard(organizationDashboardQuery());
+
+  assert.equal(fixture.queries.length, 2);
+  assert.equal(
+    fixture.queries.filter(({ query }) => query.includes("organization-dashboard-usage")).length,
+    1,
+  );
+  assert.equal(
+    fixture.queries.filter(({ query }) => query.includes("organization-dashboard-breakdown")).length,
+    1,
+  );
+  assert.deepEqual(
+    fixture.operations.filter((operation) => operation.startsWith("organization_dashboard_")),
+    ["organization_dashboard_usage", "organization_dashboard_breakdown"],
+  );
+  assert.deepEqual(result, {
+    overview: {
+      totalSessions: 2,
+      activeUsers: 1,
+      totalCostUsd: 1,
+      totalInputTokens: 10,
+      totalOutputTokens: 5,
+      totalCacheReadTokens: 2,
+      totalCacheCreationTokens: 1,
+      costCoverage: { pricedEvents: 2, unpricedEvents: 3, legacyEvents: 4 },
+    },
+    previousOverview: {
+      totalSessions: 1,
+      activeUsers: 1,
+      totalCostUsd: 0.5,
+      totalInputTokens: 5,
+      totalOutputTokens: 2,
+      totalCacheReadTokens: 0,
+      totalCacheCreationTokens: 0,
+      costCoverage: { pricedEvents: 1, unpricedEvents: 0, legacyEvents: 1 },
+    },
+    daily: [
+      {
+        day: "2026-07-01",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 0.6,
+        inputTokens: 6,
+        outputTokens: 3,
+        cacheReadTokens: 1,
+        cacheCreationTokens: 1,
+      },
+      {
+        day: "2026-07-02",
+        sessions: 1,
+        activeUsers: 1,
+        costUsd: 0.4,
+        inputTokens: 4,
+        outputTokens: 2,
+        cacheReadTokens: 1,
+        cacheCreationTokens: 0,
+      },
+    ],
+    topUsers: [
+      {
+        key: "user-1",
+        label: "User 1",
+        costUsd: 1,
+        totalTokens: 18,
+        sessions: 2,
+        costCoverage: { pricedEvents: 2, unpricedEvents: 0, legacyEvents: 0 },
+      },
+      {
+        key: "user-without-label",
+        label: "user-without-label",
+        costUsd: 0.25,
+        totalTokens: 9,
+        sessions: 1,
+        costCoverage: { pricedEvents: 0, unpricedEvents: 1, legacyEvents: 1 },
+      },
+    ],
+    topTeams: [{
+      key: "team-1",
+      label: "Team 1",
+      costUsd: 1,
+      totalTokens: 18,
+      sessions: 2,
+      costCoverage: { pricedEvents: 2, unpricedEvents: 0, legacyEvents: 0 },
+    }],
+    providerBreakdown: [{
+      providerKey: "codex",
+      costUsd: 1,
+      totalTokens: 18,
+      sessions: 2,
+      costCoverage: { pricedEvents: 1, unpricedEvents: 1, legacyEvents: 0 },
+    }],
+  });
+});
+
+test("팀 순위를 숨기면 breakdown SQL branch와 팀 label query를 모두 생략한다", async () => {
+  const fixture = dashboardFixture({ breakdownRows: dashboardBreakdownBundleRows(false) });
+
+  const result = await fixture.storage.getOrganizationDashboard(organizationDashboardQuery({
+    includeTeamLeaderboard: false,
+  }));
+
+  const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+  assert.ok(breakdown);
+  assert.doesNotMatch(breakdown.query, /'team_leader' AS result_kind/);
+  assert.equal(fixture.pgQueries.some(({ sql }) => sql.includes("FROM teams")), false);
+  assert.deepEqual(result.topTeams, []);
+});
+
+test("user leaderboard order는 허용된 cost 또는 tokens column만 SQL에 사용한다", async () => {
+  for (const order of ["cost", "tokens"] as const) {
+    const fixture = dashboardFixture({ breakdownRows: dashboardBreakdownBundleRows(false) });
+    await fixture.storage.getOrganizationDashboard(organizationDashboardQuery({
+      includeTeamLeaderboard: false,
+      leaderboardOrder: order,
+    }));
+
+    const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+    assert.ok(breakdown);
+    assert.match(
+      breakdown.query,
+      new RegExp(`SELECT user_id AS key,[\\s\\S]*?GROUP BY key ORDER BY ${order} DESC LIMIT 100`),
+    );
+  }
+});
+
+test("unknown usage result kind는 fail closed한다", async () => {
+  const fixture = dashboardFixture({
+    usageRows: [
+      ...dashboardUsageBundleRows(),
+      { ...dashboardUsageBundleRows()[0]!, result_kind: "unexpected_usage" },
+    ],
+  });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Unknown organization dashboard usage row kind/,
+  );
+});
+
+test("unknown breakdown result kind는 fail closed한다", async () => {
+  const fixture = dashboardFixture({
+    breakdownRows: [
+      ...dashboardBreakdownBundleRows(),
+      { ...dashboardBreakdownBundleRows()[0]!, result_kind: "unexpected_breakdown" },
+    ],
+  });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Unknown organization dashboard breakdown row kind/,
+  );
+});
+
+test("필수 current 또는 previous overview row가 없으면 fail closed한다", async () => {
+  for (const missing of ["current_overview", "previous_overview"]) {
+    const fixture = dashboardFixture({
+      usageRows: dashboardUsageBundleRows().filter((row) => row.result_kind !== missing),
+    });
+    await assert.rejects(
+      fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+      /Organization dashboard overview row is missing/,
+      missing,
+    );
+  }
+});
+
+test("daily row의 필수 bucket이 없으면 fail closed한다", async () => {
+  const fixture = dashboardFixture({
+    usageRows: dashboardUsageBundleRows().map((row) => row.result_kind === "daily"
+      ? { ...row, day: null }
+      : row),
+  });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Organization dashboard daily row is missing its bucket/,
+  );
+});
+
+test("dashboard bundle parser는 overview 필수 numeric field 누락을 거부한다", async () => {
+  const rows = dashboardUsageBundleRows();
+  const currentIndex = rows.findIndex((row) => row.result_kind === "current_overview");
+  rows[currentIndex] = dashboardRowWithout(rows[currentIndex]!, "sessions") as DashboardUsageBundleRow;
+  const fixture = dashboardFixture({ usageRows: rows });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Organization dashboard usage row parsing error.*current_overview.*sessions/,
+  );
+});
+
+test("dashboard bundle parser는 daily 필수 numeric field 누락을 거부한다", async () => {
+  const rows = dashboardUsageBundleRows();
+  const dailyIndex = rows.findIndex((row) => row.result_kind === "daily");
+  rows[dailyIndex] = dashboardRowWithout(rows[dailyIndex]!, "cache_creation") as DashboardUsageBundleRow;
+  const fixture = dashboardFixture({ usageRows: rows });
+
+  await assert.rejects(
+    fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+    /Organization dashboard usage row parsing error.*daily.*cache_creation/,
+  );
+});
+
+test("dashboard bundle parser는 breakdown의 key·numeric·coverage field 누락을 거부한다", async () => {
+  for (const field of ["key", "tokens", "legacy_events"] as const) {
+    const rows = dashboardBreakdownBundleRows();
+    rows[0] = dashboardRowWithout(rows[0]!, field) as DashboardBreakdownBundleRow;
+    const fixture = dashboardFixture({ breakdownRows: rows });
+
+    await assert.rejects(
+      fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+      new RegExp(`Organization dashboard breakdown row parsing error.*user_leader.*${field}`),
+      field,
+    );
+  }
+});
+
+test("dashboard bundle parser는 필수 numeric·coverage field의 잘못된 타입과 값을 거부한다", async () => {
+  const cases: Array<{
+    name: string;
+    usageRows?: Array<Record<string, unknown>>;
+    breakdownRows?: Array<Record<string, unknown>>;
+    expected: RegExp;
+  }> = [
+    {
+      name: "overview coverage boolean",
+      usageRows: dashboardUsageBundleRows().map((row) => row.result_kind === "current_overview"
+        ? { ...row, priced_events: false }
+        : row),
+      expected: /usage row parsing error.*current_overview.*priced_events/,
+    },
+    {
+      name: "daily numeric object",
+      usageRows: dashboardUsageBundleRows().map((row) => row.result_kind === "daily"
+        ? { ...row, cost: {} }
+        : row),
+      expected: /usage row parsing error.*daily.*cost/,
+    },
+    {
+      name: "breakdown non-numeric string",
+      breakdownRows: dashboardBreakdownBundleRows().map((row) => row.result_kind === "provider"
+        ? { ...row, sessions: "not-a-number" }
+        : row),
+      expected: /breakdown row parsing error.*provider.*sessions/,
+    },
+  ];
+
+  for (const malformed of cases) {
+    const fixture = dashboardFixture({
+      ...(malformed.usageRows ? { usageRows: malformed.usageRows } : {}),
+      ...(malformed.breakdownRows ? { breakdownRows: malformed.breakdownRows } : {}),
+    });
+    await assert.rejects(
+      fixture.storage.getOrganizationDashboard(organizationDashboardQuery()),
+      malformed.expected,
+      malformed.name,
+    );
+  }
+});
+
+test("dashboard bundle parser는 finite number와 numeric string을 모두 허용한다", async () => {
+  const numericFields = new Set([
+    "sessions",
+    "active_users",
+    "cost",
+    "input",
+    "output",
+    "cache_read",
+    "cache_creation",
+    "tokens",
+    "priced_events",
+    "unpriced_events",
+    "legacy_events",
+  ]);
+  const asJsonNumbers = (rows: Array<Record<string, unknown>>) => rows.map((row) => Object.fromEntries(
+    Object.entries(row).map(([field, value]) => [
+      field,
+      numericFields.has(field) ? Number(value) : value,
+    ]),
+  ));
+  const fixture = dashboardFixture({
+    usageRows: asJsonNumbers(dashboardUsageBundleRows()),
+    breakdownRows: asJsonNumbers(dashboardBreakdownBundleRows()),
+  });
+
+  const result = await fixture.storage.getOrganizationDashboard(organizationDashboardQuery());
+
+  assert.equal(result.overview.totalSessions, 2);
+  assert.deepEqual(result.overview.costCoverage, {
+    pricedEvents: 2,
+    unpricedEvents: 3,
+    legacyEvents: 4,
+  });
+  assert.equal(result.daily[0]?.costUsd, 0.6);
+  assert.equal(result.topUsers[0]?.totalTokens, 18);
+  assert.equal(result.providerBreakdown[0]?.sessions, 2);
+});
+
+test("dashboard current와 previous source parameter namespace는 충돌하지 않는다", async () => {
+  const fixture = dashboardFixture({ breakdownRows: dashboardBreakdownBundleRows(false) });
+  await fixture.storage.getOrganizationDashboard(organizationDashboardQuery({
+    includeTeamLeaderboard: false,
+  }));
+
+  const usage = fixture.queries.find(({ query }) => query.includes("organization-dashboard-usage"));
+  const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+  assert.ok(usage);
+  assert.ok(breakdown);
+  assert.equal(usage.params.dashboard_previous_from, "2026-06-24 00:00:00.000");
+  assert.equal(usage.params.dashboard_previous_to, "2026-07-01 00:00:00.000");
+  assert.equal(usage.params.dashboard_current_from, "2026-07-01 00:00:00.000");
+  assert.equal(usage.params.dashboard_current_to, "2026-07-08 00:00:00.000");
+  assert.equal(usage.params.from, undefined);
+  assert.equal(usage.params.to, undefined);
+  assert.match(usage.query, /\{dashboard_previous_from:DateTime64\(3\)\}/);
+  assert.match(usage.query, /\{dashboard_current_from:DateTime64\(3\)\}/);
+  assert.deepEqual(breakdown.params, {
+    dashboard_current_from: "2026-07-01 00:00:00.000",
+    dashboard_current_to: "2026-07-08 00:00:00.000",
+  });
+});
+
+test("dashboard는 current timezone cache와 previous exact source를 같은 coverage schema로 묶는다", async () => {
+  const current = localDayRange("Asia/Seoul", "2026-07-01", 2);
+  const fixture = sourceRouterFixture({
+    watermark: current.to,
+    jobs: current.jobs,
+    read15mV2Rollup: false,
+    jsonRows: (query) => dashboardBundleRows(query, false),
+  });
+
+  await fixture.storage.getOrganizationDashboard({
+    current: { ...current, bucket: "day", timezone: "Asia/Seoul" },
+    previous: {
+      from: new Date("2026-06-01T00:00:00.000Z"),
+      to: new Date("2026-06-02T00:00:00.000Z"),
+    },
+    includeTeamLeaderboard: false,
+    leaderboardOrder: "tokens",
+  });
+
+  const usage = fixture.queries.find(({ query }) => query.includes("organization-dashboard-usage"));
+  const breakdown = fixture.queries.find(({ query }) => query.includes("organization-dashboard-breakdown"));
+  assert.ok(usage);
+  assert.ok(breakdown);
+  assert.match(usage.query, /usage_daily_timezone_rollup FINAL/);
+  assert.match(usage.query, /usage_events/);
+  assert.match(breakdown.query, /usage_daily_timezone_rollup FINAL/);
+  assert.doesNotMatch(breakdown.query, /usage_events/);
+  assert.match(usage.query, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost/);
+  assert.match(usage.query, /sumIf\(event_count, cost_status = 'legacy'\) AS legacy_events/);
+  assert.ok("dashboard_current_timezone" in usage.params);
+  assert.ok("dashboard_previous_from" in usage.params);
+});
+
+test("dashboard raw fallback도 두 source와 기존 coverage 식을 보존한다", async () => {
+  const range = localDayRange("UTC", "2026-07-01", 1);
+  const fixture = sourceRouterFixture({
+    active: false,
+    watermark: range.to,
+    read15mV2Rollup: false,
+    jsonRows: (query) => dashboardBundleRows(query, false),
+  });
+
+  await fixture.storage.getOrganizationDashboard({
+    current: { ...range, bucket: "day", timezone: "UTC" },
+    previous: {
+      from: new Date("2026-06-30T00:00:00.000Z"),
+      to: new Date("2026-07-01T00:00:00.000Z"),
+    },
+    includeTeamLeaderboard: false,
+    leaderboardOrder: "cost",
+  });
+
+  assert.equal(fixture.queries.length, 2);
+  for (const { query } of fixture.queries) {
+    assert.match(query, /usage_events/);
+    assert.doesNotMatch(query, /usage_(?:15m|hourly|daily)_.*rollup/);
+    assert.match(query, /sumIf\(cost_usd, cost_status != 'unpriced'\) AS cost/);
+    assert.match(query, /sumIf\(event_count, cost_status = 'unpriced'\) AS unpriced_events/);
+  }
+});
+
+test("dashboard snapshot과 background usage read가 겹쳐도 JSON read 동시성은 4 이하이다", async () => {
+  let active = 0;
+  let maxActive = 0;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const queries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      queries.push(query);
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      if (active > 6) {
+        const error = new Error("Too many simultaneous queries") as Error & { code: string };
+        error.code = "202";
+        throw error;
+      }
+      if (active === 3) release();
+      await gate;
+      active -= 1;
+      return { json: async () => dashboardBundleRows(query, false) };
+    },
+  } as unknown as ClickHouseClient;
+  const pg = {
+    query: async (sql: string) => sql.includes("FROM users")
+      ? { rows: [{ id: "user-1", label: "User 1" }], rowCount: 1 }
+      : { rows: [], rowCount: 0 },
+  } as unknown as Pool;
+  const runner = new ClickHouseOperationController({ maxConcurrent: 4, queueTimeoutMs: 1_000 });
+  const storage = new ClickHouseStorage(ch, pg, {
+    readRollup: false,
+    read15mV2Rollup: false,
+    operationRunner: runner,
+  });
+
+  await Promise.all([
+    storage.getOrganizationDashboard(organizationDashboardQuery({ includeTeamLeaderboard: false })),
+    storage.getOrganizationUtilizationUsage({
+      from: new Date("2026-07-01T00:00:00.000Z"),
+      to: new Date("2026-07-08T00:00:00.000Z"),
+      timezone: "UTC",
+    }),
+  ]);
+
+  assert.equal(queries.filter((query) => query.includes("organization-dashboard-")).length, 2);
+  assert.ok(maxActive <= 4, `observed max active ${maxActive}`);
+});
 
 test("legacy rollup flag는 deprecated alias이며 새 flag의 명시값이 우선하고 경고는 process당 한 번이다", () => {
   const warnings: string[] = [];
@@ -450,6 +1124,105 @@ async function schemaCommands(
   return commands;
 }
 
+test("첫 schema DDL ECONNRESET은 재시도한 뒤 JSON read를 계속한다", async () => {
+  let firstDdl: string | undefined;
+  let firstDdlAttempts = 0;
+  let readAttempts = 0;
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      firstDdl ??= query;
+      if (query !== firstDdl) return;
+      firstDdlAttempts += 1;
+      if (firstDdlAttempts === 1) {
+        throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+      }
+    },
+    query: async () => {
+      readAttempts += 1;
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const operationRunner = new ClickHouseOperationController({
+    sleep: async () => undefined,
+    log: () => undefined,
+  });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner });
+
+  assert.deepEqual(await storage.getUserHosts("user-1"), []);
+  assert.equal(firstDdlAttempts, 2);
+  assert.equal(readAttempts, 1);
+});
+
+test("schema DDL network 오류가 계속되면 정확히 5 attempts 뒤 중단한다", async () => {
+  let attempts = 0;
+  const networkError = Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+  const ch = {
+    command: async () => {
+      attempts += 1;
+      throw networkError;
+    },
+  } as unknown as ClickHouseClient;
+  const operationRunner = new ClickHouseOperationController({
+    sleep: async () => undefined,
+    log: () => undefined,
+  });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner });
+
+  await assert.rejects(
+    storage.getUserHosts("user-1"),
+    (error: unknown) => error === networkError,
+  );
+  assert.equal(attempts, 5);
+});
+
+test("schema DDL backoff 동안 outer read slot 없이 다른 작업을 허용한다", async () => {
+  let ddlAttempts = 0;
+  let readAttempts = 0;
+  let sleepStarted = false;
+  let releaseSleep!: () => void;
+  const ch = {
+    command: async () => {
+      ddlAttempts += 1;
+      if (ddlAttempts === 1) {
+        throw Object.assign(new Error("connection reset"), { code: "ECONNRESET" });
+      }
+    },
+    query: async () => {
+      readAttempts += 1;
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const operationRunner = new ClickHouseOperationController({
+    maxConcurrent: 1,
+    sleep: () => new Promise<void>((resolve) => {
+      sleepStarted = true;
+      releaseSleep = resolve;
+    }),
+    log: () => undefined,
+  });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner });
+  const reading = storage.getUserHosts("user-1");
+  const outcome = reading.then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  let otherResult: string | undefined;
+  if (sleepStarted) {
+    otherResult = await operationRunner.run("other", async () => "other");
+    releaseSleep();
+  }
+  const settled = await outcome;
+
+  assert.equal(sleepStarted, true);
+  assert.equal(otherResult, "other");
+  assert.equal(settled.ok, true);
+  if (settled.ok) assert.deepEqual(settled.value, []);
+  assert.equal(ddlAttempts > 1, true);
+  assert.equal(readAttempts, 1);
+});
+
 test("인사이트 query log 표식은 SQL 주석 제거 후에도 남는 문자열 리터럴이다", async () => {
   const queries: string[] = [];
   const ch = {
@@ -527,6 +1300,62 @@ test("ClickHouseStorage groups team member usage by bucket and user", async () =
   ]);
 });
 
+test("ClickHouseStorage는 활용 지수 일별 사용량을 provider capability와 함께 집계한다", async () => {
+  let query = "";
+  let queryParams: Record<string, unknown> = {};
+  const ch = {
+    command: async () => undefined,
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      query = args.query;
+      queryParams = args.query_params;
+      return {
+        json: async () => [
+          {
+            user_id: "u1",
+            day: "2026-07-06",
+            sessions: "2",
+            input: "100",
+            cache_read: "80",
+            cache_creation: "20",
+            cache_signal_events: "3",
+            cache_unsupported_events: "1",
+          },
+        ],
+      };
+    },
+  } as unknown as ClickHouseClient;
+
+  const storage = new ClickHouseStorage(ch, {} as Pool, {
+    readRollup: false,
+    read15mRollup: false,
+    read15mV2Rollup: false,
+  });
+  const queryInput = {
+    from: new Date("2026-07-06T00:00:00.000Z"),
+    to: new Date("2026-07-08T00:00:00.000Z"),
+    timezone: "UTC",
+  };
+  const result = await storage.getUserUtilizationUsage("u1", queryInput);
+
+  assert.match(query, /user_id = \{uid:String\}/);
+  assert.match(query, /uniqExactIf\(session_id, session_id != ''\)/);
+  assert.match(query, /provider_key IN \{cacheProviders:Array\(String\)\}/);
+  assert.match(query, /sumIf\(event_count,/);
+  assert.deepEqual(queryParams.cacheProviders, ["claude_code", "codex", "cursor", "gemini", "qwen"]);
+  assert.deepEqual(result, [
+    {
+      userId: "u1",
+      day: "2026-07-06",
+      sessions: 2,
+      inputTokens: 100,
+      cacheReadTokens: 80,
+      cacheCreationTokens: 20,
+      cacheSignalEvents: 3,
+      cacheUnsupportedEvents: 1,
+    },
+  ]);
+});
+
 test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다", async () => {
   const inserts: InsertedRows[] = [];
   const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
@@ -563,9 +1392,362 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
       .map(({ params }) => params[0]),
     ["usage_15m", "usage_15m_v2"],
   );
+  const enqueueIndexes = pgQueries.flatMap(({ sql }, index) =>
+    sql.includes("enqueue_pricing_repair") ? [index] : []
+  );
+  assert.equal(enqueueIndexes.length, 1);
+  const outboxDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET delivered_at = now()"));
+  const batchDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET status = 'delivered'"));
+  const deliveryCommitIndex = pgQueries.map(({ sql }) => sql).lastIndexOf("COMMIT");
+  assert.ok(enqueueIndexes[0]! > outboxDeliveredIndex);
+  assert.ok(enqueueIndexes[0]! > batchDeliveredIndex);
+  assert.ok(deliveryCommitIndex > enqueueIndexes[0]!);
 });
 
-test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 priced 버전을 결정적으로 삽입한다", async () => {
+test("ClickHouse outbox는 이벤트 발생 시각의 유효한 팀을 귀속하고 멤버십 공백은 미배정으로 둔다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, {
+    teamByDedupKey: { "event-a": "team-a", "event-b": "team-b" },
+  });
+
+  await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "event-a", userId: "user-1", ts: new Date("2026-07-10T01:00:00.000Z") }),
+    finalizedEvent({ dedupKey: "event-gap", userId: "user-1", ts: new Date("2026-07-10T02:00:00.000Z") }),
+    finalizedEvent({ dedupKey: "event-b", userId: "user-1", ts: new Date("2026-07-10T03:00:00.000Z") }),
+  ]);
+
+  const attributionQuery = pgQueries.find(({ sql }) => sql.includes("FROM user_team_assignments"));
+  assert.ok(attributionQuery);
+  assert.match(attributionQuery.sql, /effective_from <= requested\.event_ts/);
+  assert.match(attributionQuery.sql, /requested\.event_ts < assignment\.effective_to/);
+  assert.equal(pgQueries.some(({ sql }) => /SELECT id, team_id FROM users/.test(sql)), false);
+  assert.deepEqual(
+    pgQueries
+      .filter(({ sql }) => sql.includes("INSERT INTO clickhouse_usage_outbox"))
+      .map(({ params }) => params[4]),
+    ["team-a", null, "team-b"],
+  );
+});
+
+test("ClickHouse 팀 귀속 preview는 pending outbox·raw·rollup-only를 중복 없이 합산한다", async () => {
+  const chQueries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      chQueries.push(query);
+      if (query.includes("AS raw_from") && !query.includes("total_tokens")) {
+        return { json: async () => [{ raw_from: "2026-06-01 00:00:00.000" }] };
+      }
+      if (query.includes("FROM usage_15m_rollup_v2")) {
+        return {
+          json: async () => [{
+            events: "3",
+            from_ts: "2026-04-01 00:00:00.000",
+            to_ts: "2026-04-02 00:00:00.000",
+            total_tokens: "300",
+            cost_usd: "3.00",
+          }],
+        };
+      }
+      return {
+        json: async () => [{
+          events: "2",
+          from_ts: "2026-07-01 00:00:00.000",
+          to_ts: "2026-07-02 00:00:00.000",
+          total_tokens: "200",
+          cost_usd: "2.00",
+        }],
+      };
+    },
+  } as unknown as ClickHouseClient;
+  const pg = {
+    query: async (sql: string) => {
+      assert.match(sql, /delivered_at IS NULL/);
+      assert.match(sql, /team_id IS NULL/);
+      return {
+        rows: [{
+          events: "1",
+          from_ts: new Date("2026-07-03T00:00:00.000Z"),
+          to_ts: new Date("2026-07-03T00:00:00.000Z"),
+          total_tokens: "100",
+          cost_usd: "1.00",
+          dedup_keys: ["pending-1"],
+        }],
+      };
+    },
+  } as unknown as Pool;
+
+  const preview = await new ClickHouseStorage(ch, pg).previewUnassignedTeamAttribution({
+    userId: "user-1",
+    from: null,
+    to: null,
+  });
+
+  const rawPreviewSql = chQueries.find((sql) => sql.includes("FROM usage_events FINAL") && sql.includes("team_id = ''")) ?? "";
+  assert.match(rawPreviewSql, /team_id = ''/);
+  assert.match(rawPreviewSql, /ts >= \{raw_full_from/);
+  assert.match(rawPreviewSql, /dedup_key NOT IN/);
+  assert.match(chQueries.find((sql) => sql.includes("FROM usage_15m_rollup_v2")) ?? "", /bucket_15m < \{raw_full_from/);
+  assert.deepEqual(preview, {
+    events: 6,
+    from: new Date("2026-04-01T00:00:00.000Z"),
+    to: new Date("2026-07-03T00:00:00.000Z"),
+    totalTokens: 600,
+    costUsd: 6,
+  });
+});
+
+test("ClickHouse 팀 귀속 batch는 pending outbox를 먼저 고치고 delivered raw를 dirty 후 교체한다", async () => {
+  const actions: string[] = [];
+  const pgCalls: Array<{ sql: string; params: unknown[] }> = [];
+  const inserts: Array<Record<string, unknown>> = [];
+  const client = {
+    query: async (sql: string, params: unknown[] = []) => {
+      pgCalls.push({ sql, params });
+      if (sql.includes("UPDATE clickhouse_usage_outbox AS outbox")) {
+        actions.push("outbox-update");
+        return {
+          rows: [{ processed: "1", updated: "1", affected_ts: [new Date("2026-07-10T10:05:00.000Z")], has_more: false }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets")) actions.push("mark-dirty");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const chQueries: string[] = [];
+  const ch = {
+    command: async () => undefined,
+    query: async ({ query }: { query: string }) => {
+      chQueries.push(query);
+      if (query.includes("SELECT dedup_key") && query.includes("FROM usage_events FINAL")) {
+        actions.push("raw-select");
+        return { json: async () => [{
+          dedup_key: "raw-1",
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          ts: "2026-07-10 10:06:00.000",
+          input_tokens: "100",
+          output_tokens: "20",
+          cache_read_tokens: "5",
+          cache_creation_tokens: "3",
+          cost_usd: "0.01230000",
+          pricing_revision_id: "rev-1",
+          cost_status: "priced",
+          log_adapter: "claude",
+          host: "macbook",
+        }] };
+      }
+      return { json: async () => [] };
+    },
+    insert: async ({ table, values }: { table: string; values: Array<Record<string, unknown>> }) => {
+      if (table === "usage_events") {
+        actions.push("insert-replacement");
+        inserts.push(...values);
+      }
+    },
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, {
+    connect: async () => client,
+  } as unknown as Pool);
+
+  const result = await storage.backfillUnassignedTeamAttribution({
+    userId: "user-1",
+    teamId: "team-1",
+    from: null,
+    to: null,
+    limit: 10,
+    jobId: "job-1",
+  });
+
+  const outboxUpdate = pgCalls.find(({ sql }) => sql.includes("UPDATE clickhouse_usage_outbox AS outbox"));
+  assert.ok(outboxUpdate);
+  assert.match(outboxUpdate.sql, /delivered_at IS NULL/);
+  assert.match(outboxUpdate.sql, /outbox\.team_id IS NULL/);
+  assert.match(chQueries.find((sql) => sql.includes("SELECT dedup_key")) ?? "", /FROM usage_events FINAL/);
+  assert.match(chQueries.find((sql) => sql.includes("SELECT dedup_key")) ?? "", /team_id = ''/);
+  assert.ok(actions.indexOf("outbox-update") < actions.indexOf("raw-select"));
+  assert.ok(actions.indexOf("mark-dirty") < actions.indexOf("insert-replacement"));
+  assert.equal(inserts[0]?.dedup_key, "raw-1");
+  assert.equal(inserts[0]?.team_id, "team-1");
+  assert.deepEqual(result, {
+    processed: 2,
+    updated: 2,
+    affectedBuckets: [new Date("2026-07-10T10:00:00.000Z")],
+    hasMore: false,
+  });
+});
+
+test("ClickHouse rollup-only 귀속은 staging과 read fence를 만든 뒤 동기 교체하고 검증 후 fence를 해제한다", async () => {
+  const actions: string[] = [];
+  const client = {
+    query: async (sql: string) => {
+      if (sql.includes("INSERT INTO team_attribution_read_fences")) actions.push("create-fence");
+      if (sql.includes("clickhouse_timezone_rollup_jobs")) actions.push("invalidate-timezone");
+      if (sql.includes("complete_team_attribution_fence")) actions.push("complete-fence");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      if (query.includes("INSERT INTO team_attribution_rollup_staging")) actions.push("stage");
+      if (query.includes("DELETE WHERE") && query.includes("team_id = ''")) actions.push("delete-old");
+      if (query.includes("INSERT INTO usage_15m_rollup_v2") && query.includes("team_attribution_rollup_staging")) {
+        actions.push("insert-replacement");
+      }
+      if (query.includes("DELETE WHERE job_id")) actions.push("cleanup-stage");
+    },
+    query: async ({ query }: { query: string }) => {
+      if (query.includes("SELECT dedup_key") && query.includes("usage_events FINAL")) {
+        return { json: async () => [] };
+      }
+      if (query.includes("FROM team_attribution_rollup_staging") && query.includes("SELECT DISTINCT bucket_start")) {
+        return { json: async () => [] };
+      }
+      if (query.includes("SELECT DISTINCT bucket_15m")) {
+        return { json: async () => [{ bucket_start: "2026-04-01 00:00:00.000" }] };
+      }
+      if (query.includes("team-attribution-rollup-verification")) {
+        actions.push("verify");
+        return { json: async () => [{ remaining_old: "0", staged_rows: "1", replacement_rows: "1" }] };
+      }
+      return { json: async () => [] };
+    },
+    insert: async () => undefined,
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, { connect: async () => client } as unknown as Pool);
+
+  const result = await storage.backfillUnassignedTeamAttribution({
+    userId: "user-1",
+    teamId: "team-1",
+    from: null,
+    to: null,
+    limit: 100,
+    jobId: "job-1",
+  });
+
+  for (const action of ["stage", "create-fence", "delete-old", "insert-replacement", "verify", "invalidate-timezone", "complete-fence", "cleanup-stage"]) {
+    assert.notEqual(actions.indexOf(action), -1, `${action} action missing`);
+  }
+  assert.ok(actions.indexOf("stage") < actions.indexOf("create-fence"));
+  assert.ok(actions.indexOf("create-fence") < actions.indexOf("delete-old"));
+  assert.ok(actions.indexOf("delete-old") < actions.indexOf("insert-replacement"));
+  assert.ok(actions.indexOf("insert-replacement") < actions.indexOf("verify"));
+  assert.ok(actions.indexOf("verify") < actions.indexOf("complete-fence"));
+  assert.deepEqual(result, {
+    processed: 1,
+    updated: 1,
+    affectedBuckets: [new Date("2026-04-01T00:00:00.000Z")],
+    hasMore: true,
+  });
+});
+
+test("ClickHouse rollup-only 교체 실패는 fence와 staging을 보존한다", async () => {
+  const actions: string[] = [];
+  const client = {
+    query: async (sql: string) => {
+      if (sql.includes("INSERT INTO team_attribution_read_fences")) actions.push("create-fence");
+      if (sql.includes("complete_team_attribution_fence")) actions.push("complete-fence");
+      return { rows: [], rowCount: 0 };
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const ch = {
+    command: async ({ query }: { query: string }) => {
+      if (query.includes("INSERT INTO team_attribution_rollup_staging")) actions.push("stage");
+      if (query.includes("INSERT INTO usage_15m_rollup_v2") && query.includes("team_attribution_rollup_staging")) {
+        throw new Error("replacement failed");
+      }
+      if (query.includes("DELETE WHERE job_id")) actions.push("cleanup-stage");
+    },
+    query: async ({ query }: { query: string }) => {
+      if (query.includes("SELECT dedup_key")) return { json: async () => [] };
+      if (query.includes("SELECT DISTINCT bucket_start")) return { json: async () => [] };
+      if (query.includes("SELECT DISTINCT bucket_15m")) {
+        return { json: async () => [{ bucket_start: "2026-04-01 00:00:00.000" }] };
+      }
+      return { json: async () => [] };
+    },
+    insert: async () => undefined,
+  } as unknown as ClickHouseClient;
+  const storage = new ClickHouseStorage(ch, { connect: async () => client } as unknown as Pool);
+
+  await assert.rejects(storage.backfillUnassignedTeamAttribution({
+    userId: "user-1",
+    teamId: "team-1",
+    from: null,
+    to: null,
+    limit: 100,
+    jobId: "job-1",
+  }), /replacement failed/);
+
+  assert.equal(actions.includes("stage"), true);
+  assert.equal(actions.includes("create-fence"), true);
+  assert.equal(actions.includes("complete-fence"), false);
+  assert.equal(actions.includes("cleanup-stage"), false);
+});
+
+test("ClickHouse는 priced·legacy delivery만 있으면 가격 복구를 예약하지 않는다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries);
+
+  await storage.saveUsageEvents([
+    finalizedEvent({ dedupKey: "priced" }),
+    finalizedEvent({ dedupKey: "legacy", pricingRevisionId: null, costStatus: "legacy" }),
+  ]);
+
+  assert.equal(pgQueries.some(({ sql }) => sql.includes("enqueue_pricing_repair")), false);
+});
+
+test("ClickHouse delivery의 가격 복구 예약 실패는 outbox batch를 pending으로 되돌린다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, { failEnqueue: true });
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+
+  try {
+    await storage.saveUsageEvents([
+      finalizedEvent({ pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    ]);
+    await assert.rejects(storage.flushUsageOutbox(), /enqueue unavailable/);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(pgQueries.some(({ sql }) =>
+    sql.includes("SET status = 'pending'")
+  ), true);
+  assert.equal(pgQueries.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(warnings.some((warning) => warning.includes("queued rows retained")), true);
+});
+
+test("ClickHouse raw insert 실패 전에는 가격 복구를 예약하지 않는다", async () => {
+  const pgQueries: Array<{ sql: string; params: unknown[] }> = [];
+  const storage = storageWithInsertedRows([], pgQueries, { failInsert: true });
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+
+  try {
+    await storage.saveUsageEvents([
+      finalizedEvent({ pricingRevisionId: null, costStatus: "unpriced", costUsd: 0 }),
+    ]);
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(pgQueries.some(({ sql }) => sql.includes("enqueue_pricing_repair")), false);
+  assert.equal(pgQueries.some(({ sql }) => sql.includes("SET status = 'pending'")), true);
+  assert.equal(warnings.some((warning) => warning.includes("queued rows retained")), true);
+});
+
+test("ClickHouse 가격 복구는 unpriced와 legacy를 dirty 먼저 기록하고 priced 버전을 결정적으로 삽입한다", async () => {
   const actions: string[] = [];
   const queries: string[] = [];
   const inserts: Array<{
@@ -592,6 +1774,23 @@ test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 p
           cost_usd: "0.00000000",
           pricing_revision_id: "",
           cost_status: "unpriced",
+          log_adapter: "claude",
+          host: "macbook",
+        }, {
+          dedup_key: "event-2",
+          provider_key: "anthropic",
+          user_id: "user-1",
+          team_id: "team-1",
+          session_id: "session-1",
+          model: "claude-sonnet-4",
+          ts: "2026-07-10 10:06:00.000",
+          input_tokens: "200",
+          output_tokens: "40",
+          cache_read_tokens: "10",
+          cache_creation_tokens: "6",
+          cost_usd: "9.99000000",
+          pricing_revision_id: "legacy-revision",
+          cost_status: "legacy",
           log_adapter: "claude",
           host: "macbook",
         }],
@@ -625,29 +1824,35 @@ test("ClickHouse 가격 복구는 dirty를 먼저 기록하고 같은 dedup의 p
     from: new Date("2026-04-11T00:00:00.000Z"),
     to: new Date("2026-07-10T12:00:00.000Z"),
     models: ["claude-sonnet-4"],
+    includeCodexModelFallback: true,
     replaceRevisionIds: ["bootstrap-revision"],
     limit: 100,
     generation: "2026-07-10T12:00:00.000Z",
   };
 
-  const first = await storage.repairUnpricedUsage(request, resolver);
-  const second = await storage.repairUnpricedUsage(request, resolver);
+  const first = await storage.repairPricingUsage(request, resolver);
+  const second = await storage.repairPricingUsage(request, resolver);
 
   assert.match(queries[0] ?? "", /FROM usage_events FINAL/);
-  assert.match(queries[0] ?? "", /cost_status = 'unpriced'[\s\S]*pricing_revision_id IN/);
+  assert.match(queries[0] ?? "", /cost_status IN \('unpriced', 'legacy'\)[\s\S]*pricing_revision_id IN/);
+  assert.match(queries[0] ?? "", /provider_key = 'codex'[\s\S]*log_adapter = 'codex'[\s\S]*model = ''/);
   assert.deepEqual(actions.slice(0, 3), ["mark-dirty", "mark-dirty", "insert-replacement"]);
   assert.equal(inserts[0]?.values[0]?.dedup_key, "event-1");
   assert.equal(inserts[0]?.values[0]?.cost_status, "priced");
   assert.equal(inserts[0]?.values[0]?.pricing_revision_id, "revision-1");
+  assert.equal(inserts[0]?.values[1]?.dedup_key, "event-2");
+  assert.equal(inserts[0]?.values[1]?.input_tokens, 200);
+  assert.equal(inserts[0]?.values[1]?.cost_status, "priced");
   assert.match(inserts[0]?.token ?? "", /^pricing-repair:/);
   assert.equal(inserts[1]?.token, inserts[0]?.token);
   assert.deepEqual(first, {
-    scanned: 1,
+    scanned: 2,
     recovered: 1,
+    repricedLegacy: 1,
     affectedBuckets: [new Date("2026-07-10T10:00:00.000Z")],
     hasMore: false,
   });
-  assert.equal(second.recovered, 1);
+  assert.equal(second.repricedLegacy, 1);
 });
 
 test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 mutation으로 제거한다", async () => {
@@ -712,7 +1917,82 @@ test("ClickHouse Codex 재생 보정은 exact match만 dirty 처리 후 동기 m
   });
 });
 
-test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한다", async () => {
+test("ClickHouse exact-key 보정은 소유권 범위를 유지하고 dirty-first 동기 삭제한다", async () => {
+  const key = "b".repeat(64);
+  const actions: string[] = [];
+  let selectedSql = "";
+  let selectedParams: Record<string, unknown> = {};
+  let deleteCommand: Record<string, unknown> | undefined;
+  const pgQueries: Array<{ sql: string; params?: unknown[] }> = [];
+  const ch = {
+    query: async (args: { query: string; query_params: Record<string, unknown> }) => {
+      selectedSql = args.query;
+      selectedParams = args.query_params;
+      return { json: async () => [{ dedup_key: key, ts: "2026-07-15 01:20:21.000" }] };
+    },
+    command: async (args: Record<string, unknown>) => {
+      if (/ALTER TABLE usage_events\s+DELETE WHERE user_id/.test(String(args.query ?? ""))) {
+        actions.push("delete");
+        deleteCommand = args;
+      }
+    },
+  } as unknown as ClickHouseClient;
+  const client = {
+    async query(sql: string, params?: unknown[]) {
+      pgQueries.push({ sql, params });
+      if (sql.includes("FROM clickhouse_usage_outbox") && sql.includes("FOR UPDATE")) {
+        return {
+          rows: [{ dedup_key: key, ts: new Date("2026-07-15T01:20:21.000Z") }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("DELETE FROM clickhouse_usage_outbox")) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO clickhouse_rollup_dirty_buckets")) actions.push("dirty");
+      return { rows: [], rowCount: 0 };
+    },
+    release() {},
+  } as unknown as PoolClient;
+  const storage = new ClickHouseStorage(
+    ch,
+    { connect: async () => client } as unknown as Pool,
+  );
+
+  const result = await storage.reconcileUsageEvents({
+    userId: "user-1",
+    providerKey: "codex",
+    logAdapter: "codex",
+    dedupKeys: [key],
+  });
+
+  assert.match(selectedSql, /FROM usage_events FINAL/);
+  assert.match(selectedSql, /user_id = \{user_id:String\}/);
+  assert.match(selectedSql, /provider_key = \{provider_key:String\}/);
+  assert.match(selectedSql, /log_adapter = \{log_adapter:String\}/);
+  assert.deepEqual(selectedParams.dedup_keys, [key]);
+  const outboxDelete = pgQueries.find(({ sql }) => sql.includes("DELETE FROM clickhouse_usage_outbox"));
+  assert.ok(outboxDelete);
+  assert.match(outboxDelete.sql, /user_id = \$1/);
+  assert.match(outboxDelete.sql, /provider_key = \$2/);
+  assert.match(outboxDelete.sql, /log_adapter = \$3/);
+  assert.deepEqual(outboxDelete.params, ["user-1", "codex", "codex", [key]]);
+  assert.deepEqual(actions, ["dirty", "dirty", "delete", "dirty", "dirty"]);
+  assert.ok(deleteCommand);
+  assert.match(String(deleteCommand?.query), /user_id = \{user_id:String\}/);
+  assert.match(String(deleteCommand?.query), /provider_key = \{provider_key:String\}/);
+  assert.match(String(deleteCommand?.query), /log_adapter = \{log_adapter:String\}/);
+  assert.equal(
+    (deleteCommand?.clickhouse_settings as { mutations_sync: string }).mutations_sync,
+    "1",
+  );
+  assert.deepEqual(result, {
+    reconciled: 1,
+    affectedBuckets: [new Date("2026-07-15T01:15:00.000Z")],
+  });
+});
+
+test("ClickHouse 가격 복구 모델 진단은 FINAL 원본의 unpriced와 legacy를 상태별 집계한다", async () => {
   let query = "";
   let params: Record<string, unknown> = {};
   const ch = {
@@ -720,23 +2000,31 @@ test("ClickHouse 미확정 모델 진단은 FINAL 원본을 범위별 집계한�
     query: async (args: { query: string; query_params: Record<string, unknown> }) => {
       query = args.query;
       params = args.query_params;
-      return { json: async () => [{ model: "model-a", events: "2", first_at: "2026-07-01 00:00:00.000", last_at: "2026-07-02 00:00:00.000" }] };
+      return { json: async () => [{
+        provider_key: "codex", log_adapter: "codex",
+        model: "model-a", events: "5", unpriced_events: "2", legacy_events: "3",
+        first_at: "2025-09-01 00:00:00.000", last_at: "2026-07-02 00:00:00.000",
+      }] };
     },
   } as unknown as ClickHouseClient;
   const storage = new ClickHouseStorage(ch, {} as Pool);
   const from = new Date("2026-07-01T00:00:00Z");
   const to = new Date("2026-07-03T00:00:00Z");
 
-  const result = await storage.getUnpricedUsageModels(from, to, ["bootstrap-revision"]);
+  const result = await storage.getPricingRecoveryModels(from, to, ["bootstrap-revision"]);
 
   assert.match(query, /FROM usage_events FINAL/);
-  assert.match(query, /cost_status = 'unpriced'[\s\S]*pricing_revision_id IN/);
+  assert.match(query, /cost_status IN \('unpriced', 'legacy'\)[\s\S]*pricing_revision_id IN/);
   assert.equal(params.from, "2026-07-01 00:00:00.000");
   assert.deepEqual(params.replace_revision_ids, ["bootstrap-revision"]);
   assert.deepEqual(result, [{
+    providerKey: "codex",
+    logAdapter: "codex",
     model: "model-a",
-    events: 2,
-    firstAt: new Date("2026-07-01T00:00:00.000Z"),
+    events: 5,
+    unpricedEvents: 2,
+    legacyEvents: 3,
+    firstAt: new Date("2025-09-01T00:00:00.000Z"),
     lastAt: new Date("2026-07-02T00:00:00.000Z"),
   }]);
 });
@@ -1617,8 +2905,8 @@ test("compose와 운영 문서는 legacy hourly를 제거하고 runtime 자동 �
   assert.doesNotMatch(compose, /CLICKHOUSE_READ_ROLLUP:.*hourly rollup.*대시보드/);
   assert.doesNotMatch(runbook, /CLICKHOUSE_READ_ROLLUP=1/);
   assert.match(runbook, /schema.*rollup:activate-timezones.*worker.*coverage.*benchmark.*unset.*자동/is);
-  assert.match(readme, /CLICKHOUSE_READ_ROLLUP.*deprecated alias/);
-  assert.match(readme, /schema 배포.*worker 자동 백필.*T0 고정.*60분.*자동 전환/is);
+  assert.match(readme, /CLICKHOUSE_READ_ROLLUP.*deprecated alias/is);
+  assert.match(readme, /deploy schema.*automatic worker backfill.*fix T0.*60.*switch automatically/is);
 });
 
 test("인사이트의 current·previous 집계도 공통 router의 ready timezone-day source를 사용한다", async () => {
@@ -1710,10 +2998,12 @@ test("ClickHouse ensure schema는 가격 상태를 가진 400일 15분 v2 테이
   const rawPricingRevisionDdl = commands.find((query) => /usage_events ADD COLUMN.*pricing_revision_id/.test(query));
   const rawCostStatusDdl = commands.find((query) => /usage_events ADD COLUMN.*cost_status/.test(query));
   const ddl = commands.find((query) => query.includes("usage_15m_rollup_v2"));
+  const stagingDdl = commands.find((query) => query.includes("CREATE TABLE IF NOT EXISTS team_attribution_rollup_staging"));
 
   assert.ok(rawPricingRevisionDdl);
   assert.ok(rawCostStatusDdl);
   assert.ok(ddl);
+  assert.ok(stagingDdl);
   assert.match(ddl, /pricing_revision_id\s+String/);
   assert.match(ddl, /cost_status\s+LowCardinality\(String\)/);
   assert.match(ddl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
@@ -1722,6 +3012,8 @@ test("ClickHouse ensure schema는 가격 상태를 가진 400일 15분 v2 테이
     ddl,
     /ORDER BY\s*\(bucket_15m, provider_key, user_id, team_id, session_id, model, host, pricing_revision_id, cost_status\)/,
   );
+  assert.match(stagingDdl, /ENGINE\s*=\s*ReplacingMergeTree\(version\)/);
+  assert.match(stagingDdl, /TTL\s+toDateTime\(created_at\)\s*\+\s*INTERVAL\s+7\s+DAY\s+DELETE/);
 });
 
 test("ClickHouse 기본 schema ensure는 opt-in raw TTL을 변경하지 않는다", async () => {
@@ -2007,6 +3299,58 @@ test("rollup storage snapshot은 active part만 합산하고 raw min/max를 2초
   assert.match(rawRange.query, /min\(ts\)/);
   assert.match(rawRange.query, /max\(ts\)/);
   assert.ok(queries.every(({ clickhouse_settings }) => clickhouse_settings?.max_execution_time === 2));
+});
+
+test("ClickHouseStorage의 동시 JSON read는 네 개를 넘지 않는다", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const releases = new Map<number, () => void>();
+  let nextIndex = 0;
+  const ch = {
+    command: async () => undefined,
+    query: async () => {
+      const index = nextIndex++;
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise<void>((resolve) => releases.set(index, resolve));
+      active -= 1;
+      return { json: async () => [] };
+    },
+  } as unknown as ClickHouseClient;
+  const runner = new ClickHouseOperationController({ maxConcurrent: 4, queueTimeoutMs: 1_000 });
+  const storage = new ClickHouseStorage(ch, {} as Pool, { operationRunner: runner });
+  const jobs = Array.from({ length: 6 }, (_, index) => storage.getUserHosts(`user-${index}`));
+
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(active, 4);
+  releases.get(0)!();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  releases.get(1)!();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  for (const index of [2, 3, 4, 5]) releases.get(index)!();
+  await Promise.all(jobs);
+
+  assert.equal(maxActive, 4);
+});
+
+test("ClickHouse client 호출과 readiness ping은 operation controller를 거친다", () => {
+  const source = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
+  const clientCalls = [...source.matchAll(/this\.ch\.(?:query|command|insert)\(/g)];
+  const guardedCalls = [...source.matchAll(
+    /this\.operationRunner\.run\(\s*(?:"[^"]+"|operation),\s*(?:async\s*)?\(\)\s*=>\s*this\.ch\.(?:query|command|insert)\(/g,
+  )];
+
+  assert.ok(clientCalls.length > 0);
+  assert.equal(guardedCalls.length, clientCalls.length);
+  assert.equal([...source.matchAll(/retryTransient:\s*true/g)].length, 3);
+  assert.match(
+    source,
+    /runSchemaCommand[\s\S]*?operationRunner\.run\(\s*"ensure_schema",[\s\S]*?\{\s*retryTransient:\s*true\s*}\s*\)/,
+  );
+  assert.match(
+    source,
+    /defaultClickHouseOperationController\.run\(\s*"readiness_ping",[\s\S]*?\{\s*retryTransient:\s*true\s*}\s*\)/,
+  );
 });
 
 test("ClickHouse runtime/init schema는 timezone cache 2종에 400일 TTL과 exact key를 둔다", async () => {

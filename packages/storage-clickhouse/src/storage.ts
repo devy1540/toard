@@ -16,9 +16,11 @@ import type {
   LeaderRow,
   LeaderScope,
   ModelBreakdown,
+  OrganizationDashboardData,
+  OrganizationDashboardQuery,
   OverviewStats,
   PeriodQuery,
-  PricingRepairBatchResult,
+  PricingRecoveryBatchResult,
   PricingRepairRequest,
   PricingRepairResolver,
   ProviderBreakdown,
@@ -27,26 +29,39 @@ import type {
   SessionUsageSummary,
   ModelDailyPoint,
   StorageBackend,
+  TeamAttributionBatchRequest,
+  TeamAttributionBatchResult,
+  TeamAttributionPreview,
+  TeamAttributionRange,
   TeamMemberTimeseriesPoint,
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
   UsageCostCoverage,
+  UsageEventReconciliationRequest,
+  UsageEventReconciliationResult,
   UsageReplayReconciliationRequest,
   UsageReplayReconciliationResult,
-  UnpricedUsageModelDiagnostic,
+  PricingRecoveryModelDiagnostic,
   UserUsage,
   UserInsightComparison,
+  UtilizationUsageDay,
+  UtilizationUsageQuery,
 } from "@toard/core";
 import {
   addLocalCalendarDays,
   buildUserInsightComparison,
+  CACHE_SIGNAL_PROVIDER_KEYS,
   canonicalTimezoneId,
   firstInstantOfLocalDate,
   localDateKey,
   CLICKHOUSE_RAW_RETENTION_DAYS,
 } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
+import {
+  defaultClickHouseOperationController,
+  type ClickHouseOperationRunner,
+} from "./operation-controller";
 
 /** CH/PG 는 큰 수·Decimal 을 string 으로 반환 → number 변환 */
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -150,6 +165,8 @@ export interface ClickHouseStorageOptions {
   read15mV2Rollup?: RollupReadMode;
   /** 원본 usage_events의 90일 논리 기간 + 7일 safety grace TTL을 적용할지 여부. */
   enforceRetentionTtl?: boolean;
+  /** ClickHouse 요청 admission과 transient retry를 제어한다. */
+  operationRunner?: ClickHouseOperationRunner;
 }
 
 export const ROLLUP_STORAGE_TABLES = [
@@ -224,9 +241,9 @@ function clickHouseTimestampToIso(value: unknown): string | null {
 }
 
 interface CostCoverageRow {
-  priced_events?: string;
-  unpriced_events?: string;
-  legacy_events?: string;
+  priced_events?: string | number;
+  unpriced_events?: string | number;
+  legacy_events?: string | number;
 }
 
 interface AggRow extends CostCoverageRow {
@@ -237,6 +254,128 @@ interface AggRow extends CostCoverageRow {
   output?: string;
   cache_read?: string;
   cache_creation?: string;
+}
+
+type OrganizationUsageBundleKind = "current_overview" | "previous_overview" | "daily";
+type OrganizationBreakdownBundleKind = "user_leader" | "team_leader" | "provider";
+type OrganizationDashboardNumeric = string | number;
+
+interface OrganizationUsageBundleRow {
+  result_kind: OrganizationUsageBundleKind;
+  day: string | null;
+  sessions: OrganizationDashboardNumeric;
+  active_users: OrganizationDashboardNumeric;
+  cost: OrganizationDashboardNumeric;
+  input: OrganizationDashboardNumeric;
+  output: OrganizationDashboardNumeric;
+  cache_read: OrganizationDashboardNumeric;
+  cache_creation: OrganizationDashboardNumeric;
+  priced_events: OrganizationDashboardNumeric;
+  unpriced_events: OrganizationDashboardNumeric;
+  legacy_events: OrganizationDashboardNumeric;
+}
+
+interface OrganizationBreakdownBundleRow {
+  result_kind: OrganizationBreakdownBundleKind;
+  key: string;
+  cost: OrganizationDashboardNumeric;
+  tokens: OrganizationDashboardNumeric;
+  sessions: OrganizationDashboardNumeric;
+  priced_events: OrganizationDashboardNumeric;
+  unpriced_events: OrganizationDashboardNumeric;
+  legacy_events: OrganizationDashboardNumeric;
+}
+
+function organizationDashboardParsingError(
+  bundle: "usage" | "breakdown",
+  kind: string,
+  field: string,
+): Error {
+  return new Error(`Organization dashboard ${bundle} row parsing error: ${kind}.${field}`);
+}
+
+function organizationDashboardRow(
+  value: unknown,
+  bundle: "usage" | "breakdown",
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw organizationDashboardParsingError(bundle, "unknown", "row");
+  }
+  return value as Record<string, unknown>;
+}
+
+function organizationDashboardNumeric(
+  row: Record<string, unknown>,
+  bundle: "usage" | "breakdown",
+  kind: string,
+  field: string,
+): OrganizationDashboardNumeric {
+  const value = row[field];
+  const valid = typeof value === "number"
+    ? Number.isFinite(value)
+    : typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value));
+  if (!valid) {
+    throw organizationDashboardParsingError(bundle, kind, field);
+  }
+  return value as OrganizationDashboardNumeric;
+}
+
+function parseOrganizationUsageBundleRow(value: unknown): OrganizationUsageBundleRow {
+  const row = organizationDashboardRow(value, "usage");
+  const rawKind = row.result_kind;
+  if (typeof rawKind !== "string") {
+    throw organizationDashboardParsingError("usage", "unknown", "result_kind");
+  }
+  if (rawKind !== "current_overview" && rawKind !== "previous_overview" && rawKind !== "daily") {
+    throw new Error("Unknown organization dashboard usage row kind");
+  }
+  const day = row.day;
+  if (rawKind === "daily") {
+    if (day == null) throw new Error("Organization dashboard daily row is missing its bucket");
+    if (typeof day !== "string") {
+      throw organizationDashboardParsingError("usage", rawKind, "day");
+    }
+  } else if (day !== null) {
+    throw organizationDashboardParsingError("usage", rawKind, "day");
+  }
+  return {
+    result_kind: rawKind,
+    day,
+    sessions: organizationDashboardNumeric(row, "usage", rawKind, "sessions"),
+    active_users: organizationDashboardNumeric(row, "usage", rawKind, "active_users"),
+    cost: organizationDashboardNumeric(row, "usage", rawKind, "cost"),
+    input: organizationDashboardNumeric(row, "usage", rawKind, "input"),
+    output: organizationDashboardNumeric(row, "usage", rawKind, "output"),
+    cache_read: organizationDashboardNumeric(row, "usage", rawKind, "cache_read"),
+    cache_creation: organizationDashboardNumeric(row, "usage", rawKind, "cache_creation"),
+    priced_events: organizationDashboardNumeric(row, "usage", rawKind, "priced_events"),
+    unpriced_events: organizationDashboardNumeric(row, "usage", rawKind, "unpriced_events"),
+    legacy_events: organizationDashboardNumeric(row, "usage", rawKind, "legacy_events"),
+  };
+}
+
+function parseOrganizationBreakdownBundleRow(value: unknown): OrganizationBreakdownBundleRow {
+  const row = organizationDashboardRow(value, "breakdown");
+  const rawKind = row.result_kind;
+  if (typeof rawKind !== "string") {
+    throw organizationDashboardParsingError("breakdown", "unknown", "result_kind");
+  }
+  if (rawKind !== "user_leader" && rawKind !== "team_leader" && rawKind !== "provider") {
+    throw new Error("Unknown organization dashboard breakdown row kind");
+  }
+  if (typeof row.key !== "string") {
+    throw organizationDashboardParsingError("breakdown", rawKind, "key");
+  }
+  return {
+    result_kind: rawKind,
+    key: row.key,
+    cost: organizationDashboardNumeric(row, "breakdown", rawKind, "cost"),
+    tokens: organizationDashboardNumeric(row, "breakdown", rawKind, "tokens"),
+    sessions: organizationDashboardNumeric(row, "breakdown", rawKind, "sessions"),
+    priced_events: organizationDashboardNumeric(row, "breakdown", rawKind, "priced_events"),
+    unpriced_events: organizationDashboardNumeric(row, "breakdown", rawKind, "unpriced_events"),
+    legacy_events: organizationDashboardNumeric(row, "breakdown", rawKind, "legacy_events"),
+  };
 }
 
 const costCoverage = (row: CostCoverageRow | undefined): UsageCostCoverage => ({
@@ -476,13 +615,36 @@ const CLICKHOUSE_SCHEMA_DDL = [
    PARTITION BY toYYYYMM(bucket_start)
    ORDER BY (timezone, bucket_start, user_id, team_id, provider_key, model, host, session_id, pricing_revision_id, cost_status)
    TTL toDateTime(bucket_start) + INTERVAL 400 DAY DELETE`,
+  `CREATE TABLE IF NOT EXISTS team_attribution_rollup_staging
+   (
+     job_id                 String,
+     layer                  LowCardinality(String),
+     bucket_start           DateTime64(3, 'UTC'),
+     provider_key           LowCardinality(String),
+     user_id                String,
+     session_id             String,
+     model                  LowCardinality(String),
+     host                   LowCardinality(String),
+     pricing_revision_id    String,
+     cost_status            LowCardinality(String),
+     event_count            UInt64,
+     input_tokens           UInt64,
+     output_tokens          UInt64,
+     cache_read_tokens      UInt64,
+     cache_creation_tokens  UInt64,
+     cost_usd               Decimal(18, 8),
+     version                UInt64,
+     created_at             DateTime64(3, 'UTC') DEFAULT now64(3)
+   )
+   ENGINE = ReplacingMergeTree(version)
+   PARTITION BY toYYYYMM(bucket_start)
+   ORDER BY (job_id, layer, bucket_start, provider_key, user_id, session_id, model, host, pricing_revision_id, cost_status)
+   TTL toDateTime(created_at) + INTERVAL 7 DAY DELETE`,
 ] as const;
 
 const CLICKHOUSE_RAW_RETENTION_DDL =
   `ALTER TABLE usage_events MODIFY TTL toDateTime(ts) + INTERVAL ${CLICKHOUSE_RAW_RETENTION_DAYS} DAY DELETE`;
 
-const CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS = 5;
-const CLICKHOUSE_TRANSIENT_RETRY_BASE_MS = 150;
 const CLICKHOUSE_ROLLUP_DEFAULT_FINALIZE_DELAY_MS = 30 * 60 * 1000;
 const CLICKHOUSE_ROLLUP_DEFAULT_MAX_BUCKETS = 16;
 const TIMEZONE_ROLLUP_MAX_DAYS = 400;
@@ -502,21 +664,10 @@ const USAGE_15M_V2: RollupSpec = {
   sourcePolicy: "canonical_final",
 };
 const USAGE_ROLLUPS = [USAGE_15M, USAGE_15M_V2] as const;
-const TRANSIENT_CLICKHOUSE_ERROR_CODES = new Set([
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "EPIPE",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "ETIMEDOUT",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_SOCKET",
-]);
-
 /**
  * ClickHouse 저장 백엔드 (설계 §4.3, ADR-003 옵트인).
  * 이벤트·집계는 CH(ReplacingMergeTree, 읽기 시 FINAL), 메타(이름)는 PG 에서 머지.
- * 팀 귀속은 수집 시점 team_id 를 이벤트에 비정규화해 CH 단독 GROUP BY 로 성립.
+ * 팀 귀속은 이벤트 발생 시각의 소속 team_id 를 비정규화해 CH 단독 GROUP BY 로 성립.
  */
 export class ClickHouseStorage implements StorageBackend {
   private readonly tz: string;
@@ -525,6 +676,7 @@ export class ClickHouseStorage implements StorageBackend {
   private readonly read15mRollup: boolean;
   private readonly read15mV2Rollup: RollupReadMode;
   private readonly enforceRetentionTtl: boolean;
+  private readonly operationRunner: ClickHouseOperationRunner;
   private readonly cacheReadyInFlight = new Map<string, Promise<CacheWindow | null>>();
   private readonly timezoneBucketPlans = new Map<string, CacheBucket[]>();
   private runtimeReadStateCache:
@@ -540,6 +692,7 @@ export class ClickHouseStorage implements StorageBackend {
     private readonly pg: Pool,
     opts: ClickHouseStorageOptions = {},
   ) {
+    this.operationRunner = opts.operationRunner ?? defaultClickHouseOperationController;
     this.tz = safeTimezone(opts.timezone);
     this.usageEventsSource = opts.readFinal ? "usage_events FINAL" : "usage_events";
     this.readRollup = opts.readRollup ?? false;
@@ -597,7 +750,7 @@ export class ClickHouseStorage implements StorageBackend {
     type RangeRow = { from: string | Date | null; to: string | Date | null };
     const settings = { max_execution_time: 2 } as const;
     const [partRows, rangeRows] = await Promise.all([
-      this.ch.query({
+      this.operationRunner.run("get_rollup_storage_stats_parts", () => this.ch.query({
         query: `SELECT table, sum(rows) AS rows, sum(bytes_on_disk) AS bytes
                 FROM system.parts
                 WHERE active = 1
@@ -607,14 +760,14 @@ export class ClickHouseStorage implements StorageBackend {
         query_params: { tables: [...ROLLUP_STORAGE_TABLES] },
         clickhouse_settings: settings,
         format: "JSONEachRow",
-      }).then((result) => result.json<PartRow>()),
-      this.ch.query({
+      }).then((result) => result.json<PartRow>())),
+      this.operationRunner.run("get_rollup_storage_stats_range", () => this.ch.query({
         query: `SELECT if(count() = 0, NULL, min(ts)) AS from,
                        if(count() = 0, NULL, max(ts)) AS to
                 FROM usage_events`,
         clickhouse_settings: settings,
         format: "JSONEachRow",
-      }).then((result) => result.json<RangeRow>()),
+      }).then((result) => result.json<RangeRow>())),
     ]);
 
     const tables = Object.fromEntries(
@@ -1276,11 +1429,19 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async ensureClickHouseSchema(): Promise<void> {
     for (const query of CLICKHOUSE_SCHEMA_DDL) {
-      await this.ch.command({ query });
+      await this.runSchemaCommand(query);
     }
     if (this.enforceRetentionTtl) {
-      await this.ch.command({ query: CLICKHOUSE_RAW_RETENTION_DDL });
+      await this.runSchemaCommand(CLICKHOUSE_RAW_RETENTION_DDL);
     }
+  }
+
+  private async runSchemaCommand(query: string): Promise<void> {
+    await this.operationRunner.run(
+      "ensure_schema",
+      () => this.ch.command({ query }),
+      { retryTransient: true },
+    );
   }
 
   private ensureSchema(): Promise<void> {
@@ -1295,17 +1456,15 @@ export class ClickHouseStorage implements StorageBackend {
     query: string,
     query_params: Params,
     clickhouse_settings?: ClickHouseSettings,
+    operation = "clickhouse_query",
   ): Promise<T[]> {
-    return retryTransientClickHouseError(async () => {
-      await this.ensureSchema();
-      const rs = await this.ch.query({
+    await this.ensureSchema();
+    return this.operationRunner.run(operation, () => this.ch.query({
         query,
         query_params,
         clickhouse_settings,
         format: "JSONEachRow",
-      });
-      return rs.json<T>();
-    });
+      }).then((rs) => rs.json<T>()), { retryTransient: true });
   }
 
   // ── 쓰기 ──
@@ -1315,11 +1474,11 @@ export class ClickHouseStorage implements StorageBackend {
     await this.ensureSchema();
     // ms 내 단조 증가 시퀀스로 충돌 완화(난수보다 안정적; raw id 하류 의존 없음)
     const id = Date.now() * 1000 + (this.rawSeq++ % 1000);
-    await this.ch.insert({
+    await this.operationRunner.run("save_raw_event", () => this.ch.insert({
       table: "raw_events",
       values: [{ id, provider_key: providerKey, payload: JSON.stringify(payload) }],
       format: "JSONEachRow",
-    });
+    }));
     return id;
   }
 
@@ -1336,35 +1495,604 @@ export class ClickHouseStorage implements StorageBackend {
     return { inserted: res.inserted, deduped: res.deduped };
   }
 
-  async getUnpricedUsageModels(
+  async previewUnassignedTeamAttribution(
+    input: TeamAttributionRange,
+  ): Promise<TeamAttributionPreview> {
+    type PreviewRow = {
+      events: string | number;
+      from_ts: Date | string | null;
+      to_ts: Date | string | null;
+      total_tokens: string | number;
+      cost_usd: string | number;
+      dedup_keys?: string[] | null;
+      raw_from?: Date | string | null;
+    };
+    const pendingResult = await this.pg.query<PreviewRow>(
+      `SELECT COUNT(*) AS events,
+              MIN(ts) AS from_ts,
+              MAX(ts) AS to_ts,
+              COALESCE(SUM(
+                input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens
+              ), 0) AS total_tokens,
+              COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost_usd,
+              COALESCE(ARRAY_AGG(dedup_key) FILTER (WHERE dedup_key IS NOT NULL), '{}') AS dedup_keys
+         FROM clickhouse_usage_outbox
+        WHERE user_id = $1
+          AND team_id IS NULL
+          AND delivered_at IS NULL
+          AND ($2::timestamptz IS NULL OR ts >= $2)
+          AND ($3::timestamptz IS NULL OR ts < $3)`,
+      [input.userId, input.from, input.to],
+    );
+    const pending = pendingResult.rows[0]!;
+    const pendingKeys = pending.dedup_keys ?? [];
+    const rawFullFrom = await this.clickHouseRawFullFrom();
+    const rawRows = await this.queryJson<PreviewRow>(
+      `SELECT count() AS events,
+              if(count() = 0, NULL, min(ts)) AS from_ts,
+              if(count() = 0, NULL, max(ts)) AS to_ts,
+              coalesce(sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0) AS total_tokens,
+              coalesce(sumIf(cost_usd, cost_status != 'unpriced'), 0) AS cost_usd
+         FROM usage_events FINAL
+        WHERE user_id = {user_id:String}
+          AND team_id = ''
+          AND ts >= {raw_full_from:DateTime64(3)}
+          AND ({from_nullable:UInt8} = 1 OR ts >= {from:DateTime64(3)})
+          AND ({to_nullable:UInt8} = 1 OR ts < {to:DateTime64(3)})
+          AND dedup_key NOT IN {pending_keys:Array(String)}`,
+      {
+        user_id: input.userId,
+        raw_full_from: chTs(rawFullFrom),
+        from_nullable: input.from ? 0 : 1,
+        from: chTs(input.from ?? new Date(0)),
+        to_nullable: input.to ? 0 : 1,
+        to: chTs(input.to ?? new Date("2100-01-01T00:00:00.000Z")),
+        pending_keys: pendingKeys,
+      },
+    );
+    const raw = rawRows[0] ?? {
+      events: 0,
+      from_ts: null,
+      to_ts: null,
+      total_tokens: 0,
+      cost_usd: 0,
+      raw_from: null,
+    };
+    const rollupRows = await this.queryJson<PreviewRow>(
+      `SELECT coalesce(sum(event_count), 0) AS events,
+              if(sum(event_count) = 0, NULL, min(bucket_15m)) AS from_ts,
+              if(sum(event_count) = 0, NULL, max(bucket_15m)) AS to_ts,
+              coalesce(sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens), 0) AS total_tokens,
+              coalesce(sum(cost_usd), 0) AS cost_usd
+         FROM usage_15m_rollup_v2 FINAL
+        WHERE user_id = {user_id:String}
+          AND team_id = ''
+          AND bucket_15m < {raw_full_from:DateTime64(3)}
+          AND ({from_nullable:UInt8} = 1 OR bucket_15m >= {from:DateTime64(3)})
+          AND ({to_nullable:UInt8} = 1 OR bucket_15m < {to:DateTime64(3)})`,
+      {
+        user_id: input.userId,
+        raw_full_from: chTs(rawFullFrom),
+        from_nullable: input.from ? 0 : 1,
+        from: chTs(input.from ?? new Date(0)),
+        to_nullable: input.to ? 0 : 1,
+        to: chTs(input.to ?? new Date("2100-01-01T00:00:00.000Z")),
+      },
+    );
+    const rollup = rollupRows[0] ?? {
+      events: 0,
+      from_ts: null,
+      to_ts: null,
+      total_tokens: 0,
+      cost_usd: 0,
+    };
+    const parts = [pending, raw, rollup];
+    const fromValues = parts.flatMap((part) => {
+      const value = this.optionalClickHouseDate(part.from_ts);
+      return value ? [value] : [];
+    });
+    const toValues = parts.flatMap((part) => {
+      const value = this.optionalClickHouseDate(part.to_ts);
+      return value ? [value] : [];
+    });
+    return {
+      events: parts.reduce((sum, part) => sum + n(part.events), 0),
+      from: fromValues.length > 0
+        ? new Date(Math.min(...fromValues.map((value) => value.getTime())))
+        : null,
+      to: toValues.length > 0
+        ? new Date(Math.max(...toValues.map((value) => value.getTime())))
+        : null,
+      totalTokens: parts.reduce((sum, part) => sum + n(part.total_tokens), 0),
+      costUsd: parts.reduce((sum, part) => sum + n(part.cost_usd), 0),
+    };
+  }
+
+  async backfillUnassignedTeamAttribution(
+    input: TeamAttributionBatchRequest,
+  ): Promise<TeamAttributionBatchResult> {
+    if (input.limit <= 0) {
+      return { processed: 0, updated: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(input.limit), 1), 1_000);
+    const pending = await this.backfillPendingOutbox(input, limit);
+    const affectedRows: Array<{ ts: Date | string }> = pending.affectedTs.map((ts) => ({ ts }));
+    let processed = pending.processed;
+    let updated = pending.updated;
+    let remaining = Math.max(0, limit - processed);
+    if (pending.hasMore || remaining === 0) {
+      return {
+        processed,
+        updated,
+        affectedBuckets: this.dirty15mBuckets(affectedRows),
+        hasMore: true,
+      };
+    }
+
+    const rawFullFrom = await this.clickHouseRawFullFrom();
+    const rawRows = await this.queryJson<OutboxRow>(
+      `SELECT dedup_key, provider_key, user_id, team_id, session_id, model, ts,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              cost_usd, pricing_revision_id, cost_status, log_adapter, host
+         FROM usage_events FINAL
+        WHERE user_id = {user_id:String}
+          AND team_id = ''
+          AND ts >= {raw_full_from:DateTime64(3)}
+          AND ({from_nullable:UInt8} = 1 OR ts >= {from:DateTime64(3)})
+          AND ({to_nullable:UInt8} = 1 OR ts < {to:DateTime64(3)})
+        ORDER BY ts, dedup_key
+        LIMIT {row_limit:UInt32}`,
+      {
+        user_id: input.userId,
+        raw_full_from: chTs(rawFullFrom),
+        from_nullable: input.from ? 0 : 1,
+        from: chTs(input.from ?? new Date(0)),
+        to_nullable: input.to ? 0 : 1,
+        to: chTs(input.to ?? new Date("2100-01-01T00:00:00.000Z")),
+        row_limit: remaining + 1,
+      },
+    );
+    const rawCandidates = rawRows.slice(0, remaining);
+    const rawHasMore = rawRows.length > rawCandidates.length;
+    if (rawCandidates.length > 0) {
+      const replacements = rawCandidates.map((row) => ({
+        ...row,
+        team_id: input.teamId,
+        ts: row.ts instanceof Date ? row.ts : chDate(String(row.ts)),
+      }));
+      await this.markAttributionRowsDirty(replacements);
+      const digest = createHash("sha256")
+        .update(replacements.map((row) => row.dedup_key).sort().join("\n"))
+        .digest("hex");
+      await this.operationRunner.run("backfill_team_attribution_raw", () => this.ch.insert({
+        table: "usage_events",
+        values: replacements.map((row) => this.clickHouseUsageRow(row)),
+        format: "JSONEachRow",
+        clickhouse_settings: {
+          insert_deduplication_token: `team-attribution:${input.jobId}:raw:${digest}`,
+        },
+      }));
+      affectedRows.push(...replacements);
+      processed += rawCandidates.length;
+      updated += replacements.length;
+      remaining -= rawCandidates.length;
+    }
+    if (rawHasMore || remaining === 0) {
+      return {
+        processed,
+        updated,
+        affectedBuckets: this.dirty15mBuckets(affectedRows),
+        hasMore: true,
+      };
+    }
+
+    const rollup = await this.backfillRollupOnly(input, Math.max(1, remaining), rawFullFrom);
+    return {
+      processed: processed + rollup.processed,
+      updated: updated + rollup.updated,
+      affectedBuckets: this.mergeBuckets(
+        this.dirty15mBuckets(affectedRows),
+        rollup.affectedBuckets,
+      ),
+      hasMore: rollup.hasMore,
+    };
+  }
+
+  private optionalClickHouseDate(value: Date | string | null | undefined): Date | null {
+    if (value instanceof Date) return value;
+    if (typeof value !== "string" || value === "") return null;
+    return chDate(value);
+  }
+
+  private async clickHouseRawFullFrom(): Promise<Date> {
+    const rows = await this.queryJson<{ raw_from: Date | string | null }>(
+      `SELECT if(count() = 0, NULL, min(ts)) AS raw_from
+         FROM usage_events FINAL`,
+      {},
+    );
+    const rawFrom = this.optionalClickHouseDate(rows[0]?.raw_from);
+    return rawFrom
+      ? new Date(Math.ceil(rawFrom.getTime() / FIFTEEN_MINUTES_MS) * FIFTEEN_MINUTES_MS)
+      : new Date("2100-01-01T00:00:00.000Z");
+  }
+
+  private clickHouseUsageRow(row: OutboxRow): Record<string, unknown> {
+    return {
+      dedup_key: row.dedup_key,
+      provider_key: row.provider_key,
+      user_id: row.user_id ?? "",
+      team_id: row.team_id ?? "",
+      session_id: row.session_id ?? "",
+      model: row.model ?? "",
+      ts: chTs(new Date(row.ts)),
+      input_tokens: n(row.input_tokens),
+      output_tokens: n(row.output_tokens),
+      cache_read_tokens: n(row.cache_read_tokens),
+      cache_creation_tokens: n(row.cache_creation_tokens),
+      cost_usd: row.cost_usd,
+      pricing_revision_id: row.pricing_revision_id ?? "",
+      cost_status: row.cost_status,
+      log_adapter: row.log_adapter ?? "",
+      host: row.host ?? "",
+    };
+  }
+
+  private mergeBuckets(...groups: Date[][]): Date[] {
+    const values = new Map<number, Date>();
+    for (const bucket of groups.flat()) values.set(bucket.getTime(), bucket);
+    return [...values.values()].sort((a, b) => a.getTime() - b.getTime());
+  }
+
+  private async markAttributionRowsDirty(rows: ReadonlyArray<{ ts: Date | string }>): Promise<void> {
+    if (rows.length === 0) return;
+    const client = await this.pg.connect();
+    try {
+      await client.query("BEGIN");
+      await this.mark15mRollupDirty(client, rows);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async backfillPendingOutbox(
+    input: TeamAttributionBatchRequest,
+    limit: number,
+  ): Promise<{ processed: number; updated: number; affectedTs: Date[]; hasMore: boolean }> {
+    const client = await this.pg.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await client.query<{
+        processed: string | number;
+        updated: string | number;
+        affected_ts: Date[] | null;
+        has_more: boolean;
+      }>(
+        `WITH candidate_probe AS (
+           SELECT dedup_key
+             FROM clickhouse_usage_outbox
+            WHERE user_id = $1
+              AND team_id IS NULL
+              AND delivered_at IS NULL
+              AND ($3::timestamptz IS NULL OR ts >= $3)
+              AND ($4::timestamptz IS NULL OR ts < $4)
+            ORDER BY created_at, dedup_key
+            LIMIT ($5 + 1)
+            FOR UPDATE SKIP LOCKED
+         ), candidates AS (
+           SELECT dedup_key FROM candidate_probe ORDER BY dedup_key LIMIT $5
+         ), updated AS (
+           UPDATE clickhouse_usage_outbox AS outbox
+              SET team_id = $2
+             FROM candidates
+            WHERE outbox.dedup_key = candidates.dedup_key
+              AND outbox.team_id IS NULL
+              AND outbox.delivered_at IS NULL
+           RETURNING outbox.ts
+         )
+         SELECT (SELECT COUNT(*) FROM candidates) AS processed,
+                (SELECT COUNT(*) FROM updated) AS updated,
+                (SELECT ARRAY_AGG(ts) FROM updated) AS affected_ts,
+                (SELECT COUNT(*) > $5 FROM candidate_probe) AS has_more`,
+        [input.userId, input.teamId, input.from, input.to, limit],
+      );
+      await client.query("COMMIT");
+      const row = result.rows[0] ?? {
+        processed: 0,
+        updated: 0,
+        affected_ts: [],
+        has_more: false,
+      };
+      return {
+        processed: n(row.processed),
+        updated: n(row.updated),
+        affectedTs: row.affected_ts ?? [],
+        hasMore: row.has_more,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async backfillRollupOnly(
+    input: TeamAttributionBatchRequest,
+    limit: number,
+    rawFullFrom: Date,
+  ): Promise<TeamAttributionBatchResult> {
+    const stagedBuckets = await this.queryJson<{ bucket_start: Date | string }>(
+      `SELECT DISTINCT bucket_start
+         FROM team_attribution_rollup_staging FINAL
+        WHERE job_id = {job_id:String}
+          AND layer = 'usage_15m_rollup_v2'
+        ORDER BY bucket_start`,
+      { job_id: input.jobId },
+    );
+    let buckets = stagedBuckets.map((row) =>
+      row.bucket_start instanceof Date ? row.bucket_start : chDate(row.bucket_start)
+    );
+    if (buckets.length === 0) {
+      const selected = await this.queryJson<{ bucket_start: Date | string }>(
+        `SELECT DISTINCT bucket_15m AS bucket_start
+           FROM usage_15m_rollup_v2 FINAL
+          WHERE user_id = {user_id:String}
+            AND team_id = ''
+            AND bucket_15m < {raw_full_from:DateTime64(3)}
+            AND ({from_nullable:UInt8} = 1 OR bucket_15m >= {from:DateTime64(3)})
+            AND ({to_nullable:UInt8} = 1 OR bucket_15m < {to:DateTime64(3)})
+          ORDER BY bucket_15m
+          LIMIT {bucket_limit:UInt32}`,
+        {
+          user_id: input.userId,
+          raw_full_from: chTs(rawFullFrom),
+          from_nullable: input.from ? 0 : 1,
+          from: chTs(input.from ?? new Date(0)),
+          to_nullable: input.to ? 0 : 1,
+          to: chTs(input.to ?? new Date("2100-01-01T00:00:00.000Z")),
+          bucket_limit: Math.min(Math.max(limit, 1), 16),
+        },
+      );
+      buckets = selected.map((row) =>
+        row.bucket_start instanceof Date ? row.bucket_start : chDate(row.bucket_start)
+      );
+    }
+    buckets = this.mergeBuckets(buckets);
+    if (buckets.length === 0) {
+      return { processed: 0, updated: 0, affectedBuckets: [], hasMore: false };
+    }
+
+    const bucketParams = buckets.map(chTs);
+    const stageVersion = Date.now();
+    const stageCommands = [
+      `INSERT INTO team_attribution_rollup_staging
+         (job_id, layer, bucket_start, provider_key, user_id, session_id, model, host,
+          pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, cost_usd, version)
+       SELECT {job_id:String}, 'usage_15m_rollup_v2', bucket_15m, provider_key, user_id,
+              session_id, model, host, pricing_revision_id, cost_status, event_count,
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+              cost_usd, greatest(version, {stage_version:UInt64})
+         FROM usage_15m_rollup_v2 FINAL
+        WHERE user_id = {user_id:String}
+          AND team_id = ''
+          AND bucket_15m IN {buckets:Array(DateTime64(3))}`,
+      `INSERT INTO team_attribution_rollup_staging
+         (job_id, layer, bucket_start, provider_key, user_id, session_id, model, host,
+          pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, cost_usd, version)
+       SELECT {job_id:String}, 'usage_15m_rollup', bucket_15m, provider_key, user_id,
+              session_id, model, host, '', 'legacy', event_count, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cost_usd,
+              greatest(version, {stage_version:UInt64})
+         FROM usage_15m_rollup FINAL
+        WHERE user_id = {user_id:String}
+          AND team_id = ''
+          AND bucket_15m IN {buckets:Array(DateTime64(3))}`,
+    ];
+    for (const query of stageCommands) {
+      await this.operationRunner.run("stage_team_attribution_rollup", () => this.ch.command({
+        query,
+        query_params: {
+          job_id: input.jobId,
+          user_id: input.userId,
+          buckets: bucketParams,
+          stage_version: stageVersion,
+        },
+      }));
+    }
+
+    const fenceFrom = new Date(Math.floor(buckets[0]!.getTime() / 3_600_000) * 3_600_000);
+    const fenceTo = new Date(
+      Math.floor(buckets.at(-1)!.getTime() / 3_600_000) * 3_600_000 + 3_600_000,
+    );
+    const fenceClient = await this.pg.connect();
+    try {
+      await fenceClient.query("BEGIN");
+      await fenceClient.query(
+        `INSERT INTO team_attribution_read_fences (job_id, from_ts, to_ts)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (job_id) DO UPDATE
+           SET from_ts = LEAST(team_attribution_read_fences.from_ts, EXCLUDED.from_ts),
+               to_ts = GREATEST(team_attribution_read_fences.to_ts, EXCLUDED.to_ts),
+               created_at = now()`,
+        [input.jobId, fenceFrom, fenceTo],
+      );
+      await fenceClient.query("COMMIT");
+    } catch (error) {
+      await fenceClient.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      fenceClient.release();
+    }
+
+    const mutationSettings = { mutations_sync: "1", max_threads: 2 } as const;
+    await this.operationRunner.run("delete_team_attribution_v2_rollup", () => this.ch.command({
+      query: `ALTER TABLE usage_15m_rollup_v2
+              DELETE WHERE user_id = {user_id:String}
+                AND team_id = ''
+                AND bucket_15m IN {buckets:Array(DateTime64(3))}`,
+      query_params: { user_id: input.userId, buckets: bucketParams },
+      clickhouse_settings: mutationSettings,
+    }));
+    await this.operationRunner.run("delete_team_attribution_legacy_rollup", () => this.ch.command({
+      query: `ALTER TABLE usage_15m_rollup
+              DELETE WHERE user_id = {user_id:String}
+                AND team_id = ''
+                AND bucket_15m IN {buckets:Array(DateTime64(3))}`,
+      query_params: { user_id: input.userId, buckets: bucketParams },
+      clickhouse_settings: mutationSettings,
+    }));
+    const replacementVersion = Date.now() + 1;
+    await this.operationRunner.run("insert_team_attribution_v2_rollup", () => this.ch.command({
+      query: `INSERT INTO usage_15m_rollup_v2
+                (bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                 pricing_revision_id, cost_status, event_count, input_tokens, output_tokens,
+                 cache_read_tokens, cache_creation_tokens, cost_usd, version)
+              SELECT bucket_start, provider_key, user_id, {team_id:String}, session_id, model,
+                     host, pricing_revision_id, cost_status, event_count, input_tokens,
+                     output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+                     greatest(version + 1, {replacement_version:UInt64})
+                FROM team_attribution_rollup_staging FINAL
+               WHERE job_id = {job_id:String}
+                 AND layer = 'usage_15m_rollup_v2'`,
+      query_params: {
+        job_id: input.jobId,
+        team_id: input.teamId,
+        replacement_version: replacementVersion,
+      },
+    }));
+    await this.operationRunner.run("insert_team_attribution_legacy_rollup", () => this.ch.command({
+      query: `INSERT INTO usage_15m_rollup
+                (bucket_15m, provider_key, user_id, team_id, session_id, model, host,
+                 event_count, input_tokens, output_tokens, cache_read_tokens,
+                 cache_creation_tokens, cost_usd, version)
+              SELECT bucket_start, provider_key, user_id, {team_id:String}, session_id, model,
+                     host, event_count, input_tokens, output_tokens, cache_read_tokens,
+                     cache_creation_tokens, cost_usd,
+                     greatest(version + 1, {replacement_version:UInt64})
+                FROM team_attribution_rollup_staging FINAL
+               WHERE job_id = {job_id:String}
+                 AND layer = 'usage_15m_rollup'`,
+      query_params: {
+        job_id: input.jobId,
+        team_id: input.teamId,
+        replacement_version: replacementVersion,
+      },
+    }));
+    const verificationRows = await this.queryJson<{
+      remaining_old: string | number;
+      staged_rows: string | number;
+      replacement_rows: string | number;
+    }>(
+      `SELECT 'team-attribution-rollup-verification' AS marker,
+              (SELECT count()
+                 FROM usage_15m_rollup_v2 FINAL
+                WHERE user_id = {user_id:String}
+                  AND team_id = ''
+                  AND bucket_15m IN {buckets:Array(DateTime64(3))}) AS remaining_old,
+              (SELECT coalesce(sum(event_count), 0)
+                 FROM team_attribution_rollup_staging FINAL
+                WHERE job_id = {job_id:String}
+                  AND layer = 'usage_15m_rollup_v2') AS staged_rows,
+              (SELECT coalesce(sum(event_count), 0)
+                 FROM usage_15m_rollup_v2 FINAL
+                WHERE user_id = {user_id:String}
+                  AND team_id = {team_id:String}
+                  AND bucket_15m IN {buckets:Array(DateTime64(3))}) AS replacement_rows`,
+      {
+        user_id: input.userId,
+        team_id: input.teamId,
+        job_id: input.jobId,
+        buckets: bucketParams,
+      },
+    );
+    const verification = verificationRows[0];
+    if (
+      !verification
+      || n(verification.remaining_old) !== 0
+      || n(verification.replacement_rows) < n(verification.staged_rows)
+    ) {
+      throw new Error("team attribution rollup verification failed");
+    }
+
+    const completionClient = await this.pg.connect();
+    try {
+      await completionClient.query("BEGIN");
+      await this.invalidateTimezoneRollupJobs(completionClient, buckets);
+      await completionClient.query("SELECT complete_team_attribution_fence($1::uuid)", [input.jobId]);
+      await completionClient.query("COMMIT");
+    } catch (error) {
+      await completionClient.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      completionClient.release();
+    }
+
+    try {
+      await this.operationRunner.run("cleanup_team_attribution_staging", () => this.ch.command({
+        query: `ALTER TABLE team_attribution_rollup_staging
+                DELETE WHERE job_id = {job_id:String}`,
+        query_params: { job_id: input.jobId },
+        clickhouse_settings: mutationSettings,
+      }));
+    } catch {
+      // Fence가 해제된 뒤의 TTL staging 정리는 best-effort다. 교체 결과는 이미 검증됐다.
+    }
+    const stagedEvents = n(verification.staged_rows);
+    return {
+      processed: stagedEvents,
+      updated: stagedEvents,
+      affectedBuckets: buckets,
+      hasMore: true,
+    };
+  }
+
+  async getPricingRecoveryModels(
     from: Date,
     to: Date,
     replaceRevisionIds: string[] = [],
-  ): Promise<UnpricedUsageModelDiagnostic[]> {
+  ): Promise<PricingRecoveryModelDiagnostic[]> {
     const rows = await this.queryJson<{
+      provider_key: string;
+      log_adapter: string;
       model: string | null;
       events: string | number;
+      unpriced_events: string | number;
+      legacy_events: string | number;
       first_at: string | Date;
       last_at: string | Date;
     }>(
-      `SELECT nullIf(model, '') AS model,
+      `SELECT provider_key,
+              nullIf(log_adapter, '') AS log_adapter,
+              nullIf(model, '') AS model,
               count() AS events,
+              countIf(cost_status = 'unpriced') AS unpriced_events,
+              countIf(cost_status = 'legacy') AS legacy_events,
               min(ts) AS first_at,
               max(ts) AS last_at
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
          AND (
-           cost_status = 'unpriced'
+           cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id IN {replace_revision_ids:Array(String)}
          )
-       GROUP BY model
+       GROUP BY provider_key, log_adapter, model
        ORDER BY events DESC, model`,
       { from: chTs(from), to: chTs(to), replace_revision_ids: replaceRevisionIds },
     );
     return rows.map((row) => ({
+      providerKey: row.provider_key,
+      logAdapter: row.log_adapter || null,
       model: row.model || null,
       events: n(row.events),
+      unpricedEvents: n(row.unpriced_events),
+      legacyEvents: n(row.legacy_events),
       firstAt: row.first_at instanceof Date ? row.first_at : chDate(row.first_at),
       lastAt: row.last_at instanceof Date ? row.last_at : chDate(row.last_at),
     }));
@@ -1443,12 +2171,12 @@ export class ClickHouseStorage implements StorageBackend {
 
     // 삭제 전 raw fallback을 활성화하고, 삭제 후 다시 표시해 compactor 경합에도 stale cache가 남지 않게 한다.
     await markDirty();
-    await this.ch.command({
+    await this.operationRunner.run("reconcile_codex_replay_usage", () => this.ch.command({
       query: `ALTER TABLE usage_events
               DELETE WHERE dedup_key IN {dedup_keys:Array(String)}`,
       query_params: { dedup_keys: candidates.map((row) => row.dedup_key) },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
     await markDirty();
 
     return {
@@ -1460,12 +2188,117 @@ export class ClickHouseStorage implements StorageBackend {
     };
   }
 
-  async repairUnpricedUsage(
+  async reconcileUsageEvents(
+    request: UsageEventReconciliationRequest,
+  ): Promise<UsageEventReconciliationResult> {
+    const dedupKeys = [...new Set(request.dedupKeys)].slice(0, 1_000);
+    if (dedupKeys.length === 0) {
+      return { reconciled: 0, affectedBuckets: [] };
+    }
+    const outboxClient = await this.pg.connect();
+    let outboxRows: Array<{ dedup_key: string; ts: Date }> = [];
+    try {
+      await outboxClient.query("BEGIN");
+      const selectedOutbox = await outboxClient.query<{ dedup_key: string; ts: Date }>(
+        `SELECT dedup_key, ts
+         FROM clickhouse_usage_outbox
+         WHERE user_id = $1
+           AND provider_key = $2
+           AND log_adapter = $3
+           AND dedup_key = ANY($4::text[])
+         FOR UPDATE`,
+        [request.userId, request.providerKey, request.logAdapter, dedupKeys],
+      );
+      outboxRows = selectedOutbox.rows;
+      if (outboxRows.length > 0) {
+        await outboxClient.query(
+          `DELETE FROM clickhouse_usage_outbox
+           WHERE user_id = $1
+             AND provider_key = $2
+             AND log_adapter = $3
+             AND dedup_key = ANY($4::text[])`,
+          [request.userId, request.providerKey, request.logAdapter, dedupKeys],
+        );
+      }
+      await outboxClient.query("COMMIT");
+    } catch (error) {
+      await outboxClient.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      outboxClient.release();
+    }
+    const rows = await this.queryJson<{ dedup_key: string; ts: string | Date }>(
+      `SELECT dedup_key, ts
+       FROM usage_events FINAL
+       WHERE user_id = {user_id:String}
+         AND provider_key = {provider_key:String}
+         AND log_adapter = {log_adapter:String}
+         AND dedup_key IN {dedup_keys:Array(String)}`,
+      {
+        user_id: request.userId,
+        provider_key: request.providerKey,
+        log_adapter: request.logAdapter,
+        dedup_keys: dedupKeys,
+      },
+    );
+    const candidateByKey = new Map<string, { dedup_key: string; ts: Date }>();
+    for (const row of outboxRows) {
+      candidateByKey.set(row.dedup_key, { dedup_key: row.dedup_key, ts: row.ts });
+    }
+    for (const row of rows) {
+      candidateByKey.set(row.dedup_key, {
+        dedup_key: row.dedup_key,
+        ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
+      });
+    }
+    const candidates = [...candidateByKey.values()];
+    if (candidates.length === 0) {
+      return { reconciled: 0, affectedBuckets: [] };
+    }
+
+    const markDirty = async (): Promise<void> => {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(client, candidates);
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    };
+
+    await markDirty();
+    await this.operationRunner.run("reconcile_usage_events", () => this.ch.command({
+      query: `ALTER TABLE usage_events
+              DELETE WHERE user_id = {user_id:String}
+                AND provider_key = {provider_key:String}
+                AND log_adapter = {log_adapter:String}
+                AND dedup_key IN {dedup_keys:Array(String)}`,
+      query_params: {
+        user_id: request.userId,
+        provider_key: request.providerKey,
+        log_adapter: request.logAdapter,
+        dedup_keys: candidates.map((row) => row.dedup_key),
+      },
+      clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
+    }));
+    await markDirty();
+
+    return {
+      reconciled: candidates.length,
+      affectedBuckets: this.dirty15mBuckets(candidates),
+    };
+  }
+
+  async repairPricingUsage(
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
-  ): Promise<PricingRepairBatchResult> {
-    if (request.models.length === 0 || request.limit <= 0) {
-      return { scanned: 0, recovered: 0, affectedBuckets: [], hasMore: false };
+  ): Promise<PricingRecoveryBatchResult> {
+    if ((request.models.length === 0 && !request.includeCodexModelFallback) || request.limit <= 0) {
+      return { scanned: 0, recovered: 0, repricedLegacy: 0, affectedBuckets: [], hasMore: false };
     }
     const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 1_000);
     const rows = await this.queryJson<PricingRepairClickHouseRow>(
@@ -1476,16 +2309,25 @@ export class ClickHouseStorage implements StorageBackend {
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
          AND (
-           cost_status = 'unpriced'
+           cost_status IN ('unpriced', 'legacy')
            OR pricing_revision_id IN {replace_revision_ids:Array(String)}
          )
-         AND model IN {models:Array(String)}
+         AND (
+           model IN {models:Array(String)}
+           OR (
+             {include_codex_model_fallback:UInt8} = 1
+             AND provider_key = 'codex'
+             AND log_adapter = 'codex'
+             AND model = ''
+           )
+         )
        ORDER BY ts, dedup_key
        LIMIT {row_limit:UInt32}`,
       {
         from: chTs(request.from),
         to: chTs(request.to),
         models: request.models,
+        include_codex_model_fallback: request.includeCodexModelFallback ? 1 : 0,
         replace_revision_ids: request.replaceRevisionIds,
         row_limit: limit + 1,
       },
@@ -1536,7 +2378,7 @@ export class ClickHouseStorage implements StorageBackend {
       const digest = createHash("sha256")
         .update(`${request.generation}:${sortedKeys}`)
         .digest("hex");
-      await this.ch.insert({
+      await this.operationRunner.run("repair_pricing_usage", () => this.ch.insert({
         table: "usage_events",
         values: replacements.map((row) => ({
           dedup_key: row.dedup_key,
@@ -1560,12 +2402,20 @@ export class ClickHouseStorage implements StorageBackend {
         clickhouse_settings: {
           insert_deduplication_token: `pricing-repair:${digest}`,
         },
-      });
+      }));
     }
 
+    const originalStatus = new Map(candidates.map((candidate) => [candidate.dedup_key, candidate.cost_status]));
+    const repricedLegacy = replacements.filter(
+      (replacement) => originalStatus.get(replacement.dedup_key) === "legacy",
+    ).length;
+    const recovered = replacements.filter(
+      (replacement) => originalStatus.get(replacement.dedup_key) === "unpriced",
+    ).length;
     return {
       scanned: candidates.length,
-      recovered: replacements.length,
+      recovered,
+      repricedLegacy,
       affectedBuckets: this.dirty15mBuckets(replacements),
       hasMore: rows.length > limit,
     };
@@ -1575,10 +2425,7 @@ export class ClickHouseStorage implements StorageBackend {
     const client = await this.pg.connect();
     try {
       await client.query("BEGIN");
-      const teamMap = await this.teamMap(
-        client,
-        events.map((e) => e.userId).filter((x): x is string => !!x),
-      );
+      const teamByEvent = await this.teamMapAtEventTime(client, events);
       const batch = await client.query<{ id: string }>(
         `INSERT INTO clickhouse_usage_batches (insert_token)
          VALUES ($1)
@@ -1588,7 +2435,7 @@ export class ClickHouseStorage implements StorageBackend {
       const batchId = batch.rows[0]!.id;
       let inserted = 0;
       for (const e of events) {
-        const teamId = e.userId ? (teamMap.get(e.userId) ?? null) : null;
+        const teamId = e.userId ? (teamByEvent.get(e.dedupKey) ?? null) : null;
         const r = await client.query(
           `INSERT INTO clickhouse_usage_outbox
              (dedup_key, batch_id, provider_key, user_id, team_id, session_id, model, ts,
@@ -1691,6 +2538,9 @@ export class ClickHouseStorage implements StorageBackend {
              WHERE id = $1`,
             [batch.id],
           );
+          if (batchRows.rows.some((row) => row.cost_status === "unpriced")) {
+            await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
+          }
           await client.query("COMMIT");
           batches++;
           rows += batchRows.rowCount ?? 0;
@@ -1734,24 +2584,24 @@ export class ClickHouseStorage implements StorageBackend {
       log_adapter: e.log_adapter ?? "",
       host: e.host ?? "",
     }));
-    await this.ch.insert({
+    await this.operationRunner.run("flush_usage_outbox_raw", () => this.ch.insert({
       table: "usage_events",
       values: rawRows,
       format: "JSONEachRow",
       clickhouse_settings: {
         insert_deduplication_token: `${batch.insertToken}:raw`,
       },
-    });
+    }));
 
     const rollupRows = this.rollupRows(rows);
-    await this.ch.insert({
+    await this.operationRunner.run("flush_usage_outbox_rollup", () => this.ch.insert({
       table: "usage_hourly_rollup",
       values: rollupRows,
       format: "JSONEachRow",
       clickhouse_settings: {
         insert_deduplication_token: `${batch.insertToken}:rollup`,
       },
-    });
+    }));
   }
 
   private rollupRows(rows: OutboxRow[]): RollupRow[] {
@@ -1934,12 +2784,12 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async deleteRollupBuckets(spec: RollupSpec, buckets: Date[]): Promise<void> {
     if (buckets.length === 0) return;
-    await this.ch.command({
+    await this.operationRunner.run("delete_rollup_buckets", () => this.ch.command({
       query: `ALTER TABLE ${spec.table}
               DELETE WHERE ${spec.bucketColumn} IN {buckets:Array(DateTime64(3))}`,
       query_params: { buckets: buckets.map(chTs) },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
   }
 
   private async invalidateTimezoneRollupJobs(client: PoolClient, buckets: Date[]): Promise<void> {
@@ -2046,11 +2896,11 @@ export class ClickHouseStorage implements StorageBackend {
       // ReplacingMergeTree는 키가 바뀐 이전 행을 지우지 못하므로 해당 bucket을 먼저 비운다.
       await this.deleteRollupBuckets(spec, dirty.rows.map(({ bucket }) => bucket));
       if (rollupRows.length > 0) {
-        await this.ch.insert({
+        await this.operationRunner.run("compact_usage_rollup", () => this.ch.insert({
           table: spec.table,
           values: rollupRows,
           format: "JSONEachRow",
-        });
+        }));
       }
       if (spec.name === USAGE_15M_V2.name) {
         await this.invalidateTimezoneRollupJobs(client, buckets);
@@ -2142,17 +2992,17 @@ export class ClickHouseStorage implements StorageBackend {
       ? "usage_hourly_timezone_rollup"
       : "usage_daily_timezone_rollup";
     // 재집계 결과가 0행이어도 이전 차원의 cache는 제거해야 한다.
-    await this.ch.command({
+    await this.operationRunner.run("compact_timezone_rollup_delete", () => this.ch.command({
       query: `ALTER TABLE ${table}
               DELETE WHERE timezone = {timezone:String}
                 AND bucket_start = {bucket:DateTime64(3)}`,
       query_params: { timezone: tz, bucket: chTs(bucket) },
       clickhouse_settings: { mutations_sync: "1", max_threads: 2 },
-    });
+    }));
     if (rows.length === 0) return 0;
 
     const version = Date.now();
-    await this.ch.insert({
+    await this.operationRunner.run("compact_timezone_rollup_insert", () => this.ch.insert({
       table,
       values: rows.map((row) => ({
         timezone: tz,
@@ -2174,19 +3024,44 @@ export class ClickHouseStorage implements StorageBackend {
         version,
       })),
       format: "JSONEachRow",
-    });
+    }));
     return rows.length;
   }
 
-  private async teamMap(client: PoolClient, userIds: string[]): Promise<Map<string, string>> {
-    if (userIds.length === 0) return new Map();
-    const uniq = [...new Set(userIds)];
-    const rs = await client.query<{ id: string; team_id: string | null }>(
-      "SELECT id, team_id FROM users WHERE id = ANY($1)",
-      [uniq],
+  /** dedup_key → 이벤트 발생 시각에 유효한 team_id (멤버십 공백은 제외) */
+  private async teamMapAtEventTime(
+    client: PoolClient,
+    events: FinalizedUsageEvent[],
+  ): Promise<Map<string, string>> {
+    const identified = events.filter(
+      (event): event is FinalizedUsageEvent & { userId: string } => !!event.userId,
+    );
+    if (identified.length === 0) return new Map();
+
+    const userIds = [...new Set(identified.map((event) => event.userId))].sort();
+    for (const userId of userIds) {
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 1540))", [userId]);
+    }
+
+    const rs = await client.query<{ dedup_key: string; team_id: string }>(
+      `WITH requested(dedup_key, user_id, event_ts) AS (
+         SELECT *
+           FROM unnest($1::text[], $2::uuid[], $3::timestamptz[])
+       )
+       SELECT requested.dedup_key, assignment.team_id
+         FROM user_team_assignments assignment
+         JOIN requested
+           ON requested.user_id = assignment.user_id
+          AND assignment.effective_from <= requested.event_ts
+          AND (assignment.effective_to IS NULL OR requested.event_ts < assignment.effective_to)`,
+      [
+        identified.map((event) => event.dedupKey),
+        identified.map((event) => event.userId),
+        identified.map((event) => event.ts),
+      ],
     );
     const m = new Map<string, string>();
-    for (const r of rs.rows) if (r.team_id) m.set(r.id, r.team_id);
+    for (const row of rs.rows) m.set(row.dedup_key, row.team_id);
     return m;
   }
 
@@ -2370,6 +3245,243 @@ export class ClickHouseStorage implements StorageBackend {
       cacheReadTokens: n(r.cache_read),
       cacheCreationTokens: n(r.cache_creation),
     }));
+  }
+
+  private async utilizationUsageQuery(
+    q: UtilizationUsageQuery,
+    userId?: string,
+  ): Promise<UtilizationUsageDay[]> {
+    const scoped: ScopedQuery = userId ? { ...q, userId } : q;
+    const timezone = safeTimezone(q.timezone, this.tz);
+    const source = await this.resolveTimeseriesSource(scoped, "day", timezone);
+    const dayExpr = this.sourceBucketExpr("day", source, timezone);
+    const params = {
+      ...source.params,
+      cacheProviders: [...CACHE_SIGNAL_PROVIDER_KEYS],
+    };
+    const rows = await this.queryJson<{
+      user_id: string;
+      day: string;
+      sessions?: string;
+      input?: string;
+      cache_read?: string;
+      cache_creation?: string;
+      cache_signal_events?: string;
+      cache_unsupported_events?: string;
+    }>(
+      `SELECT user_id,
+              ${dayExpr} AS day,
+              uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(input_tokens, provider_key IN {cacheProviders:Array(String)}) AS input,
+              sumIf(cache_read_tokens, provider_key IN {cacheProviders:Array(String)}) AS cache_read,
+              sumIf(cache_creation_tokens, provider_key IN {cacheProviders:Array(String)}) AS cache_creation,
+              sumIf(event_count, provider_key IN {cacheProviders:Array(String)}) AS cache_signal_events,
+              sumIf(event_count, provider_key NOT IN {cacheProviders:Array(String)}) AS cache_unsupported_events
+       FROM ${source.source}
+       WHERE user_id != ''
+       GROUP BY user_id, day
+       ORDER BY day, user_id`,
+      params,
+    );
+    return rows.map((row) => ({
+      userId: row.user_id,
+      day: row.day,
+      sessions: n(row.sessions),
+      inputTokens: n(row.input),
+      cacheReadTokens: n(row.cache_read),
+      cacheCreationTokens: n(row.cache_creation),
+      cacheSignalEvents: n(row.cache_signal_events),
+      cacheUnsupportedEvents: n(row.cache_unsupported_events),
+    }));
+  }
+
+  getUserUtilizationUsage(userId: string, q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q, userId);
+  }
+
+  getOrganizationUtilizationUsage(q: UtilizationUsageQuery): Promise<UtilizationUsageDay[]> {
+    return this.utilizationUsageQuery(q);
+  }
+
+  async getOrganizationDashboard(q: OrganizationDashboardQuery): Promise<OrganizationDashboardData> {
+    const timezone = safeTimezone(q.current.timezone, this.tz);
+    const [currentSourceRaw, previousSourceRaw] = await Promise.all([
+      this.resolveTimeseriesSource(q.current, q.current.bucket, timezone),
+      this.resolveTimeseriesSource(q.previous, undefined, this.tz),
+    ]);
+    const current = this.namespaceTimeseriesSource(currentSourceRaw, "dashboard_current");
+    const previous = this.namespaceTimeseriesSource(previousSourceRaw, "dashboard_previous");
+    const columns = `ts, provider_key, user_id, team_id, session_id, model, host,
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                     cost_usd, cost_status, event_count`;
+    const tagged = `(
+      SELECT 'previous' AS period, ${columns} FROM ${previous.source}
+      UNION ALL
+      SELECT 'current' AS period, ${columns} FROM ${current.source}
+    )`;
+    const params = { ...previous.params, ...current.params };
+    const bucketExpr = this.bucketExpr(q.current.bucket, "ts", timezone);
+    const orderColumn = q.leaderboardOrder === "tokens" ? "tokens" : "cost";
+
+    const usageSql = `WITH '/* organization-dashboard-usage */' AS query_tag,
+tagged AS ${tagged}
+SELECT 'current_overview' AS result_kind, CAST(NULL AS Nullable(String)) AS day,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       uniqExactIf(user_id, user_id != '') AS active_users,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens) AS input, sum(output_tokens) AS output,
+       sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM tagged WHERE period = 'current'
+UNION ALL
+SELECT 'previous_overview' AS result_kind, CAST(NULL AS Nullable(String)) AS day,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       uniqExactIf(user_id, user_id != '') AS active_users,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens) AS input, sum(output_tokens) AS output,
+       sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM tagged WHERE period = 'previous'
+UNION ALL
+SELECT 'daily' AS result_kind, CAST(${bucketExpr} AS Nullable(String)) AS day,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       uniqExactIf(user_id, user_id != '') AS active_users,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens) AS input, sum(output_tokens) AS output,
+       sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM tagged WHERE period = 'current'
+GROUP BY day ORDER BY result_kind, day`;
+
+    const teamBranch = q.includeTeamLeaderboard ? `
+UNION ALL
+SELECT 'team_leader' AS result_kind, key, cost, tokens, sessions,
+       priced_events, unpriced_events, legacy_events
+FROM (
+  SELECT team_id AS key,
+         sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+         sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+         uniqExactIf(session_id, session_id != '') AS sessions,
+         sumIf(event_count, cost_status = 'priced') AS priced_events,
+         sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+         sumIf(event_count, cost_status = 'legacy') AS legacy_events
+  FROM ${current.source} WHERE team_id != ''
+  GROUP BY key ORDER BY cost DESC LIMIT 100
+)` : "";
+
+    const breakdownSql = `WITH '/* organization-dashboard-breakdown */' AS query_tag
+SELECT 'user_leader' AS result_kind, key, cost, tokens, sessions,
+       priced_events, unpriced_events, legacy_events
+FROM (
+  SELECT user_id AS key,
+         sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+         sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+         uniqExactIf(session_id, session_id != '') AS sessions,
+         sumIf(event_count, cost_status = 'priced') AS priced_events,
+         sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+         sumIf(event_count, cost_status = 'legacy') AS legacy_events
+  FROM ${current.source} WHERE user_id != ''
+  GROUP BY key ORDER BY ${orderColumn} DESC LIMIT 100
+)
+${teamBranch}
+UNION ALL
+SELECT 'provider' AS result_kind, provider_key AS key,
+       sumIf(cost_usd, cost_status != 'unpriced') AS cost,
+       sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+       uniqExactIf(session_id, session_id != '') AS sessions,
+       sumIf(event_count, cost_status = 'priced') AS priced_events,
+       sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
+       sumIf(event_count, cost_status = 'legacy') AS legacy_events
+FROM ${current.source}
+GROUP BY provider_key ORDER BY tokens DESC`;
+
+    const [usagePayload, breakdownPayload] = await Promise.all([
+      this.queryJson<unknown>(
+        usageSql,
+        params,
+        undefined,
+        "organization_dashboard_usage",
+      ),
+      this.queryJson<unknown>(
+        breakdownSql,
+        current.params,
+        undefined,
+        "organization_dashboard_breakdown",
+      ),
+    ]);
+    const usageRows = usagePayload.map(parseOrganizationUsageBundleRow);
+    const breakdownRows = breakdownPayload.map(parseOrganizationBreakdownBundleRow);
+    const currentRow = usageRows.find((row) => row.result_kind === "current_overview");
+    const previousRow = usageRows.find((row) => row.result_kind === "previous_overview");
+    if (!currentRow || !previousRow) {
+      throw new Error("Organization dashboard overview row is missing");
+    }
+
+    const toOverview = (row: OrganizationUsageBundleRow): OverviewStats => ({
+      totalSessions: n(row.sessions),
+      activeUsers: n(row.active_users),
+      totalCostUsd: n(row.cost),
+      totalInputTokens: n(row.input),
+      totalOutputTokens: n(row.output),
+      totalCacheReadTokens: n(row.cache_read),
+      totalCacheCreationTokens: n(row.cache_creation),
+      costCoverage: costCoverage(row),
+    });
+    const daily = usageRows
+      .filter((row) => row.result_kind === "daily")
+      .map((row) => ({
+        day: row.day!,
+        sessions: n(row.sessions),
+        activeUsers: n(row.active_users),
+        costUsd: n(row.cost),
+        inputTokens: n(row.input),
+        outputTokens: n(row.output),
+        cacheReadTokens: n(row.cache_read),
+        cacheCreationTokens: n(row.cache_creation),
+      }))
+      .sort((a, b) => a.day.localeCompare(b.day));
+
+    const userRows = breakdownRows.filter((row) => row.result_kind === "user_leader");
+    const teamRows = breakdownRows.filter((row) => row.result_kind === "team_leader");
+    const providerRows = breakdownRows.filter((row) => row.result_kind === "provider");
+    const [userLabels, teamLabels] = await Promise.all([
+      this.labelMap("user", userRows.map((row) => row.key)),
+      q.includeTeamLeaderboard
+        ? this.labelMap("team", teamRows.map((row) => row.key))
+        : Promise.resolve(new Map<string, string>()),
+    ]);
+    const toLeader = (
+      row: OrganizationBreakdownBundleRow,
+      labels: Map<string, string>,
+    ): LeaderRow => ({
+      key: row.key,
+      label: labels.get(row.key) ?? row.key,
+      costUsd: n(row.cost),
+      totalTokens: n(row.tokens),
+      sessions: n(row.sessions),
+      costCoverage: costCoverage(row),
+    });
+
+    return {
+      overview: toOverview(currentRow),
+      previousOverview: toOverview(previousRow),
+      daily,
+      topUsers: userRows.map((row) => toLeader(row, userLabels)),
+      topTeams: teamRows.map((row) => toLeader(row, teamLabels)),
+      providerBreakdown: providerRows.map((row) => ({
+        providerKey: row.key,
+        costUsd: n(row.cost),
+        totalTokens: n(row.tokens),
+        sessions: n(row.sessions),
+        costCoverage: costCoverage(row),
+      })),
+    };
   }
 
   async getUserUsage(userId: string, q: PeriodQuery & BucketOptions): Promise<UserUsage> {
@@ -2742,7 +3854,7 @@ export function createClickHouseStorage(pg: Pool, opts: ClickHouseStorageOptions
 }
 
 export async function pingClickHouse(): Promise<void> {
-  await retryTransientClickHouseError(async () => {
+  await defaultClickHouseOperationController.run("readiness_ping", async () => {
     const ch = createClickHouseClient();
     try {
       const result = await ch.ping({ select: true });
@@ -2750,28 +3862,7 @@ export async function pingClickHouse(): Promise<void> {
     } finally {
       await ch.close();
     }
-  });
-}
-
-async function retryTransientClickHouseError<T>(op: () => Promise<T>): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS; attempt++) {
-    try {
-      return await op();
-    } catch (err) {
-      lastError = err;
-      if (attempt === CLICKHOUSE_TRANSIENT_RETRY_ATTEMPTS - 1 || !isTransientClickHouseError(err)) throw err;
-      await sleep(CLICKHOUSE_TRANSIENT_RETRY_BASE_MS * 2 ** attempt);
-    }
-  }
-  throw lastError;
-}
-
-function isTransientClickHouseError(err: unknown): boolean {
-  const codes = errorCodes(err);
-  if (codes.some((code) => TRANSIENT_CLICKHOUSE_ERROR_CODES.has(code))) return true;
-  const message = String(err instanceof Error ? err.message : err);
-  return [...TRANSIENT_CLICKHOUSE_ERROR_CODES].some((code) => message.includes(code));
+  }, { retryTransient: true });
 }
 
 function readPositiveIntEnv(name: string, defaultValue: number): number {
@@ -2779,15 +3870,4 @@ function readPositiveIntEnv(name: string, defaultValue: number): number {
   if (value == null || value === "") return defaultValue;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : defaultValue;
-}
-
-function errorCodes(err: unknown): string[] {
-  if (!err || typeof err !== "object") return [];
-  const e = err as { code?: unknown; cause?: unknown };
-  const own = typeof e.code === "string" ? [e.code] : [];
-  return [...own, ...errorCodes(e.cause)];
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

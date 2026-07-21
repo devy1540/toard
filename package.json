@@ -5,20 +5,22 @@
   "type": "module",
   "description": "경량 멀티 프로바이더 AI 사용량 대시보드",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
-  "packageManager": "pnpm@9.15.0",
+  "packageManager": "pnpm@11.15.1",
   "scripts": {
     "dev": "pnpm --filter @toard/web dev",
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test && pnpm test:migrations",
-    "test:migrations": "TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test scripts/pricing-revisions-migration.integration.test.ts scripts/pricing-auto-recovery-migration.integration.test.ts scripts/historical-pricing-migration.integration.test.ts scripts/rollup-coordinator-migration.integration.test.ts scripts/e2ee-content-migration.integration.test.ts scripts/e2ee-legacy-migration.integration.test.ts scripts/e2ee-legacy-retirement-migration.integration.test.ts scripts/tool-deployment-migration.integration.test.ts",
+    "test": "pnpm -r test && pnpm test:migrations && pnpm test:content-security",
+    "test:migrations": "TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test --test-concurrency=1 scripts/toard-admin.test.ts scripts/pricing-revisions-migration.integration.test.ts scripts/pricing-auto-recovery-migration.integration.test.ts scripts/historical-pricing-migration.integration.test.ts scripts/full-retention-legacy-pricing-migration.integration.test.ts scripts/pricing-codex-alias-recovery-migration.integration.test.ts scripts/pricing-late-ingest-repair-migration.integration.test.ts scripts/team-membership-attribution-migration.integration.test.ts scripts/rollup-coordinator-migration.integration.test.ts scripts/e2ee-content-migration.integration.test.ts scripts/e2ee-legacy-migration.integration.test.ts scripts/e2ee-legacy-retirement-migration.integration.test.ts scripts/managed-content-migration.integration.test.ts scripts/managed-content-state-migration.integration.test.ts scripts/server-content-migration.integration.test.ts scripts/e2ee-to-managed-migration.integration.test.ts scripts/bootstrap-app-role.integration.test.ts scripts/provider-rewrap.integration.test.ts scripts/provider-migration-audit.integration.test.ts scripts/content-key-operations-migration.integration.test.ts scripts/managed-key-distribution-migration.integration.test.ts scripts/managed-content-write-fence-migration.integration.test.ts scripts/deployment-release-completion.integration.test.ts scripts/tool-deployment-migration.integration.test.ts",
+    "test:content-security": "TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx --test --test-concurrency=1 scripts/e2ee-ciphertext-only.integration.test.ts scripts/managed-content-security.integration.test.ts",
     "lint": "pnpm -r lint",
     "db:up": "docker compose -f docker-compose.dev.yml up -d",
     "db:down": "docker compose -f docker-compose.dev.yml down",
     "migrate": "node-pg-migrate -j sql -m migrations -d DATABASE_URL up",
     "migrate:down": "node-pg-migrate -j sql -m migrations -d DATABASE_URL down",
+    "toard-admin": "TSX_TSCONFIG_PATH=apps/web/tsconfig.json node --import tsx scripts/toard-admin.ts",
     "seed": "tsx scripts/seed.ts",
     "seed:demo": "tsx scripts/seed-demo.ts",
     "seed:dashboard-demo": "tsx scripts/seed-dashboard-demo.ts",
@@ -30,12 +32,16 @@
     "verify:pricing-auto-recovery": "tsx scripts/verify-pricing-auto-recovery.ts",
     "verify:historical-pricing": "tsx scripts/verify-historical-pricing-recovery.ts",
     "test:benchmark-dashboard-http": "node --import tsx --test scripts/benchmark-dashboard-http.test.ts scripts/benchmark-dashboard-release.test.ts",
-    "test:benchmark-dashboard-signal": "RUN_DOCKER_SIGNAL_INTEGRATION=1 node --import tsx --test scripts/benchmark-dashboard-release-signal.integration.test.ts"
+    "test:benchmark-dashboard-signal": "RUN_DOCKER_SIGNAL_INTEGRATION=1 node --import tsx --test scripts/benchmark-dashboard-release-signal.integration.test.ts",
+    "validate:helm-encryption": "node --import tsx scripts/validate-helm-encryption.ts",
+    "mark:deployment-release": "node --import tsx scripts/mark-deployment-release-complete.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/pg": "^8.20.0",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
+    "esbuild": "0.28.1",
     "node-pg-migrate": "^7.9.0",
     "pg": "^8.13.1",
     "tsx": "^4.19.2",

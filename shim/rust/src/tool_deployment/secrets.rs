@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+#[cfg(unix)]
 use std::io::{self, Write};
 use std::process::Command;
 

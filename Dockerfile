@@ -13,6 +13,9 @@ ARG NODE_VERSION=22-alpine
 FROM node:${NODE_VERSION} AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH="$PNPM_HOME:$PATH"
+# pnpm 11의 workspace 설정(enableGlobalVirtualStore=true)이 builder 단계에서 deps 레이아웃을
+# 다시 만들려고 하지 않도록 모든 Docker stage에서 ephemeral local virtual store를 강제한다.
+ENV PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=false
 RUN npm install -g pnpm@11.15.1
 WORKDIR /app
 

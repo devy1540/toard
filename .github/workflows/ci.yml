@@ -18,12 +18,12 @@ jobs:
       - uses: pnpm/action-setup@v4 # 버전은 package.json packageManager 필드를 따름
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22.13
           cache: pnpm
       - uses: azure/setup-kubectl@v4
         with:
           version: v1.33.9
-      - run: pnpm install --frozen-lockfile
+      - run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test

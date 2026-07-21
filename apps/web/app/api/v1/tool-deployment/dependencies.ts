@@ -5,10 +5,21 @@ import type { ToolDeploymentApiDependencies } from "@/lib/tool-deployment-api";
 
 export function toolDeploymentApiDependencies(): ToolDeploymentApiDependencies {
   const repository = getToolDeploymentRepository();
+  const build = (owner: Parameters<typeof buildDeviceManifest>[0], input: Parameters<typeof buildDeviceManifest>[1]) =>
+    buildDeviceManifest(owner, input, repository);
   return {
     authenticate: authenticateIngestToken,
-    buildManifest: (owner, input) => buildDeviceManifest(owner, input, repository),
+    buildManifest: build,
     deviceBelongsToToken: (owner, fingerprint) => repository.deviceBelongsToToken(owner, fingerprint),
+    reportMatchesDesiredState: async (owner, report) => {
+      const manifest = await build(owner, { fingerprint: report.deviceFingerprint, protocol: 1 });
+      return manifest.items.some(
+        (item) =>
+          item.catalogItemId === report.catalogItemId &&
+          item.versionId === report.desiredVersionId &&
+          item.rolloutId === report.rolloutId,
+      );
+    },
     saveReport: (owner, report) => repository.saveDeploymentReport(owner, report),
   };
 }

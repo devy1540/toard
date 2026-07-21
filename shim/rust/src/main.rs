@@ -23,8 +23,8 @@ mod json;
 mod otel;
 mod recovery;
 mod resolve;
-mod tool_event;
 mod tool_deployment;
+mod tool_event;
 mod update;
 mod usage_event;
 

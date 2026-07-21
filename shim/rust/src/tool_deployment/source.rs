@@ -37,7 +37,10 @@ pub(crate) fn validate_archive_entry(
         || path.contains('\0')
         || path.contains('\\')
         || path.contains("//")
-        || matches!(kind, EntryKind::Symlink | EntryKind::Hardlink | EntryKind::Device)
+        || matches!(
+            kind,
+            EntryKind::Symlink | EntryKind::Hardlink | EntryKind::Device
+        )
     {
         return Err(DeployError::new("unsafe_archive"));
     }
@@ -153,7 +156,10 @@ pub(crate) fn read_tar_gz_files(
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return Err(DeployError::new("archive_file_limit"));
         }
-        files.push(SourceFile { path: relative, bytes });
+        files.push(SourceFile {
+            path: relative,
+            bytes,
+        });
     }
     files.sort_by(|left, right| left.path.cmp(&right.path));
     let found: BTreeSet<_> = files.iter().map(|file| file.path.clone()).collect();

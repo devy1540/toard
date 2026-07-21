@@ -154,7 +154,9 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 ### 도구 설치와 팀 기본 배포
 
-라이브러리 상세에서 개인은 모든 기기 또는 선택한 기기에 immutable manifest 버전을 설치할 수 있다. 팀 리더는 같은 버전을 팀 기본으로 지정할 수 있고 구성원은 계정별로 제외할 수 있다. 온라인 shim은 60초 간격으로 desired manifest를 확인하며 ETag가 같으면 본문을 다시 받지 않는다. MCP가 요구하는 값은 서버 폼이 아니라 각 기기에서 다음 명령으로 입력한다.
+> **실험 기능:** 기본값은 비활성이다. 검증된 개발 환경에서만 `TOARD_TOOL_DEPLOYMENT_EXPERIMENTAL=1`로 manifest/report API와 rollout worker를 함께 활성화한다. 플래그가 꺼져 있어도 카탈로그 공유와 탐색은 사용할 수 있다.
+
+라이브러리 상세에서 개인은 이미 immutable manifest 버전이 등록된 Skill·stdio MCP를 모든 기기 또는 선택한 기기에 설치할 수 있다. 팀 리더는 같은 버전을 팀 기본으로 지정할 수 있고 구성원은 계정별로 제외할 수 있다. Plugin·HTTP MCP 자동 설치는 아직 지원하지 않으며 카탈로그 공유만 가능하다. daemon을 등록한 온라인 shim은 기본 60초 간격으로 desired manifest를 확인하며 ETag가 같으면 본문을 다시 받지 않는다. MCP가 요구하는 값은 서버 폼이 아니라 각 기기에서 다음 명령으로 입력한다.
 
 ```bash
 toard-shim tool configure <slug>

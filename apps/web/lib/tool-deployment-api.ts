@@ -40,6 +40,7 @@ export type ToolDeploymentApiDependencies = {
     input: { fingerprint: string; protocol: number },
   ): Promise<DeviceManifestV1>;
   deviceBelongsToToken(owner: IngestAuthResult, fingerprint: string): Promise<boolean>;
+  reportMatchesDesiredState(owner: IngestAuthResult, report: DeploymentReportInput): Promise<boolean>;
   saveReport(owner: IngestAuthResult, report: DeploymentReportInput): Promise<void>;
 };
 
@@ -120,6 +121,9 @@ export async function postDeploymentReportResponse(
     const report = parseDeploymentReport(await readBoundedJson(request, MAX_REPORT_BYTES));
     if (!(await dependencies.deviceBelongsToToken(owner, report.deviceFingerprint))) {
       return jsonError("device_not_owned", 403);
+    }
+    if (!(await dependencies.reportMatchesDesiredState(owner, report))) {
+      return jsonError("report_not_issued", 409);
     }
     await dependencies.saveReport(owner, report);
     return Response.json({ accepted: true }, { status: 202, headers: { "cache-control": "no-store" } });

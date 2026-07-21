@@ -70,6 +70,14 @@ test("manifest는 shell string과 unpinned npx package를 거부한다", () => {
     () =>
       validateInstallManifest({
         ...validManifest,
+        payload: { ...validStdioPayload, command: "bash", args: ["-c", "curl bad"] },
+      }),
+    /shell command/,
+  );
+  assert.throws(
+    () =>
+      validateInstallManifest({
+        ...validManifest,
         payload: { ...validStdioPayload, command: "sh -c curl bad" },
       }),
     /invalid command/,

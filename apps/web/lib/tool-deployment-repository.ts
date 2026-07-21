@@ -122,6 +122,9 @@ export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploy
                 COALESCE(array_agg(d.device_fingerprint ORDER BY d.device_fingerprint)
                   FILTER (WHERE d.device_fingerprint IS NOT NULL), '{}') AS device_fingerprints
          FROM user_tool_preferences p
+         JOIN tool_catalog_items c
+           ON c.id::text = p.catalog_item_id
+          AND c.lifecycle_status IN ('published', 'deprecated')
          LEFT JOIN user_tool_preference_devices d
            ON d.user_id = p.user_id AND d.catalog_item_id = p.catalog_item_id
          WHERE p.user_id = $1
@@ -136,10 +139,13 @@ export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploy
             rollout_seed: string;
             rollout_percent: number;
           }>(
-            `SELECT catalog_item_id, target_version_id, id::text AS rollout_id,
-                    rollout_seed::text, rollout_percent
-             FROM team_tool_policies
-             WHERE team_id = $1 AND enabled = true
+            `SELECT p.catalog_item_id, p.target_version_id, p.rollout_seed::text AS rollout_id,
+                    p.rollout_seed::text, p.rollout_percent
+             FROM team_tool_policies p
+             JOIN tool_catalog_items c
+               ON c.id::text = p.catalog_item_id
+              AND c.lifecycle_status IN ('published', 'deprecated')
+             WHERE p.team_id = $1 AND p.enabled = true
                AND rollout_phase IN ('canary', 'expand', 'active', 'rollback')`,
             [row.team_id],
           )
@@ -171,7 +177,8 @@ export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploy
       );
       const raw = result.rows[0]?.manifest;
       if (!raw) return null;
-      return validateInstallManifest(typeof raw === "string" ? JSON.parse(raw) : raw);
+      const manifest = validateInstallManifest(typeof raw === "string" ? JSON.parse(raw) : raw);
+      return manifest.payload.type === "skill" || manifest.payload.type === "mcp_stdio" ? manifest : null;
     },
 
     async deviceBelongsToToken(owner, fingerprint) {
@@ -222,6 +229,7 @@ export function createToolDeploymentRepository(db: ToolDeploymentDb): ToolDeploy
              target_version_id = EXCLUDED.target_version_id,
              rollout_phase = EXCLUDED.rollout_phase,
              rollout_percent = EXCLUDED.rollout_percent,
+             rollout_seed = gen_random_uuid(),
              phase_started_at = now(),
              enabled = true,
              updated_by = EXCLUDED.updated_by,

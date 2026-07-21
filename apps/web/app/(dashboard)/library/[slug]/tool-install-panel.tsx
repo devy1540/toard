@@ -1,18 +1,22 @@
 import { useTranslations } from "next-intl";
 import type { ToolCatalogItem } from "@toard/core";
 import { Badge } from "@/components/ui/badge";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ToolDeploymentView } from "@/lib/tool-deployment-view";
 import { excludeTeamDefaultAction, installToolAction } from "./tool-install-actions";
 
-export function ToolInstallPanel({ item, deployment }: { item: ToolCatalogItem; deployment: ToolDeploymentView }) {
+export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCatalogItem; deployment: ToolDeploymentView; enabled: boolean }) {
   const t = useTranslations("library.install");
   const settingsRequiredCommand = `toard-shim tool configure ${item.slug}`;
   return (
     <Card className="min-w-0 border-primary/25" aria-labelledby="install-heading">
       <CardHeader>
-        <CardTitle id="install-heading">{t("title")}</CardTitle>
+        <div className="flex flex-wrap items-center gap-2">
+          <CardTitle id="install-heading">{t("title")}</CardTitle>
+          <FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge>
+        </div>
         <CardDescription>{t("description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -22,7 +26,12 @@ export function ToolInstallPanel({ item, deployment }: { item: ToolCatalogItem; 
           <Summary label={t("permissions")} value={t("permissionCount", { env: item.requiredEnv.length, hosts: item.networkHosts.length })} />
         </div>
 
-        {deployment.versionId ? (
+        {!enabled ? (
+          <div className="rounded-md border border-orange-500/30 bg-orange-500/5 p-3 text-sm">
+            <p className="font-medium">{t("disabledTitle")}</p>
+            <p className="text-muted-foreground mt-1">{t("disabledDescription")}</p>
+          </div>
+        ) : deployment.versionId ? (
           <form action={installToolAction} className="space-y-3">
             <input type="hidden" name="catalogItemId" value={item.id} />
             <input type="hidden" name="versionId" value={deployment.versionId} />

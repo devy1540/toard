@@ -4,6 +4,7 @@ import { getTranslations } from "next-intl/server";
 import { LibraryBig, Search } from "lucide-react";
 import type { CatalogInstallState, ToolCatalogKind, ToolCatalogScope } from "@toard/core";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
@@ -54,7 +55,10 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
     <div className="min-w-0 space-y-5">
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
+            <FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge>
+          </div>
           <p className="text-muted-foreground mt-1 text-sm">{t("description")}</p>
         </div>
         <Button asChild className="self-start">

@@ -39,6 +39,11 @@ function dependencies(): ToolDeploymentApiDependencies & { reports: unknown[] } 
     async deviceBelongsToToken(_owner, value) {
       return value === fingerprint;
     },
+    async reportMatchesDesiredState(_owner, report) {
+      return report.catalogItemId === "catalog-1" &&
+        report.desiredVersionId === "version-1" &&
+        report.rolloutId === null;
+    },
     async saveReport(_owner, report) {
       reports.push(report);
     },
@@ -126,4 +131,27 @@ test("report API는 token 소유 기기만 비밀값 없는 닫힌 상태를 저
     deps,
   );
   assert.equal(forbidden.status, 403);
+});
+
+test("report API는 현재 기기에 발급되지 않은 catalog/version/rollout 조합을 거부한다", async () => {
+  const deps = dependencies();
+  const response = await postDeploymentReportResponse(
+    new Request("http://localhost/api/v1/tool-deployment/reports", {
+      method: "POST",
+      headers: { authorization: "Bearer token", "content-type": "application/json" },
+      body: JSON.stringify({
+        deviceFingerprint: fingerprint,
+        catalogItemId: "forged-item",
+        desiredVersionId: "version-1",
+        appliedVersionId: null,
+        status: "failed",
+        errorCode: "health_check_failed",
+        attempt: 1,
+        rolloutId: null,
+      }),
+    }),
+    deps,
+  );
+  assert.equal(response.status, 409);
+  assert.equal(deps.reports.length, 0);
 });

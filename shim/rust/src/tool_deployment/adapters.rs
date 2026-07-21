@@ -89,10 +89,7 @@ pub(crate) fn remove_managed_toml_mcp(
     let mut document = content
         .parse::<DocumentMut>()
         .map_err(|_| DeployError::new("invalid_client_config"))?;
-    if let Some(servers) = document
-        .get_mut("mcp_servers")
-        .and_then(Item::as_table_mut)
-    {
+    if let Some(servers) = document.get_mut("mcp_servers").and_then(Item::as_table_mut) {
         servers.remove(key);
     }
     Ok(document.to_string())

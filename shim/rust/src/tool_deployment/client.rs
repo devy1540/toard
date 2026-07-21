@@ -17,12 +17,15 @@ pub(crate) struct ManifestFetch {
 }
 
 pub(crate) fn parse_etag_headers(headers: &str) -> Option<String> {
-    headers.lines().filter_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.eq_ignore_ascii_case("etag")
-            .then(|| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-    }).last()
+    headers
+        .lines()
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("etag")
+                .then(|| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
+        .next_back()
 }
 
 pub(crate) fn parse_curl_response(output: &str) -> Result<CurlResponse, DeployError> {
@@ -65,7 +68,10 @@ pub(crate) fn fetch_manifest(
     );
     let mut command = Command::new("curl");
     let header_path = crate::fsx::state_dir()
-        .map(|path| path.join("tmp").join(format!("tool-manifest-headers-{}.txt", std::process::id())))
+        .map(|path| {
+            path.join("tmp")
+                .join(format!("tool-manifest-headers-{}.txt", std::process::id()))
+        })
         .ok_or_else(|| DeployError::new("home_unavailable"))?;
     if let Some(parent) = header_path.parent() {
         fs::create_dir_all(parent).map_err(|_| DeployError::new("state_write_failed"))?;
@@ -136,7 +142,8 @@ pub(crate) fn post_report(
         .map(|path| path.join("tmp"))
         .ok_or_else(|| DeployError::new("home_unavailable"))?;
     let path = directory.join(format!("tool-report-{}.json", std::process::id()));
-    let body = serde_json::to_string(report).map_err(|_| DeployError::new("report_encode_failed"))?;
+    let body =
+        serde_json::to_string(report).map_err(|_| DeployError::new("report_encode_failed"))?;
     crate::fsx::write_atomic(&path, &body, 0o600)
         .map_err(|_| DeployError::new("report_write_failed"))?;
     let output = Command::new("curl")
@@ -164,6 +171,7 @@ pub(crate) fn post_report(
     match String::from_utf8_lossy(&output.stdout).trim() {
         "202" => Ok(()),
         "401" => Err(DeployError::new("unauthorized")),
+        "409" => Err(DeployError::new("report_rejected")),
         _ => Err(DeployError::new("report_failed")),
     }
 }

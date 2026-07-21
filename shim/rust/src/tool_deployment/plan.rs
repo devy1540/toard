@@ -5,10 +5,22 @@ use super::state::ManagedState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PlanAction {
-    Install { slug: String, version_id: String },
-    Update { slug: String, from: String, to: String },
-    Remove { slug: String, version_id: String },
-    Noop { slug: String },
+    Install {
+        slug: String,
+        version_id: String,
+    },
+    Update {
+        slug: String,
+        from: String,
+        to: String,
+    },
+    Remove {
+        slug: String,
+        version_id: String,
+    },
+    Noop {
+        slug: String,
+    },
 }
 
 pub(crate) fn plan(current: &ManagedState, desired: &[DesiredItem]) -> Vec<PlanAction> {

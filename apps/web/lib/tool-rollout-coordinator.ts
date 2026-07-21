@@ -70,7 +70,10 @@ export function createToolRolloutRepository(pool: Pool): ToolRolloutRepository {
          FROM team_tool_policies p
          JOIN users u ON u.team_id = p.team_id
          LEFT JOIN device_tool_inventory_snapshots s ON s.user_id = u.id
-         LEFT JOIN tool_deployment_reports r ON r.rollout_id = p.id
+         LEFT JOIN tool_deployment_reports r
+           ON r.rollout_id = p.rollout_seed
+          AND r.desired_version_id = p.target_version_id
+          AND r.last_attempted_at >= p.phase_started_at
          WHERE p.enabled = true AND p.rollout_phase IN ('preflight', 'canary', 'expand')
          GROUP BY p.id`,
       );
@@ -128,7 +131,9 @@ export function startToolRolloutCoordinator(): void {
   const runtime = globalThis as typeof globalThis & { [SCHEDULER_KEY]?: ReturnType<typeof setInterval> };
   if (runtime[SCHEDULER_KEY] || process.env.TOARD_TOOL_ROLLOUT_COORDINATOR === "0") return;
   const repository = createToolRolloutRepository(getPool());
-  const tick = () => void runToolRolloutCoordinator(repository, new Date()).catch(() => undefined);
+  const tick = () => void runToolRolloutCoordinator(repository, new Date()).catch((error: unknown) => {
+    console.error("tool rollout coordinator tick failed", error);
+  });
   tick();
   const timer = setInterval(tick, 60_000);
   timer.unref();

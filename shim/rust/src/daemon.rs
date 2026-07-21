@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 
 use crate::fsx;
 
-pub const DEFAULT_INTERVAL_SECS: u64 = 300;
+pub const DEFAULT_INTERVAL_SECS: u64 = 60;
 pub const MIN_INTERVAL_SECS: u64 = 60;
 
 const LAUNCHD_LABEL: &str = "dev.toard.collect";
@@ -35,7 +35,7 @@ pub fn run(args: &[String]) -> i32 {
     }
 }
 
-/// `--interval <초>` 파싱 — 기본 300, 하한 60(명시 거부: 조용한 보정보다 명확한 실패).
+/// `--interval <초>` 파싱 — 기본 60, 하한 60(명시 거부: 조용한 보정보다 명확한 실패).
 fn parse_interval(args: &[String]) -> Result<u64, String> {
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut it = args.iter();
@@ -773,7 +773,7 @@ mod tests {
 
     #[test]
     fn interval_parsing() {
-        assert_eq!(parse_interval(&[]).unwrap(), 300, "기본 300초");
+        assert_eq!(parse_interval(&[]).unwrap(), 60, "기본 60초");
         let args = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(parse_interval(&args(&["--interval", "600"])).unwrap(), 600);
         assert!(
@@ -852,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_task_uses_current_user_limited_five_minute_schedule() {
+    fn windows_task_uses_current_user_limited_one_minute_schedule() {
         let script = windows_registration_script(
             r"C:\Users\GA\.toard\bin\toard-shim.exe",
             "S-1-5-21-1234-5678-9012-1001",
@@ -860,7 +860,7 @@ mod tests {
         );
 
         assert!(script.contains("Register-ScheduledTask -TaskName 'toard-collect'"));
-        assert!(script.contains("<Interval>PT5M</Interval>"));
+        assert!(script.contains("<Interval>PT1M</Interval>"));
         assert!(script.contains("<UserId>S-1-5-21-1234-5678-9012-1001</UserId>"));
         assert!(script.contains("<LogonType>InteractiveToken</LogonType>"));
         assert!(script.contains("<RunLevel>LeastPrivilege</RunLevel>"));

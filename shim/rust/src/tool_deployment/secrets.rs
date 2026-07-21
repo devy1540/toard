@@ -23,7 +23,8 @@ fn account(slug: &str, name: &str) -> String {
 
 pub(crate) fn load_definition(slug: &str) -> Result<McpLaunchDefinition, String> {
     let path = definition_path(slug).ok_or_else(|| "HOME 이 없습니다".to_string())?;
-    let body = std::fs::read_to_string(path).map_err(|_| "설치된 MCP 정의를 찾지 못했습니다".to_string())?;
+    let body = std::fs::read_to_string(path)
+        .map_err(|_| "설치된 MCP 정의를 찾지 못했습니다".to_string())?;
     serde_json::from_str(&body).map_err(|_| "설치된 MCP 정의가 손상됐습니다".to_string())
 }
 
@@ -107,6 +108,11 @@ pub(crate) fn configure(slug: &str) -> i32 {
         }
     }
     println!("  ✓ {slug} 로컬 설정 완료 — 값은 toard 서버로 전송되지 않습니다");
+    let mut client_state = super::state::load_client_state();
+    client_state.etag = None;
+    client_state.next_attempt_at = 0;
+    let _ = super::state::save_client_state(&client_state);
+    crate::bg::kick(super::SPAWN_ARG);
     0
 }
 
@@ -127,7 +133,21 @@ pub(crate) fn run_mcp(slug: &str) -> i32 {
         }
     };
     let mut command = Command::new(&launch.command);
-    command.args(&launch.args).envs(&launch.env);
+    command.args(&launch.args).env_clear();
+    for name in [
+        "PATH",
+        "HOME",
+        "USERPROFILE",
+        "SYSTEMROOT",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command.envs(&launch.env);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

@@ -56,7 +56,7 @@ fn print_usage() {
                                /v1/prompts 로 전송. 기존 true 설정은 server_v1 호환 모드
   daemon install|uninstall|status
                                주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
-                               install --interval <초> (기본 300, 하한 60)
+                               install --interval <초> (기본 60, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
   e2ee setup                   Recovery Kit를 저장·확인하고 E2EE 본문 수집 활성화
   e2ee status                  로컬 E2EE 모드와 보안 저장소 키 상태 확인
@@ -75,7 +75,9 @@ fn print_usage() {
 fn tool_cmd(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("reconcile") if args.len() == 1 => crate::tool_deployment::run_once(),
-        Some("configure") if args.len() == 2 => crate::tool_deployment::secrets::configure(&args[1]),
+        Some("configure") if args.len() == 2 => {
+            crate::tool_deployment::secrets::configure(&args[1])
+        }
         Some("run-mcp") if args.len() == 2 => crate::tool_deployment::secrets::run_mcp(&args[1]),
         _ => {
             eprintln!("toard-shim: 사용법: toard-shim tool reconcile | tool configure <slug> | tool run-mcp <slug>");
@@ -123,7 +125,11 @@ fn collect_cmd(args: &[String]) -> i32 {
             }
         }
     }
-    crate::collect::run(only.as_deref(), dry_run, quiet)
+    let result = crate::collect::run(only.as_deref(), dry_run, quiet);
+    if !dry_run {
+        let _ = crate::tool_deployment::run_once();
+    }
+    result
 }
 
 // ── claude-env — settings.json env 주입 관리 ──

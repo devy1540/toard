@@ -15,6 +15,7 @@ const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z
 const EXECUTABLE = /^[A-Za-z0-9._+-]+$/;
 const MANAGED_KEY = /^[A-Za-z0-9._-]{1,200}$/;
 const PINNED_NPM_PACKAGE = /^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/i;
+const SHELL_TRAMPOLINES = new Set(["sh", "bash", "zsh", "fish", "cmd", "cmd.exe", "pwsh", "powershell", "powershell.exe"]);
 
 export function normalizeSafeRelativePath(value: string): string {
   if (
@@ -94,6 +95,7 @@ function validatePayload(payload: ToolDeploymentPayload): void {
   }
   if (payload.type === "mcp_stdio") {
     if (!EXECUTABLE.test(payload.command)) throw new Error("invalid command");
+    if (SHELL_TRAMPOLINES.has(payload.command.toLowerCase())) throw new Error("shell command is not allowed");
     if (payload.args.some((arg) => arg.includes("\0") || arg.length > 2_000)) throw new Error("invalid command argument");
     if (payload.command === "npx" && !payload.args.some((arg) => PINNED_NPM_PACKAGE.test(arg))) {
       throw new Error("npx requires a pinned package version");

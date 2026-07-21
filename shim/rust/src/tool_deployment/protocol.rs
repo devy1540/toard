@@ -107,7 +107,7 @@ pub(crate) struct PluginComponent {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DeploymentStatus {
     Queued,
@@ -121,7 +121,7 @@ pub(crate) enum DeploymentStatus {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DeploymentReport {
     pub device_fingerprint: String,

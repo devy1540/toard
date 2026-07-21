@@ -4,12 +4,14 @@ import { getLocale, getTranslations } from "next-intl/server";
 import { ArrowLeft, ExternalLink, ShieldAlert } from "lucide-react";
 import type { CatalogInstallState } from "@toard/core";
 import { CopyButton } from "@/components/dashboard/copy-button";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { getToolCatalogItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getToolDeploymentView } from "@/lib/tool-deployment-view";
+import { toolDeploymentExperimentalEnabled } from "@/lib/tool-deployment-feature";
 import { archiveToolCatalogAction } from "../tool-actions";
 import { TeamDeploymentPanel } from "./team-deployment-panel";
 import { ToolInstallPanel } from "./tool-install-panel";
@@ -30,6 +32,7 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
   const item = await getToolCatalogItem(viewer, slug);
   if (!item) notFound();
   const deployment = await getToolDeploymentView(viewer.id, viewer.teamId, item.id);
+  const deploymentEnabled = toolDeploymentExperimentalEnabled();
 
   if (item.lifecycleStatus === "blocked") {
     return (
@@ -56,6 +59,7 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
+            <FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge>
             <Badge variant="secondary">{t(`kind.${item.kind}`)}</Badge>
             <Badge variant={item.trustStatus === "verified" ? "default" : "outline"}>{t(`trust.${item.trustStatus}`)}</Badge>
             {item.lifecycleStatus === "deprecated" ? <Badge variant="outline">{t("lifecycle.deprecated")}</Badge> : null}
@@ -74,8 +78,8 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
       </div>
 
       <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(20rem,0.8fr)]">
-        <ToolInstallPanel item={item} deployment={deployment} />
-        {viewer.teamRole === "leader" ? <TeamDeploymentPanel item={item} deployment={deployment} /> : null}
+        <ToolInstallPanel item={item} deployment={deployment} enabled={deploymentEnabled} />
+        {viewer.teamRole === "leader" ? <TeamDeploymentPanel item={item} deployment={deployment} enabled={deploymentEnabled} /> : null}
       </div>
 
       <div className="grid min-w-0 gap-4 lg:grid-cols-2">

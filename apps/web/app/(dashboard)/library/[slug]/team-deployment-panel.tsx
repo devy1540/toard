@@ -1,18 +1,22 @@
 import { useTranslations } from "next-intl";
 import type { ToolCatalogItem } from "@toard/core";
 import { Badge } from "@/components/ui/badge";
+import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { ToolDeploymentView } from "@/lib/tool-deployment-view";
 import { approveTeamRolloutAction, deployTeamDefaultAction } from "./tool-install-actions";
 
-export function TeamDeploymentPanel({ item, deployment }: { item: ToolCatalogItem; deployment: ToolDeploymentView }) {
+export function TeamDeploymentPanel({ item, deployment, enabled }: { item: ToolCatalogItem; deployment: ToolDeploymentView; enabled: boolean }) {
   const t = useTranslations("library.teamDeployment");
   const policy = deployment.teamPolicy;
   return (
     <Card className="min-w-0">
       <CardHeader>
-        <div className="flex flex-wrap items-center justify-between gap-2"><CardTitle>{t("title")}</CardTitle><Badge variant="outline">{t("leaderOnly")}</Badge></div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2"><CardTitle>{t("title")}</CardTitle><FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge></div>
+          <Badge variant="outline">{t("leaderOnly")}</Badge>
+        </div>
         <CardDescription>{t("description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -30,16 +34,17 @@ export function TeamDeploymentPanel({ item, deployment }: { item: ToolCatalogIte
           <input type="hidden" name="catalogItemId" value={item.id} />
           <input type="hidden" name="versionId" value={deployment.versionId ?? ""} />
           <input type="hidden" name="slug" value={item.slug} />
-          <Button type="submit" variant="outline" disabled={!deployment.versionId}>{policy ? t("update") : t("deploy")}</Button>
+          <Button type="submit" variant="outline" disabled={!enabled || !deployment.versionId}>{policy ? t("update") : t("deploy")}</Button>
         </form>
         {policy?.phase === "paused" ? (
           <form action={approveTeamRolloutAction}>
             <input type="hidden" name="catalogItemId" value={item.id} />
             <input type="hidden" name="slug" value={item.slug} />
-            <Button type="submit">{t("approvePermissions")}</Button>
+            <Button type="submit" disabled={!enabled}>{t("approvePermissions")}</Button>
           </form>
         ) : null}
         <p className="text-muted-foreground text-xs">{t("rolloutNotice")}</p>
+        {!enabled ? <p className="text-muted-foreground rounded-md border border-orange-500/30 bg-orange-500/5 p-3 text-xs">{t("disabledDescription")}</p> : null}
       </CardContent>
     </Card>
   );

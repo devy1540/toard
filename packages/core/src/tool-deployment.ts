@@ -198,7 +198,8 @@ export function evaluateRollout(state: RolloutEvaluation, now: Date): RolloutDec
   if (state.phase === "canary" && elapsedMs >= 30 * 60_000 && state.attempted >= canaryTarget) {
     return { action: "advance", nextPhase: "expand", percent: 50 };
   }
-  if (state.phase === "expand" && elapsedMs >= 60 * 60_000) {
+  const expandTarget = Math.max(1, Math.ceil(state.eligible * 0.5));
+  if (state.phase === "expand" && elapsedMs >= 60 * 60_000 && state.attempted >= expandTarget) {
     return { action: "advance", nextPhase: "active", percent: 100 };
   }
   return { action: "hold" };

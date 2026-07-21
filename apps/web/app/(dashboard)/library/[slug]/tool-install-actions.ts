@@ -5,6 +5,7 @@ import { getPool } from "@/lib/db";
 import { getSessionUser } from "@/lib/session-user";
 import { getToolDeploymentRepository } from "@/lib/tool-deployment-repository";
 import { mutateTeamPolicy } from "@/lib/tool-deployment-service";
+import { toolDeploymentExperimentalEnabled } from "@/lib/tool-deployment-feature";
 
 const FINGERPRINT = /^[a-f0-9]{64}$/;
 
@@ -21,6 +22,7 @@ async function installableVersion(catalogItemId: string, versionId: string): Pro
 }
 
 export async function installToolAction(formData: FormData): Promise<void> {
+  if (!toolDeploymentExperimentalEnabled()) return;
   const viewer = await getSessionUser();
   if (!viewer) return;
   const catalogItemId = field(formData, "catalogItemId");
@@ -49,6 +51,7 @@ export async function installToolAction(formData: FormData): Promise<void> {
 }
 
 export async function excludeTeamDefaultAction(formData: FormData): Promise<void> {
+  if (!toolDeploymentExperimentalEnabled()) return;
   const viewer = await getSessionUser();
   if (!viewer) return;
   const catalogItemId = field(formData, "catalogItemId");
@@ -66,6 +69,7 @@ export async function excludeTeamDefaultAction(formData: FormData): Promise<void
 }
 
 export async function deployTeamDefaultAction(formData: FormData): Promise<void> {
+  if (!toolDeploymentExperimentalEnabled()) return;
   const viewer = await getSessionUser();
   if (!viewer?.teamId) return;
   const catalogItemId = field(formData, "catalogItemId");
@@ -81,6 +85,7 @@ export async function deployTeamDefaultAction(formData: FormData): Promise<void>
 }
 
 export async function approveTeamRolloutAction(formData: FormData): Promise<void> {
+  if (!toolDeploymentExperimentalEnabled()) return;
   const viewer = await getSessionUser();
   if (!viewer?.teamId || viewer.teamRole !== "leader") return;
   const catalogItemId = field(formData, "catalogItemId");

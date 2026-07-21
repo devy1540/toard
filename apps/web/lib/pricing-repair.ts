@@ -17,6 +17,7 @@ import { getStorage } from "./storage";
 
 const STALE_RUNNING_MS = 5 * 60 * 1_000;
 const WAITING_RETRY_MS = 60 * 60 * 1_000;
+const PRICING_ROLLUP_RECONCILIATION_LIMIT = 10_000;
 
 export type PricingRepairState = "idle" | "pending" | "running" | "waiting_for_catalog" | "failed";
 
@@ -468,13 +469,20 @@ export async function runPricingRepairTaskWith(
           && item.logAdapter === "codex"
         ))
       : diagnostics;
+    const rollupReconciliation = !result.hasMore && !remainingSupported && remainingTotal === 0
+      ? await dependencies.storage.reconcilePricingRollupUsage?.({
+          from,
+          to: claimed.targetTo,
+          limit: PRICING_ROLLUP_RECONCILIATION_LIMIT,
+        }) ?? { dirtied: 0, affectedBuckets: [], hasMore: false }
+      : { dirtied: 0, affectedBuckets: [], hasMore: false };
     const at = dependencies.now();
     const adaptive = nextPricingRepairBatchLimit(
       claimed.adaptiveLimit,
       at.getTime() - startedAt.getTime(),
       result.scanned >= claimed.adaptiveLimit,
     );
-    let state: PricingRepairProgress["state"] = result.hasMore || remainingSupported
+    let state: PricingRepairProgress["state"] = result.hasMore || remainingSupported || rollupReconciliation.hasMore
       ? "pending"
       : remainingTotal === 0
         ? "idle"

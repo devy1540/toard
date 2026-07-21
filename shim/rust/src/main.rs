@@ -22,6 +22,7 @@ mod fsx;
 mod host;
 mod iso;
 mod json;
+mod local_bridge;
 mod otel;
 mod recovery;
 mod resolve;
@@ -77,7 +78,10 @@ fn main() {
         Some(update::SPAWN_ARG) => update::spawn_detached_updater(),
         Some(update::RUN_ARG) => std::process::exit(update::run_self_update(true)),
         Some(collect::SPAWN_ARG) => collect::spawn_detached_collector(),
-        Some(collect::RUN_ARG) => std::process::exit(collect::run(None, false, false)),
+        Some(collect::RUN_ARG) => {
+            local_bridge::ensure_background_quiet();
+            std::process::exit(collect::run(None, false, false))
+        }
         Some(tool_deployment::SPAWN_ARG) => tool_deployment::spawn_detached_reconciler(),
         Some(tool_deployment::RUN_ARG) => std::process::exit(tool_deployment::run_once()),
         _ => {}

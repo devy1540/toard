@@ -9,6 +9,7 @@ export type PlatformSignals = {
 export type InstallCommandInput = {
   platform: InstallPlatform;
   baseUrl: string;
+  uiOrigin: string;
   token: string;
   collectContent: boolean;
 };
@@ -51,30 +52,32 @@ export function buildInstallCommand(input: InstallCommandInput): string {
   if (input.platform === "windows") {
     return [
       `$env:TOARD_INGEST_TOKEN=${quotePowerShell(input.token)}`,
+      `$env:TOARD_UI_ORIGIN=${quotePowerShell(input.uiOrigin)}`,
       `$env:TOARD_SHIM_COLLECT_CONTENT=${quotePowerShell(collect)}`,
       `irm ${quotePowerShell(`${baseUrl}/install.ps1`)} | iex`,
     ].join("; ");
   }
 
-  return `curl -fsSL ${quotePosix(`${baseUrl}/install.sh`)} | TOARD_INGEST_TOKEN=${quotePosix(input.token)} TOARD_SHIM_COLLECT_CONTENT=${quotePosix(collect)} sh`;
+  return `curl -fsSL ${quotePosix(`${baseUrl}/install.sh`)} | TOARD_INGEST_TOKEN=${quotePosix(input.token)} TOARD_UI_ORIGIN=${quotePosix(input.uiOrigin)} TOARD_SHIM_COLLECT_CONTENT=${quotePosix(collect)} sh`;
 }
 
 export function buildManagementCommands(
   platform: InstallPlatform,
   baseUrl: string,
+  uiOrigin: string,
 ): ManagementCommands {
   const base = trimBaseUrl(baseUrl);
   if (platform === "windows") {
     const shim = '"$HOME\\.toard\\bin\\toard-shim.exe"';
     return {
-      manual: `$env:TOARD_INGEST_TOKEN='<내 토큰>'; irm ${quotePowerShell(`${base}/install.ps1`)} | iex`,
+      manual: `$env:TOARD_INGEST_TOKEN='<내 토큰>'; $env:TOARD_UI_ORIGIN=${quotePowerShell(uiOrigin)}; irm ${quotePowerShell(`${base}/install.ps1`)} | iex`,
       doctor: `& ${shim} doctor`,
       update: `& ${shim} update`,
       uninstall: `irm ${quotePowerShell(`${base}/uninstall.ps1`)} | iex`,
     };
   }
   return {
-    manual: `curl -fsSL ${quotePosix(`${base}/install.sh`)} | TOARD_INGEST_TOKEN='<내 토큰>' sh`,
+    manual: `curl -fsSL ${quotePosix(`${base}/install.sh`)} | TOARD_INGEST_TOKEN='<내 토큰>' TOARD_UI_ORIGIN=${quotePosix(uiOrigin)} sh`,
     doctor: "toard-shim doctor",
     update: "toard-shim update",
     uninstall: `curl -fsSL ${quotePosix(`${base}/uninstall.sh`)} | sh`,

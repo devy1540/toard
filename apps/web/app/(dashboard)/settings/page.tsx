@@ -12,7 +12,7 @@ import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims } from "@/lib/host-shims";
-import { getPublicBaseUrl } from "@/lib/public-url";
+import { getPublicBaseUrl, getRequestOrigin, localShimTargetId } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
@@ -29,6 +29,7 @@ import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
 import { HistorySecurityPanel } from "./history-security-panel";
+import { LocalShimPanel } from "./local-shim-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -162,9 +163,10 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [tokens, baseUrl, devices, shims, inventories] = await Promise.all([
+  const [tokens, baseUrl, uiOrigin, devices, shims, inventories] = await Promise.all([
     listActiveTokens(userId),
     getPublicBaseUrl(),
+    getRequestOrigin(),
     getStorage().getUserHosts(userId),
     getHostShims(userId),
     getMyDeviceInventories(userId),
@@ -196,15 +198,20 @@ async function InstallTab({ userId }: { userId: string }) {
         <CardContent className="min-w-0 space-y-6">
           <OnboardingWizard
             baseUrl={baseUrl}
+            uiOrigin={uiOrigin}
             contentEnabled={contentEnabled}
             contentDefaultOn={contentDefaultOn}
           />
           <div className="border-t pt-4">
-            <OnboardingPanel baseUrl={baseUrl} />
+            <OnboardingPanel baseUrl={baseUrl} uiOrigin={uiOrigin} />
           </div>
         </CardContent>
       </Card>
 
+      <LocalShimPanel
+        serverVersion={serverVersion}
+        targetId={localShimTargetId(`${baseUrl.replace(/\/+$/, "")}/api`)}
+      />
       <TokenManagementPanel tokens={tokenRows} />
       <DeviceList devices={devices} shims={shims} inventories={inventories} serverVersion={serverVersion} />
     </div>

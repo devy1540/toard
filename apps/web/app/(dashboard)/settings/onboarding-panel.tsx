@@ -17,7 +17,7 @@ type NavigatorWithUserAgentData = Navigator & {
   userAgentData?: { platform?: string };
 };
 
-export function OnboardingPanel({ baseUrl }: { baseUrl: string }) {
+export function OnboardingPanel({ baseUrl, uiOrigin }: { baseUrl: string; uiOrigin: string }) {
   const t = useTranslations("settings");
   const [platform, setPlatform] = useState<InstallPlatform>("macos");
 
@@ -31,7 +31,7 @@ export function OnboardingPanel({ baseUrl }: { baseUrl: string }) {
     if (detected) setPlatform(detected);
   }, []);
 
-  const commands = buildManagementCommands(platform, baseUrl);
+  const commands = buildManagementCommands(platform, baseUrl, uiOrigin);
 
   return (
     <Disclosure

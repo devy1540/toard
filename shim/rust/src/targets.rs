@@ -84,6 +84,27 @@ pub fn target_id(normalized_endpoint: &str) -> String {
     format!("{:x}", Sha256::digest(normalized_endpoint.as_bytes()))
 }
 
+pub fn normalize_origin(value: &str) -> Result<String, TargetError> {
+    let url = Url::parse(value.trim())
+        .map_err(|_| TargetError::InvalidEndpoint("UI origin must be an absolute URL".into()))?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Err(TargetError::InvalidEndpoint(
+            "UI origin must use http or https and include a host".into(),
+        ));
+    }
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || url.path() != "/"
+    {
+        return Err(TargetError::InvalidEndpoint(
+            "UI origin must not include credentials, path, query, or fragment".into(),
+        ));
+    }
+    Ok(url.origin().ascii_serialization())
+}
+
 #[derive(Clone, Debug)]
 pub struct Target {
     pub id: String,
@@ -200,6 +221,9 @@ impl TargetStore {
                 if credentials.content_device_id.is_none() {
                     credentials.content_device_id = existing.content_device_id;
                 }
+                if credentials.ui_origin.is_none() {
+                    credentials.ui_origin = existing.ui_origin;
+                }
             }
             self.write_target_unlocked(&mut credentials)
         })
@@ -227,6 +251,9 @@ impl TargetStore {
     fn write_target_unlocked(&self, credentials: &mut Credentials) -> Result<Target, TargetError> {
         let endpoint = validate_credentials(credentials)?;
         credentials.endpoint = Some(endpoint.clone());
+        if let Some(ui_origin) = credentials.ui_origin.as_deref() {
+            credentials.ui_origin = Some(normalize_origin(ui_origin)?);
+        }
 
         let id = target_id(&endpoint);
         let target_dir = self.targets_dir().join(&id);
@@ -383,7 +410,7 @@ impl TargetStore {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error.into()),
             };
-            let credentials = credentials::parse(&content);
+            let mut credentials = credentials::parse(&content);
             let endpoint =
                 credentials
                     .endpoint
@@ -392,6 +419,9 @@ impl TargetStore {
                         "stored endpoint is missing",
                     ))?;
             let endpoint = normalize_endpoint(endpoint)?;
+            if let Some(ui_origin) = credentials.ui_origin.as_deref() {
+                credentials.ui_origin = Some(normalize_origin(ui_origin)?);
+            }
             if target_id(&endpoint) != id || credentials.token.is_none() {
                 return Err(TargetError::InvalidCredentials(
                     "stored target identity is invalid",
@@ -790,6 +820,21 @@ mod tests {
         assert_eq!(a, "https://toard.example/api");
         assert_eq!(a, b);
         assert_eq!(target_id(&a), target_id(&b));
+    }
+
+    #[test]
+    fn normalizes_ui_origin_and_rejects_path_components() {
+        assert_eq!(
+            normalize_origin("HTTPS://Dashboard.Example:443/").unwrap(),
+            "https://dashboard.example"
+        );
+        for value in [
+            "https://dashboard.example/team",
+            "https://user@dashboard.example",
+            "https://dashboard.example?team=1",
+        ] {
+            assert!(normalize_origin(value).is_err(), "accepted {value}");
+        }
     }
 
     #[test]

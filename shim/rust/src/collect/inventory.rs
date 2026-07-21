@@ -48,10 +48,15 @@ struct InventoryBody<'a> {
     items: &'a [InventoryItem],
 }
 
-pub fn inventory_body(host: Option<&str>, observed_at_ms: i64, items: &[InventoryItem]) -> String {
+pub fn inventory_body(
+    host: Option<&str>,
+    device_id: &str,
+    observed_at_ms: i64,
+    items: &[InventoryItem],
+) -> String {
     serde_json::to_string(&InventoryBody {
         host,
-        fingerprint: inventory_fingerprint(items),
+        fingerprint: device_id.to_owned(),
         observed_at: crate::iso::epoch_ms_to_iso(observed_at_ms),
         items,
     })
@@ -68,10 +73,19 @@ struct WatchStamp {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct InventoryScanState {
     last_checked: u64,
+    #[serde(default)]
+    device_id: String,
     fingerprint: String,
     stamps: Vec<WatchStamp>,
     #[serde(default)]
     body: String,
+}
+
+fn random_device_id() -> String {
+    rand::random::<[u8; 32]>()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub struct InventorySnapshot {
@@ -267,7 +281,12 @@ pub fn prepare_inventory(
     let now = crate::bg::now_unix();
     let current_stamps = stamps(&home);
     let mut state = load_scan_state(global_state_dir);
-    if state.stamps == current_stamps
+    let created_device_id = state.device_id.is_empty();
+    if created_device_id {
+        state.device_id = random_device_id();
+    }
+    if !created_device_id
+        && state.stamps == current_stamps
         && now.saturating_sub(state.last_checked) < 24 * 60 * 60
         && !state.fingerprint.is_empty()
         && !state.body.is_empty()
@@ -279,7 +298,7 @@ pub fn prepare_inventory(
     }
     let items = scan_inventory(&home);
     let fingerprint = inventory_fingerprint(&items);
-    let body = inventory_body(host, (now * 1000) as i64, &items);
+    let body = inventory_body(host, &state.device_id, (now * 1000) as i64, &items);
     state.last_checked = now;
     state.stamps = current_stamps;
     state.fingerprint.clone_from(&fingerprint);
@@ -326,8 +345,10 @@ mod tests {
     #[test]
     fn serialized_inventory_has_no_sensitive_configuration_fields() {
         let item = InventoryItem::new("mcp", "context7", "claude_code", true);
-        let body = inventory_body(Some("box"), 1_783_641_600_000, &[item]);
+        let device_id = "a".repeat(64);
+        let body = inventory_body(Some("box"), &device_id, 1_783_641_600_000, &[item]);
         assert!(body.contains("context7"));
+        assert!(body.contains(&device_id));
         for forbidden in ["endpoint", "command", "arguments", "output", "/Users/"] {
             assert!(!body.contains(forbidden));
         }
@@ -364,11 +385,32 @@ mod tests {
         assert!(items.iter().any(|item| {
             item.kind == "skill" && item.item_key == "shared" && item.source_provider == "cursor"
         }));
-        let body = inventory_body(None, 1_783_641_600_000, &items);
+        let body = inventory_body(None, &"b".repeat(64), 1_783_641_600_000, &items);
         for forbidden in ["secret-command", "secret-token", "private body"] {
             assert!(!body.contains(forbidden));
         }
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn device_identity_is_stable_when_inventory_changes() {
+        let device_id = "d".repeat(64);
+        let first = inventory_body(
+            Some("box"),
+            &device_id,
+            1_783_641_600_000,
+            &[InventoryItem::new("mcp", "first", "codex", true)],
+        );
+        let second = inventory_body(
+            Some("box"),
+            &device_id,
+            1_783_641_600_001,
+            &[InventoryItem::new("skill", "second", "codex", true)],
+        );
+        let first: serde_json::Value = serde_json::from_str(&first).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&second).unwrap();
+        assert_eq!(first["fingerprint"], second["fingerprint"]);
+        assert_eq!(first["fingerprint"], device_id);
     }
 
     #[test]

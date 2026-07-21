@@ -23,7 +23,7 @@ const MIGRATIONS = [
   "1700000001_init.sql",
   "1700000010_prompt_records.sql",
   "1700000030_e2ee_content_foundation.sql",
-  "1700000045_prompt_agent_metadata.sql",
+  "1700000047_prompt_agent_metadata.sql",
 ];
 
 test("E2EE canary는 승인된 browser envelope 복호화 뒤에만 나타난다", { timeout: 90_000 }, async () => {

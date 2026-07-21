@@ -1,0 +1,175 @@
+{
+  "title": "Tool library",
+  "description": "Discover public and workspace-shared MCP servers, skills, and plugins.",
+  "experimental": "Experimental",
+  "share": "Share my tool",
+  "scope": {
+    "all": "All",
+    "public": "Public tools",
+    "workspace": "Workspace",
+    "mine": "Shared by me"
+  },
+  "kind": {
+    "all": "All types",
+    "mcp": "MCP",
+    "skill": "Skill",
+    "plugin": "Plugin"
+  },
+  "trust": {
+    "community": "Community",
+    "verified": "Verified"
+  },
+  "lifecycle": {
+    "published": "Published",
+    "deprecated": "Deprecated",
+    "blocked": "Blocked",
+    "archived": "Archived"
+  },
+  "state": {
+    "not_installed": "Not installed",
+    "unavailable": "Unavailable",
+    "installed": "Installed",
+    "versionUnknown": "Installed · version unavailable",
+    "sameVersion": "Installed · matches registered version",
+    "differentVersion": "Installed · different version"
+  },
+  "filters": {
+    "searchLabel": "Search tools",
+    "searchPlaceholder": "Search names or descriptions",
+    "kindLabel": "Type",
+    "apply": "Apply",
+    "reset": "Reset"
+  },
+  "table": {
+    "tool": "Tool",
+    "kind": "Type",
+    "origin": "Source",
+    "state": "My status",
+    "detail": "Details",
+    "publicOrigin": "Public catalog",
+    "workspaceOrigin": "Shared by {owner}"
+  },
+  "empty": {
+    "title": "No tools match these filters",
+    "description": "Change the search or filters, or share the first workspace tool."
+  },
+  "detail": {
+    "back": "Back to library",
+    "source": "Source",
+    "sourceOpen": "Open source repository",
+    "sourceRef": "Registered ref",
+    "tagNotice": "A tag can move in its source repository. Only a commit SHA provides strong immutability.",
+    "clients": "Supported clients",
+    "requiredEnv": "Required environment variable names",
+    "noRequiredEnv": "No required environment variables",
+    "networkHosts": "Network destinations",
+    "noNetworkHosts": "No external hosts declared",
+    "installState": "My device status",
+    "publishedBy": "Publisher",
+    "publicPublisher": "Public catalog",
+    "updatedAt": "Last updated",
+    "installNotes": "Installation notes",
+    "uninstallNotes": "Removal notes",
+    "copyInstall": "Copy installation notes",
+    "copyUninstall": "Copy removal notes",
+    "copied": "Instructions copied.",
+    "noNotes": "See the source repository README.",
+    "verificationNotice": "Source verification means the registered URL and ref were checked. It is not an official endorsement or security audit.",
+    "blockedTitle": "This tool has been blocked",
+    "blockedDescription": "An administrator blocked workspace access for the following reason.",
+    "blockedNoReason": "No blocking reason was recorded."
+  },
+  "install": {
+    "title": "Install on my devices",
+    "description": "toard sends desired state; the connected shim verifies the source and applies it to Codex and Claude Code.",
+    "experimental": "Experimental",
+    "disabledTitle": "Automatic installation is currently disabled",
+    "disabledDescription": "Only verified workspaces can enable it with a server setting. Tool sharing and discovery remain available.",
+    "source": "Pinned source", "clients": "Target clients", "permissions": "Requested access",
+    "permissionCount": "{env} environment variables · {hosts} external hosts",
+    "installAllDevices": "Install on all my devices",
+    "installAllDevicesDescription": "Also applies automatically to devices connected later.",
+    "advancedDeviceSelection": "Advanced: select target devices", "selectedDevices": "Install only on selected devices",
+    "unknownDevice": "Unnamed device", "noDevices": "Connect a device in Settings first.", "install": "Install",
+    "nextShimRun": "After saving, online devices apply it on the next shim sync (normally within 60 seconds).",
+    "versionUnavailable": "An automatic installation version is not ready yet",
+    "versionUnavailableDescription": "You can inspect the source and permissions, but installation waits for an immutable manifest.",
+    "deviceStatus": "Status by device", "settingsRequiredCommand": "Run when local setup is required",
+    "excludeTeamDefault": "Exclude this team default for my account", "excluded": "This team default is excluded for your account.",
+    "status": {
+      "queued": "Queued", "applying": "Applying", "settings_required": "Local setup required", "installed": "Installed",
+      "conflict": "Existing config conflict", "failed": "Failed", "rolled_back": "Restored previous version", "excluded": "Excluded", "unsupported": "Unsupported"
+    }
+  },
+  "teamDeployment": {
+    "title": "Team default deployment", "leaderOnly": "Team leader",
+    "description": "Members can opt out, while new versions expand automatically from a small device cohort.",
+    "experimental": "Experimental",
+    "disabledDescription": "The automatic installation experiment is disabled, so team deployment cannot start or expand.",
+    "notDeployed": "This is not currently a team default.", "approvePermissions": "Approve permission changes and start canary", "deploy": "Deploy as team default", "update": "Deploy new version",
+    "rolloutNotice": "Expands from at least one device and 10%, to 50%, then 100%; two failures or 20% triggers automatic recovery.",
+    "installed": "Installed", "settingsRequired": "Setup needed", "failed": "Failed",
+    "phase": { "preflight": "Preflight", "canary": "Canary", "expand": "Expanding", "active": "Fully active", "paused": "Awaiting approval", "rollback": "Recovering" }
+  },
+  "form": {
+    "title": "Share a tool",
+    "description": "Share a Git source and safe metadata. Secrets and local files are never uploaded.",
+    "editTitle": "Edit shared tool",
+    "editDescription": "Changing metadata resets an existing verification back to community status.",
+    "backToDetail": "Back to details",
+    "publishNoticeTitle": "Published immediately without approval",
+    "publishNotice": "The item appears in the workspace as community content. Administrators only verify or block it afterward.",
+    "editNoticeTitle": "Changes return to community status",
+    "editNotice": "Previous verification does not cover changed content, so saving removes the verified badge.",
+    "startTitle": "Where should we import from?",
+    "startDescription": "Choose a tool detected on your device or start from its GitHub source.",
+    "fromDevice": "Choose from my device",
+    "fromDeviceDescription": "Prefill basic details from MCP servers, skills, and plugins detected by a connected shim.",
+    "fromGithub": "Import from GitHub",
+    "fromGithubDescription": "Register a public repository with a pinned tag or commit.",
+    "detectedTool": "Detected tool",
+    "detectedToolPlaceholder": "Select a tool",
+    "noDetectedTools": "No tools were detected on connected devices",
+    "deviceImportNotice": "Only the tool name and type are imported. Confirm the GitHub source and description before publishing.",
+    "advanced": "Advanced settings · permissions and instructions",
+    "name": "Name",
+    "slug": "URL identifier",
+    "slugHelp": "Use lowercase letters, numbers, and hyphens only.",
+    "descriptionLabel": "Description",
+    "kind": "Type",
+    "clients": "Supported clients",
+    "sourceUrl": "Git HTTPS URL",
+    "sourceUrlHelp": "Credentials, localhost, and private-network URLs are rejected.",
+    "sourceRef": "Version tag or commit SHA",
+    "sourceRefHelp": "Enter a tag such as v1.2.3 or a full 40-character commit SHA.",
+    "inventorySourceProvider": "Inventory source",
+    "inventoryItemKey": "Inventory itemKey",
+    "inventoryItemKeyHelp": "This must exactly match the tool name in device configuration to connect installation status.",
+    "requiredEnv": "Environment variable names",
+    "networkHosts": "Network hosts",
+    "linesHelp": "Enter one per line. Do not enter values or URL paths.",
+    "installNotes": "Installation notes",
+    "uninstallNotes": "Removal notes",
+    "invalidField": "Review the input format.",
+    "publish": "Publish to community",
+    "saveEdit": "Save changes",
+    "saving": "Saving…",
+    "edit": "Edit",
+    "archive": "Archive",
+    "errors": {
+      "unauthorized": "Sign in is required.",
+      "duplicate": "That URL identifier is already in use.",
+      "forbidden": "You do not have permission to edit this tool.",
+      "save-failed": "The tool could not be saved. Try again shortly."
+    }
+  },
+  "errors": {
+    "load": "The tool could not be loaded.",
+    "unauthorized": "Sign in is required.",
+    "invalid": "Review the entered values."
+  },
+  "admin": {
+    "title": "Tool moderation",
+    "description": "Verify or block items after they have been published without an approval gate."
+  }
+}

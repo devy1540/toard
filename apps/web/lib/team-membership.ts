@@ -129,12 +129,17 @@ export async function changeUserTeam(
     if (input.completeOnboarding) {
       await client.query(
         `UPDATE users
-         SET team_id = $2, team_onboarding_completed_at = COALESCE(team_onboarding_completed_at, $3)
+         SET team_id = $2::uuid,
+             team_role = CASE WHEN $2::uuid IS NULL THEN 'member' ELSE team_role END,
+             team_onboarding_completed_at = COALESCE(team_onboarding_completed_at, $3)
          WHERE id = $1`,
         [input.userId, input.teamId, now],
       );
     } else {
-      await client.query("UPDATE users SET team_id = $2 WHERE id = $1", [input.userId, input.teamId]);
+      await client.query(
+        "UPDATE users SET team_id = $2::uuid, team_role = CASE WHEN $2::uuid IS NULL THEN 'member' ELSE team_role END WHERE id = $1",
+        [input.userId, input.teamId],
+      );
     }
 
     let attributionJobId: string | null = null;

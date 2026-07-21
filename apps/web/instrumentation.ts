@@ -13,6 +13,11 @@ export async function register(): Promise<void> {
     teamAttributionSchedulerEligible,
   } = await import("./lib/team-attribution");
   if (teamAttributionSchedulerEligible(process.env)) startTeamAttributionWorker();
+  const { toolDeploymentExperimentalEnabled } = await import("./lib/tool-deployment-feature");
+  if (toolDeploymentExperimentalEnabled()) {
+    const { startToolRolloutCoordinator } = await import("./lib/tool-rollout-coordinator");
+    startToolRolloutCoordinator();
+  }
   if (process.env.STORAGE_BACKEND === "clickhouse") {
     const {
       startClickHouseOutboxFlush,

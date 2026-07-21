@@ -154,6 +154,20 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 The shim wraps `claude` and `codex` on each developer machine and sends usage and AI-tool activity to toard, with automatic OS and architecture detection. Install only one shim and one scheduled collection job per user account. That installation can send independently to **any number of toard server targets**, such as work and personal servers. By default, tool collection handles only metadata such as MCP, skill, and plugin names, timestamps, and status. It **never sends tool arguments, outputs, commands, environment variables, absolute paths, or raw payloads**. See [AI tool metadata collection](docs/tool-metadata-collection.md) for fields, detection limits, and opt-out instructions.
 
+### Tool installation and team defaults
+
+> **Experimental:** disabled by default. Enable manifest/report APIs and the rollout worker together with `TOARD_TOOL_DEPLOYMENT_EXPERIMENTAL=1` only in a verified development environment. Catalog sharing and discovery remain available while the flag is off.
+
+From a library detail page, an individual can install an already-registered immutable Skill or stdio MCP version on all or selected devices. A team leader can set the same version as a team default, and members may opt out per account. Plugin and HTTP MCP auto-installation are not supported yet; those items can only be shared in the catalog. An online shim checks desired manifests every 60 seconds. To prevent policies from different servers competing for the same local client configuration, automatic tool deployment is skipped when more than one toard target is registered. MCP secrets stay on each device and are configured with `toard-shim tool configure <slug>`.
+
+| Location | Stored | Never stored |
+|---|---|---|
+| Git repository | Skill/MCP/Plugin source and tag or commit | User secrets |
+| toard server | Immutable manifest, tree digest, desired state, and status reports | Permanent source copy, MCP secrets, GitHub installation tokens |
+| User device | Installed files, managed client config, local secrets, and last-known-good state | Other users' policies or secrets |
+
+Team updates progress through a minimum one-device 10% canary, then 50%, then 100%. Rollout stops and restores last-known-good when at least two devices fail or failures reach 20% of attempted devices. Permission or source-identity expansion requires a team leader to confirm again.
+
 **One-line installer (recommended)** — after signing in, open **Settings → Connect a computer**, confirm the operating system, and copy the provided command. A token for that computer is issued automatically, and the page verifies the first authenticated request after installation. Running a command from a new server adds that target without removing existing targets. Rerunning a command for the same server updates only that target's token and policy while preserving its delivery cursor. Legacy single-server installations migrate automatically to the target structure on the first new-version installation. Claude, Codex, Gemini, and Qwen backfill historical usage from local session files. Cursor usage starts after the exact-token stop hook is installed, while existing `.cursor` transcripts are used for opt-in conversation content and MCP or skill activity.
 
 ```bash

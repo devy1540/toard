@@ -108,6 +108,53 @@ test("가격 복구 worker는 지원 모델의 unpriced를 확정하고 idle로 
   assert.equal(status.nextAttemptAt, null);
 });
 
+test("가격 원본 보정이 끝나면 stale 15분 rollup을 찾아 다음 batch까지 이어간다", async () => {
+  let status = pendingStatus({ remainingUnpricedEvents: 0, remainingLegacyEvents: 0 });
+  let reconciliationCalls = 0;
+  const repository: PricingRepairRepository = {
+    get: async () => status,
+    claim: async () => ({ ...status, state: "running", lastStartedAt: NOW }),
+    async markProgress(input) {
+      status = {
+        ...status,
+        state: input.state,
+        nextAttemptAt: input.nextAttemptAt,
+      };
+      return true;
+    },
+    async markFailed() {
+      throw new Error("unexpected failure");
+    },
+  };
+  const storage = {
+    reconcileCodexReplayUsage: async () => ({
+      scanned: 0, reconciled: 0, remainingUnpriced: 0, affectedBuckets: [], hasMore: false,
+    }),
+    getPricingRecoveryModels: async () => [],
+    reconcilePricingRollupUsage: async (request: { from: Date; to: Date; limit: number }) => {
+      reconciliationCalls += 1;
+      assert.equal(request.from.toISOString(), "1970-01-01T00:00:00.000Z");
+      assert.equal(request.to.toISOString(), NOW.toISOString());
+      assert.equal(request.limit, 10_000);
+      return {
+        dirtied: 10_000,
+        affectedBuckets: [new Date("2026-07-10T10:00:00.000Z")],
+        hasMore: true,
+      };
+    },
+  } as unknown as StorageBackend;
+
+  assert.equal(await runPricingRepairTaskWith({
+    repository,
+    storage,
+    getSchedule: async () => new Map(),
+    now: () => NOW,
+  }), "success");
+  assert.equal(reconciliationCalls, 1);
+  assert.equal(status.state, "pending");
+  assert.equal(status.nextAttemptAt?.toISOString(), NOW.toISOString());
+});
+
 test("가격 복구 worker는 90일 이전 legacy도 전체 보존 범위에서 재가격한다", async () => {
   let status = pendingStatus({ remainingUnpricedEvents: 0, remainingLegacyEvents: 2 });
   let requestedFrom = "";

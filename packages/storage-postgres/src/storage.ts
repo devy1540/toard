@@ -15,6 +15,8 @@ import type {
   OverviewStats,
   PeriodQuery,
   PricingRecoveryBatchResult,
+  PricingRollupReconciliationRequest,
+  PricingRollupReconciliationResult,
   PricingRepairRequest,
   PricingRepairResolver,
   ProviderBreakdown,
@@ -673,6 +675,12 @@ export class PostgresStorage implements StorageBackend {
     } finally {
       client.release();
     }
+  }
+
+  async reconcilePricingRollupUsage(
+    _request: PricingRollupReconciliationRequest,
+  ): Promise<PricingRollupReconciliationResult> {
+    return { dirtied: 0, affectedBuckets: [], hasMore: false };
   }
 
   // ── 읽기 ──

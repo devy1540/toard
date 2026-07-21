@@ -18,6 +18,68 @@ export interface TurnUsage {
   costStatus: SessionUsageEventRow["costStatus"];
 }
 
+export interface HistoryAgentRun {
+  id: string;
+  parentId: string | null;
+  depth: number | null;
+  name: string | null;
+  role: string | null;
+  turns: PromptHistoryItem[];
+  firstTs: Date;
+  latestTs: Date;
+}
+
+export type HistoryTimelineItem =
+  | { type: "turn"; turn: PromptHistoryItem }
+  | { type: "agents"; agents: HistoryAgentRun[]; firstTs: Date; latestTs: Date };
+
+/**
+ * 시간순 턴을 메인 턴과 연속된 서브에이전트 실행 묶음으로 변환한다.
+ * 에이전트 내부에서는 원본 턴 순서를 유지하고, 묶음 안 에이전트는 첫 활동 시각순이다.
+ */
+export function groupHistoryAgents(turns: PromptHistoryItem[]): HistoryTimelineItem[] {
+  const timeline: HistoryTimelineItem[] = [];
+  let index = 0;
+  while (index < turns.length) {
+    const turn = turns[index]!;
+    if (!turn.agent) {
+      timeline.push({ type: "turn", turn });
+      index += 1;
+      continue;
+    }
+
+    const grouped = new Map<string, HistoryAgentRun>();
+    let firstTs = turn.ts;
+    let latestTs = turn.ts;
+    while (index < turns.length && turns[index]!.agent) {
+      const agentTurn = turns[index]!;
+      const agent = agentTurn.agent!;
+      const existing = grouped.get(agent.id);
+      if (existing) {
+        existing.turns.push(agentTurn);
+        existing.latestTs = agentTurn.ts;
+      } else {
+        grouped.set(agent.id, {
+          ...agent,
+          turns: [agentTurn],
+          firstTs: agentTurn.ts,
+          latestTs: agentTurn.ts,
+        });
+      }
+      if (agentTurn.ts < firstTs) firstTs = agentTurn.ts;
+      if (agentTurn.ts > latestTs) latestTs = agentTurn.ts;
+      index += 1;
+    }
+    timeline.push({
+      type: "agents",
+      agents: [...grouped.values()].sort((left, right) => left.firstTs.getTime() - right.firstTs.getTime()),
+      firstTs,
+      latestTs,
+    });
+  }
+  return timeline;
+}
+
 /** pull 수집은 같은 로그 라인에서 본문·usage 가 나와 ts 가 일치하고,
  *  OTLP 경로는 어긋날 수 있어 여유를 둔다. 이 이상 벌어지면 무매칭 처리. */
 const MATCH_TOLERANCE_MS = 10_000;

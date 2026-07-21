@@ -8,6 +8,7 @@ import {
   parseContentDevice,
   parseContentKeyWrapper,
   parseDeviceEnvelope,
+  parseE2eePromptRecord,
   parseE2eePromptRecordsBody,
 } from "./e2ee-contract";
 import {
@@ -53,6 +54,36 @@ test("e2ee wire validates batch and decoded byte lengths", () => {
   assert.throws(
     () => parseE2eePromptRecordsBody([{ ...VALID_E2EE_RECORD, ciphertext: "" }]),
     /ciphertext는 1바이트 이상/,
+  );
+});
+
+test("E2EE agent metadata를 검증하고 기존 레코드 shape는 유지한다", () => {
+  const root = parseE2eePromptRecord(VALID_E2EE_RECORD);
+  assert.equal(Object.hasOwn(root, "agent"), false);
+
+  const subagent = parseE2eePromptRecord({
+    ...VALID_E2EE_RECORD,
+    agent: {
+      id: "agent-reviewer",
+      parentId: VALID_E2EE_RECORD.sessionId,
+      depth: 2,
+      name: "Reviewer",
+      role: "reviewer",
+    },
+  });
+  assert.deepEqual(subagent.agent, {
+    id: "agent-reviewer",
+    parentId: VALID_E2EE_RECORD.sessionId,
+    depth: 2,
+    name: "Reviewer",
+    role: "reviewer",
+  });
+  assert.throws(
+    () => parseE2eePromptRecord({
+      ...VALID_E2EE_RECORD,
+      agent: { id: "agent-reviewer", parentId: null, depth: 0, name: null, role: null },
+    }),
+    /agent\.depth/,
   );
 });
 

@@ -19,7 +19,12 @@ import { saveE2eePromptRecords } from "../apps/web/lib/prompt-records";
 const execFileAsync = promisify(execFile);
 const CANARY = "TOARD_E2EE_PLAINTEXT_CANARY_7f39";
 const CREDENTIAL_CANARY = "AWS_SECRET_ACCESS_KEY=TOARD_MUST_NOT_PERSIST_7f39";
-const MIGRATIONS = ["1700000001_init.sql", "1700000010_prompt_records.sql", "1700000030_e2ee_content_foundation.sql"];
+const MIGRATIONS = [
+  "1700000001_init.sql",
+  "1700000010_prompt_records.sql",
+  "1700000030_e2ee_content_foundation.sql",
+  "1700000045_prompt_agent_metadata.sql",
+];
 
 test("E2EE canary는 승인된 browser envelope 복호화 뒤에만 나타난다", { timeout: 90_000 }, async () => {
   const container = `toard-e2ee-canary-${randomUUID().slice(0, 8)}`;

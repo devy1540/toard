@@ -23,6 +23,15 @@ export interface PromptHistoryItem {
   ts: Date;
   text: string;
   contentUnavailable?: boolean;
+  agent?: PromptHistoryAgent | null;
+}
+
+export interface PromptHistoryAgent {
+  id: string;
+  parentId: string | null;
+  depth: number | null;
+  name: string | null;
+  role: string | null;
 }
 
 export interface HistoryFilter {
@@ -45,6 +54,7 @@ export interface HistorySessionSummary {
   turnCount: number;
   firstTs: Date;
   latestTs: Date;
+  subagentCount: number;
 }
 
 export interface HistorySessionPage {
@@ -88,6 +98,11 @@ const CIPHER_COLS = [
   "provider_key",
   "turn_role",
   "ts",
+  "agent_id",
+  "parent_agent_id",
+  "agent_depth",
+  "agent_name",
+  "agent_role",
 ].join(", ");
 
 type HistoryCipherRow = {
@@ -106,6 +121,11 @@ type HistoryCipherRow = {
   provider_key: string;
   turn_role: "user" | "assistant";
   ts: Date;
+  agent_id: string | null;
+  parent_agent_id: string | null;
+  agent_depth: number | null;
+  agent_name: string | null;
+  agent_role: string | null;
 };
 
 type HistoryDb = {
@@ -303,6 +323,7 @@ export async function getMyHistorySessions(
     turn_count: string;
     first_ts: Date;
     latest_ts: Date;
+    subagent_count: string;
     total_groups: string;
     has_managed_content: boolean;
     has_legacy_content: boolean;
@@ -321,6 +342,7 @@ export async function getMyHistorySessions(
                 COUNT(*)                          AS turn_count,
                 MIN(ts)                           AS first_ts,
                 MAX(ts)                           AS latest_ts,
+                COUNT(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS subagent_count,
                 COUNT(*) OVER ()                  AS total_groups,
                 BOOL_OR(encryption_scheme = 'managed_v1') AS has_managed_content,
                 BOOL_OR(encryption_scheme = 'server_v1')  AS has_legacy_content
@@ -375,6 +397,7 @@ export async function getMyHistorySessions(
         turnCount: Number(g.turn_count),
         firstTs: g.first_ts,
         latestTs: g.latest_ts,
+        subagentCount: Number(g.subagent_count ?? 0),
       })),
     };
   } finally {
@@ -436,6 +459,13 @@ export async function getMyHistorySession(
         role: row.turn_role,
         ts: row.ts,
         text: text ?? "",
+        agent: row.agent_id == null ? null : {
+          id: row.agent_id,
+          parentId: row.parent_agent_id ?? null,
+          depth: row.agent_depth ?? null,
+          name: row.agent_name ?? null,
+          role: row.agent_role ?? null,
+        },
         ...(text === null ? { contentUnavailable: true } : {}),
       };
     });

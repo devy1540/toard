@@ -16,7 +16,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{
-    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage,
+    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawPromptAgent, RawToolActivity,
+    RawUsage,
 };
 use crate::iso::iso_to_epoch_ms;
 use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
@@ -44,12 +45,47 @@ impl LogAdapter for Codex {
     }
 
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
-        parse_rollout(path)
+        parse_rollout_all(path, true, false).content
     }
 
     fn parse_changed(&self, path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
         parse_rollout_all(path, include_content, include_tools)
     }
+}
+
+fn subagent_metadata(payload: &serde_json::Map<String, Value>) -> Option<RawPromptAgent> {
+    let spawn = payload
+        .get("source")
+        .and_then(Value::as_object)
+        .and_then(|source| source.get("subagent"))
+        .and_then(Value::as_object)
+        .and_then(|subagent| subagent.get("thread_spawn"))?;
+    let spawn = spawn.as_object();
+    let id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .or_else(|| payload.get("session_id").and_then(Value::as_str))?
+        .to_string();
+    let field = |key: &str| {
+        spawn
+            .and_then(|item| item.get(key))
+            .or_else(|| payload.get(key))
+    };
+    Some(RawPromptAgent {
+        id,
+        parent_id: field("parent_thread_id")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        depth: field("depth")
+            .and_then(Value::as_u64)
+            .and_then(|depth| u8::try_from(depth).ok()),
+        name: field("agent_nickname")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        role: field("agent_role")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    })
 }
 
 fn parse_mcp_name(name: &str) -> Option<String> {
@@ -123,6 +159,8 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
     let mut first_live_fork_task: Option<usize> = None;
     let mut first_inter_agent_marker: Option<usize> = None;
     let mut positioned_usage = Vec::new();
+    let mut positioned_content = Vec::new();
+    let mut current_prompt_agent: Option<RawPromptAgent> = None;
     for (line_index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
         let Ok(value) = serde_json::from_slice::<Value>(line) else {
             continue;
@@ -148,6 +186,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     .and_then(|item| item.get("source"))
                     .and_then(Value::as_object)
                     .is_some_and(|source| source.contains_key("subagent"));
+                current_prompt_agent = payload.and_then(subagent_metadata);
             } else if next_session_id != first_session_id {
                 // vscode fork/resume는 새 rollout의 session_meta 뒤에 다른 세션의 전체
                 // 기록을 복사한다. 현재 session UUID 이후의 첫 turn이 live 경계다.
@@ -230,19 +269,23 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                         continue;
                     };
                     if !text.is_empty() {
-                        parsed.content.push(RawContent {
-                            ts_ms,
-                            session_id: session_id.as_deref().map(str::to_string),
-                            message_id: None,
-                            role: if item.get("type").and_then(Value::as_str)
-                                == Some("user_message")
-                            {
-                                "user"
-                            } else {
-                                "assistant"
+                        positioned_content.push((
+                            line_index,
+                            RawContent {
+                                ts_ms,
+                                session_id: session_id.as_deref().map(str::to_string),
+                                message_id: None,
+                                role: if item.get("type").and_then(Value::as_str)
+                                    == Some("user_message")
+                                {
+                                    "user"
+                                } else {
+                                    "assistant"
+                                },
+                                text: text.to_string(),
+                                agent: None,
                             },
-                            text: text.to_string(),
-                        });
+                        ));
                     }
                 }
                 _ => {}
@@ -324,6 +367,15 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             parsed.usage.push(usage);
         }
     }
+    for (line_index, mut content) in positioned_content {
+        let is_live_subagent =
+            source_is_subagent && replay_cutoff.is_none_or(|cutoff| line_index >= cutoff);
+        if is_live_subagent {
+            content.session_id = first_session_id.clone();
+            content.agent = current_prompt_agent.clone();
+        }
+        parsed.content.push(content);
+    }
     parsed
 }
 
@@ -342,68 +394,6 @@ fn sessions_dir() -> Option<PathBuf> {
         return Some(PathBuf::from(h).join("sessions"));
     }
     crate::fsx::home_dir().map(|h| h.join(".codex").join("sessions"))
-}
-
-/// 롤아웃 jsonl → user/assistant 본문 레코드. event_msg(user_message/agent_message)만 정본으로 사용.
-fn parse_rollout(path: &Path) -> Vec<RawContent> {
-    let fallback = file_mtime_ms(path);
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let mut session_id: Option<String> = None;
-    let mut out = Vec::new();
-    for line in bytes.split(|b| *b == b'\n') {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Some(obj) = v.as_object() else {
-            continue;
-        };
-        let ty = obj.get("type").and_then(Value::as_str);
-        let payload = obj.get("payload").and_then(Value::as_object);
-
-        if ty == Some("session_meta") {
-            if let Some(p) = payload {
-                session_id = p
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-            }
-            continue;
-        }
-        if ty != Some("event_msg") {
-            continue;
-        }
-        let Some(p) = payload else {
-            continue;
-        };
-        let role: &'static str = match p.get("type").and_then(Value::as_str) {
-            Some("user_message") => "user",
-            Some("agent_message") => "assistant",
-            _ => continue,
-        };
-        let Some(text) = p.get("message").and_then(Value::as_str) else {
-            continue;
-        };
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        let ts_ms = obj
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(iso_to_epoch_ms)
-            .unwrap_or(fallback);
-        out.push(RawContent {
-            ts_ms,
-            session_id: session_id.clone(),
-            // event_msg 엔 message id 가 없음 — dedup 은 session+ts+role+text 로 성립(§content_dedup_key)
-            message_id: None,
-            role,
-            text: text.to_string(),
-        });
-    }
-    out
 }
 
 #[cfg(test)]
@@ -562,6 +552,39 @@ mod tests {
             parsed.replayed_usage[0].session_id.as_deref(),
             Some("parent-replayed")
         );
+    }
+
+    #[test]
+    fn preserves_live_subagent_identity_without_tagging_replayed_parent_content() {
+        let tmp = TempDir::new("codex-subagent-content-metadata");
+        let path = tmp.write(
+            "sessions/2026/07/21/rollout.jsonl",
+            &[
+                r#"{"type":"session_meta","payload":{"id":"agent-thread","session_id":"root-thread","source":{"subagent":{"thread_spawn":{"parent_thread_id":"root-thread","depth":1,"agent_nickname":"Galileo","agent_role":"explorer"}}}}}"#,
+                r#"{"type":"session_meta","payload":{"id":"root-thread","session_id":"root-thread","source":"vscode"}}"#,
+                r#"{"timestamp":"2026-07-21T01:00:00Z","type":"event_msg","payload":{"type":"agent_message","message":"복사된 부모 응답"}}"#,
+                r#"{"type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}"#,
+                r#"{"timestamp":"2026-07-21T01:00:01Z","type":"event_msg","payload":{"type":"user_message","message":"할당 작업"}}"#,
+                r#"{"timestamp":"2026-07-21T01:00:02Z","type":"event_msg","payload":{"type":"agent_message","message":"조사 결과"}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Codex.parse_changed(&path, true, false);
+        assert_eq!(parsed.content.len(), 3);
+        assert!(
+            parsed.content[0].agent.is_none(),
+            "replayed parent remains root"
+        );
+        for turn in &parsed.content[1..] {
+            assert_eq!(turn.session_id.as_deref(), Some("root-thread"));
+            let agent = turn.agent.as_ref().expect("live subagent metadata");
+            assert_eq!(agent.id, "agent-thread");
+            assert_eq!(agent.parent_id.as_deref(), Some("root-thread"));
+            assert_eq!(agent.depth, Some(1));
+            assert_eq!(agent.name.as_deref(), Some("Galileo"));
+            assert_eq!(agent.role.as_deref(), Some("explorer"));
+        }
     }
 
     #[test]

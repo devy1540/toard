@@ -22,6 +22,15 @@ export interface E2eePromptRecordWire extends ContentAadInput {
   iv: string;
   ciphertext: string;
   authTag: string;
+  agent?: E2eePromptAgentWire | null;
+}
+
+export interface E2eePromptAgentWire {
+  id: string;
+  parentId: string | null;
+  depth: number | null;
+  name: string | null;
+  role: string | null;
 }
 
 export interface ContentDeviceWire {
@@ -84,6 +93,31 @@ function nullableString(value: unknown, field: string, max = 255): string | null
   return string(value, field, max);
 }
 
+function optionalNullableString(value: unknown, field: string, max = 255): string | null {
+  if (value === undefined || value === null) return null;
+  return string(value, field, max);
+}
+
+function promptAgent(value: unknown): E2eePromptAgentWire | null {
+  if (value === undefined || value === null) return null;
+  const input = record(value, "agent는 객체 또는 null이어야 합니다");
+  exactKeys(input, ["id", "parentId", "depth", "name", "role"]);
+  let depth: number | null = null;
+  if (input.depth !== undefined && input.depth !== null) {
+    if (!Number.isSafeInteger(input.depth) || Number(input.depth) < 1 || Number(input.depth) > 32) {
+      throw new E2eeContractError("agent.depth는 1 이상 32 이하 정수 또는 null이어야 합니다");
+    }
+    depth = Number(input.depth);
+  }
+  return {
+    id: string(input.id, "agent.id", 255),
+    parentId: optionalNullableString(input.parentId, "agent.parentId", 255),
+    depth,
+    name: optionalNullableString(input.name, "agent.name", 100),
+    role: optionalNullableString(input.role, "agent.role", 100),
+  };
+}
+
 function positiveVersion(value: unknown): number {
   if (!Number.isSafeInteger(value) || Number(value) < 1 || Number(value) > 32_767) {
     throw new E2eeContractError("contentKeyVersion은 1 이상 32767 이하 정수여야 합니다");
@@ -143,7 +177,7 @@ export function canonicalContentAad(input: ContentAadInput): Uint8Array {
 const E2EE_FIELDS = [
   "schema", "algorithm", "aadVersion", "contentOwnerId", "contentKeyVersion", "dedupKey",
   "sessionId", "providerKey", "turnRole", "ts", "wrappedDek", "dekWrapIv", "dekWrapAuthTag",
-  "iv", "ciphertext", "authTag",
+  "iv", "ciphertext", "authTag", "agent",
 ] as const;
 
 export function parseE2eePromptRecord(value: unknown): E2eePromptRecordWire {
@@ -157,6 +191,7 @@ export function parseE2eePromptRecord(value: unknown): E2eePromptRecordWire {
   if (input.turnRole !== "user" && input.turnRole !== "assistant") {
     throw new E2eeContractError("turnRole은 user 또는 assistant여야 합니다");
   }
+  const agent = input.agent === undefined ? undefined : promptAgent(input.agent);
   return {
     schema: "e2ee_v1",
     algorithm: "AES-256-GCM",
@@ -174,6 +209,7 @@ export function parseE2eePromptRecord(value: unknown): E2eePromptRecordWire {
     iv: bytes(input.iv, "iv", 12),
     ciphertext: rangedBytes(input.ciphertext, "ciphertext", 1, E2EE_MAX_CIPHERTEXT_BYTES),
     authTag: bytes(input.authTag, "authTag", 16),
+    ...(agent === undefined ? {} : { agent }),
   };
 }
 

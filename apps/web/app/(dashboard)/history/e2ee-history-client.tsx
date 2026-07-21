@@ -40,11 +40,13 @@ import type { E2eeHistoryDetail, E2eeHistoryPage } from "@/lib/e2ee-history";
 import type { ContentKeyWrapperWire, E2eePromptRecordWire } from "@/lib/e2ee-contract";
 import { formatCostForCoverage } from "@/lib/cost-coverage";
 import { fmtUsd } from "@/lib/format";
+import { groupHistoryAgents } from "@/lib/history-grouping";
 import { toHistoryPreview } from "@/lib/history-preview";
 import type { ProviderOption } from "@/lib/providers";
 import { initialE2eeHistoryState, reduceE2eeHistory } from "./e2ee-history-state";
 import { HistorySessionList } from "./history-session-list";
 import { historyPagination, type HistoryListItem } from "./history-list-view";
+import { HistoryAgentGroup } from "./history-agent-group";
 import { LockedHistory } from "./locked-history";
 import {
   managedMigrationStateBody,
@@ -452,6 +454,20 @@ export function E2eeHistoryClient({
 
   const providerLabel = useCallback((key: string): string =>
     providers.find((provider) => provider.key === key)?.label ?? key, [providers]);
+  const detailTimeFormatter = useMemo(
+    () => new Intl.DateTimeFormat(locale, { timeZone: timezone, timeStyle: "short" }),
+    [locale, timezone],
+  );
+  const detailTimeline = useMemo(() => groupHistoryAgents((detail?.turns ?? []).map((turn) => ({
+    dedupKey: turn.dedupKey,
+    sessionId: turn.sessionId,
+    providerKey: turn.providerKey,
+    role: turn.turnRole,
+    ts: new Date(turn.ts),
+    text: turn.text ?? "",
+    contentUnavailable: turn.text === null,
+    agent: turn.agent ?? null,
+  }))), [detail?.turns]);
   const listItems = useMemo<HistoryListItem[]>(() => historyPage.sessions.map((session) => {
     const usage = session.usage;
     return {
@@ -575,14 +591,44 @@ export function E2eeHistoryClient({
           {detail.truncated ? <p className="text-muted-foreground text-xs">{t("truncated")}</p> : null}
           <Card className="min-w-0">
             <CardContent className="space-y-4 p-4 sm:p-6">
-              {detail.turns.map((turn, index) => (
-                <div key={turn.dedupKey} className={turn.turnRole === "user" ? "flex justify-end" : "flex justify-start"}>
+              {detailTimeline.map((item, index) => item.type === "agents" ? (
+                <HistoryAgentGroup
+                  key={`agents-${item.firstTs.toISOString()}-${index}`}
+                  agents={item.agents}
+                  firstTs={item.firstTs}
+                  latestTs={item.latestTs}
+                  turnUsage={new Map()}
+                  fmtTime={(date) => detailTimeFormatter.format(date)}
+                  costLabels={{
+                    partial: dashboardT("costCoverage.partial"),
+                    unpriced: dashboardT("costCoverage.unpriced"),
+                    legacy: dashboardT("costCoverage.legacy"),
+                  }}
+                  idPrefix={`e2ee-agent-${index}`}
+                  labels={{
+                    subagents: (count) => dashboardT("history.subagents", { count }),
+                    subagent: dashboardT("history.subagent"),
+                    parallelExecution: dashboardT("history.parallelExecution"),
+                    completed: dashboardT("history.agentCompleted"),
+                    fallbackName: (agentIndex) => dashboardT("history.agentFallback", { index: agentIndex }),
+                    depth: (depth) => dashboardT("history.agentDepth", { depth }),
+                    assigned: dashboardT("history.agentAssigned"),
+                    turns: (count) => dashboardT("history.turns", { count }),
+                    rolePrompt: dashboardT("history.rolePrompt"),
+                    roleResponse: dashboardT("history.roleResponse"),
+                    showMore: dashboardT("history.showMore"),
+                    showLess: dashboardT("history.showLess"),
+                    contentUnavailable: dashboardT("history.contentUnavailable"),
+                  }}
+                />
+              ) : (
+                <div key={item.turn.dedupKey} className={item.turn.role === "user" ? "flex justify-end" : "flex justify-start"}>
                   <div className="max-w-[92%] min-w-0 rounded-xl border bg-muted/30 px-3 py-2 sm:max-w-[80%]">
-                    <span className="sr-only">{turn.turnRole === "user" ? t("prompt") : t("response")}</span>
-                    {turn.text === null ? (
+                    <span className="sr-only">{item.turn.role === "user" ? t("prompt") : t("response")}</span>
+                    {item.turn.contentUnavailable ? (
                       <p className="text-muted-foreground text-sm italic">{t("contentUnavailable")}</p>
                     ) : (
-                      <TurnText id={`e2ee-${index}`} text={turn.text} more={t("more")} less={t("less")} />
+                      <TurnText id={`e2ee-${index}`} text={item.turn.text} more={t("more")} less={t("less")} />
                     )}
                   </div>
                 </div>

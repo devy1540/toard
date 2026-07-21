@@ -103,10 +103,39 @@ test("plaintext records are encrypted as managed_v1 before INSERT", async () => 
     false,
   );
   assert.equal(insert.params[1], USER_ID);
-  assert.equal(insert.params[6], 3);
-  assert.equal(insert.params[11], null);
-  assert.equal(insert.params[12], 3);
-  assert.equal(insert.params[15], 2);
+  assert.equal(insert.params[11], 3);
+  assert.equal(insert.params[16], null);
+  assert.equal(insert.params[17], 3);
+  assert.equal(insert.params[20], 2);
+});
+
+test("managed records preserve subagent identity columns", async () => {
+  const db = createManagedDb();
+  await saveManagedPromptRecords(
+    USER_ID,
+    [{
+      ...PROMPT,
+      agent: {
+        id: "agent-reviewer",
+        parentId: "session-1",
+        depth: 2,
+        name: "Reviewer",
+        role: "reviewer",
+      },
+    }],
+    createManagedRuntime(),
+    db,
+  );
+
+  const insert = db.calls.find((call) => /INSERT INTO prompt_records/.test(call.sql));
+  assert.ok(insert);
+  assert.deepEqual(insert.params.slice(6, 11), [
+    "agent-reviewer",
+    "session-1",
+    2,
+    "Reviewer",
+    "reviewer",
+  ]);
 });
 
 test("managed 저장은 trusted userId와 암호화한 canonical metadata만 사용한다", async () => {
@@ -188,14 +217,14 @@ test("managed 저장은 첫 await 전 snapshot으로 원본 object와 Date 변�
       turnRole: initial.turnRole,
       ts: new Date("2026-07-17T05:06:07.890Z"),
       encryptionScheme: "managed_v1",
-      contentKeyVersion: insert.params[12] as number,
+      contentKeyVersion: insert.params[17] as number,
       aadVersion: 2,
-      wrappedDek: insert.params[7] as Buffer,
-      iv: insert.params[8] as Buffer,
-      ciphertext: insert.params[9] as Buffer,
-      authTag: insert.params[10] as Buffer,
-      dekWrapIv: insert.params[13] as Buffer,
-      dekWrapAuthTag: insert.params[14] as Buffer,
+      wrappedDek: insert.params[12] as Buffer,
+      iv: insert.params[13] as Buffer,
+      ciphertext: insert.params[14] as Buffer,
+      authTag: insert.params[15] as Buffer,
+      dekWrapIv: insert.params[18] as Buffer,
+      dekWrapAuthTag: insert.params[19] as Buffer,
     },
     UCK,
     "018f47d0-4d47-7b04-950b-7d18a86e1b43",
@@ -311,6 +340,34 @@ test("e2ee records are inserted byte-for-byte without server plaintext or KEK", 
     insert.params.find((value) => Buffer.isBuffer(value) && value.length === 24),
     fromBase64Url(VALID_E2EE_RECORD.ciphertext, "ciphertext"),
   );
+});
+
+test("e2ee records preserve subagent identity columns", async () => {
+  const db = createRecordingDb({ contentState: "active" });
+  await saveE2eePromptRecords(
+    "user-1",
+    [{
+      ...VALID_E2EE_RECORD,
+      agent: {
+        id: "agent-cursor-1",
+        parentId: VALID_E2EE_RECORD.sessionId,
+        depth: 1,
+        name: null,
+        role: null,
+      },
+    }],
+    db,
+  );
+
+  const insert = db.calls.find((call) => /INSERT INTO prompt_records/.test(call.sql));
+  assert.ok(insert);
+  assert.deepEqual(insert.params.slice(6, 11), [
+    "agent-cursor-1",
+    VALID_E2EE_RECORD.sessionId,
+    1,
+    null,
+    null,
+  ]);
 });
 
 test("e2ee owner는 active 또는 migrated이고 ingest-token user에 속해야 한다", async () => {

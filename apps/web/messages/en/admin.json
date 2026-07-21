@@ -4,6 +4,7 @@
     "members": "Members",
     "teams": "Teams",
     "invites": "Invites",
+    "library": "Tools",
     "system": "System"
   },
   "members": {
@@ -12,12 +13,19 @@
     "colMember": "Member",
     "colRole": "Role",
     "colTeam": "Team",
+    "colTeamRole": "Tool role",
     "colLastReceived": "Last received",
     "colJoined": "Joined",
     "colShim": "Shim version",
     "shimUnreported": "Not reported (old shim)",
     "shimOutdated": "Update needed",
     "outdatedBanner": "{count, plural, one {# device runs} other {# devices run}} an outdated shim — auto-update may be stalled"
+  },
+  "teamRoleSelect": {
+    "label": "Team tool role",
+    "member": "Member",
+    "leader": "Leader",
+    "updated": "Team tool role updated."
   },
   "teams": {
     "cardTitle": "Teams ({count})",
@@ -86,6 +94,29 @@
     "pendingHeading": "Pending invites",
     "pendingTeam": "{team} team",
     "pendingExpires": "Expires {date}"
+  },
+  "library": {
+    "immediateNotice": "Posts are already visible without administrator approval",
+    "description": "This is not an approval queue. Add a verified badge after publication, or deprecate and block problematic items.",
+    "workspaceTitle": "Workspace tools ({count})",
+    "workspaceDescription": "Manage trust and lifecycle status for items shared by members.",
+    "publicTitle": "Built-in public tools ({count})",
+    "publicDescription": "These items ship in toard code and cannot be edited here.",
+    "empty": "No workspace tools have been shared yet.",
+    "readOnly": "Read only",
+    "verified": "Verified",
+    "lifecycle": "Visibility",
+    "reason": "Status reason",
+    "reasonPlaceholder": "Reason for blocking or deprecation",
+    "save": "Save status",
+    "saving": "Saving…",
+    "saved": "Status saved.",
+    "errors": {
+      "forbidden": "Administrator access is required.",
+      "invalid": "The target or status is invalid.",
+      "reasonRequired": "A reason is required for blocking or deprecation.",
+      "saveFailed": "The status could not be saved."
+    }
   },
   "encryption": {
     "title": "Managed encryption",
@@ -381,6 +412,8 @@
     "roleInvalid": "The selected role is not valid.",
     "userNotFound": "The selected member could not be found.",
     "lastAdminRequired": "The last administrator cannot be changed to member.",
+    "teamRoleInvalid": "The selected team tool role is invalid.",
+    "teamRequiredForLeader": "Only a member assigned to a team can become a leader.",
     "legacyAttributionNotEligible": "This member is not eligible for existing unassigned usage attribution."
   }
 }

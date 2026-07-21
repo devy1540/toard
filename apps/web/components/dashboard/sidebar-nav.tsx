@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { Building2, ChartBar, Lightbulb, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
+import { Building2, ChartBar, LibraryBig, Lightbulb, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import { featureStatusBadgeClassName } from "./feature-status-badge";
 
-type NavKey = "myUsage" | "insights" | "history" | "org" | "orgTeams" | "myTeam" | "settings" | "admin";
+type NavKey = "myUsage" | "insights" | "history" | "org" | "orgTeams" | "myTeam" | "library" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
 type NavBadge = "preview" | "beta";
 type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
@@ -29,6 +29,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
     { href: "/org", key: "org", icon: ChartBar, badge: "preview" },
     ...(isAdmin ? ([{ href: "/org/teams", key: "orgTeams", icon: Building2, badge: "preview" }] satisfies NavItem[]) : []),
     { href: "/org/team", key: "myTeam", icon: Building2, badge: "preview" },
+    { href: "/library", key: "library", icon: LibraryBig, badge: "beta" },
   ];
 
   // 그룹 축: 개인(내 데이터) / 워크스페이스(이 인스턴스 전체·팀별 집계) / 시스템

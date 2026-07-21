@@ -34,6 +34,7 @@ pub fn run(args: &[String]) -> ! {
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
         Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
+        Some("tool") => std::process::exit(tool_cmd(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
         Some("version" | "--version" | "-V") => {
             println!("toard-shim {}", version());
@@ -77,8 +78,11 @@ fn usage_text() -> String {
                                /v1/prompts에 전송하고 서버 관리형 암호화로 저장
   daemon install|uninstall|status
                                주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron)
-                               install --interval <초> (기본 300, 하한 60)
+                               install --interval <초> (기본 60, 하한 60)
                                — Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 안에 수집
+  tool reconcile               도구 원하는 상태를 즉시 조회·적용
+  tool configure <slug>        MCP 비밀값을 로컬 보안 저장소에 입력
+  tool run-mcp <slug>          로컬 비밀값을 주입해 관리 MCP 실행
   [legacy-e2ee — 기존 사용자 호환]
   e2ee setup                   기존 E2EE Recovery Kit 설정·복구
   e2ee status                  기존 로컬 E2EE 모드와 보안 저장소 키 상태 확인
@@ -253,6 +257,20 @@ fn target_remove_machine() -> i32 {
     }
 }
 
+fn tool_cmd(args: &[String]) -> i32 {
+    match args.first().map(String::as_str) {
+        Some("reconcile") if args.len() == 1 => crate::tool_deployment::run_once(),
+        Some("configure") if args.len() == 2 => {
+            crate::tool_deployment::secrets::configure(&args[1])
+        }
+        Some("run-mcp") if args.len() == 2 => crate::tool_deployment::secrets::run_mcp(&args[1]),
+        _ => {
+            eprintln!("toard-shim: 사용법: toard-shim tool reconcile | tool configure <slug> | tool run-mcp <slug>");
+            2
+        }
+    }
+}
+
 fn e2ee_cmd(args: &[String]) -> i32 {
     eprintln!("{LEGACY_E2EE_WARNING}");
     match args.first().map(String::as_str) {
@@ -293,7 +311,11 @@ fn collect_cmd(args: &[String]) -> i32 {
             }
         }
     }
-    crate::collect::run(only.as_deref(), dry_run, quiet)
+    let result = crate::collect::run(only.as_deref(), dry_run, quiet);
+    if !dry_run {
+        let _ = crate::tool_deployment::run_once();
+    }
+    result
 }
 
 // ── claude-env — settings.json env 주입 관리 ──

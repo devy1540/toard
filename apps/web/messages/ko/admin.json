@@ -4,6 +4,7 @@
     "members": "멤버",
     "teams": "팀",
     "invites": "초대",
+    "library": "도구",
     "system": "시스템"
   },
   "members": {
@@ -12,12 +13,19 @@
     "colMember": "멤버",
     "colRole": "역할",
     "colTeam": "팀",
+    "colTeamRole": "팀 도구 권한",
     "colLastReceived": "마지막 수신",
     "colJoined": "가입일",
     "colShim": "shim 버전",
     "shimUnreported": "미보고 (구 shim)",
     "shimOutdated": "업데이트 필요",
     "outdatedBanner": "구버전 shim 기기 {count}대 — 자동 업데이트가 멈춰 있을 수 있습니다"
+  },
+  "teamRoleSelect": {
+    "label": "팀 도구 권한",
+    "member": "구성원",
+    "leader": "리더",
+    "updated": "팀 도구 권한을 변경했습니다."
   },
   "teams": {
     "cardTitle": "팀 ({count})",
@@ -86,6 +94,29 @@
     "pendingHeading": "대기 중 초대",
     "pendingTeam": "{team} 팀",
     "pendingExpires": "만료 {date}"
+  },
+  "library": {
+    "immediateNotice": "게시물은 관리자 승인 없이 이미 노출됩니다",
+    "description": "이 화면은 승인 대기열이 아닙니다. 게시 후 검증 배지를 부여하거나 문제 항목을 사용 중단·차단합니다.",
+    "workspaceTitle": "워크스페이스 도구 ({count})",
+    "workspaceDescription": "구성원이 공유한 항목의 신뢰와 수명주기 상태를 관리합니다.",
+    "publicTitle": "공개 내장 도구 ({count})",
+    "publicDescription": "toard 코드에 포함된 항목으로 이 화면에서는 수정할 수 없습니다.",
+    "empty": "구성원이 공유한 도구가 아직 없습니다.",
+    "readOnly": "읽기 전용",
+    "verified": "검증됨",
+    "lifecycle": "노출 상태",
+    "reason": "상태 사유",
+    "reasonPlaceholder": "차단·사용 중단 사유",
+    "save": "상태 저장",
+    "saving": "저장 중…",
+    "saved": "상태를 저장했습니다.",
+    "errors": {
+      "forbidden": "관리자 권한이 필요합니다.",
+      "invalid": "대상이나 상태값이 올바르지 않습니다.",
+      "reasonRequired": "차단 또는 사용 중단에는 사유가 필요합니다.",
+      "saveFailed": "상태를 저장하지 못했습니다."
+    }
   },
   "encryption": {
     "title": "관리형 암호화",
@@ -381,6 +412,8 @@
     "roleInvalid": "변경할 역할이 올바르지 않습니다.",
     "userNotFound": "대상 멤버를 찾을 수 없습니다.",
     "lastAdminRequired": "마지막 관리자는 member로 변경할 수 없습니다.",
+    "teamRoleInvalid": "팀 도구 권한이 올바르지 않습니다.",
+    "teamRequiredForLeader": "팀에 소속된 멤버만 리더가 될 수 있습니다.",
     "legacyAttributionNotEligible": "현재 멤버는 기존 미배정 사용량 귀속 대상이 아닙니다."
   }
 }

@@ -23,9 +23,20 @@ toard-shim claude-env on|off|status  # settings.json OTEL 주입 관리 (experim
 toard-shim collect [--dry-run]       # 로컬 사용량 수집(claude·codex·cursor·gemini·qwen) → /api/v1/events
 toard-shim cursor-hook install|status|uninstall # Cursor 정확 토큰 stop hook 관리
 toard-shim daemon install|uninstall|status  # 주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron / Windows 작업 스케줄러)
+toard-shim local start|stop|status   # 설정 UI용 loopback bridge 관리
 toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를 임베드)
 ```
 `doctor` 의 endpoint 점검은 `POST <endpoint>/v1/logs` 에 빈 OTLP(`{}`)를 보내 연결·인증만 확인한다(레코드 0건 — 부작용 없음, curl 사용).
+
+### 설정 UI 로컬 제어 bridge
+
+최신 shim은 `127.0.0.1:38473`에만 작은 HTTP bridge를 열어 **설정 → 컴퓨터 연결** 화면에서 이 컴퓨터의 상태 확인, 즉시 수집, 진단, 업데이트를 실행할 수 있게 한다. `daemon install`은 bridge를 macOS launchd 또는 Linux systemd의 별도 사용자 서비스로 등록하고, Windows는 로그인 트리거, cron 폴백은 `@reboot`로 복구한다. 주기 `collect`도 꺼진 bridge를 안전망으로 다시 시작한다. `daemon uninstall`은 수집 스케줄과 bridge 등록을 함께 제거하고 프로세스를 종료한다.
+
+- 브라우저 `Origin`이 설치 때 기록한 실제 UI origin과 정확히 일치하고 전체 target ID도 맞을 때만 응답한다. 경로가 다른 same-origin target이나 UI/ingest URL이 분리된 프록시에서도 현재 서버 target만 선택한다.
+- 상태 연결 때 발급한 10분짜리 메모리 세션을 작업 요청의 `Authorization: Bearer`로 요구한다. 세션은 origin과 target ID에 함께 묶이고 재시작하면 사라진다.
+- Safari처럼 HTTPS 페이지의 HTTP loopback fetch를 막는 브라우저는 사용자 클릭으로 작은 loopback helper 창을 연다. helper는 저장된 UI origin의 `postMessage`만 받고 target에 묶인 30초짜리 일회 capability로 동일-origin 요청을 실행한 뒤 결과만 원래 설정 UI에 돌려주고 닫힌다.
+- ingest token, credentials, endpoint, 명령 출력, 원문 로그는 응답하지 않는다. 내부 종료 요청은 `~/.toard/state/local-bridge-secret`의 별도 0600 secret으로 인증한다.
+- 직접 연결에는 CORS와 Private Network Access 응답 헤더를 제공한다. helper HTML은 외부 subresource·frame을 막는 CSP를 사용하며 구버전 shim에서만 기존 수동 명령 UI를 유지한다.
 
 ### target 저장 구조와 구버전 이전
 
@@ -45,7 +56,7 @@ claude·codex·gemini·qwen의 로컬 세션 파일과 Cursor의 최소 stop hoo
 - **커서**: 로그가 append 가 아니라 세션 파일 제자리 갱신이라, target별 파일 stamp(mtime+size)를 `~/.toard/targets/<id>/state/cursors/`에 기록한다. 파일은 수집 회차당 한 번 파싱하고, 각 target은 자체 전송 진행(sent 개수 + dedup_key prefix 해시)을 기준으로 **자신에게 필요한 신규분만 전송**한다. 판정이 어긋나면(파일 재작성 등) 해당 target은 전체 전송으로 폴백하고 서버 dedup_key 멱등 저장이 흡수한다.
 - **백필**: claude·codex·gemini·qwen은 usage 커서가 없으면 전 파일 스캔 → 과거 사용량 전량 백필(토큰 카운트라 민감정보 아님, 히스토리 가치↑). 이후엔 커서로 변한 파일만. Cursor 사용량은 hook 설치 이후부터다.
 - **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).
-- **실행 모델**: 트리거 3중 — ① **주기 수집(권장, #65)**: `toard-shim daemon install` 이 OS 스케줄러에 단발 `collect` 를 등록(macOS launchd LaunchAgent / Linux systemd user timer·crontab / Windows 작업 스케줄러). 기본 300초, `--interval <초>`(하한 60) 조절. Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 간격 안에 수집. 상주 프로세스 아님 — 스케줄러가 매번 단발 실행을 깨움. 제거는 `daemon uninstall`, 상태는 `daemon status`/`doctor`. ② `claude`/`codex` wrap 실행 편승(10분 스로틀, double-spawn 분리 — `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절). ③ `toard-shim collect` 즉시 실행. 세 트리거는 공용 `~/.toard/state/last-collect` 스탬프를 공유하고 전송 진행은 target별로 관리한다. 데몬 등록물은 `collect --quiet` 로 실행돼 **무변경 회차는 로그를 남기지 않고**(전송·오류만 출력), 데몬 로그(`~/.toard/state/daemon*.log`)는 **1년 주기로 `.1` 한 세대 로테이션**된다.
+- **실행 모델**: 트리거 3중 — ① **주기 수집(권장, #65)**: `toard-shim daemon install` 이 OS 스케줄러에 단발 `collect` 를 등록(macOS launchd LaunchAgent / Linux systemd user timer·crontab / Windows 작업 스케줄러). 기본 300초, `--interval <초>`(하한 60) 조절. Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 간격 안에 수집. **수집기는 상주 프로세스가 아니며** 스케줄러가 매번 단발 실행을 깨운다. 설정 UI용 loopback bridge만 재부팅 후에도 복구되는 별도 최소 사용자 서비스로 실행된다. 제거는 `daemon uninstall`, 상태는 `daemon status`/`doctor`. ② `claude`/`codex` wrap 실행 편승(10분 스로틀, double-spawn 분리 — `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절). ③ `toard-shim collect` 즉시 실행. 세 트리거는 공용 `~/.toard/state/last-collect` 스탬프를 공유하고 전송 진행은 target별로 관리한다. 데몬 등록물은 `collect --quiet` 로 실행돼 **무변경 회차는 로그를 남기지 않고**(전송·오류만 출력), 데몬 로그(`~/.toard/state/daemon*.log`)는 **1년 주기로 `.1` 한 세대 로테이션**된다.
 - **Cursor**: 설치기가 기존 `~/.cursor/hooks.json`을 보존하면서 user-global `stop` hook 하나를 병합한다. Cursor가 전달한 정확한 input/output/cache 토큰만 `~/.toard/cursor/usage.jsonl`에 기록하며 이메일·workspace 경로·transcript 경로·대화 본문은 버린다. 설치 이전 사용량은 소급 수집하지 않는다. `~/.cursor/projects/**/agent-transcripts/**/*.{jsonl,txt}`는 사용량을 추정하거나 중복 집계하지 않고 본문(opt-in)과 MCP·Skill 활동만 읽는다. 중간에 잘린 JSONL은 해당 줄만 건너뛰며, 결과 블록이 없는 도구 호출은 `unknown`으로 기록한다.
 
 ## 컴퓨터별 구분 (host — 기본 on)

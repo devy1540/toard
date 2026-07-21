@@ -669,6 +669,17 @@ fn rotate_daemon_logs() {
 /// `toard-shim collect` 본체. only=특정 어댑터만, dry_run=파싱 결과만 출력,
 /// quiet=무변경 시 무출력(데몬 주기 실행용 — 전송·오류는 항상 출력).
 pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
+    run_selected(only, None, dry_run, quiet)
+}
+
+/// 로컬 UI가 자기 origin에 등록된 target만 즉시 수집할 때 사용한다.
+/// endpoint 선택은 adapter 선택과 독립적이며, 다른 target의 cursor·delivery를 건드리지 않는다.
+pub fn run_selected(
+    only: Option<&str>,
+    selected_endpoint: Option<&str>,
+    dry_run: bool,
+    quiet: bool,
+) -> i32 {
     let store = match TargetStore::from_home() {
         Ok(store) => store,
         Err(error) => {
@@ -676,11 +687,12 @@ pub fn run(only: Option<&str>, dry_run: bool, quiet: bool) -> i32 {
             return 1;
         }
     };
-    run_with(
+    run_with_selected(
         &store,
         &post::CurlTransport,
         adapters(),
         only,
+        selected_endpoint,
         dry_run,
         quiet,
     )
@@ -691,6 +703,26 @@ pub fn run_with(
     transport: &dyn post::Transport,
     source_adapters: Vec<Box<dyn LogAdapter>>,
     only: Option<&str>,
+    dry_run: bool,
+    quiet: bool,
+) -> i32 {
+    run_with_selected(
+        store,
+        transport,
+        source_adapters,
+        only,
+        None,
+        dry_run,
+        quiet,
+    )
+}
+
+fn run_with_selected(
+    store: &TargetStore,
+    transport: &dyn post::Transport,
+    source_adapters: Vec<Box<dyn LogAdapter>>,
+    only: Option<&str>,
+    selected_endpoint: Option<&str>,
     dry_run: bool,
     quiet: bool,
 ) -> i32 {
@@ -738,6 +770,14 @@ pub fn run_with(
             state_dir: global_state.clone(),
             credentials,
         });
+    }
+
+    if let Some(endpoint) = selected_endpoint {
+        targets.retain(|target| target.endpoint == endpoint);
+        if targets.is_empty() {
+            eprintln!("toard-shim: 등록된 target을 찾을 수 없습니다: {endpoint}");
+            return 2;
+        }
     }
 
     let cached_adapters = prepare_cached_adapters(&targets, source_adapters, only, dry_run);
@@ -1883,6 +1923,62 @@ mod tests {
             transport.calls.borrow().as_slice(),
             ["https://company.example/api"],
             "복구 실행은 실패했던 company suffix만 전송"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn selected_endpoint_collect_never_advances_another_target() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-selected-target-run-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let credentials = |token: &str, endpoint: &str| crate::credentials::Credentials {
+            token: Some(token.into()),
+            endpoint: Some(endpoint.into()),
+            collect_tools: false,
+            ..Default::default()
+        };
+        let company = store
+            .upsert(credentials("company-token", "https://company.example/api"))
+            .unwrap();
+        let personal = store
+            .upsert(credentials(
+                "personal-token",
+                "https://personal.example/api",
+            ))
+            .unwrap();
+        let transport = FanoutTestTransport::default();
+
+        let code = run_with_selected(
+            &store,
+            &transport,
+            vec![Box::new(FanoutTestAdapter {
+                file,
+                parse_calls: Rc::new(Cell::new(0)),
+            })],
+            Some("fanout_test"),
+            Some("https://personal.example/api"),
+            false,
+            true,
+        );
+
+        assert_eq!(code, 0);
+        assert_eq!(
+            transport.calls.borrow().as_slice(),
+            ["https://personal.example/api"]
+        );
+        assert!(cursor::load(&company.state_dir, "fanout_test")
+            .files
+            .is_empty());
+        assert_eq!(
+            cursor::load(&personal.state_dir, "fanout_test").files.len(),
+            1
         );
         let _ = std::fs::remove_dir_all(root);
     }

@@ -47,6 +47,45 @@
       "update": "업데이트",
       "more": "기기 작업 더보기"
     },
+    "localControl": {
+      "title": "이 컴퓨터의 shim 직접 제어",
+      "description": "브라우저에서 이 컴퓨터의 toard-shim에만 안전하게 연결합니다.",
+      "connect": "로컬 shim 연결",
+      "checking": "로컬 shim 확인 중…",
+      "connected": "로컬 연결됨",
+      "unavailable": "로컬 shim에 연결할 수 없습니다.",
+      "fallback": "최신 shim과 주기 수집이 실행 중인지 확인하세요. 아래 수동 명령은 계속 사용할 수 있습니다.",
+      "safariFallback": "최신 shim이 실행 중인지 확인하고, Safari가 로컬 연결 창을 차단했다면 이 사이트의 팝업을 허용한 뒤 다시 시도하세요.",
+      "retry": "다시 확인",
+      "computer": "컴퓨터",
+      "unknownComputer": "알 수 없음",
+      "version": "shim 버전",
+      "updateNeeded": "업데이트 필요",
+      "periodicCollection": "주기 수집",
+      "active": "정상 실행 중",
+      "inactive": "비활성",
+      "security": "등록된 현재 toard 서버만 접근할 수 있으며 토큰·자격 증명·로그 원문은 브라우저에 노출하지 않습니다.",
+      "action": {
+        "collect": "지금 수집",
+        "doctor": "진단 실행",
+        "update": "shim 업데이트"
+      },
+      "running": {
+        "collect": "수집 중…",
+        "doctor": "진단 중…",
+        "update": "업데이트 중…"
+      },
+      "success": {
+        "collect": "이 서버로 수집을 완료했습니다.",
+        "doctor": "로컬 진단을 완료했습니다.",
+        "update": "shim 업데이트를 완료했습니다."
+      },
+      "failure": {
+        "collect": "로컬 수집에 실패했습니다.",
+        "doctor": "로컬 진단에 실패했습니다.",
+        "update": "shim 업데이트에 실패했습니다."
+      }
+    },
     "tokensTitle": "토큰 관리",
     "tokensDescription": "토큰은 서버 인증 단위입니다. 기기마다 별도 토큰을 발급해 두면 문제가 생긴 기기만 폐기할 수 있습니다.",
     "tokenLabel": "라벨",

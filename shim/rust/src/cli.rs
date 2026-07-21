@@ -33,6 +33,7 @@ pub fn run(args: &[String]) -> ! {
         Some("cursor-hook") => std::process::exit(crate::cursor_hook::run(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
+        Some("local") => std::process::exit(crate::local_bridge::run(&args[1..])),
         Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
         Some("tool") => std::process::exit(tool_cmd(&args[1..])),
         Some("update") => std::process::exit(crate::update::run_self_update(false)),
@@ -83,6 +84,7 @@ fn usage_text() -> String {
   tool reconcile               도구 원하는 상태를 즉시 조회·적용
   tool configure <slug>        MCP 비밀값을 로컬 보안 저장소에 입력
   tool run-mcp <slug>          로컬 비밀값을 주입해 관리 MCP 실행
+  local start|stop|status       UI 로컬 bridge 시작·종료·확인
   [legacy-e2ee — 기존 사용자 호환]
   e2ee setup                   기존 E2EE Recovery Kit 설정·복구
   e2ee status                  기존 로컬 E2EE 모드와 보안 저장소 키 상태 확인
@@ -188,6 +190,7 @@ fn target_upsert() -> i32 {
     let credentials = match crate::credentials::from_installer_input(InstallerCredentialsInput {
         token,
         endpoint,
+        ui_origin: env::var("TOARD_UI_ORIGIN").ok(),
         collect_content: env::var("TOARD_SHIM_COLLECT_CONTENT").ok(),
         collect_tools: env::var("TOARD_SHIM_COLLECT_TOOLS").ok(),
         collect_content_since: content_since,
@@ -293,6 +296,7 @@ fn collect_cmd(args: &[String]) -> i32 {
     let mut dry_run = false;
     let mut quiet = false;
     let mut only: Option<String> = None;
+    let mut selected_endpoint: Option<String> = None;
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -305,13 +309,41 @@ fn collect_cmd(args: &[String]) -> i32 {
                     return 2;
                 }
             },
+            "--target-env" => {
+                let endpoint = match installer_env("TOARD_INGEST_ENDPOINT") {
+                    Ok(endpoint) => endpoint,
+                    Err(_) => {
+                        eprintln!("toard-shim: collect --target-env에는 TOARD_INGEST_ENDPOINT가 필요합니다");
+                        return 2;
+                    }
+                };
+                selected_endpoint = match crate::targets::normalize_endpoint(&endpoint) {
+                    Ok(endpoint) => Some(endpoint),
+                    Err(error) => {
+                        eprintln!("toard-shim: endpoint가 올바르지 않습니다: {error}");
+                        return 2;
+                    }
+                };
+            }
             other => {
                 eprintln!("toard-shim: collect 가 모르는 인자: {other}");
                 return 2;
             }
         }
     }
-    let result = crate::collect::run(only.as_deref(), dry_run, quiet);
+    if env::var(crate::local_bridge::BRIDGE_ACTION_ENV)
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        crate::local_bridge::ensure_background_quiet();
+    }
+    let result = crate::collect::run_selected(
+        only.as_deref(),
+        selected_endpoint.as_deref(),
+        dry_run,
+        quiet,
+    );
     if !dry_run {
         let _ = crate::tool_deployment::run_once();
     }
@@ -699,6 +731,11 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
             _ => ok(&format!("마지막 수집 {} 전", human_age(age))),
         },
         None => info("수집 실행 기록 없음 — 첫 수집 전이거나 트리거 미발동"),
+    }
+    if crate::local_bridge::is_running() {
+        ok("UI 로컬 bridge 실행 중 — loopback 전용");
+    } else {
+        warn("UI 로컬 bridge 미실행 — 다음 주기 수집 또는 'toard-shim local start'로 복구");
     }
 
     println!();

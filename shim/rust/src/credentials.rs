@@ -29,6 +29,8 @@ impl ContentCollectionMode {
 pub struct Credentials {
     pub token: Option<String>,
     pub endpoint: Option<String>,
+    /// 설정 UI가 실제로 서빙되는 origin. ingest endpoint와 프록시로 분리될 수 있다.
+    pub ui_origin: Option<String>,
     /// 본문 수집 opt-in 지속 플래그 (install.sh 가 기록). env 미설정 시 이 값을 따른다.
     pub collect_content: ContentCollectionMode,
     /// 본문 백필 컷오프. 이 시점 이후 턴만 수집(§collect_content_since).
@@ -44,6 +46,7 @@ pub struct Credentials {
 pub struct InstallerCredentialsInput {
     pub token: String,
     pub endpoint: String,
+    pub ui_origin: Option<String>,
     pub collect_content: Option<String>,
     pub collect_tools: Option<String>,
     pub collect_content_since: Option<String>,
@@ -54,6 +57,7 @@ impl Default for Credentials {
         Self {
             token: None,
             endpoint: None,
+            ui_origin: None,
             collect_content: ContentCollectionMode::Off,
             collect_content_since: None,
             collect_tools: true,
@@ -80,6 +84,10 @@ pub fn read_credentials() -> Credentials {
             .ok()
             .and_then(non_empty)
             .or(file.endpoint),
+        ui_origin: env::var("TOARD_UI_ORIGIN")
+            .ok()
+            .and_then(non_empty)
+            .or(file.ui_origin),
         collect_content: file.collect_content,
         collect_content_since: env::var("TOARD_SHIM_COLLECT_CONTENT_SINCE")
             .ok()
@@ -111,6 +119,7 @@ pub fn parse(content: &str) -> Credentials {
             match k.trim() {
                 "agent_key" if creds.token.is_none() => creds.token = Some(v.to_string()),
                 "endpoint" if creds.endpoint.is_none() => creds.endpoint = Some(v.to_string()),
+                "ui_origin" if creds.ui_origin.is_none() => creds.ui_origin = Some(v.to_string()),
                 "collect_content" => creds.collect_content = ContentCollectionMode::parse(v),
                 "collect_content_since" if creds.collect_content_since.is_none() => {
                     creds.collect_content_since = Some(v.to_string())
@@ -161,6 +170,7 @@ pub fn from_installer_input(input: InstallerCredentialsInput) -> Result<Credenti
     Ok(Credentials {
         token: Some(required(input.token)?),
         endpoint: Some(required(input.endpoint)?),
+        ui_origin: optional(input.ui_origin)?,
         collect_content,
         collect_content_since: optional(input.collect_content_since)?,
         collect_tools,
@@ -178,6 +188,11 @@ pub fn serialize(credentials: &Credentials) -> String {
     if let Some(endpoint) = credentials.endpoint.as_deref() {
         output.push_str("endpoint=");
         output.push_str(endpoint);
+        output.push('\n');
+    }
+    if let Some(ui_origin) = credentials.ui_origin.as_deref() {
+        output.push_str("ui_origin=");
+        output.push_str(ui_origin);
         output.push('\n');
     }
     output.push_str("collect_content=");
@@ -359,6 +374,7 @@ mod tests {
         let personal = from_installer_input(InstallerCredentialsInput {
             token: "personal".into(),
             endpoint: "https://personal.example/api".into(),
+            ui_origin: Some("https://dashboard.example".into()),
             collect_content: Some("true".into()),
             collect_tools: Some("false".into()),
             collect_content_since: None,
@@ -385,6 +401,7 @@ mod tests {
         let original = Credentials {
             token: Some("secret".into()),
             endpoint: Some("https://toard.example/api".into()),
+            ui_origin: Some("https://dashboard.example".into()),
             collect_content: ContentCollectionMode::LegacyE2eeV1,
             collect_content_since: Some("all".into()),
             collect_tools: false,
@@ -407,6 +424,7 @@ mod tests {
             assert!(from_installer_input(InstallerCredentialsInput {
                 token: token.into(),
                 endpoint: endpoint.into(),
+                ui_origin: None,
                 collect_content: None,
                 collect_tools: None,
                 collect_content_since: None,

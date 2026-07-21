@@ -13,21 +13,34 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 60;
 pub const MIN_INTERVAL_SECS: u64 = 60;
 
 const LAUNCHD_LABEL: &str = "dev.toard.collect";
+const LAUNCHD_LOCAL_LABEL: &str = "dev.toard.local-bridge";
 const SYSTEMD_UNIT: &str = "toard-collect";
+const SYSTEMD_LOCAL_UNIT: &str = "toard-local-bridge";
 const CRON_MARKER: &str = "# toard-collect";
+const CRON_LOCAL_MARKER: &str = "# toard-local-bridge";
 const WINDOWS_TASK_NAME: &str = "toard-collect";
 const WINDOWS_BACKGROUND_EXE: &str = "toard-shim-background.exe";
 
 pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("install") => match parse_interval(&args[1..]) {
-            Ok(interval) => install(interval),
+            Ok(interval) => {
+                let code = install(interval);
+                if code == 0 && !crate::local_bridge::ensure_background() {
+                    eprintln!("toard-shim: 경고: 주기 수집은 등록됐지만 선택 기능인 UI 로컬 bridge를 시작하지 못했습니다");
+                }
+                code
+            }
             Err(e) => {
                 eprintln!("toard-shim: {e}");
                 2
             }
         },
-        Some("uninstall") => uninstall(),
+        Some("uninstall") => {
+            let code = uninstall();
+            crate::local_bridge::stop_background_quiet();
+            code
+        }
         Some("status") | None => status(),
         Some(other) => {
             eprintln!("toard-shim: daemon 사용법: install [--interval <초>] | uninstall | status (받은 값: {other})");
@@ -88,6 +101,42 @@ pub enum State {
 
 pub fn state() -> State {
     state_for_os(std::env::consts::OS)
+}
+
+/// `collect`와 수동 `local start`가 등록된 사용자 서비스 경계 안에서 bridge를 복구한다.
+/// 등록이 없거나 해당 플랫폼이 아니면 caller가 detached 시작으로 폴백한다.
+pub(crate) fn start_local_bridge_service_quiet() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        if !launchd_local_plist_path().is_some_and(|path| path.is_file()) {
+            return false;
+        }
+        let Some(uid) = current_uid() else {
+            return false;
+        };
+        quiet(
+            Command::new("launchctl")
+                .args(["kickstart", &format!("gui/{uid}/{LAUNCHD_LOCAL_LABEL}")]),
+        )
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let registered = systemd_dir()
+            .map(|dir| dir.join(format!("{SYSTEMD_LOCAL_UNIT}.service")))
+            .is_some_and(|path| path.is_file());
+        if !registered || !systemd_available() {
+            return false;
+        }
+        quiet(Command::new("systemctl").args([
+            "--user",
+            "start",
+            &format!("{SYSTEMD_LOCAL_UNIT}.service"),
+        ]))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
 }
 
 fn state_for_os(os: &'static str) -> State {
@@ -299,6 +348,10 @@ Import-Module ScheduledTasks
     <Description>Collect toard usage periodically.</Description>
   </RegistrationInfo>
   <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>{user_sid}</UserId>
+    </LogonTrigger>
     <TimeTrigger>
       <Enabled>true</Enabled>
       <StartBoundary>2000-01-01T00:00:00</StartBoundary>
@@ -436,6 +489,14 @@ fn launchd_plist_path() -> Option<PathBuf> {
     })
 }
 
+fn launchd_local_plist_path() -> Option<PathBuf> {
+    fsx::home_dir().map(|h| {
+        h.join("Library")
+            .join("LaunchAgents")
+            .join(format!("{LAUNCHD_LOCAL_LABEL}.plist"))
+    })
+}
+
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -475,6 +536,43 @@ fn launchd_plist(exe: &str, interval: u64, log_out: &str, log_err: &str) -> Stri
     )
 }
 
+fn launchd_local_plist(exe: &str, log_out: &str, log_err: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{exe}</string>
+    <string>local</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>{log_out}</string>
+  <key>StandardErrorPath</key>
+  <string>{log_err}</string>
+</dict>
+</plist>
+"#,
+        label = LAUNCHD_LOCAL_LABEL,
+        exe = xml_escape(exe),
+        log_out = xml_escape(log_out),
+        log_err = xml_escape(log_err),
+    )
+}
+
 /// plist 에서 StartInterval 을 읽는다 (status/doctor 표시용 — 정식 파서 불필요).
 fn plist_interval(text: &str) -> Option<u64> {
     let after = text.split("<key>StartInterval</key>").nth(1)?;
@@ -494,6 +592,10 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
         eprintln!("toard-shim: HOME 이 없어 LaunchAgents 위치를 알 수 없습니다");
         return 1;
     };
+    let Some(local_plist_path) = launchd_local_plist_path() else {
+        eprintln!("toard-shim: HOME 이 없어 로컬 bridge LaunchAgent 위치를 알 수 없습니다");
+        return 1;
+    };
     let logs = fsx::state_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let content = launchd_plist(
         exe,
@@ -501,7 +603,14 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
         &logs.join("daemon.log").display().to_string(),
         &logs.join("daemon.err.log").display().to_string(),
     );
-    if let Err(e) = fsx::write_atomic(&plist_path, &content, 0o644) {
+    let local_content = launchd_local_plist(
+        exe,
+        &logs.join("local-bridge.log").display().to_string(),
+        &logs.join("local-bridge.err.log").display().to_string(),
+    );
+    if let Err(e) = fsx::write_atomic(&plist_path, &content, 0o644)
+        .and_then(|()| fsx::write_atomic(&local_plist_path, &local_content, 0o644))
+    {
         eprintln!("toard-shim: plist 쓰기 실패: {e}");
         return 1;
     }
@@ -516,20 +625,36 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
             .args(["bootout", &domain])
             .arg(&plist_path),
     );
-    let ok = quiet(
+    let _ = quiet(
+        Command::new("launchctl")
+            .args(["bootout", &domain])
+            .arg(&local_plist_path),
+    );
+    let collector_ok = quiet(
         Command::new("launchctl")
             .args(["bootstrap", &domain])
             .arg(&plist_path),
     );
-    if !ok {
+    if !collector_ok {
         eprintln!(
             "toard-shim: launchctl bootstrap 실패 — 'launchctl bootstrap {domain} {}' 를 직접 실행해 오류를 확인하세요",
             plist_path.display()
         );
         return 1;
     }
+    let local_ok = quiet(
+        Command::new("launchctl")
+            .args(["bootstrap", &domain])
+            .arg(&local_plist_path),
+    );
+    if !local_ok {
+        eprintln!(
+            "toard-shim: 경고: UI 로컬 bridge LaunchAgent를 시작하지 못했습니다 — 수집 스케줄은 정상 등록됐습니다"
+        );
+    }
     println!("  ✓ 주기 수집 등록됨 — launchd, {interval}초 간격");
     println!("    파일: {}", plist_path.display());
+    println!("    로컬 UI: {}", local_plist_path.display());
     println!("    로그: {}", logs.join("daemon.err.log").display());
     println!("    제거: toard-shim daemon uninstall");
     0
@@ -554,12 +679,24 @@ fn launchd_uninstall() -> i32 {
     let Some(plist_path) = launchd_plist_path() else {
         return 1;
     };
+    let local_plist_path = launchd_local_plist_path();
     if let Some(uid) = current_uid() {
+        let domain = format!("gui/{uid}");
         let _ = quiet(
             Command::new("launchctl")
-                .args(["bootout", &format!("gui/{uid}")])
+                .args(["bootout", &domain])
                 .arg(&plist_path),
         );
+        if let Some(local) = &local_plist_path {
+            let _ = quiet(
+                Command::new("launchctl")
+                    .args(["bootout", &domain])
+                    .arg(local),
+            );
+        }
+    }
+    if let Some(local) = local_plist_path {
+        let _ = std::fs::remove_file(local);
     }
     match std::fs::remove_file(&plist_path) {
         Ok(()) => {
@@ -594,6 +731,12 @@ fn systemd_service(exe: &str) -> String {
     )
 }
 
+fn systemd_local_service(exe: &str) -> String {
+    format!(
+        "[Unit]\nDescription=toard local UI bridge\n\n[Service]\nType=simple\nExecStart=\"{exe}\" local serve\nRestart=on-failure\nRestartSec=5s\n\n[Install]\nWantedBy=default.target\n"
+    )
+}
+
 /// timer 유닛 생성 — 순수 함수 (유닛테스트 대상).
 fn systemd_timer(interval: u64) -> String {
     format!(
@@ -615,26 +758,37 @@ fn systemd_install(exe: &str, interval: u64) -> i32 {
     };
     let service_path = dir.join(format!("{SYSTEMD_UNIT}.service"));
     let timer_path = dir.join(format!("{SYSTEMD_UNIT}.timer"));
+    let local_service_path = dir.join(format!("{SYSTEMD_LOCAL_UNIT}.service"));
     if let Err(e) = fsx::write_atomic(&service_path, &systemd_service(exe), 0o644)
         .and_then(|()| fsx::write_atomic(&timer_path, &systemd_timer(interval), 0o644))
+        .and_then(|()| fsx::write_atomic(&local_service_path, &systemd_local_service(exe), 0o644))
     {
         eprintln!("toard-shim: 유닛 파일 쓰기 실패: {e}");
         return 1;
     }
     let reloaded = quiet(Command::new("systemctl").args(["--user", "daemon-reload"]));
-    let enabled = reloaded
+    let timer_enabled = reloaded
         && quiet(Command::new("systemctl").args([
             "--user",
             "enable",
             "--now",
             &format!("{SYSTEMD_UNIT}.timer"),
         ]));
-    if !enabled {
+    if !timer_enabled {
         eprintln!("toard-shim: systemd timer 활성화 실패 — 'systemctl --user enable --now {SYSTEMD_UNIT}.timer' 를 직접 실행해 확인하세요");
         return 1;
     }
+    if !quiet(Command::new("systemctl").args([
+        "--user",
+        "enable",
+        "--now",
+        &format!("{SYSTEMD_LOCAL_UNIT}.service"),
+    ])) {
+        eprintln!("toard-shim: 경고: UI 로컬 bridge systemd service를 시작하지 못했습니다 — 수집 timer는 정상 등록됐습니다");
+    }
     println!("  ✓ 주기 수집 등록됨 — systemd user timer, {interval}초 간격");
     println!("    파일: {}", timer_path.display());
+    println!("    로컬 UI: {}", local_service_path.display());
     println!("    제거: toard-shim daemon uninstall");
     0
 }
@@ -665,16 +819,19 @@ fn systemd_uninstall() -> i32 {
     };
     let timer = dir.join(format!("{SYSTEMD_UNIT}.timer"));
     let service = dir.join(format!("{SYSTEMD_UNIT}.service"));
-    let existed = timer.exists() || service.exists();
+    let local_service = dir.join(format!("{SYSTEMD_LOCAL_UNIT}.service"));
+    let existed = timer.exists() || service.exists() || local_service.exists();
     if existed {
         let _ = quiet(Command::new("systemctl").args([
             "--user",
             "disable",
             "--now",
             &format!("{SYSTEMD_UNIT}.timer"),
+            &format!("{SYSTEMD_LOCAL_UNIT}.service"),
         ]));
         let _ = std::fs::remove_file(&timer);
         let _ = std::fs::remove_file(&service);
+        let _ = std::fs::remove_file(&local_service);
         let _ = quiet(Command::new("systemctl").args(["--user", "daemon-reload"]));
         println!("  ✓ 주기 수집 제거됨 — systemd ({})", timer.display());
     }
@@ -687,6 +844,10 @@ fn systemd_uninstall() -> i32 {
 fn cron_line(exe: &str, interval: u64) -> String {
     let mins = interval.div_ceil(60).clamp(1, 59);
     format!("*/{mins} * * * * \"{exe}\" collect --quiet >/dev/null 2>&1 {CRON_MARKER}")
+}
+
+fn cron_local_line(exe: &str) -> String {
+    format!("@reboot \"{exe}\" local start >/dev/null 2>&1 {CRON_LOCAL_MARKER}")
 }
 
 fn cron_current() -> String {
@@ -719,14 +880,15 @@ fn cron_write(content: &str) -> bool {
 }
 
 /// 기존 crontab 에서 toard 항목만 갈아끼운다 — 순수 함수 (유닛테스트 대상).
-fn cron_merged(existing: &str, new_line: Option<&str>) -> String {
+fn cron_merged(existing: &str, new_lines: &[&str]) -> String {
     let mut lines: Vec<&str> = existing
         .lines()
-        .filter(|l| !l.trim_end().ends_with(CRON_MARKER))
+        .filter(|l| {
+            let line = l.trim_end();
+            !line.ends_with(CRON_MARKER) && !line.ends_with(CRON_LOCAL_MARKER)
+        })
         .collect();
-    if let Some(l) = new_line {
-        lines.push(l);
-    }
+    lines.extend_from_slice(new_lines);
     let mut out = lines.join("\n");
     if !out.is_empty() {
         out.push('\n');
@@ -736,7 +898,8 @@ fn cron_merged(existing: &str, new_line: Option<&str>) -> String {
 
 fn cron_install(exe: &str, interval: u64) -> i32 {
     let line = cron_line(exe, interval);
-    let merged = cron_merged(&cron_current(), Some(&line));
+    let local_line = cron_local_line(exe);
+    let merged = cron_merged(&cron_current(), &[&line, &local_line]);
     if !cron_write(&merged) {
         eprintln!("toard-shim: crontab 등록 실패 — 자동 등록이 불가합니다. 수동 등록: {line}");
         return 1;
@@ -770,10 +933,13 @@ fn cron_state() -> State {
 
 fn cron_uninstall() -> i32 {
     let current = cron_current();
-    if !current.lines().any(|l| l.trim_end().ends_with(CRON_MARKER)) {
+    if !current.lines().any(|l| {
+        let line = l.trim_end();
+        line.ends_with(CRON_MARKER) || line.ends_with(CRON_LOCAL_MARKER)
+    }) {
         return 0;
     }
-    if cron_write(&cron_merged(&current, None)) {
+    if cron_write(&cron_merged(&current, &[])) {
         println!("  ✓ 주기 수집 제거됨 — crontab");
         0
     } else {
@@ -834,6 +1000,14 @@ mod tests {
         let p = launchd_plist("/a&b/<x>", 60, "/o", "/e");
         assert!(p.contains("/a&amp;b/&lt;x&gt;"));
         assert!(!p.contains("/a&b/<x>"));
+
+        let local = launchd_local_plist("/a&b/<x>", "/o", "/e");
+        assert!(local.contains("<string>dev.toard.local-bridge</string>"));
+        assert!(local.contains("<string>local</string>"));
+        assert!(local.contains("<string>serve</string>"));
+        assert!(local.contains("<key>KeepAlive</key>"));
+        assert!(local.contains("<key>SuccessfulExit</key>"));
+        assert!(local.contains("/a&amp;b/&lt;x&gt;"));
     }
 
     #[test]
@@ -844,6 +1018,11 @@ mod tests {
         assert!(t.contains("OnUnitActiveSec=300s"));
         assert!(t.contains("OnBootSec=300s"));
         assert_eq!(timer_interval(&t), Some(300), "쓴 간격을 그대로 읽어야 함");
+
+        let local = systemd_local_service("/home/x/.toard/bin/toard-shim");
+        assert!(local.contains("ExecStart=\"/home/x/.toard/bin/toard-shim\" local serve"));
+        assert!(local.contains("Restart=on-failure"));
+        assert!(local.contains("WantedBy=default.target"));
     }
 
     #[test]
@@ -859,16 +1038,26 @@ mod tests {
             "cron 상한 59분"
         );
         assert!(cron_line("/x/toard-shim", 300).ends_with(CRON_MARKER));
+        assert!(cron_local_line("/x/toard-shim").starts_with("@reboot "));
+        assert!(cron_local_line("/x/toard-shim").ends_with(CRON_LOCAL_MARKER));
     }
 
     #[test]
     fn cron_merge_is_idempotent() {
-        let existing = "0 9 * * * echo hi\n*/5 * * * * old collect # toard-collect\n";
-        let merged = cron_merged(existing, Some("*/5 * * * * new collect # toard-collect"));
+        let existing = "0 9 * * * echo hi\n*/5 * * * * old collect # toard-collect\n@reboot old local # toard-local-bridge\n";
+        let merged = cron_merged(
+            existing,
+            &[
+                "*/5 * * * * new collect # toard-collect",
+                "@reboot new local # toard-local-bridge",
+            ],
+        );
         assert!(merged.contains("echo hi"), "사용자 항목 보존");
         assert!(!merged.contains("old collect"), "기존 toard 항목 교체");
+        assert!(!merged.contains("old local"), "기존 bridge 항목 교체");
         assert!(merged.contains("new collect"));
-        let removed = cron_merged(&merged, None);
+        assert!(merged.contains("new local"));
+        let removed = cron_merged(&merged, &[]);
         assert!(
             !removed.contains("toard-collect"),
             "제거 시 toard 항목만 사라짐"
@@ -888,6 +1077,7 @@ mod tests {
         assert!(script.contains("<Interval>PT1M</Interval>"));
         assert!(script.contains("<UserId>S-1-5-21-1234-5678-9012-1001</UserId>"));
         assert!(script.contains("<LogonType>InteractiveToken</LogonType>"));
+        assert!(script.contains("<LogonTrigger>"));
         assert!(script.contains("<RunLevel>LeastPrivilege</RunLevel>"));
         assert!(
             script.contains(r"<Command>C:\Users\GA\.toard\bin\toard-shim-background.exe</Command>")

@@ -27,10 +27,12 @@ type NavigatorWithUserAgentData = Navigator & {
 
 export function OnboardingWizard({
   baseUrl,
+  uiOrigin,
   contentEnabled,
   contentDefaultOn,
 }: {
   baseUrl: string;
+  uiOrigin: string;
   contentEnabled: boolean;
   contentDefaultOn: boolean;
 }) {
@@ -89,10 +91,11 @@ export function OnboardingWizard({
     return buildInstallCommand({
       platform: state.platform,
       baseUrl,
+      uiOrigin,
       token: state.token,
       collectContent,
     });
-  }, [baseUrl, collectContent, state.platform, state.token]);
+  }, [baseUrl, collectContent, state.platform, state.token, uiOrigin]);
 
   const copy = async (kind: "install" | "doctor", value: string) => {
     try {

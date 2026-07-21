@@ -47,6 +47,45 @@
       "update": "Update",
       "more": "More device actions"
     },
+    "localControl": {
+      "title": "Control this computer's shim",
+      "description": "Connect safely from the browser to toard-shim on this computer only.",
+      "connect": "Connect local shim",
+      "checking": "Checking local shim…",
+      "connected": "Connected locally",
+      "unavailable": "Could not connect to the local shim.",
+      "fallback": "Check that the latest shim and periodic collection are running. The manual commands below remain available.",
+      "safariFallback": "Check that the latest shim is running. If Safari blocked the local connection window, allow pop-ups for this site and try again.",
+      "retry": "Check again",
+      "computer": "Computer",
+      "unknownComputer": "Unknown",
+      "version": "Shim version",
+      "updateNeeded": "Update needed",
+      "periodicCollection": "Periodic collection",
+      "active": "Running",
+      "inactive": "Inactive",
+      "security": "Only the currently registered toard server can connect. Tokens, credentials, and raw logs are never exposed to the browser.",
+      "action": {
+        "collect": "Collect now",
+        "doctor": "Run diagnostics",
+        "update": "Update shim"
+      },
+      "running": {
+        "collect": "Collecting…",
+        "doctor": "Diagnosing…",
+        "update": "Updating…"
+      },
+      "success": {
+        "collect": "Collection for this server completed.",
+        "doctor": "Local diagnostics completed.",
+        "update": "Shim update completed."
+      },
+      "failure": {
+        "collect": "Local collection failed.",
+        "doctor": "Local diagnostics failed.",
+        "update": "Shim update failed."
+      }
+    },
     "tokensTitle": "Token management",
     "tokensDescription": "Tokens are the server authentication unit. Issue one token per machine so you can revoke only the affected machine when needed.",
     "tokenLabel": "Label",

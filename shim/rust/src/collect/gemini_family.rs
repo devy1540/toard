@@ -130,6 +130,7 @@ pub fn content_from_message(
         message_id: non_empty_json_string(obj.get("id")),
         role,
         text,
+        agent: None,
     })
 }
 

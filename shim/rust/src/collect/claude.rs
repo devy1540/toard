@@ -11,7 +11,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{
-    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage,
+    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawPromptAgent, RawToolActivity,
+    RawUsage,
 };
 use crate::iso::iso_to_epoch_ms;
 use crate::tool_event::{ToolActivityKind, ToolDetection, ToolOutcome};
@@ -74,8 +75,53 @@ fn skill_identity(input: &Value) -> Option<(String, Option<String>)> {
     Some((name.to_string(), plugin))
 }
 
+fn prompt_agent_role(path: &Path) -> Option<String> {
+    let meta_path = path.with_extension("meta.json");
+    let bytes = std::fs::read(meta_path).ok()?;
+    let value = serde_json::from_slice::<Value>(&bytes).ok()?;
+    let role = value.get("agentType")?.as_str()?.trim();
+    (!role.is_empty() && role.chars().count() <= 100).then(|| role.to_string())
+}
+
+fn prompt_agent(
+    obj: &serde_json::Map<String, Value>,
+    path: &Path,
+    role: Option<&str>,
+) -> Option<RawPromptAgent> {
+    let from_subagent_path = path
+        .components()
+        .any(|component| component.as_os_str() == "subagents");
+    let is_sidechain = obj
+        .get("isSidechain")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !from_subagent_path && !is_sidechain {
+        return None;
+    }
+    let id = obj
+        .get("agentId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(|stem| stem.strip_prefix("agent-").unwrap_or(stem).to_string())
+        })?;
+    Some(RawPromptAgent {
+        id,
+        parent_id: obj
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        depth: Some(1),
+        name: None,
+        role: role.map(str::to_string),
+    })
+}
+
 fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
     let fallback = file_mtime_ms(path);
+    let agent_role = prompt_agent_role(path);
     let Ok(bytes) = std::fs::read(path) else {
         return ParsedLog::default();
     };
@@ -190,6 +236,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                         "assistant"
                     },
                     text: text.to_string(),
+                    agent: prompt_agent(obj, path, agent_role.as_deref()),
                 });
             }
         }
@@ -314,6 +361,7 @@ fn extract_text(content: Option<&Value>) -> String {
 /// type=user|assistant 라인의 message.content 를 뽑는다. text 가 없는 라인(순수 tool/thinking)은 제외.
 fn parse_transcript(path: &Path) -> Vec<RawContent> {
     let fallback = file_mtime_ms(path);
+    let agent_role = prompt_agent_role(path);
     let Ok(bytes) = std::fs::read(path) else {
         return Vec::new();
     };
@@ -359,6 +407,7 @@ fn parse_transcript(path: &Path) -> Vec<RawContent> {
             message_id,
             role,
             text: text.to_string(),
+            agent: prompt_agent(obj, path, agent_role.as_deref()),
         });
     }
     out
@@ -458,6 +507,33 @@ mod tests {
         assert_eq!(sc.message_id.as_deref(), Some("m2"), "서브에이전트 턴 보존");
         assert_eq!(sc.input_tokens, 10);
         assert_eq!(sc.output_tokens, 20);
+    }
+
+    #[test]
+    fn preserves_subagent_metadata_in_prompt_history() {
+        let tmp = TempDir::new("claude-subagent-content");
+        tmp.write(
+            "projects/p/root-session/subagents/agent-a8266.meta.json",
+            r#"{"agentType":"Explore","description":"inspect collector metadata","toolUseId":"tool-1"}"#,
+        );
+        let path = tmp.write(
+            "projects/p/root-session/subagents/agent-a8266.jsonl",
+            &[
+                r#"{"type":"user","sessionId":"root-session","agentId":"a8266","isSidechain":true,"timestamp":"2026-07-21T01:00:00Z","message":{"role":"user","content":"할당 작업"}}"#,
+                r#"{"type":"assistant","sessionId":"root-session","agentId":"a8266","isSidechain":true,"timestamp":"2026-07-21T01:00:01Z","message":{"id":"m1","role":"assistant","content":[{"type":"text","text":"조사 결과"}]}}"#,
+            ]
+            .join("\n"),
+        );
+
+        let parsed = Claude.parse_changed(&path, true, false);
+        assert_eq!(parsed.content.len(), 2);
+        for turn in &parsed.content {
+            let agent = turn.agent.as_ref().expect("subagent metadata");
+            assert_eq!(agent.id, "a8266");
+            assert_eq!(agent.parent_id.as_deref(), Some("root-session"));
+            assert_eq!(agent.depth, Some(1));
+            assert_eq!(agent.role.as_deref(), Some("Explore"));
+        }
     }
 
     #[test]

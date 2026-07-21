@@ -93,6 +93,17 @@ pub struct RawContent {
     /// "user" | "assistant"
     pub role: &'static str,
     pub text: String,
+    /// 서브에이전트 실행 메타데이터. None이면 메인 에이전트 턴이다.
+    pub agent: Option<RawPromptAgent>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawPromptAgent {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub depth: Option<u8>,
+    pub name: Option<String>,
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -526,6 +537,13 @@ fn to_prompts_body(adapter: &str, records: &[RawContent]) -> String {
                 "turnRole": r.role,
                 "ts": iso::epoch_ms_to_iso(r.ts_ms),
                 "text": r.text,
+                "agent": r.agent.as_ref().map(|agent| serde_json::json!({
+                    "id": agent.id,
+                    "parentId": agent.parent_id,
+                    "depth": agent.depth,
+                    "name": agent.name,
+                    "role": agent.role,
+                })),
             })
         })
         .collect();
@@ -569,6 +587,13 @@ fn to_e2ee_prompts_body(
                 "iv": b64url(&encrypted.iv),
                 "ciphertext": b64url(&encrypted.ciphertext),
                 "authTag": b64url(&encrypted.auth_tag),
+                "agent": record.agent.as_ref().map(|agent| serde_json::json!({
+                    "id": agent.id,
+                    "parentId": agent.parent_id,
+                    "depth": agent.depth,
+                    "name": agent.name,
+                    "role": agent.role,
+                })),
             }))
         })
         .collect::<Result<Vec<serde_json::Value>, crate::content_crypto::ContentCryptoError>>()?;
@@ -1620,6 +1645,7 @@ mod tests {
                         message_id: Some("content-1".into()),
                         role: "user",
                         text: "prompt".into(),
+                        agent: None,
                     })
                     .into_iter()
                     .collect(),
@@ -2310,6 +2336,7 @@ mod tests {
             message_id: Some("m1".into()),
             role: "user",
             text: "hi".into(),
+            agent: None,
         }
     }
 
@@ -2379,6 +2406,25 @@ mod tests {
             Some(64),
             "sha256 hex"
         );
+    }
+
+    #[test]
+    fn to_prompts_body_includes_subagent_metadata() {
+        let mut record = sample_content();
+        record.agent = Some(RawPromptAgent {
+            id: "agent-1".into(),
+            parent_id: Some("s".into()),
+            depth: Some(1),
+            name: Some("Galileo".into()),
+            role: Some("explorer".into()),
+        });
+        let body = to_prompts_body("codex", &[record]);
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value[0]["agent"]["id"], "agent-1");
+        assert_eq!(value[0]["agent"]["parentId"], "s");
+        assert_eq!(value[0]["agent"]["depth"], 1);
+        assert_eq!(value[0]["agent"]["name"], "Galileo");
+        assert_eq!(value[0]["agent"]["role"], "explorer");
     }
 
     #[test]

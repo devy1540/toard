@@ -19,6 +19,7 @@ export type E2eeHistorySessionSummary = {
   latestTs: string;
   previewRecord: E2eePromptRecordWire | null;
   usage: SessionUsageSummary | null;
+  subagentCount?: number;
 };
 
 export type E2eeHistoryPage = {
@@ -82,7 +83,8 @@ export async function getE2eeHistorySessions(
        ), grouped AS (
          SELECT gkey, BOOL_OR(session_id IS NOT NULL) AS is_session,
                 MIN(provider_key) AS provider_key, COUNT(*) AS turn_count,
-                MIN(ts) AS first_ts, MAX(ts) AS latest_ts
+                MIN(ts) AS first_ts, MAX(ts) AS latest_ts,
+                COUNT(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS subagent_count
          FROM scoped
          GROUP BY gkey
        ), page AS (
@@ -94,7 +96,9 @@ export async function getE2eeHistorySessions(
        SELECT page.*, scoped.dedup_key, scoped.session_id, scoped.turn_role, scoped.ts,
               scoped.content_owner_id, scoped.content_key_version, scoped.wrapped_dek,
               scoped.dek_wrap_iv, scoped.dek_wrap_auth_tag, scoped.iv, scoped.ciphertext,
-              scoped.auth_tag, scoped.aad_version
+              scoped.auth_tag, scoped.aad_version, scoped.agent_id,
+              scoped.parent_agent_id, scoped.agent_depth,
+              scoped.agent_name, scoped.agent_role
        FROM page
        LEFT JOIN scoped ON scoped.gkey = page.gkey AND scoped.preview_rank = 1
        ORDER BY page.latest_ts DESC`,
@@ -113,6 +117,7 @@ export async function getE2eeHistorySessions(
       latestTs: asDate(row.latest_ts).toISOString(),
       previewRecord: row.dedup_key == null ? null : toWireRecord(row),
       usage: null,
+      subagentCount: row.subagent_count == null ? 0 : asNumber(row.subagent_count),
     })),
   };
 }
@@ -127,7 +132,8 @@ export async function getE2eeHistorySession(
     tx.query(
       `SELECT dedup_key, session_id, provider_key, turn_role, ts, content_owner_id,
               content_key_version, wrapped_dek, dek_wrap_iv, dek_wrap_auth_tag, iv,
-              ciphertext, auth_tag, aad_version
+              ciphertext, auth_tag, aad_version, agent_id, parent_agent_id,
+              agent_depth, agent_name, agent_role
        FROM prompt_records
        WHERE user_id = $1
          AND encryption_scheme = 'e2ee_v1'
@@ -202,6 +208,13 @@ function toWireRecord(row: Record<string, unknown>): E2eePromptRecordWire {
     iv: asBuffer(row.iv).toString("base64url"),
     ciphertext: asBuffer(row.ciphertext).toString("base64url"),
     authTag: asBuffer(row.auth_tag).toString("base64url"),
+    agent: row.agent_id == null ? null : {
+      id: asString(row.agent_id),
+      parentId: row.parent_agent_id == null ? null : asString(row.parent_agent_id),
+      depth: row.agent_depth == null ? null : asNumber(row.agent_depth),
+      name: row.agent_name == null ? null : asString(row.agent_name),
+      role: row.agent_role == null ? null : asString(row.agent_role),
+    },
   };
 }
 

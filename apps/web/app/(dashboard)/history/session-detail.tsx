@@ -17,12 +17,13 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty";
 import { fmtCompact, fmtUsd } from "@/lib/format";
-import { matchTurnUsage } from "@/lib/history-grouping";
+import { groupHistoryAgents, matchTurnUsage } from "@/lib/history-grouping";
 import { costCoverageForStatus, formatCostForCoverage } from "@/lib/pricing";
 import { DETAIL_TURN_LIMIT, getMyHistorySession } from "@/lib/prompt-history";
 import { getStorage } from "@/lib/storage";
 import { detectMetaTurn } from "@/lib/turn-meta";
 import { getViewerTimezone } from "@/lib/viewer-time";
+import { HistoryAgentGroup } from "./history-agent-group";
 
 /** 세션 상세 — 한 대화의 전체 턴 + usage 조인(세션 합계 헤더, assistant 턴별 모델·토큰·비용). */
 export async function SessionDetail({
@@ -98,6 +99,10 @@ export async function SessionDetail({
     : [[], []];
   const summary = summaries[0];
   const turnUsage = matchTurnUsage(session.turns, events);
+  const timeline = groupHistoryAgents(session.turns);
+  const subagentCount = new Set(
+    session.turns.flatMap((turn) => turn.agent?.id ? [turn.agent.id] : []),
+  ).size;
 
   const stats: Array<{ label: string; value: string }> = [
     { label: t("history.startedAt"), value: fmtTs(session.firstTs) },
@@ -118,6 +123,12 @@ export async function SessionDetail({
     if (summary.hosts.length > 0) {
       stats.push({ label: t("computer"), value: summary.hosts.join(", ") });
     }
+  }
+  if (subagentCount > 0) {
+    stats.push({
+      label: t("history.executionCount"),
+      value: t("history.executionSummary", { count: subagentCount }),
+    });
   }
 
   return (
@@ -171,13 +182,44 @@ export async function SessionDetail({
               시스템·명령 메시지는 가운데 접힌 칩(details — JS 없이 동작)으로 분리 */}
           <Card className="min-w-0 py-0">
             <CardContent className="space-y-4 px-4 py-5 sm:px-6">
-              {session.turns.map((turn, ti) => {
+              {timeline.map((item, ti) => {
+                if (item.type === "agents") {
+                  return (
+                    <HistoryAgentGroup
+                      key={`agents-${item.firstTs.toISOString()}-${ti}`}
+                      agents={item.agents}
+                      firstTs={item.firstTs}
+                      latestTs={item.latestTs}
+                      turnUsage={turnUsage}
+                      fmtTime={fmtTime}
+                      costLabels={costLabels}
+                      idPrefix={`agent-${ti}`}
+                      labels={{
+                        subagents: (count) => t("history.subagents", { count }),
+                        subagent: t("history.subagent"),
+                        parallelExecution: t("history.parallelExecution"),
+                        completed: t("history.agentCompleted"),
+                        fallbackName: (index) => t("history.agentFallback", { index }),
+                        depth: (depth) => t("history.agentDepth", { depth }),
+                        assigned: t("history.agentAssigned"),
+                        turns: (count) => t("history.turns", { count }),
+                        rolePrompt: t("history.rolePrompt"),
+                        roleResponse: t("history.roleResponse"),
+                        showMore: t("history.showMore"),
+                        showLess: t("history.showLess"),
+                        contentUnavailable: t("history.contentUnavailable"),
+                      }}
+                    />
+                  );
+                }
+                const turn = item.turn;
                 const isUser = turn.role === "user";
                 const usage = turnUsage.get(turn.dedupKey);
                 const meta = isUser && !turn.contentUnavailable ? detectMetaTurn(turn.text) : null;
                 const day = fmtDay(turn.ts);
-                const prevTurn = ti > 0 ? session.turns[ti - 1] : undefined;
-                const showDay = prevTurn !== undefined && fmtDay(prevTurn.ts) !== day;
+                const prevItem = ti > 0 ? timeline[ti - 1] : undefined;
+                const prevTs = prevItem?.type === "turn" ? prevItem.turn.ts : prevItem?.latestTs;
+                const showDay = prevTs !== undefined && fmtDay(prevTs) !== day;
                 const content = turn.contentUnavailable ? (
                   <p className="text-muted-foreground text-sm italic">{t("history.contentUnavailable")}</p>
                 ) : (

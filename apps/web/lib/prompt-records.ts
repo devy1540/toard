@@ -23,8 +23,10 @@ export async function savePromptRecords(
       const res = await tx.query(
         `INSERT INTO prompt_records
            (dedup_key, user_id, session_id, provider_key, turn_role, ts,
+            agent_id, parent_agent_id, agent_depth, agent_name, agent_role,
             key_version, wrapped_dek, iv, ciphertext, auth_tag)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 $12, $13, $14, $15, $16)
          ON CONFLICT (dedup_key) DO NOTHING`,
         [
           r.dedupKey,
@@ -33,6 +35,11 @@ export async function savePromptRecords(
           r.providerKey,
           r.turnRole,
           r.ts,
+          r.agent?.id ?? null,
+          r.agent?.parentId ?? null,
+          r.agent?.depth ?? null,
+          r.agent?.name ?? null,
+          r.agent?.role ?? null,
           enc.keyVersion,
           enc.wrappedDek,
           enc.iv,
@@ -80,12 +87,13 @@ export async function saveManagedPromptRecords(
         const result = await tx.query(
           `INSERT INTO prompt_records
              (dedup_key, user_id, session_id, provider_key, turn_role, ts,
+              agent_id, parent_agent_id, agent_depth, agent_name, agent_role,
               key_version, wrapped_dek, iv, ciphertext, auth_tag,
               encryption_scheme, content_owner_id, content_key_version,
               dek_wrap_iv, dek_wrap_auth_tag, aad_version)
-           VALUES ($1, $2, $3, $4, $5, $6,
-                   $7, $8, $9, $10, $11,
-                   'managed_v1', $12, $13, $14, $15, $16)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                   $12, $13, $14, $15, $16,
+                   'managed_v1', $17, $18, $19, $20, $21)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             record.dedupKey,
@@ -94,6 +102,11 @@ export async function saveManagedPromptRecords(
             record.providerKey,
             record.turnRole,
             record.ts,
+            record.agent?.id ?? null,
+            record.agent?.parentId ?? null,
+            record.agent?.depth ?? null,
+            record.agent?.name ?? null,
+            record.agent?.role ?? null,
             enc.contentKeyVersion,
             enc.wrappedDek,
             enc.iv,
@@ -131,6 +144,17 @@ function snapshotManagedPromptRecords(
         || !(record.ts instanceof Date)
         || !Number.isFinite(record.ts.getTime())
         || typeof record.text !== "string"
+        || (
+          record.agent != null
+          && (
+            typeof record.agent !== "object"
+            || typeof record.agent.id !== "string"
+            || (record.agent.parentId !== null && typeof record.agent.parentId !== "string")
+            || (record.agent.depth !== null && !Number.isSafeInteger(record.agent.depth))
+            || (record.agent.name !== null && typeof record.agent.name !== "string")
+            || (record.agent.role !== null && typeof record.agent.role !== "string")
+          )
+        )
       ) {
         throw new Error("INVALID_PROMPT_RECORD");
       }
@@ -141,6 +165,7 @@ function snapshotManagedPromptRecords(
         turnRole: record.turnRole,
         ts: new Date(record.ts.getTime()),
         text: record.text,
+        agent: record.agent == null ? null : Object.freeze({ ...record.agent }),
       });
     }));
   } catch {
@@ -197,12 +222,13 @@ export async function saveE2eePromptRecords(
       const result = await tx.query(
         `INSERT INTO prompt_records
            (dedup_key, user_id, session_id, provider_key, turn_role, ts,
+            agent_id, parent_agent_id, agent_depth, agent_name, agent_role,
             key_version, wrapped_dek, iv, ciphertext, auth_tag,
             encryption_scheme, content_owner_id, content_key_version,
             dek_wrap_iv, dek_wrap_auth_tag, aad_version)
-         VALUES ($1, $2, $3, $4, $5, $6,
-                 $7, $8, $9, $10, $11,
-                 'e2ee_v1', $12, $13, $14, $15, 1)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 $12, $13, $14, $15, $16,
+                 'e2ee_v1', $17, $18, $19, $20, 1)
          ON CONFLICT (dedup_key) DO NOTHING`,
         [
           record.dedupKey,
@@ -211,6 +237,11 @@ export async function saveE2eePromptRecords(
           record.providerKey,
           record.turnRole,
           record.ts,
+          record.agent?.id ?? null,
+          record.agent?.parentId ?? null,
+          record.agent?.depth ?? null,
+          record.agent?.name ?? null,
+          record.agent?.role ?? null,
           record.contentKeyVersion,
           fromBase64Url(record.wrappedDek, "wrappedDek"),
           fromBase64Url(record.iv, "iv"),

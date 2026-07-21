@@ -12,7 +12,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::{
-    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawToolActivity, RawUsage,
+    file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawPromptAgent, RawToolActivity,
+    RawUsage,
 };
 use crate::cursor_hook::CapturedUsage;
 use crate::iso::iso_to_epoch_ms;
@@ -118,12 +119,57 @@ fn parse_usage_file(path: &Path) -> Vec<RawUsage> {
 }
 
 fn session_id_from_path(path: &Path) -> Option<String> {
+    let parts = path
+        .components()
+        .skip_while(|component| component.as_os_str() != "agent-transcripts")
+        .skip(1)
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    if parts.len() >= 2 && parts.contains(&"subagents") {
+        return Some(parts[0].to_string());
+    }
     let stem = path.file_stem()?.to_str()?;
     if matches!(stem, "transcript" | "agent-transcript") {
         path.parent()?.file_name()?.to_str().map(str::to_string)
     } else {
         Some(stem.to_string())
     }
+}
+
+fn prompt_agent_from_path(path: &Path) -> Option<RawPromptAgent> {
+    let parts = path
+        .components()
+        .skip_while(|component| component.as_os_str() != "agent-transcripts")
+        .skip(1)
+        .filter_map(|component| component.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let subagent_positions = parts
+        .iter()
+        .enumerate()
+        .filter_map(|(index, part)| (*part == "subagents").then_some(index))
+        .collect::<Vec<_>>();
+    let last_subagent = *subagent_positions.last()?;
+    let stem = path.file_stem()?.to_str()?;
+    let id = if matches!(stem, "transcript" | "agent-transcript") {
+        path.parent()?.file_name()?.to_str()?.to_string()
+    } else {
+        stem.to_string()
+    };
+    let parent_id = if subagent_positions.len() == 1 {
+        parts.first().map(|value| (*value).to_string())
+    } else {
+        last_subagent
+            .checked_sub(1)
+            .and_then(|index| parts.get(index))
+            .map(|value| (*value).to_string())
+    };
+    Some(RawPromptAgent {
+        id,
+        parent_id,
+        depth: u8::try_from(subagent_positions.len()).ok(),
+        name: None,
+        role: None,
+    })
 }
 
 fn timestamp_value(value: &Value) -> Option<i64> {
@@ -267,6 +313,7 @@ fn tool_blocks(content: Option<&Value>) -> impl Iterator<Item = &Value> {
 fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
     let fallback = file_mtime_ms(path);
     let fallback_session = session_id_from_path(path);
+    let path_agent = prompt_agent_from_path(path);
     let Ok(bytes) = std::fs::read(path) else {
         return ParsedLog::default();
     };
@@ -290,12 +337,16 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
         }
         let content = message.get("content").or_else(|| value.get("content"));
         let ts_ms = timestamp_at(&value, message, fallback);
-        let session = value
+        let explicit_session = value
             .get("sessionId")
             .or_else(|| value.get("session_id"))
             .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| fallback_session.clone());
+            .map(str::to_string);
+        let session = if path_agent.is_some() {
+            fallback_session.clone().or(explicit_session)
+        } else {
+            explicit_session.or_else(|| fallback_session.clone())
+        };
         let session_arc = session.as_deref().map(Arc::from);
         let message_id = value
             .get("id")
@@ -320,6 +371,7 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
                     message_id,
                     role: if role == "user" { "user" } else { "assistant" },
                     text,
+                    agent: path_agent.clone(),
                 });
             }
         }
@@ -412,6 +464,7 @@ fn flush_legacy_content(
     role: Option<&'static str>,
     lines: &mut Vec<String>,
     session: &Option<String>,
+    agent: &Option<RawPromptAgent>,
     ts_ms: i64,
     message_index: &mut usize,
 ) {
@@ -434,6 +487,7 @@ fn flush_legacy_content(
         )),
         role,
         text,
+        agent: agent.clone(),
     });
     *message_index += 1;
 }
@@ -441,6 +495,7 @@ fn flush_legacy_content(
 fn parse_legacy_transcript(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
     let ts_ms = file_mtime_ms(path);
     let session = session_id_from_path(path);
+    let agent = prompt_agent_from_path(path);
     let Ok(text) = std::fs::read_to_string(path) else {
         return ParsedLog::default();
     };
@@ -463,6 +518,7 @@ fn parse_legacy_transcript(path: &Path, include_content: bool, include_tools: bo
                     role,
                     &mut lines,
                     &session,
+                    &agent,
                     ts_ms,
                     &mut message_index,
                 );
@@ -507,6 +563,7 @@ fn parse_legacy_transcript(path: &Path, include_content: bool, include_tools: bo
             role,
             &mut lines,
             &session,
+            &agent,
             ts_ms,
             &mut message_index,
         );
@@ -597,6 +654,28 @@ mod tests {
         let wire = crate::tool_event::to_tool_events_body("cursor", None, &parsed.tools);
         for forbidden in ["do-not-send", "secret output", "command", "prompt"] {
             assert!(!wire.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn groups_cursor_subagent_transcript_under_parent_session() {
+        let tmp = TempDir::new("cursor-subagent-content");
+        let path = tmp.write(
+            "projects/repo/agent-transcripts/session-1/subagents/agent-review.jsonl",
+            concat!(
+                "{\"role\":\"user\",\"message\":{\"content\":\"할당 작업\"}}\n",
+                "{\"role\":\"assistant\",\"message\":{\"content\":\"검토 결과\"}}\n"
+            ),
+        );
+
+        let parsed = CursorUsage.parse_changed(&path, true, false);
+        assert_eq!(parsed.content.len(), 2);
+        for turn in &parsed.content {
+            assert_eq!(turn.session_id.as_deref(), Some("session-1"));
+            let agent = turn.agent.as_ref().expect("subagent metadata");
+            assert_eq!(agent.id, "agent-review");
+            assert_eq!(agent.parent_id.as_deref(), Some("session-1"));
+            assert_eq!(agent.depth, Some(1));
         }
     }
 

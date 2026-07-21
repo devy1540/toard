@@ -27,6 +27,15 @@ export interface PromptRecordWire {
   turnRole: "user" | "assistant";
   ts: Date;
   text: string;
+  agent?: PromptAgentWire | null;
+}
+
+export interface PromptAgentWire {
+  id: string;
+  parentId: string | null;
+  depth: number | null;
+  name: string | null;
+  role: string | null;
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -46,6 +55,32 @@ function nullableString(v: unknown, field: string): string | null {
   return v;
 }
 
+function boundedNullableString(v: unknown, field: string, max: number): string | null {
+  const value = nullableString(v, field);
+  if (value !== null && (value.length === 0 || value.length > max)) {
+    throw new PromptWireError(`${field} 는 1~${max}자 문자열 또는 null 이어야 합니다`);
+  }
+  return value;
+}
+
+function parsePromptAgentWire(v: unknown): PromptAgentWire | null {
+  if (v === null || v === undefined) return null;
+  if (!isRecord(v)) throw new PromptWireError("agent 는 객체 또는 null 이어야 합니다");
+  const id = boundedNullableString(v.id, "agent.id", 255);
+  if (id === null) throw new PromptWireError("agent.id 는 비어있지 않은 문자열이어야 합니다");
+  const parentId = boundedNullableString(v.parentId, "agent.parentId", 255);
+  const name = boundedNullableString(v.name, "agent.name", 100);
+  const role = boundedNullableString(v.role, "agent.role", 100);
+  let depth: number | null = null;
+  if (v.depth !== null && v.depth !== undefined) {
+    if (!Number.isSafeInteger(v.depth) || Number(v.depth) < 1 || Number(v.depth) > 32) {
+      throw new PromptWireError("agent.depth 는 1~32 정수 또는 null 이어야 합니다");
+    }
+    depth = Number(v.depth);
+  }
+  return { id, parentId, depth, name, role };
+}
+
 /** 와이어 JSON(unknown) 1건 → PromptRecordWire. 실패 시 PromptWireError. */
 export function parsePromptRecordWire(v: unknown): PromptRecordWire {
   if (!isRecord(v)) throw new PromptWireError("레코드는 객체여야 합니다");
@@ -63,7 +98,8 @@ export function parsePromptRecordWire(v: unknown): PromptRecordWire {
   if (new TextEncoder().encode(text).byteLength > E2EE_MAX_CIPHERTEXT_BYTES) {
     throw new PromptWireError(`text는 ${E2EE_MAX_CIPHERTEXT_BYTES} byte 이하여야 합니다`);
   }
-  return { dedupKey, providerKey, sessionId, turnRole, ts, text };
+  const agent = parsePromptAgentWire(v.agent);
+  return { dedupKey, providerKey, sessionId, turnRole, ts, text, agent };
 }
 
 /** POST /api/v1/prompts 본문(PromptRecord[] JSON) 파싱. */

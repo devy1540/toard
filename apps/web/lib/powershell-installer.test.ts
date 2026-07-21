@@ -24,6 +24,25 @@ test("PowerShell installer verifies checksum before target, ACL, and PATH", () =
   assert.match(script, /WindowsIdentity.*GetCurrent/);
 });
 
+test("PowerShell installer verifies both Windows executables before mutation", () => {
+  const script = buildPowerShellInstallScript("https://toard.example/api", false);
+
+  assert.match(script, /toard-shim-x86_64-pc-windows-msvc\.exe/);
+  assert.match(script, /toard-shim-background-x86_64-pc-windows-msvc\.exe/);
+  assert.match(script, /\$backgroundDownload/);
+  assert.match(script, /\$backgroundExpected/);
+  assert.match(script, /\$backgroundActual/);
+  assert.match(script, /toard-shim-background\.exe/);
+
+  const lastChecksum = Math.max(
+    script.indexOf("shim checksum mismatch"),
+    script.indexOf("background checksum mismatch"),
+  );
+  assert.ok(lastChecksum < script.indexOf("New-Item -ItemType Directory -Force -Path $binDir"));
+  assert.ok(lastChecksum < script.indexOf("'target', 'upsert'"));
+  assert.ok(lastChecksum < script.indexOf("'daemon', 'install'"));
+});
+
 test("PowerShell installer upserts target before PATH, daemon, and selected doctor", () => {
   const script = buildPowerShellInstallScript(
     "https://personal.example/api",
@@ -144,6 +163,16 @@ test("PowerShell uninstaller gates full cleanup on the last removed target", () 
     script,
     /Remove-Item -Recurse -Force -ErrorAction SilentlyContinue/,
   );
+});
+
+test("PowerShell uninstaller removes the helper only after the last target", () => {
+  const script = buildPowerShellUninstallScript("https://toard.example/api");
+  const remainingGate = script.indexOf("$remaining -gt 0");
+  const helperRemoval = script.indexOf("toard-shim-background.exe");
+
+  assert.ok(remainingGate >= 0);
+  assert.ok(helperRemoval > remainingGate);
+  assert.match(script, /toard-shim-background\.exe\.old/);
 });
 
 test("PowerShell uninstaller removes only toard-owned state during full cleanup", () => {

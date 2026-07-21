@@ -42,6 +42,9 @@ jobs:
             # Windows 바이너리는 .exe — 자산명 접미까지 유지 (update.rs asset_name 계약)
             if [ -f "target/$t/release/shim.exe" ]; then
               cp "target/$t/release/shim.exe" "../../dist/toard-shim-$t.exe"
+              # Windows helper release asset: toard-shim-background-x86_64-pc-windows-msvc.exe
+              cp "target/$t/release/toard-shim-background.exe" \
+                "../../dist/toard-shim-background-$t.exe"
             else
               cp "target/$t/release/shim" "../../dist/toard-shim-$t"
             fi

@@ -25,7 +25,7 @@
   "usage30m": "30분별 사용량",
   "usage15m": "15분별 사용량",
   "noCollectedUsageTitle": "아직 수집된 사용량이 없습니다",
-  "noCollectedUsageDescription": "수집기를 설치하면 Claude Code·Codex 사용량이 자동으로 수집됩니다.",
+  "noCollectedUsageDescription": "수집기를 설치하면 Claude Code·Codex·Cursor 사용량이 자동으로 수집됩니다.",
   "installShim": "수집기 설치하기",
   "noDataTitle": "데이터가 없습니다",
   "noMyUsageDescription": "선택한 기간·도구에 내 사용량이 없습니다.",

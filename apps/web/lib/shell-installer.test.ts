@@ -8,6 +8,7 @@ test("POSIX installer upserts target before daemon and selected doctor", () => {
   assert.match(script, /TOARD_INSTALL_DAEMON=0 sh/);
   assert.match(script, /"\$SHIM" capabilities/);
   assert.match(script, /"\$SHIM" target upsert/);
+  assert.match(script, /"\$SHIM" cursor-hook install/);
   assert.match(script, /"\$SHIM" daemon install/);
   assert.match(script, /"\$SHIM" doctor --target-env/);
   assert.match(
@@ -21,11 +22,14 @@ test("POSIX installer upserts target before daemon and selected doctor", () => {
   const capability = script.indexOf('"$SHIM" capabilities');
   const upsert = script.indexOf('"$SHIM" target upsert');
   const pathChange = script.indexOf("printf '\\nexport PATH=");
+  const cursorHook = script.indexOf('"$SHIM" cursor-hook install');
   const daemon = script.indexOf('"$SHIM" daemon install');
   const doctor = script.indexOf('"$SHIM" doctor --target-env');
   assert.ok(capability >= 0);
   assert.ok(capability < upsert);
   assert.ok(capability < pathChange);
+  assert.ok(upsert < cursorHook);
+  assert.ok(cursorHook < daemon);
   assert.ok(upsert < daemon);
   assert.ok(daemon < doctor);
 });

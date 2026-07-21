@@ -15,6 +15,7 @@ async function main(): Promise<void> {
      VALUES
        ('claude_code', 'Claude Code', ARRAY['claude-code','claude-code-desktop'], 'logfile', true),
        ('codex', 'Codex', ARRAY['codex','codex_cli_rs','codex_exec'], 'logfile', true),
+       ('cursor', 'Cursor', ARRAY[]::text[], 'logfile', true),
        ('gemini', 'Gemini CLI', ARRAY[]::text[], 'logfile', true),
        ('qwen', 'Qwen Code', ARRAY[]::text[], 'logfile', true)
      ON CONFLICT (key) DO NOTHING`,

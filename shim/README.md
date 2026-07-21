@@ -20,7 +20,8 @@ toard-shim doctor --target-env       # TOARD_INGEST_ENDPOINT와 일치하는 한
 toard-shim target upsert             # installer env의 endpoint·token·정책 추가/갱신(고급·설치기용)
 toard-shim target remove --machine   # installer env의 endpoint 제거 결과 출력(고급·제거기용)
 toard-shim claude-env on|off|status  # settings.json OTEL 주입 관리 (experimental OTLP 전용 — 강등)
-toard-shim collect [--dry-run]       # 로컬 세션 파일 수집(claude·codex·gemini·qwen) → /api/v1/events
+toard-shim collect [--dry-run]       # 로컬 사용량 수집(claude·codex·cursor·gemini·qwen) → /api/v1/events
+toard-shim cursor-hook install|status|uninstall # Cursor 정확 토큰 stop hook 관리
 toard-shim daemon install|uninstall|status  # 주기 수집 등록·해제·확인 (macOS launchd / Linux systemd·cron / Windows 작업 스케줄러)
 toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를 임베드)
 ```
@@ -37,24 +38,25 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 **(experimental OTLP 전용 — 강등)** `claude-env` 는 OTLP push 커버리지 갭(PATH 를 거치지 않는 IDE 확장·절대경로·alias 실행)을 메우던 장치로, Claude Code 가 직접 읽는 settings.json 의 `env` 에 OTEL 키를 병합 주입한다. 사용량이 이제 pull(트랜스크립트)로 수집되므로 **일반 사용엔 불필요**하고, `TOARD_EXPERIMENTAL_OTLP` + 서버 `collection_method='otel'` 로 push 를 되켤 때만 의미가 있다(`on` 실행 시 강등 경고 출력). 우리가 넣은 값은 `~/.toard/state/claude-env.json` 에 기록되며, 사용자가 직접 설정했거나 이후 변경한 키는 덮지도 지우지도 않는다(경고만). 토큰이 평문으로 들어가므로 settings.json 은 0600 으로 조정된다.
 
 ## 로컬 세션 파일 pull 수집 (사용량 기본 경로)
-claude·codex·gemini·qwen **전 도구**의 로컬 세션 파일을 어댑터로 파싱해 `UsageEvent[]` 로 정규화하고 `POST /api/v1/events` 로 보낸다. 파서는 ccusage(MIT) Rust 어댑터에서 이식(`shim/NOTICE` attribution 참조).
-- **소스·매핑**: claude=`~/.claude/projects/**/*.jsonl`(`assistant.message.usage`, Desktop 사용분 포함, `input_tokens` 는 캐시 제외), codex=`~/.codex/sessions/**/*.jsonl`(`token_count.info.last_token_usage`, 모델은 `turn_context.model`, `input−cached`, `total_token_usage` 변화 기준 중복 방출 dedup), gemini·qwen=각 CLI 로그.
+claude·codex·gemini·qwen의 로컬 세션 파일과 Cursor의 최소 stop hook 로그를 어댑터로 파싱해 `UsageEvent[]` 로 정규화하고 `POST /api/v1/events` 로 보낸다. 파서는 ccusage(MIT) Rust 어댑터에서 이식(`shim/NOTICE` attribution 참조).
+- **소스·매핑**: claude=`~/.claude/projects/**/*.jsonl`(`assistant.message.usage`, Desktop 사용분 포함, `input_tokens` 는 캐시 제외), codex=`~/.codex/sessions/**/*.jsonl`(`token_count.info.last_token_usage`, 모델은 `turn_context.model`, `input−cached`, `total_token_usage` 변화 기준 중복 방출 dedup), cursor=`~/.toard/cursor/usage.jsonl`(stop hook의 정확 input/output/cache 토큰), gemini·qwen=각 CLI 로그.
 - **Codex fork/subagent 재생 방어**: Codex가 새 rollout 앞에 부모 history를 복사하는 경우, subagent의 첫 `inter_agent_communication_metadata` 또는 vscode fork에서 현재 session UUIDv7 이상인 첫 `task_started.turn_id`를 구조적 경계로 사용한다. 경계 전 `token_count`는 신규 사용량에서 제외한다. 일반 root 세션의 inter-agent 메시지는 제외 대상이 아니다.
 - **기존 재생 오염 1회 보정**: 업그레이드된 shim은 Codex usage cursor의 `reconciliation_version`을 보고 로그 전체를 한 번 다시 읽는다. 과거 parser와 동일한 session/model/token 승계로 재생분의 `dedup_key`만 재현해 인증된 `/api/v1/events/reconcile`로 최대 1,000개씩 보낸다. 정상 구간에서도 발견된 키는 절대 철회하지 않는다. 서버는 인증 토큰의 사용자 + `provider=codex` + `log_adapter=codex` 범위의 정확 키만 삭제하고 PostgreSQL daily mart 또는 ClickHouse dirty rollup/outbox를 함께 갱신한다. 직접 DB 삭제나 시간 기반 추정은 하지 않는다. 404/405 서버는 기존 usage 수집을 유지하고 24시간 뒤 다시 확인한다.
 - **커서**: 로그가 append 가 아니라 세션 파일 제자리 갱신이라, target별 파일 stamp(mtime+size)를 `~/.toard/targets/<id>/state/cursors/`에 기록한다. 파일은 수집 회차당 한 번 파싱하고, 각 target은 자체 전송 진행(sent 개수 + dedup_key prefix 해시)을 기준으로 **자신에게 필요한 신규분만 전송**한다. 판정이 어긋나면(파일 재작성 등) 해당 target은 전체 전송으로 폴백하고 서버 dedup_key 멱등 저장이 흡수한다.
-- **백필**: usage 커서가 없으면 전 파일 스캔 → 과거 사용량 전량 백필(토큰 카운트라 민감정보 아님, 히스토리 가치↑). 이후엔 커서로 변한 파일만.
+- **백필**: claude·codex·gemini·qwen은 usage 커서가 없으면 전 파일 스캔 → 과거 사용량 전량 백필(토큰 카운트라 민감정보 아님, 히스토리 가치↑). 이후엔 커서로 변한 파일만. Cursor 사용량은 hook 설치 이후부터다.
 - **신뢰경계**: shim 은 토큰 카운트까지만(costUsd=0, userId=null) — user/cost 는 서버 권위(§10.1).
 - **실행 모델**: 트리거 3중 — ① **주기 수집(권장, #65)**: `toard-shim daemon install` 이 OS 스케줄러에 단발 `collect` 를 등록(macOS launchd LaunchAgent / Linux systemd user timer·crontab / Windows 작업 스케줄러). 기본 300초, `--interval <초>`(하한 60) 조절. Desktop/IDE 처럼 PATH 를 안 거치는 사용도 주기 간격 안에 수집. 상주 프로세스 아님 — 스케줄러가 매번 단발 실행을 깨움. 제거는 `daemon uninstall`, 상태는 `daemon status`/`doctor`. ② `claude`/`codex` wrap 실행 편승(10분 스로틀, double-spawn 분리 — `TOARD_SHIM_COLLECT=0` 끄기, `TOARD_SHIM_COLLECT_INTERVAL`(초) 조절). ③ `toard-shim collect` 즉시 실행. 세 트리거는 공용 `~/.toard/state/last-collect` 스탬프를 공유하고 전송 진행은 target별로 관리한다. 데몬 등록물은 `collect --quiet` 로 실행돼 **무변경 회차는 로그를 남기지 않고**(전송·오류만 출력), 데몬 로그(`~/.toard/state/daemon*.log`)는 **1년 주기로 `.1` 한 세대 로테이션**된다.
+- **Cursor**: 설치기가 기존 `~/.cursor/hooks.json`을 보존하면서 user-global `stop` hook 하나를 병합한다. Cursor가 전달한 정확한 input/output/cache 토큰만 `~/.toard/cursor/usage.jsonl`에 기록하며 이메일·workspace 경로·transcript 경로·대화 본문은 버린다. 설치 이전 사용량은 소급 수집하지 않는다. `~/.cursor/projects/**/agent-transcripts/**/*.{jsonl,txt}`는 사용량을 추정하거나 중복 집계하지 않고 본문(opt-in)과 MCP·Skill 활동만 읽는다. 중간에 잘린 JSONL은 해당 줄만 건너뛰며, 결과 블록이 없는 도구 호출은 `unknown`으로 기록한다.
 
 ## 컴퓨터별 구분 (host — 기본 on)
-같은 계정을 여러 컴퓨터에서 써도 사용량을 **컴퓨터별로 구분**해 볼 수 있게, shim 이 발생 기기의 라벨(호스트명)을 함께 보낸다. **기본(pull) 경로는 `UsageEvent.host` 로 claude·codex·gemini·qwen 전부 자동 부착** — env 주입이 없어 host 누락 지점이 사라졌다. experimental OTLP push 는 OTEL resource attribute `toard.host`. 표시는 **본인 화면 한정**(내 사용량 · 설정 › 내 기기).
+같은 계정을 여러 컴퓨터에서 써도 사용량을 **컴퓨터별로 구분**해 볼 수 있게, shim 이 발생 기기의 라벨(호스트명)을 함께 보낸다. **기본 수집 경로는 `UsageEvent.host` 로 claude·codex·cursor·gemini·qwen 전부 자동 부착** — env 주입이 없어 host 누락 지점이 사라졌다. experimental OTLP push 는 OTEL resource attribute `toard.host`. 표시는 **본인 화면 한정**(내 사용량 · 설정 › 내 기기).
 - **기본값**: 자동으로 `hostname` 을 `trim`+소문자화해 전송(대소문자·공백 차이로 버킷이 갈리지 않게).
 - `TOARD_DISABLE_HOST=1`: 기기명 전송 끄기 → 서버에서 "(알 수 없음)" 으로 집계.
 - `TOARD_HOST_LABEL=<별칭>`: 호스트명 대신 지정한 별칭 전송(대소문자 존중). 사내 기기명이 실명/직책을 담는 경우 대비.
 - **Codex 주의(experimental OTLP 한정)**: Codex 는 `config.toml` 우선이라 push 시 env resource attribute 존중 여부가 버전마다 달라 host 가 "(알 수 없음)"이 될 수 있다. **기본 pull 경로는 host 자동 부착이라 무관**.
 
 ## 본문 수집 (서버 관리형 암호화 opt-in — 기본 off)
-설정 화면에서 본문 수집을 선택하면 installer는 `collect_content=true`를 기록한다. **claude·codex·gemini·qwen** 로컬 세션 파일의 프롬프트/응답을 HTTPS(또는 localhost)로 `POST /api/v1/prompts`에 보내며, 서버는 저장 전에 `managed_v1`으로 암호화한다. Recovery Kit나 기기 승인은 필요하지 않다.
+설정 화면에서 본문 수집을 선택하면 installer는 `collect_content=true`를 기록한다. **claude·codex·cursor·gemini·qwen** 로컬 세션 파일의 프롬프트/응답을 HTTPS(또는 localhost)로 `POST /api/v1/prompts`에 보내며, 서버는 저장 전에 `managed_v1`으로 암호화한다. Recovery Kit나 기기 승인은 필요하지 않다.
 
 `TOARD_SHIM_COLLECT_CONTENT=1|true|on|yes|server_v1|managed_v1`은 모두 서버 관리형 모드다. usage 경로(`/v1/events`)와 커서(`{adapter}` vs `{adapter}-content`)는 완전히 분리되어 서로 영향을 주지 않는다.
 
@@ -70,8 +72,8 @@ toard-shim e2ee status
 toard-shim e2ee approve
 ```
 
-- **본문·사용량 모두 pull 로 일원화(설계 확정)**: OTLP 로는 응답을 얻을 수 없어(Codex 는 응답 이벤트 자체가 없고 — 실측·소스 확정) 본문은 전 도구가 로컬 세션 파일에서 pull 하고, 사용량도 같은 파일에서 pull 한다(claude/codex 트랜스크립트, docs/design-usage-pull). usage·content 는 **커서(`{adapter}` vs `{adapter}-content`)·엔드포인트가 완전 분리**돼 서로 영향이 없다.
-  - claude: `~/.claude/projects/**/*.jsonl` (Desktop 사용분 포함). codex: `~/.codex/sessions/**/*.jsonl`(CODEX_HOME 존중). 각 도구가 프롬프트+응답을 전문으로 남긴다.
+- **본문은 로컬 세션 파일 pull(설계 확정)**: OTLP 로는 응답을 얻을 수 없어(Codex 는 응답 이벤트 자체가 없고 — 실측·소스 확정) 본문은 전 도구가 로컬 세션 파일에서 pull 한다. 사용량은 claude/codex 트랜스크립트와 Cursor 최소 stop hook 등 각 어댑터의 정확 소스를 쓴다. usage·content 는 **커서(`{adapter}` vs `{adapter}-content`)·엔드포인트가 완전 분리**돼 서로 영향이 없다.
+  - claude: `~/.claude/projects/**/*.jsonl` (Desktop 사용분 포함). codex: `~/.codex/sessions/**/*.jsonl`(CODEX_HOME 존중). cursor: `~/.cursor/projects/**/agent-transcripts/**/*.{jsonl,txt}`(`CURSOR_AGENT_HOME` override 지원). 각 도구가 남긴 프롬프트+응답 텍스트만 추출한다.
 - **백필 컷오프 `collect_content_since`** (credentials 또는 env `TOARD_SHIM_COLLECT_CONTENT_SINCE`): 이 시점 이후 턴만 수집.
   - **미설정(기본) = "지금부터"** — target 활성화 시각을 `~/.toard/targets/<id>/state/content-since`에 기록해, 켜는 순간 과거 대화가 통째로 전송되지 않는다.
   - `collect_content_since=2026-06-01`(그 날짜부터) · `collect_content_since=all`(전량 백필). 진행 중 세션이 append 돼도 옛 턴은 컷오프로 제외된다.

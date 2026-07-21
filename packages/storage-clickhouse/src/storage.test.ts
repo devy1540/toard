@@ -1341,7 +1341,7 @@ test("ClickHouseStorage는 활용 지수 일별 사용량을 provider capability
   assert.match(query, /uniqExactIf\(session_id, session_id != ''\)/);
   assert.match(query, /provider_key IN \{cacheProviders:Array\(String\)\}/);
   assert.match(query, /sumIf\(event_count,/);
-  assert.deepEqual(queryParams.cacheProviders, ["claude_code", "codex", "gemini", "qwen"]);
+  assert.deepEqual(queryParams.cacheProviders, ["claude_code", "codex", "cursor", "gemini", "qwen"]);
   assert.deepEqual(result, [
     {
       userId: "u1",

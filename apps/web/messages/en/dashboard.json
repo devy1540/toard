@@ -25,7 +25,7 @@
   "usage30m": "30-minute usage",
   "usage15m": "15-minute usage",
   "noCollectedUsageTitle": "No usage collected yet",
-  "noCollectedUsageDescription": "Install the collector to automatically capture Claude Code and Codex usage.",
+  "noCollectedUsageDescription": "Install the collector to automatically capture Claude Code, Codex, and Cursor usage.",
   "installShim": "Install collector",
   "noDataTitle": "No data",
   "noMyUsageDescription": "No usage for the selected period and tool.",

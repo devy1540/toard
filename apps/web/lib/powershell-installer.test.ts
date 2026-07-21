@@ -51,6 +51,7 @@ test("PowerShell installer upserts target before PATH, daemon, and selected doct
 
   assert.match(script, /'capabilities'/);
   assert.match(script, /'target', 'upsert'/);
+  assert.match(script, /'cursor-hook', 'install'/);
   assert.match(script, /'daemon', 'install'/);
   assert.match(script, /'doctor', '--target-env'/);
   assert.doesNotMatch(script, /'target', 'upsert'[^\n]*\$token/);
@@ -59,11 +60,14 @@ test("PowerShell installer upserts target before PATH, daemon, and selected doct
   const path = script.indexOf(
     "$userPath = [Environment]::GetEnvironmentVariable",
   );
+  const cursorHook = script.indexOf("'cursor-hook', 'install'");
   const daemon = script.indexOf("'daemon', 'install'");
   const doctor = script.indexOf("'doctor', '--target-env'");
   assert.ok(capability < upsert);
   assert.ok(capability < path);
   assert.ok(upsert < path);
+  assert.ok(upsert < cursorHook);
+  assert.ok(cursorHook < daemon);
   assert.ok(path < daemon);
   assert.ok(daemon < doctor);
 });

@@ -61,7 +61,7 @@ jobs:
         run: cargo build --release
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.13
+          node-version: 22
       - uses: pnpm/action-setup@v4
       - name: install workspace dependencies
         working-directory: ${{ github.workspace }}
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.13
+          node-version: 22
       - uses: pnpm/action-setup@v4
       - name: install workspace dependencies
         run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
@@ -134,7 +134,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.13
+          node-version: 22
       - uses: pnpm/action-setup@v4
       - name: install workspace dependencies
         run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile

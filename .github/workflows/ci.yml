@@ -18,7 +18,7 @@ jobs:
       - uses: pnpm/action-setup@v4 # 버전은 package.json packageManager 필드를 따름
       - uses: actions/setup-node@v4
         with:
-          node-version: 22.13
+          node-version: 22
           cache: pnpm
       - uses: azure/setup-kubectl@v4
         with:

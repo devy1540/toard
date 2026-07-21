@@ -41,8 +41,8 @@ test("도구 배포 migration은 유효한 전체 관계를 저장하고 닫힌 
     await client.query(await part("1700000001_init.sql", "up"));
     await client.query("ALTER TABLE departments RENAME TO teams; ALTER TABLE users RENAME COLUMN department_id TO team_id");
     await client.query(await part("1700000019_tool_activity_inventory.sql", "up"));
-    await client.query(await part("1700000044_tool_catalog.sql", "up"));
-    await client.query(await part("1700000045_tool_deployment.sql", "up"));
+    await client.query(await part("1700000045_tool_catalog.sql", "up"));
+    await client.query(await part("1700000046_tool_deployment.sql", "up"));
 
     const teamId = randomUUID();
     const userId = randomUUID();
@@ -86,7 +86,7 @@ test("도구 배포 migration은 유효한 전체 관계를 저장하고 닫힌 
       (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "23514",
     );
 
-    await client.query(await part("1700000045_tool_deployment.sql", "down"));
+    await client.query(await part("1700000046_tool_deployment.sql", "down"));
     assert.equal((await client.query("SELECT to_regclass('public.tool_versions') AS name")).rows[0].name, null);
     assert.equal((await client.query("SELECT count(*)::int AS n FROM information_schema.columns WHERE table_name='users' AND column_name='team_role'")).rows[0].n, 0);
   } finally {

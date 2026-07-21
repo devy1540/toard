@@ -21,6 +21,8 @@ import type {
   OverviewStats,
   PeriodQuery,
   PricingRecoveryBatchResult,
+  PricingRollupReconciliationRequest,
+  PricingRollupReconciliationResult,
   PricingRepairRequest,
   PricingRepairResolver,
   ProviderBreakdown,
@@ -2362,18 +2364,23 @@ export class ClickHouseStorage implements StorageBackend {
     }
 
     if (replacements.length > 0) {
-      const client = await this.pg.connect();
-      try {
-        await client.query("BEGIN");
-        await this.mark15mRollupDirty(client, replacements);
-        await client.query("COMMIT");
-      } catch (error) {
-        await client.query("ROLLBACK").catch(() => undefined);
-        throw error;
-      } finally {
-        client.release();
-      }
+      const markDirty = async (): Promise<void> => {
+        const client = await this.pg.connect();
+        try {
+          await client.query("BEGIN");
+          await this.mark15mRollupDirty(client, replacements);
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK").catch(() => undefined);
+          throw error;
+        } finally {
+          client.release();
+        }
+      };
 
+      // insert 전에는 dashboard를 exact source로 fallback시키고, insert 후에는
+      // 중간에 compactor가 선행 dirty를 소비해도 새 원본으로 다시 집계하게 한다.
+      await markDirty();
       const sortedKeys = replacements.map((row) => row.dedup_key).sort().join("\n");
       const digest = createHash("sha256")
         .update(`${request.generation}:${sortedKeys}`)
@@ -2403,6 +2410,7 @@ export class ClickHouseStorage implements StorageBackend {
           insert_deduplication_token: `pricing-repair:${digest}`,
         },
       }));
+      await markDirty();
     }
 
     const originalStatus = new Map(candidates.map((candidate) => [candidate.dedup_key, candidate.cost_status]));
@@ -2417,6 +2425,103 @@ export class ClickHouseStorage implements StorageBackend {
       recovered,
       repricedLegacy,
       affectedBuckets: this.dirty15mBuckets(replacements),
+      hasMore: rows.length > limit,
+    };
+  }
+
+  async reconcilePricingRollupUsage(
+    request: PricingRollupReconciliationRequest,
+  ): Promise<PricingRollupReconciliationResult> {
+    if (request.to <= request.from || request.limit <= 0) {
+      return { dirtied: 0, affectedBuckets: [], hasMore: false };
+    }
+    const limit = Math.min(Math.max(Math.trunc(request.limit), 1), 10_000);
+    const watermark = await this.pg.query<{ watermark: Date }>(
+      "SELECT watermark FROM clickhouse_rollup_watermarks WHERE name = $1",
+      [USAGE_15M_V2.name],
+    );
+    const coveredTo = watermark.rows[0]?.watermark;
+    if (!coveredTo) return { dirtied: 0, affectedBuckets: [], hasMore: false };
+    const to = coveredTo < request.to ? coveredTo : request.to;
+    if (to <= request.from) return { dirtied: 0, affectedBuckets: [], hasMore: false };
+
+    const dirty = await this.pg.query<{ bucket: Date }>(
+      `SELECT bucket
+       FROM clickhouse_rollup_dirty_buckets
+       WHERE name = $1
+         AND bucket >= $2
+         AND bucket < $3
+       ORDER BY bucket`,
+      [USAGE_15M_V2.name, request.from, to],
+    );
+    const rows = await this.queryJson<{ bucket_15m: Date | string }>(
+      `WITH raw AS (
+         SELECT toStartOfInterval(ts, INTERVAL 15 minute, 'UTC') AS bucket_15m,
+                count() AS raw_events,
+                countIf(cost_status = 'priced') AS raw_priced_events,
+                countIf(cost_status = 'unpriced') AS raw_unpriced_events,
+                countIf(cost_status = 'legacy') AS raw_legacy_events,
+                sumIf(cost_usd, cost_status != 'unpriced') AS raw_cost
+         FROM usage_events FINAL
+         WHERE ts >= {from:DateTime64(3)}
+           AND ts < {to:DateTime64(3)}
+         GROUP BY bucket_15m
+       ), rollup AS (
+         SELECT bucket_15m,
+                sum(event_count) AS rollup_events,
+                sumIf(event_count, cost_status = 'priced') AS rollup_priced_events,
+                sumIf(event_count, cost_status = 'unpriced') AS rollup_unpriced_events,
+                sumIf(event_count, cost_status = 'legacy') AS rollup_legacy_events,
+                sumIf(cost_usd, cost_status != 'unpriced') AS rollup_cost
+         FROM usage_15m_rollup_v2 FINAL
+         WHERE bucket_15m >= {from:DateTime64(3)}
+           AND bucket_15m < {to:DateTime64(3)}
+         GROUP BY bucket_15m
+       )
+       SELECT raw.bucket_15m AS bucket_15m
+       FROM raw
+       LEFT JOIN rollup ON rollup.bucket_15m = raw.bucket_15m
+       WHERE raw.raw_events = ifNull(rollup.rollup_events, 0)
+         AND raw.raw_events > 0
+         AND NOT has({dirty_buckets:Array(DateTime64(3))}, raw.bucket_15m)
+         AND (
+           raw.raw_priced_events != ifNull(rollup.rollup_priced_events, 0)
+           OR raw.raw_unpriced_events != ifNull(rollup.rollup_unpriced_events, 0)
+           OR raw.raw_legacy_events != ifNull(rollup.rollup_legacy_events, 0)
+           OR raw.raw_cost != ifNull(rollup.rollup_cost, 0)
+         )
+       ORDER BY raw.bucket_15m
+       LIMIT {row_limit:UInt32}`,
+      {
+        from: chTs(request.from),
+        to: chTs(to),
+        dirty_buckets: dirty.rows.map(({ bucket }) => chTs(bucket)),
+        row_limit: limit + 1,
+      },
+      undefined,
+      "reconcile_pricing_rollup_usage",
+    );
+    const affectedBuckets = rows.slice(0, limit).map(({ bucket_15m }) =>
+      bucket_15m instanceof Date ? bucket_15m : chDate(bucket_15m));
+    if (affectedBuckets.length > 0) {
+      const client = await this.pg.connect();
+      try {
+        await client.query("BEGIN");
+        await this.mark15mRollupDirty(
+          client,
+          affectedBuckets.map((ts) => ({ ts })),
+        );
+        await client.query("COMMIT");
+      } catch (error) {
+        await client.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        client.release();
+      }
+    }
+    return {
+      dirtied: affectedBuckets.length,
+      affectedBuckets,
       hasMore: rows.length > limit,
     };
   }

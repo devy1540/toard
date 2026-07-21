@@ -28,7 +28,7 @@
 
 - `packages/core/src/tool-deployment.ts`: manifest, desired-state, permission diff, rollout 순수 도메인 타입과 함수.
 - `packages/core/src/tool-deployment.test.ts`: 우선순위·권한 확대·cohort·rollback 임계값의 계약 테스트.
-- `migrations/1700000045_tool_deployment.sql`: 버전, 정책, 개인 선택, 기기 선택, report, audit, GitHub installation metadata 스키마.
+- `migrations/1700000046_tool_deployment.sql`: 버전, 정책, 개인 선택, 기기 선택, report, audit, GitHub installation metadata 스키마.
 - `apps/web/lib/tool-deployment-repository.ts`: PostgreSQL 저장소와 transaction 경계.
 - `apps/web/lib/tool-deployment-service.ts`: 권한 검사, desired manifest 조립, 개인/팀 mutation 서비스.
 - `apps/web/lib/tool-source.ts`: 공개 GitHub ref 고정, manifest 검증, canonical tree digest 계산.
@@ -173,7 +173,7 @@ git commit -m "feat(core): 도구 배포 정책 계약 추가"
 ### Task 2: PostgreSQL Deployment Repository and Team Roles
 
 **Files:**
-- Create: `migrations/1700000045_tool_deployment.sql`
+- Create: `migrations/1700000046_tool_deployment.sql`
 - Create: `apps/web/lib/tool-deployment-repository.ts`
 - Create: `apps/web/lib/tool-deployment-repository.test.ts`
 - Modify: `apps/web/lib/session-user.ts`
@@ -186,7 +186,7 @@ git commit -m "feat(core): 도구 배포 정책 계약 추가"
 
 ```ts
 test("migration은 immutable version과 정책/report/audit 관계를 만든다", () => {
-  const sql = readFileSync(resolve(process.cwd(), "../../migrations/1700000045_tool_deployment.sql"), "utf8");
+  const sql = readFileSync(resolve(process.cwd(), "../../migrations/1700000046_tool_deployment.sql"), "utf8");
   for (const table of ["tool_versions", "team_tool_policies", "user_tool_preferences", "user_tool_preference_devices", "tool_deployment_reports", "tool_deployment_audit", "github_app_installations"]) assert.match(sql, new RegExp(`CREATE TABLE ${table}`));
   assert.match(sql, /UNIQUE \(catalog_item_id, source_identity, exact_ref, tree_digest\)/);
   assert.match(sql, /CHECK \(status IN \('queued'.*'unsupported'\)\)/s);
@@ -325,7 +325,7 @@ Expected: repository tests PASS and TypeScript exits 0.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add migrations/1700000045_tool_deployment.sql apps/web/lib/tool-deployment-repository.ts apps/web/lib/tool-deployment-repository.test.ts apps/web/lib/session-user.ts
+git add migrations/1700000046_tool_deployment.sql apps/web/lib/tool-deployment-repository.ts apps/web/lib/tool-deployment-repository.test.ts apps/web/lib/session-user.ts
 git commit -m "feat(web): 도구 배포 상태 저장소 추가"
 ```
 

@@ -321,6 +321,18 @@ export interface PricingRecoveryBatchResult {
   hasMore: boolean;
 }
 
+export interface PricingRollupReconciliationRequest {
+  from: Date;
+  to: Date;
+  limit: number;
+}
+
+export interface PricingRollupReconciliationResult {
+  dirtied: number;
+  affectedBuckets: Date[];
+  hasMore: boolean;
+}
+
 export interface UsageReplayReconciliationRequest {
   from: Date;
   to: Date;
@@ -383,6 +395,10 @@ export interface StorageBackend {
     request: PricingRepairRequest,
     resolver: PricingRepairResolver,
   ): Promise<PricingRecoveryBatchResult>;
+  /** 원본과 15분 rollup의 가격 상태·비용 불일치 버킷을 재집계 대상으로 되돌린다. */
+  reconcilePricingRollupUsage(
+    request: PricingRollupReconciliationRequest,
+  ): Promise<PricingRollupReconciliationResult>;
   /** 모델 문맥 전에 재생된 Codex 사용량 중 모델이 있는 원본과 정확히 일치하는 행만 보정한다. */
   reconcileCodexReplayUsage(
     request: UsageReplayReconciliationRequest,

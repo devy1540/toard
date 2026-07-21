@@ -19,6 +19,7 @@ test("POSIX uninstaller removes only its endpoint unless it was last", () => {
 
   assert.match(script, /TOARD_INGEST_ENDPOINT="\$ENDPOINT"/);
   assert.match(script, /target remove --machine/);
+  assert.match(script, /cursor-hook uninstall/);
   assert.match(script, /\$REMOVED.*0/);
   assert.match(script, /\$REMAINING.*-gt 0/);
   assert.match(script, /REMOVED=.*removed=/);
@@ -84,6 +85,8 @@ test(
           '  printf "%s\\n" "$MACHINE_OUTPUT"',
           'elif [ "$1 $2" = "daemon uninstall" ]; then',
           '  : > "$TEST_ROOT/daemon-called"',
+          'elif [ "$1 $2" = "cursor-hook uninstall" ]; then',
+          '  : > "$TEST_ROOT/cursor-hook-called"',
           'elif [ "$1 $2" = "claude-env off" ]; then',
           '  : > "$TEST_ROOT/claude-env-called"',
           "fi",
@@ -114,6 +117,7 @@ test(
         }
         assert.equal(existsSync(join(bin, "toard-shim")), !scenario.cleaned);
         assert.equal(existsSync(join(root, "daemon-called")), scenario.cleaned);
+        assert.equal(existsSync(join(root, "cursor-hook-called")), scenario.cleaned);
         assert.equal(
           readFileSync(join(home, ".zshrc"), "utf8").includes("toard shim"),
           !scenario.cleaned,

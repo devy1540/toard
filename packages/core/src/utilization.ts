@@ -2,7 +2,7 @@ import { addLocalCalendarDays, firstInstantOfLocalDate, localDateKey } from "./t
 import type { PeriodQuery } from "./storage";
 
 export const UTILIZATION_METHODOLOGY_VERSION = "utilization-v1" as const;
-export const CACHE_SIGNAL_PROVIDER_KEYS = ["claude_code", "codex", "gemini", "qwen"] as const;
+export const CACHE_SIGNAL_PROVIDER_KEYS = ["claude_code", "codex", "cursor", "gemini", "qwen"] as const;
 
 export type UtilizationReason =
   | "insufficient_current_days"

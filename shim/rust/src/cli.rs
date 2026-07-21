@@ -30,6 +30,7 @@ pub fn run(args: &[String]) -> ! {
         Some("target") => std::process::exit(target_cmd(&args[1..])),
         Some("doctor") => std::process::exit(doctor_cmd(&args[1..])),
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
+        Some("cursor-hook") => std::process::exit(crate::cursor_hook::run(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
         Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
@@ -67,8 +68,10 @@ fn usage_text() -> String {
   doctor                       설치·자격 증명·endpoint·PATH 상태 진단
   claude-env on|off|status     ~/.claude/settings.json env 주입 관리
                                (IDE 등 PATH 를 거치지 않는 실행까지 수집)
+  cursor-hook install|uninstall|status
+                               Cursor stop hook 기반 정확 토큰 수집 관리
   collect [--dry-run]          비-OTEL 도구 로컬 로그 수집 → toard 전송
-          [--adapter <key>]    (gemini·qwen — §5.6 pull 경로)
+          [--adapter <key>]    (claude·codex·cursor·gemini·qwen)
           [--quiet]            무변경 시 무출력 (데몬 주기 실행용 — 전송·오류는 출력)
                                본문 수집은 opt-in(기본 off). 신규 연결은 평문을 HTTPS로
                                /v1/prompts에 전송하고 서버 관리형 암호화로 저장
@@ -621,7 +624,14 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
         }
     }
 
-    // 5. 주기 수집 데몬 + 최근 수집 시각 — 수집이 조용히 멈춘 상태를 드러낸다 (#65)
+    // 5. Cursor exact-token stop hook. 설치기는 기존 user-global hooks를 병합 보존한다.
+    if crate::cursor_hook::installed() {
+        ok("Cursor 사용량 hook 등록됨 — 정확 토큰만 최소 저장");
+    } else {
+        info("Cursor 사용량 hook 미등록 — Cursor를 쓰면 'toard-shim cursor-hook install'");
+    }
+
+    // 6. 주기 수집 데몬 + 최근 수집 시각 — 수집이 조용히 멈춘 상태를 드러낸다 (#65)
     let daemon_interval = match crate::daemon::state() {
         crate::daemon::State::Unsupported { os } => {
             info(&format!(

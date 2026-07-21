@@ -14,6 +14,7 @@ pub mod collect;
 mod content_crypto;
 mod content_keys;
 pub mod credentials;
+mod cursor_hook;
 mod daemon;
 pub mod delivery;
 mod e2ee_setup;

@@ -111,6 +111,9 @@ fn watched_paths(home: &Path) -> Vec<PathBuf> {
         home.join(".claude.json"),
         home.join(".mcp.json"),
         home.join(".codex/config.toml"),
+        home.join(".cursor/mcp.json"),
+        home.join(".cursor/skills"),
+        home.join(".cursor/skills-cursor"),
         home.join(".codex/skills"),
         home.join(".agents/skills"),
         home.join(".claude/skills"),
@@ -233,11 +236,21 @@ pub fn scan_inventory(home: &Path) -> Vec<InventoryItem> {
         "claude_code",
     );
     add_codex_mcp(&mut items, &home.join(".codex/config.toml"));
+    add_json_names(
+        &mut items,
+        &home.join(".cursor/mcp.json"),
+        "mcpServers",
+        "mcp",
+        "cursor",
+    );
     for (root, provider) in [
         (home.join(".codex/skills"), "codex"),
         (home.join(".agents/skills"), "codex"),
+        (home.join(".agents/skills"), "cursor"),
         (home.join(".claude/skills"), "claude_code"),
         (home.join(".codex/plugins/cache"), "codex"),
+        (home.join(".cursor/skills"), "cursor"),
+        (home.join(".cursor/skills-cursor"), "cursor"),
     ] {
         walk_skills(&root, provider, &mut items, 0);
     }
@@ -318,6 +331,44 @@ mod tests {
         for forbidden in ["endpoint", "command", "arguments", "output", "/Users/"] {
             assert!(!body.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn cursor_inventory_collects_only_mcp_and_skill_names() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-cursor-inventory-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix_ms()
+        ));
+        std::fs::create_dir_all(root.join(".cursor/skills/review")).unwrap();
+        std::fs::create_dir_all(root.join(".agents/skills/shared")).unwrap();
+        std::fs::write(
+            root.join(".cursor/mcp.json"),
+            r#"{"mcpServers":{"docs":{"command":"secret-command","env":{"TOKEN":"secret-token"}}}}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join(".cursor/skills/review/SKILL.md"), "private body").unwrap();
+        std::fs::write(
+            root.join(".agents/skills/shared/SKILL.md"),
+            "shared private body",
+        )
+        .unwrap();
+
+        let items = scan_inventory(&root);
+        assert!(items.iter().any(|item| {
+            item.kind == "mcp" && item.item_key == "docs" && item.source_provider == "cursor"
+        }));
+        assert!(items.iter().any(|item| {
+            item.kind == "skill" && item.item_key == "review" && item.source_provider == "cursor"
+        }));
+        assert!(items.iter().any(|item| {
+            item.kind == "skill" && item.item_key == "shared" && item.source_provider == "cursor"
+        }));
+        let body = inventory_body(None, 1_783_641_600_000, &items);
+        for forbidden in ["secret-command", "secret-token", "private body"] {
+            assert!(!body.contains(forbidden));
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

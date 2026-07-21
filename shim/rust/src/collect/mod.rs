@@ -5,6 +5,7 @@
 pub mod claude;
 pub mod codex;
 pub mod cursor;
+pub mod cursor_usage;
 pub mod fanout;
 pub mod gemini;
 pub mod gemini_family;
@@ -149,6 +150,7 @@ pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
     vec![
         Box::new(gemini::Gemini),
         Box::new(qwen::Qwen),
+        Box::new(cursor_usage::CursorUsage),
         Box::new(claude::Claude),
         Box::new(codex::Codex),
     ]

@@ -26,8 +26,8 @@
 
 ## ✨ Features
 
-- **🔌 Multi-provider** — bring Claude Code, Codex, Gemini, Qwen, and other tools into one dashboard
-- **🪶 Lightweight collection** — the shim pulls usage and AI-tool activity from local session files, with no restart or environment configuration required; devices are identified automatically, idempotent deduplication is built in, and experimental OTLP push ingestion is also available
+- **🔌 Multi-provider** — bring Claude Code, Codex, Cursor, Gemini, Qwen, and other tools into one dashboard
+- **🪶 Lightweight collection** — the shim collects usage and AI-tool activity from local session files and Cursor's minimal token hook; devices are identified automatically, idempotent deduplication is built in, and experimental OTLP push ingestion is also available
 - **🧰 AI-tool visibility** — inspect MCP and skill activity, plus plugin, skill, and MCP installation status by device, using metadata only
 - **🧭 AI utilization index** — personal dashboards provide a three-axis score relative to the individual; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
 - **💰 Accurate cost calculation** — a LiteLLM-price-based engine supports per-million, tiered 200k, cache, and fast-mode pricing with daily automatic synchronization
@@ -39,13 +39,14 @@
 
 ## 🧭 How it works
 
-The shim transparently wraps `claude` and `codex` on each developer machine. It pulls usage and AI-tool activity metadata from local session files under `~/.claude` and `~/.codex` and sends it to toard, which presents cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
+The shim transparently wraps `claude` and `codex` on each developer machine. It collects usage, opt-in conversation content, and AI-tool activity metadata from local session files under `~/.claude`, `~/.codex`, and `~/.cursor`, plus exact token counts from Cursor's minimal stop hook. Toad presents the resulting cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
 
 ```mermaid
 flowchart LR
     subgraph dev["Developer machine"]
         CLI["claude / codex"] --> SHIM["toard shim (Rust)"]
-        FILES["~/.claude · ~/.codex<br/>session files"] -. "pull" .-> SHIM
+        FILES["~/.claude · ~/.codex · ~/.cursor<br/>session files"] -. "pull" .-> SHIM
+        CURSOR["Cursor stop hook<br/>exact tokens"] -. "capture" .-> SHIM
     end
     SHIM -- "UsageEvent (JSON) + bearer token" --> API["POST /api/v1/events"]
     subgraph app["toard app (Next.js)"]
@@ -153,7 +154,7 @@ curl -X POST http://localhost:3000/api/v1/logs \
 
 The shim wraps `claude` and `codex` on each developer machine and sends usage and AI-tool activity to toard, with automatic OS and architecture detection. Install only one shim and one scheduled collection job per user account. That installation can send independently to **any number of toard server targets**, such as work and personal servers. By default, tool collection handles only metadata such as MCP, skill, and plugin names, timestamps, and status. It **never sends tool arguments, outputs, commands, environment variables, absolute paths, or raw payloads**. See [AI tool metadata collection](docs/tool-metadata-collection.md) for fields, detection limits, and opt-out instructions.
 
-**One-line installer (recommended)** — after signing in, open **Settings → Connect a computer**, confirm the operating system, and copy the provided command. A token for that computer is issued automatically, and the page verifies the first authenticated request after installation. Running a command from a new server adds that target without removing existing targets. Rerunning a command for the same server updates only that target's token and policy while preserving its delivery cursor. Legacy single-server installations migrate automatically to the target structure on the first new-version installation. Because usage is pulled from local session files, collection works across desktop apps, IDEs, and CLIs without restarts or configuration, and historical usage is backfilled.
+**One-line installer (recommended)** — after signing in, open **Settings → Connect a computer**, confirm the operating system, and copy the provided command. A token for that computer is issued automatically, and the page verifies the first authenticated request after installation. Running a command from a new server adds that target without removing existing targets. Rerunning a command for the same server updates only that target's token and policy while preserving its delivery cursor. Legacy single-server installations migrate automatically to the target structure on the first new-version installation. Claude, Codex, Gemini, and Qwen backfill historical usage from local session files. Cursor usage starts after the exact-token stop hook is installed, while existing `.cursor` transcripts are used for opt-in conversation content and MCP or skill activity.
 
 ```bash
 curl -fsSL <toard URL>/install.sh | TOARD_INGEST_TOKEN=<my token> sh

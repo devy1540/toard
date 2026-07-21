@@ -86,7 +86,7 @@ test("기준선 중앙값은 50점이고 복구 부담 방향은 반대다", () 
 });
 
 test("현재 수집 provider의 cache capability만 명시적으로 지원한다", () => {
-  for (const provider of ["claude_code", "codex", "gemini", "qwen"]) {
+  for (const provider of ["claude_code", "codex", "cursor", "gemini", "qwen"]) {
     assert.equal(getUtilizationProviderCapability(provider).reportsCacheRead, true);
   }
   assert.equal(getUtilizationProviderCapability("future-provider").reportsCacheRead, false);

@@ -219,6 +219,15 @@ test("Dockerfile은 non-root content-admin target과 안전한 기본 명령을 
   assert.doesNotMatch(stage, /COPY .*secrets/i);
 });
 
+test("Dockerfile은 모든 pnpm 단계에서 global virtual store를 비활성화한다", () => {
+  const dockerfile = readFileSync(new URL("Dockerfile", ROOT), "utf8");
+
+  assert.match(
+    dockerfile,
+    /FROM node:\$\{NODE_VERSION\} AS base[\s\S]*ENV PNPM_CONFIG_ENABLE_GLOBAL_VIRTUAL_STORE=false[\s\S]*FROM base AS deps/,
+  );
+});
+
 test("Docker build context는 secret 파일을 제외하고 public env example은 유지한다", () => {
   const dockerignore = readFileSync(new URL(".dockerignore", ROOT), "utf8");
   const ignoredLines = new Set(dockerignore.split(/\r?\n/));

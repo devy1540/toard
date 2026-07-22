@@ -24,6 +24,7 @@ export function HistorySessionList({
   locale,
   timezone,
   labels,
+  searchMode = false,
 }: {
   items: HistoryListItem[];
   totalSessions: number;
@@ -33,6 +34,8 @@ export function HistorySessionList({
   locale: string;
   timezone: string;
   labels: { total: string; prev: string; next: string; pageInfo: string };
+  /** 본문 검색은 전체 개수 대신 서명된 다음 스캔 커서를 사용한다. */
+  searchMode?: boolean;
 }) {
   const pagination = historyPagination(page, totalSessions);
   const dayFormatter = new Intl.DateTimeFormat(locale, { timeZone: timezone, dateStyle: "medium" });
@@ -131,7 +134,13 @@ export function HistorySessionList({
 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-muted-foreground text-sm">{labels.total}</span>
-        {pagination.totalPages > 1 ? (
+        {searchMode ? (
+          nextHref ? (
+            <Button asChild variant="outline" size="sm">
+              <Link href={nextHref}>{labels.next}<ChevronRight className="size-4" /></Link>
+            </Button>
+          ) : null
+        ) : pagination.totalPages > 1 ? (
           <div className="flex items-center gap-2">
             {pagination.hasPrev && prevHref ? (
               <Button asChild variant="outline" size="sm">

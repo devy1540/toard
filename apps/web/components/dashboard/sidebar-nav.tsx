@@ -17,7 +17,7 @@ import { featureStatusBadgeClassName } from "./feature-status-badge";
 
 type NavKey = "myUsage" | "insights" | "history" | "org" | "orgTeams" | "myTeam" | "library" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
-type NavBadge = "preview" | "beta";
+type NavBadge = "preview" | "beta" | "experiment";
 type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
 type NavGroup = { label: GroupKey; items: NavItem[] };
 
@@ -29,7 +29,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
     { href: "/org", key: "org", icon: ChartBar, badge: "preview" },
     ...(isAdmin ? ([{ href: "/org/teams", key: "orgTeams", icon: Building2, badge: "preview" }] satisfies NavItem[]) : []),
     { href: "/org/team", key: "myTeam", icon: Building2, badge: "preview" },
-    { href: "/library", key: "library", icon: LibraryBig, badge: "beta" },
+    { href: "/library", key: "library", icon: LibraryBig, badge: "experiment" },
   ];
 
   // 그룹 축: 개인(내 데이터) / 워크스페이스(이 인스턴스 전체·팀별 집계) / 시스템
@@ -82,7 +82,11 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
                     <SidebarMenuBadge
                       className={featureStatusBadgeClassName(badge, "h-4 min-w-0 px-1.5 text-[10px]")}
                     >
-                      {badge === "preview" ? t("badge.preview") : t("badge.beta")}
+                      {badge === "preview"
+                        ? t("badge.preview")
+                        : badge === "beta"
+                          ? t("badge.beta")
+                          : t("badge.experiment")}
                     </SidebarMenuBadge>
                   ) : null}
                 </SidebarMenuItem>

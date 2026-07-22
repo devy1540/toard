@@ -13,6 +13,7 @@
   "admin": "관리",
   "badge": {
     "preview": "프리뷰",
-    "beta": "베타"
+    "beta": "베타",
+    "experiment": "실험"
   }
 }

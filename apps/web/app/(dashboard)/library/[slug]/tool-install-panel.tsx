@@ -15,7 +15,7 @@ export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCata
       <CardHeader>
         <div className="flex flex-wrap items-center gap-2">
           <CardTitle id="install-heading">{t("title")}</CardTitle>
-          <FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge>
+          <FeatureStatusBadge status="experiment">{t("experimental")}</FeatureStatusBadge>
         </div>
         <CardDescription>{t("description")}</CardDescription>
       </CardHeader>

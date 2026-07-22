@@ -26,5 +26,5 @@ export default async function ShareToolPage() {
       },
     ]),
   ).values()];
-  return <div className="min-w-0 space-y-5"><Button asChild variant="ghost" size="sm"><Link href="/library"><ArrowLeft />{t("detail.back")}</Link></Button><div><div className="flex flex-wrap items-center gap-2"><h1 className="text-xl font-semibold tracking-tight">{t("form.title")}</h1><FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge></div><p className="text-muted-foreground mt-1 text-sm">{t("form.description")}</p></div><ToolShareForm mode="create" detectedTools={detectedTools} /></div>;
+  return <div className="min-w-0 space-y-5"><Button asChild variant="ghost" size="sm"><Link href="/library"><ArrowLeft />{t("detail.back")}</Link></Button><div><div className="flex flex-wrap items-center gap-2"><h1 className="text-xl font-semibold tracking-tight">{t("form.title")}</h1><FeatureStatusBadge status="experiment">{t("experimental")}</FeatureStatusBadge></div><p className="text-muted-foreground mt-1 text-sm">{t("form.description")}</p></div><ToolShareForm mode="create" detectedTools={detectedTools} /></div>;
 }

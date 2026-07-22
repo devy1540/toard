@@ -232,6 +232,7 @@ pub fn ensure_background_quiet() {
 }
 
 pub fn ensure_background() -> bool {
+    crate::daemon::cleanup_legacy_local_bridge_service_quiet();
     if is_running() {
         return true;
     }

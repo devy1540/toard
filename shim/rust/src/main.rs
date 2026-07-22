@@ -77,6 +77,13 @@ fn main() {
     match env::args().nth(1).as_deref() {
         Some(update::SPAWN_ARG) => update::spawn_detached_updater(),
         Some(update::RUN_ARG) => std::process::exit(update::run_self_update(true)),
+        Some(update::START_LOCAL_AFTER_UPDATE_ARG) => {
+            std::process::exit(if local_bridge::ensure_background() {
+                0
+            } else {
+                1
+            })
+        }
         Some(collect::SPAWN_ARG) => collect::spawn_detached_collector(),
         Some(collect::RUN_ARG) => {
             local_bridge::ensure_background_quiet();

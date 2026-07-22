@@ -51,6 +51,7 @@ test("history gate runs before server history reads and both content routes retu
   const gate = page.indexOf("getHistoryMfaGate(userId)");
   assert.ok(gate >= 0 && gate < page.indexOf("getE2eeContentStatus(userId)"));
   assert.ok(gate < page.indexOf("getMyHistorySessions("));
+  assert.ok(gate < page.indexOf("searchMyHistorySessions("));
   for (const path of [
     "app/api/content/history/sessions/route.ts",
     "app/api/content/history/sessions/[key]/route.ts",

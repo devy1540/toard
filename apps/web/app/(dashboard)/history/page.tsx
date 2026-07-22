@@ -1,5 +1,6 @@
+import Link from "next/link";
 import { getLocale, getTranslations } from "next-intl/server";
-import { Inbox, Lock } from "lucide-react";
+import { ChevronRight, Inbox, Lock } from "lucide-react";
 import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
@@ -10,20 +11,27 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty";
+import { Button } from "@/components/ui/button";
 import { getCurrentUserId } from "@/lib/current-user";
 import { getE2eeContentStatus } from "@/lib/e2ee-history";
 import { getE2eeManagedMigrationStatus } from "@/lib/e2ee-to-managed-migration";
 import { fmtUsd } from "@/lib/format";
 import { parseFilters, type DashboardSearchParams } from "@/lib/period";
 import { formatCostForCoverage } from "@/lib/pricing";
-import { getMyHistorySessions } from "@/lib/prompt-history";
+import {
+  getMyHistorySessions,
+  normalizeHistorySearchQuery,
+  searchMyHistorySessions,
+} from "@/lib/prompt-history";
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHistoryMfaGate } from "@/lib/history-mfa";
+import { decodeHistorySearchQueryToken } from "@/lib/history-search-token";
 import { SessionDetail } from "./session-detail";
 import { E2eeHistoryClient } from "./e2ee-history-client";
 import { HistorySecurityLink } from "./history-security-link";
+import { HistorySearchControls } from "./history-search-controls";
 import { HistorySessionList } from "./history-session-list";
 import type { HistoryListItem } from "./history-list-view";
 import { HistoryMfaUnlock } from "./history-mfa-unlock";
@@ -53,12 +61,20 @@ interface HistorySearchParams extends DashboardSearchParams {
   page?: string;
   /** active E2EE 계정에서 명시적으로 고른 열람 소스 */
   source?: "e2ee" | "managed";
+  /** 서버에서 암호화한 관리형/레거시 본문 검색어 */
+  search?: string;
+  /** 본문 검색의 서명된 다음 스캔 위치 */
+  cursor?: string;
+  /** 메인/서브에이전트 메타데이터 필터 */
+  agent?: "main" | "subagent";
 }
 
 /** 현재 필터를 보존한 /history URL — overrides 로 일부만 바꾼다(null = 제거). */
 function historyHref(sp: HistorySearchParams, overrides: Record<string, string | null>): string {
   const p = new URLSearchParams();
-  for (const k of ["period", "provider", "from", "to", "page", "session", "source"] as const) {
+  for (const k of [
+    "period", "provider", "from", "to", "page", "session", "source", "search", "cursor", "agent",
+  ] as const) {
     const v = sp[k];
     if (v) p.set(k, v);
   }
@@ -151,14 +167,39 @@ export default async function HistoryPage({
   }
 
   // ── 목록 뷰 ──
-  const filter = parseFilters(sp, timezone, "all");
-  const page = Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
-  const { enabled, sessions, totalSessions } = await getMyHistorySessions(
+  const parsedFilter = parseFilters(sp, timezone, "all");
+  const agentScope = sp.agent === "main" || sp.agent === "subagent" ? sp.agent : undefined;
+  const filter = {
+    ...parsedFilter,
+    ...(agentScope ? { agentScope } : {}),
+    searchRangeKey: JSON.stringify({
+      preset: parsedFilter.preset,
+      timezone,
+      from: sp.from ?? null,
+      to: sp.to ?? null,
+    }),
+  };
+  const searchQuery = decodeHistorySearchQueryToken(
+    sp.search,
+    process.env.AUTH_SECRET ?? "",
     userId,
-    filter,
-    page,
-    PAGE_SIZE,
-  );
+  ) ?? "";
+  const query = normalizeHistorySearchQuery(searchQuery);
+  const isSearch = query.length > 0;
+  const page = isSearch ? 0 : Math.max(0, (Number.parseInt(sp.page ?? "", 10) || 1) - 1);
+  const result = isSearch
+    ? await searchMyHistorySessions(
+        userId,
+        filter,
+        query,
+        sp.cursor,
+        process.env.AUTH_SECRET ?? "",
+        PAGE_SIZE,
+      )
+    : await getMyHistorySessions(userId, filter, page, PAGE_SIZE);
+  const { enabled, sessions } = result;
+  const totalSessions = "totalSessions" in result ? result.totalSessions : sessions.length;
+  const nextSearchCursor = "nextCursor" in result ? result.nextCursor : null;
 
   if (!enabled) {
     return (
@@ -188,9 +229,16 @@ export default async function HistoryPage({
   const totalPages = Math.max(1, Math.ceil(totalSessions / PAGE_SIZE));
   // page 파라미터는 1-기반 표시 번호 — 첫 페이지는 파라미터 제거로 URL 을 깔끔하게
   const prevHref = historyHref(sp, { page: page <= 1 ? null : String(page) });
-  const nextHref = historyHref(sp, { page: String(page + 2) });
+  const nextHref = isSearch
+    ? nextSearchCursor
+      ? historyHref(sp, { cursor: nextSearchCursor, page: null, session: null })
+      : null
+    : historyHref(sp, { page: String(page + 2) });
   // 기본 필터(전체 기간·전체 도구) 그대로인데 0건 = 수집 자체가 없는 것
-  const noFilter = (!sp.period || sp.period === "all") && (!sp.provider || sp.provider === "all");
+  const noFilter = (!sp.period || sp.period === "all")
+    && (!sp.provider || sp.provider === "all")
+    && !agentScope
+    && !isSearch;
   const listItems: HistoryListItem[] = sessions.map((session) => {
     const usage = usageByKey.get(session.key);
     return {
@@ -218,25 +266,45 @@ export default async function HistoryPage({
         providers={providers}
         defaultPeriod="all"
         showAllPreset
-        resetKeys={["page", "session"]}
+        resetKeys={["page", "session", "cursor"]}
         timezone={timezone}
         title={t("history.title")}
         statusBadge={{ status: "preview", label: navT("badge.preview") }}
+        filterTrailing={<HistorySearchControls initialQuery={searchQuery} />}
         trailing={<HistorySecurityLink label={t("history.securityInfo")} />}
       />
 
       {totalSessions === 0 ? (
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <Inbox />
-            </EmptyMedia>
-            <EmptyTitle>{noFilter ? t("history.emptyTitle") : t("history.noMatchTitle")}</EmptyTitle>
-            <EmptyDescription>
-              {noFilter ? t("history.emptyDescription") : t("history.noMatchDescription")}
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <>
+          <Empty>
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Inbox />
+              </EmptyMedia>
+              <EmptyTitle>
+                {isSearch
+                  ? t("history.searchEmptyTitle")
+                  : noFilter
+                    ? t("history.emptyTitle")
+                    : t("history.noMatchTitle")}
+              </EmptyTitle>
+              <EmptyDescription>
+                {isSearch
+                  ? t("history.searchEmptyDescription")
+                  : noFilter
+                    ? t("history.emptyDescription")
+                    : t("history.noMatchDescription")}
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+          {isSearch && nextHref ? (
+            <div className="flex justify-end">
+              <Button asChild variant="outline" size="sm">
+                <Link href={nextHref}>{t("history.searchNext")}<ChevronRight className="size-4" /></Link>
+              </Button>
+            </div>
+          ) : null}
+        </>
       ) : (
         <>
           <HistorySessionList
@@ -244,15 +312,16 @@ export default async function HistoryPage({
             totalSessions={totalSessions}
             page={page + 1}
             prevHref={page > 0 ? prevHref : null}
-            nextHref={page + 1 < totalPages ? nextHref : null}
+            nextHref={isSearch ? nextHref : page + 1 < totalPages ? nextHref : null}
             locale={locale}
             timezone={timezone}
             labels={{
-              total: t("history.listTotal", { count: totalSessions }),
+              total: isSearch ? t("history.searchResults") : t("history.listTotal", { count: totalSessions }),
               prev: t("history.prev"),
-              next: t("history.next"),
+              next: isSearch ? t("history.searchNext") : t("history.next"),
               pageInfo: t("history.pageInfo", { page: page + 1, totalPages }),
             }}
+            searchMode={isSearch}
           />
         </>
       )}

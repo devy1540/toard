@@ -135,7 +135,7 @@ export function parsePromptRecordWire(v: unknown): PromptRecordWire {
   if (!isRecord(v)) throw new PromptWireError("레코드는 객체여야 합니다");
   const dedupKey = nonEmptyString(v.dedupKey, "dedupKey");
   const providerKey = nonEmptyString(v.providerKey, "providerKey");
-  const sessionId = nullableString(v.sessionId, "sessionId");
+  const sessionId = boundedNullableString(v.sessionId, "sessionId", 255);
   const turnRole = nonEmptyString(v.turnRole, "turnRole");
   if (turnRole !== "user" && turnRole !== "assistant") {
     throw new PromptWireError("turnRole 는 'user' 또는 'assistant' 여야 합니다");

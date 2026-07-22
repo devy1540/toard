@@ -1,4 +1,11 @@
+import { createHash } from "node:crypto";
 import { decryptContent, loadKek } from "@/lib/content-crypto";
+import {
+  decodeHistorySearchCursor,
+  encodeHistorySearchCursor,
+  type HistorySearchCursorState,
+  type HistorySearchPosition,
+} from "@/lib/history-search-cursor";
 import { decryptManagedContent } from "@/lib/managed-content-crypto";
 import {
   getManagedContentRuntime,
@@ -41,6 +48,10 @@ export interface HistoryFilter {
   to: Date;
   /** 미지정 = 전체 프로바이더 */
   providerKey?: string;
+  /** 미지정 = 메인·서브에이전트 전체 */
+  agentScope?: "main" | "subagent";
+  /** 검색 커서가 같은 기간 선택인지 판별하는 안정적인 URL 범위 식별자. */
+  searchRangeKey?: string;
 }
 
 export interface HistorySessionSummary {
@@ -67,6 +78,15 @@ export interface HistorySessionPage {
   totalSessions: number;
 }
 
+export interface HistorySearchPage {
+  enabled: boolean;
+  hasManagedContent: boolean;
+  hasLegacyContent: boolean;
+  sessions: HistorySessionSummary[];
+  /** 다음 검색 구간. null이면 현재 조건의 남은 세션을 모두 확인했다. */
+  nextCursor: string | null;
+}
+
 export interface HistorySessionDetail {
   key: string;
   isSession: boolean;
@@ -80,6 +100,13 @@ export interface HistorySessionDetail {
 /** 상세 턴 상한 — 복호화 비용 바운드(한 세션이 비정상적으로 길어도 페이지가 죽지 않게) */
 export const DETAIL_TURN_LIMIT = 500;
 const HISTORY_PAGE_SIZE_LIMIT = 20;
+const HISTORY_SEARCH_QUERY_LIMIT = 200;
+const HISTORY_SEARCH_GROUP_BATCH_SIZE = 20;
+const HISTORY_SEARCH_GROUP_SCAN_LIMIT = 20;
+const HISTORY_SEARCH_ROW_CHUNK_SIZE = 25;
+const HISTORY_SEARCH_ROW_SCAN_LIMIT = 500;
+const HISTORY_SEARCH_CIPHERTEXT_BYTE_LIMIT = 16 * 1024 * 1024;
+const HISTORY_SEARCH_TIME_LIMIT_MS = 2_000;
 
 /** managed AAD와 두 암호화 scheme 복호화에 필요한 SELECT 공용 컬럼. */
 const CIPHER_COLS = [
@@ -180,6 +207,7 @@ async function decryptHistoryRows(
   rows: readonly HistoryCipherRow[],
   userId: string,
   dependencies: ResolvedHistoryDependencies,
+  managedKeyCache?: Map<number, Buffer>,
 ): Promise<Array<string | null>> {
   const plaintexts = rows.map(() => null as string | null);
   const managedByVersion = new Map<
@@ -226,37 +254,48 @@ async function decryptHistoryRows(
   // 한 페이지/세션에서 같은 UCK version은 한 번만 unwrap한다. 버전별 호출도
   // 순차 실행하여 긴 세션이 KMS 동시 요청을 폭증시키지 않게 한다.
   for (const [keyVersion, group] of managedByVersion) {
+    const decryptGroup = (uck: Buffer) => {
+      for (const { index, row } of group) {
+        try {
+          plaintexts[index] = decryptManagedContent(
+            {
+              encryptionScheme: "managed_v1",
+              contentKeyVersion: keyVersion,
+              aadVersion: 2,
+              wrappedDek: row.wrapped_dek,
+              dekWrapIv: row.dek_wrap_iv!,
+              dekWrapAuthTag: row.dek_wrap_auth_tag!,
+              iv: row.iv,
+              ciphertext: row.ciphertext,
+              authTag: row.auth_tag,
+              dedupKey: row.dedup_key,
+              providerKey: row.provider_key,
+              turnRole: row.turn_role,
+              ts: row.ts,
+            },
+            uck,
+            dependencies.runtime!.installationId,
+            userId,
+          );
+        } catch {
+          plaintexts[index] = null;
+        }
+      }
+    };
+
+    const cachedKey = managedKeyCache?.get(keyVersion);
+    if (cachedKey) {
+      decryptGroup(cachedKey);
+      continue;
+    }
     try {
       await dependencies.runtime!.userKeys.withUserKeyVersion(
         userId,
         keyVersion,
         (uck) => {
-          for (const { index, row } of group) {
-            try {
-              plaintexts[index] = decryptManagedContent(
-                {
-                  encryptionScheme: "managed_v1",
-                  contentKeyVersion: keyVersion,
-                  aadVersion: 2,
-                  wrappedDek: row.wrapped_dek,
-                  dekWrapIv: row.dek_wrap_iv!,
-                  dekWrapAuthTag: row.dek_wrap_auth_tag!,
-                  iv: row.iv,
-                  ciphertext: row.ciphertext,
-                  authTag: row.auth_tag,
-                  dedupKey: row.dedup_key,
-                  providerKey: row.provider_key,
-                  turnRole: row.turn_role,
-                  ts: row.ts,
-                },
-                uck,
-                dependencies.runtime!.installationId,
-                userId,
-              );
-            } catch {
-              plaintexts[index] = null;
-            }
-          }
+          const requestKey = managedKeyCache ? Buffer.from(uck) : uck;
+          if (managedKeyCache) managedKeyCache.set(keyVersion, requestKey);
+          decryptGroup(requestKey);
         },
       );
     } catch {
@@ -277,7 +316,43 @@ function filterConds(f: HistoryFilter, params: unknown[]): string[] {
     params.push(f.providerKey);
     conds.push(`provider_key = $${params.length}`);
   }
+  if (f.agentScope === "main") conds.push("agent_id IS NULL");
+  if (f.agentScope === "subagent") conds.push("agent_id IS NOT NULL");
   return conds;
+}
+
+function normalizedSearchText(value: string): string {
+  return value.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+export function normalizeHistorySearchQuery(value: string): string {
+  return normalizedSearchText(value).slice(0, HISTORY_SEARCH_QUERY_LIMIT).toLowerCase();
+}
+
+export function toHistorySearchSnippet(text: string, query: string, maxLength = 220): string | null {
+  const normalized = normalizedSearchText(text);
+  const index = normalized.toLowerCase().indexOf(query);
+  if (index < 0) return null;
+  if (normalized.length <= maxLength) return normalized;
+
+  const contextBefore = Math.max(0, Math.floor((maxLength - query.length) * 0.4));
+  let start = Math.max(0, index - contextBefore);
+  let end = Math.min(normalized.length, start + maxLength);
+  if (end - start < maxLength) start = Math.max(0, end - maxLength);
+  return `${start > 0 ? "…" : ""}${normalized.slice(start, end).trim()}${end < normalized.length ? "…" : ""}`;
+}
+
+function historySearchScope(userId: string, filter: HistoryFilter, query: string): string {
+  return createHash("sha256").update(JSON.stringify({
+    userId,
+    query,
+    rangeKey: filter.searchRangeKey ?? {
+      from: filter.from.toISOString(),
+      to: filter.to.toISOString(),
+    },
+    providerKey: filter.providerKey ?? null,
+    agentScope: filter.agentScope ?? null,
+  })).digest("base64url");
 }
 
 async function runHistoryContext<T>(
@@ -401,6 +476,369 @@ export async function getMyHistorySessions(
       })),
     };
   } finally {
+    resolved.legacyKek?.fill(0);
+  }
+}
+
+type HistorySearchGroupRow = {
+  gkey: string;
+  is_session: boolean;
+  provider_key: string;
+  turn_count: string;
+  first_ts: Date;
+  latest_ts: Date;
+  subagent_count: string;
+  has_managed_content: boolean;
+  has_legacy_content: boolean;
+};
+
+type HistorySearchCipherRow = HistoryCipherRow & {
+  record_id: string;
+  gkey: string;
+};
+
+function searchPosition(group: HistorySearchGroupRow): HistorySearchPosition {
+  return { latestTs: group.latest_ts, key: group.gkey };
+}
+
+async function loadHistorySearchGroups(
+  userId: string,
+  filter: HistoryFilter,
+  cursor: HistorySearchPosition | null,
+  limit: number,
+  db?: HistoryDb,
+): Promise<{ groups: HistorySearchGroupRow[]; hasMore: boolean }> {
+  const params: unknown[] = [userId];
+  const conds = [`user_id = $1`, ...filterConds(filter, params)];
+  let having = "";
+  if (cursor) {
+    params.push(cursor.latestTs, cursor.key);
+    having = `HAVING (MAX(ts) < $${params.length - 1}
+      OR (MAX(ts) = $${params.length - 1}
+        AND COALESCE(session_id, dedup_key) < $${params.length}))`;
+  }
+  params.push(limit + 1);
+  const result = await runHistoryContext(userId, db, (tx) => tx.query(
+    `/* history-search-groups */
+     SELECT COALESCE(session_id, dedup_key) AS gkey,
+            BOOL_OR(session_id IS NOT NULL) AS is_session,
+            MIN(provider_key) AS provider_key,
+            COUNT(*) AS turn_count,
+            MIN(ts) AS first_ts,
+            MAX(ts) AS latest_ts,
+            COUNT(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL) AS subagent_count,
+            BOOL_OR(encryption_scheme = 'managed_v1') AS has_managed_content,
+            BOOL_OR(encryption_scheme = 'server_v1') AS has_legacy_content
+       FROM prompt_records
+      WHERE ${conds.join(" AND ")}
+      GROUP BY COALESCE(session_id, dedup_key)
+      ${having}
+      ORDER BY latest_ts DESC, gkey DESC
+      LIMIT $${params.length}`,
+    params,
+  ));
+  const rows = result.rows as HistorySearchGroupRow[];
+  return { groups: rows.slice(0, limit), hasMore: rows.length > limit };
+}
+
+async function loadHistorySearchRows(
+  userId: string,
+  filter: HistoryFilter,
+  key: string,
+  afterRecordId: string | null,
+  limit: number,
+  db?: HistoryDb,
+): Promise<HistorySearchCipherRow[]> {
+  const params: unknown[] = [userId];
+  const conds = [`user_id = $1`, ...filterConds(filter, params)];
+  params.push(key, afterRecordId, limit);
+  const keyParam = params.length - 2;
+  const afterParam = params.length - 1;
+  const limitParam = params.length;
+  const result = await runHistoryContext(userId, db, (tx) => tx.query(
+    `/* history-search-rows */
+     SELECT id::text AS record_id,
+            COALESCE(session_id, dedup_key) AS gkey,
+            ${CIPHER_COLS}
+       FROM prompt_records
+      WHERE ${conds.join(" AND ")}
+        AND COALESCE(session_id, dedup_key) = $${keyParam}
+        AND ($${afterParam}::bigint IS NULL OR id > $${afterParam}::bigint)
+      ORDER BY id ASC
+      LIMIT $${limitParam}`,
+    params,
+  ));
+  return result.rows as HistorySearchCipherRow[];
+}
+
+function historySearchCipherBytes(row: HistorySearchCipherRow): number {
+  return row.ciphertext.length
+    + row.wrapped_dek.length
+    + row.iv.length
+    + row.auth_tag.length
+    + (row.dek_wrap_iv?.length ?? 0)
+    + (row.dek_wrap_auth_tag?.length ?? 0);
+}
+
+type HistoryGroupSearchResult = {
+  snippet: string | null;
+  complete: boolean;
+  afterRecordId: string | null;
+  scannedRows: number;
+  scannedBytes: number;
+};
+
+async function searchHistoryGroup(
+  userId: string,
+  filter: HistoryFilter,
+  group: HistorySearchGroupRow,
+  query: string,
+  initialAfterRecordId: string | null,
+  rowBudget: number,
+  byteBudget: number,
+  deadline: number,
+  dependencies: ResolvedHistoryDependencies,
+  managedKeyCache: Map<number, Buffer>,
+): Promise<HistoryGroupSearchResult> {
+  let afterRecordId = initialAfterRecordId;
+  let scannedRows = 0;
+  let scannedBytes = 0;
+
+  while (scannedRows < rowBudget && scannedBytes < byteBudget && Date.now() < deadline) {
+    const chunkLimit = Math.min(HISTORY_SEARCH_ROW_CHUNK_SIZE, rowBudget - scannedRows);
+    const rows = await loadHistorySearchRows(
+      userId,
+      filter,
+      group.gkey,
+      afterRecordId,
+      chunkLimit,
+      dependencies.db,
+    );
+    if (rows.length === 0) {
+      return { snippet: null, complete: true, afterRecordId, scannedRows, scannedBytes };
+    }
+
+    const selected: HistorySearchCipherRow[] = [];
+    for (const row of rows) {
+      const bytes = historySearchCipherBytes(row);
+      if (scannedBytes + bytes > byteBudget) break;
+      selected.push(row);
+      scannedBytes += bytes;
+    }
+    if (selected.length === 0) {
+      return { snippet: null, complete: false, afterRecordId, scannedRows, scannedBytes };
+    }
+
+    const plaintexts = await decryptHistoryRows(
+      selected,
+      userId,
+      dependencies,
+      managedKeyCache,
+    );
+    scannedRows += selected.length;
+    for (const [index, row] of selected.entries()) {
+      const plaintext = plaintexts[index];
+      afterRecordId = row.record_id;
+      if (!plaintext) continue;
+      const snippet = toHistorySearchSnippet(plaintext, query);
+      if (snippet) {
+        return { snippet, complete: true, afterRecordId, scannedRows, scannedBytes };
+      }
+    }
+
+    if (selected.length < rows.length) {
+      return { snippet: null, complete: false, afterRecordId, scannedRows, scannedBytes };
+    }
+    if (rows.length < chunkLimit) {
+      return { snippet: null, complete: true, afterRecordId, scannedRows, scannedBytes };
+    }
+  }
+  return { snippet: null, complete: false, afterRecordId, scannedRows, scannedBytes };
+}
+
+/**
+ * 관리형/레거시 서버 암호화 본문 검색. DB에는 검색용 평문 인덱스를 만들지 않고,
+ * 메타데이터로 세션 후보를 줄인 뒤 전체 턴을 요청 예산 안에서 청크 복호화한다.
+ * 한 요청에서 끝나지 않은 세션은 서명 cursor의 record id부터 이어서 검색한다.
+ */
+export async function searchMyHistorySessions(
+  userId: string,
+  filter: HistoryFilter,
+  rawQuery: string,
+  cursor: string | undefined,
+  cursorSecret: string,
+  pageSize = HISTORY_PAGE_SIZE_LIMIT,
+  dependencies: HistoryDependencies = {},
+): Promise<HistorySearchPage> {
+  if (!cursorSecret) throw new Error("HISTORY_SEARCH_CURSOR_SECRET_MISSING");
+  const query = normalizeHistorySearchQuery(rawQuery);
+  const resolved = await resolveHistoryDependencies(dependencies);
+  if (!resolved.runtime && !resolved.legacyKek) {
+    return {
+      enabled: false,
+      hasManagedContent: false,
+      hasLegacyContent: false,
+      sessions: [],
+      nextCursor: null,
+    };
+  }
+  if (!query) {
+    resolved.legacyKek?.fill(0);
+    return {
+      enabled: true,
+      hasManagedContent: false,
+      hasLegacyContent: false,
+      sessions: [],
+      nextCursor: null,
+    };
+  }
+
+  const boundedPageSize = Math.min(
+    HISTORY_PAGE_SIZE_LIMIT,
+    Math.max(1, Math.trunc(pageSize) || HISTORY_PAGE_SIZE_LIMIT),
+  );
+  const scope = historySearchScope(userId, filter, query);
+  const decodedCursor = decodeHistorySearchCursor(cursor, scope, cursorSecret);
+  const initialState: HistorySearchCursorState = decodedCursor ?? {
+    from: filter.from,
+    to: filter.to,
+    afterGroup: null,
+    resume: null,
+  };
+  const effectiveFilter = { ...filter, from: initialState.from, to: initialState.to };
+  let afterGroup = initialState.afterGroup;
+  let resume = initialState.resume;
+  let nextState: HistorySearchCursorState | null = null;
+  let exhausted = false;
+  let moreCandidates = false;
+  let scannedGroups = 0;
+  let scannedRows = 0;
+  let scannedBytes = 0;
+  let hasManagedContent = false;
+  let hasLegacyContent = false;
+  const matches: Array<{ group: HistorySearchGroupRow; snippet: string }> = [];
+  const requestManagedKeys = new Map<number, Buffer>();
+  const deadline = Date.now() + HISTORY_SEARCH_TIME_LIMIT_MS;
+
+  const cursorState = (
+    nextResume: HistorySearchCursorState["resume"] = null,
+  ): HistorySearchCursorState => ({
+    from: effectiveFilter.from,
+    to: effectiveFilter.to,
+    afterGroup,
+    resume: nextResume,
+  });
+
+  try {
+    searchLoop:
+    while (
+      matches.length < boundedPageSize
+      && scannedGroups < HISTORY_SEARCH_GROUP_SCAN_LIMIT
+      && scannedRows < HISTORY_SEARCH_ROW_SCAN_LIMIT
+      && scannedBytes < HISTORY_SEARCH_CIPHERTEXT_BYTE_LIMIT
+      && Date.now() < deadline
+    ) {
+      const batchSize = Math.min(
+        HISTORY_SEARCH_GROUP_BATCH_SIZE,
+        HISTORY_SEARCH_GROUP_SCAN_LIMIT - scannedGroups,
+      );
+      const batch = await loadHistorySearchGroups(
+        userId,
+        effectiveFilter,
+        afterGroup,
+        batchSize,
+        resolved.db,
+      );
+      if (batch.groups.length === 0) {
+        exhausted = true;
+        break;
+      }
+      moreCandidates = batch.hasMore;
+
+      for (const [index, group] of batch.groups.entries()) {
+        const position = searchPosition(group);
+        const resumeAfterRecordId = resume
+          && resume.group.key === position.key
+          && resume.group.latestTs.getTime() === position.latestTs.getTime()
+          ? resume.afterRecordId
+          : null;
+        const groupResult = await searchHistoryGroup(
+          userId,
+          effectiveFilter,
+          group,
+          query,
+          resumeAfterRecordId,
+          HISTORY_SEARCH_ROW_SCAN_LIMIT - scannedRows,
+          HISTORY_SEARCH_CIPHERTEXT_BYTE_LIMIT - scannedBytes,
+          deadline,
+          resolved,
+          requestManagedKeys,
+        );
+        resume = null;
+        scannedRows += groupResult.scannedRows;
+        scannedBytes += groupResult.scannedBytes;
+        hasManagedContent ||= group.has_managed_content;
+        hasLegacyContent ||= group.has_legacy_content;
+
+        if (!groupResult.complete) {
+          nextState = cursorState(groupResult.afterRecordId ? {
+            group: position,
+            afterRecordId: groupResult.afterRecordId,
+          } : null);
+          break searchLoop;
+        }
+
+        afterGroup = position;
+        scannedGroups += 1;
+        if (groupResult.snippet) matches.push({ group, snippet: groupResult.snippet });
+        const moreInBatch = index < batch.groups.length - 1;
+        moreCandidates = moreInBatch || batch.hasMore;
+        if (matches.length >= boundedPageSize) {
+          if (moreCandidates) nextState = cursorState();
+          else exhausted = true;
+          break searchLoop;
+        }
+        if (
+          scannedGroups >= HISTORY_SEARCH_GROUP_SCAN_LIMIT
+          || scannedRows >= HISTORY_SEARCH_ROW_SCAN_LIMIT
+          || scannedBytes >= HISTORY_SEARCH_CIPHERTEXT_BYTE_LIMIT
+          || Date.now() >= deadline
+        ) {
+          if (moreCandidates) nextState = cursorState();
+          else exhausted = true;
+          break searchLoop;
+        }
+      }
+
+      if (!batch.hasMore) {
+        exhausted = true;
+        break;
+      }
+    }
+
+    if (!exhausted && !nextState && moreCandidates) nextState = cursorState();
+
+    return {
+      enabled: true,
+      hasManagedContent,
+      hasLegacyContent,
+      sessions: matches.map(({ group, snippet }) => ({
+        key: group.gkey,
+        isSession: group.is_session,
+        providerKey: group.provider_key,
+        preview: snippet,
+        turnCount: Number(group.turn_count),
+        firstTs: group.first_ts,
+        latestTs: group.latest_ts,
+        subagentCount: Number(group.subagent_count ?? 0),
+      })),
+      nextCursor: nextState
+        ? encodeHistorySearchCursor(nextState, scope, cursorSecret)
+        : null,
+    };
+  } finally {
+    for (const key of requestManagedKeys.values()) key.fill(0);
+    requestManagedKeys.clear();
     resolved.legacyKek?.fill(0);
   }
 }

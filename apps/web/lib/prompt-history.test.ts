@@ -7,6 +7,9 @@ import type { PromptRecordWire } from "./prompt-wire";
 import {
   getMyHistorySession,
   getMyHistorySessions,
+  normalizeHistorySearchQuery,
+  searchMyHistorySessions,
+  toHistorySearchSnippet,
   type HistoryDependencies,
   toHistoryPreview,
 } from "./prompt-history";
@@ -149,6 +152,8 @@ function historyDb(input: {
   groups?: HistoryDbRow[];
   previews?: HistoryDbRow[];
   details?: HistoryDbRow[];
+  searchGroups?: HistoryDbRow[];
+  searchRows?: HistoryDbRow[];
 }): RecordingHistoryDb {
   const calls: RecordingHistoryDb["calls"] = [];
   return {
@@ -157,6 +162,32 @@ function historyDb(input: {
       calls.push({ sql, params });
       if (params[0] !== (input.ownerId ?? USER_ID)) {
         return { rows: [], rowCount: 0 };
+      }
+      if (/history-search-groups/.test(sql)) {
+        const limit = Number(params.at(-1));
+        let rows = [...(input.searchGroups ?? [])];
+        if (/HAVING/.test(sql)) {
+          const latestTs = new Date(String(params.at(-3)));
+          const key = String(params.at(-2));
+          rows = rows.filter((row) => {
+            const rowTs = new Date(String(row.latest_ts));
+            return rowTs < latestTs
+              || (rowTs.getTime() === latestTs.getTime() && String(row.gkey) < key);
+          });
+        }
+        rows = rows.slice(0, limit);
+        return { rows, rowCount: rows.length };
+      }
+      if (/history-search-rows/.test(sql)) {
+        const key = String(params.at(-3));
+        const after = params.at(-2) == null ? null : BigInt(String(params.at(-2)));
+        const limit = Number(params.at(-1));
+        const rows = (input.searchRows ?? [])
+          .filter((row) => row.gkey === key)
+          .filter((row) => after === null || BigInt(String(row.record_id)) > after)
+          .sort((a, b) => Number(BigInt(String(a.record_id)) - BigInt(String(b.record_id))))
+          .slice(0, limit);
+        return { rows, rowCount: rows.length };
       }
       if (/SELECT DISTINCT ON/.test(sql)) {
         return { rows: input.previews ?? [], rowCount: input.previews?.length ?? 0 };
@@ -205,6 +236,225 @@ test("toHistoryPreview removes attachment-only preambles", () => {
 
 test("toHistoryPreview keeps normal prompts compact", () => {
   assert.equal(toHistoryPreview("정리하면 신규 파이프라인을 이용해서 진행할까?\n\n1번 작업은 어떻게 할까?"), "정리하면 신규 파이프라인을 이용해서 진행할까? 1번 작업은 어떻게 할까?");
+});
+
+test("history search normalizes width, case, and whitespace and returns matching context", () => {
+  assert.equal(normalizeHistorySearchQuery("  ＬＯＧＩＮ\n  오류  "), "login 오류");
+  const snippet = toHistorySearchSnippet(
+    `${"앞 문맥 ".repeat(40)}OAuth LOGIN 오류를 수정했습니다.${" 뒤 문맥".repeat(40)}`,
+    "login 오류",
+    80,
+  );
+  assert.ok(snippet);
+  assert.match(snippet, /^…/);
+  assert.match(snippet, /LOGIN 오류/);
+  assert.match(snippet, /…$/);
+  assert.equal(toHistorySearchSnippet("unrelated", "login"), null);
+});
+
+test("managed history search decrypts candidate turns before pagination and returns the matching snippet", async () => {
+  const requestedVersions: number[] = [];
+  const matching = prompt({
+    dedupKey: "matching-assistant",
+    sessionId: "session-match",
+    turnRole: "assistant",
+    ts: new Date("2026-07-20T10:00:00.000Z"),
+    text: "앞부분\nOAuth 로그인 오류의 실제 원인을 찾았습니다.\n뒷부분",
+  });
+  const notMatching = prompt({
+    dedupKey: "not-matching",
+    sessionId: "session-other",
+    ts: new Date("2026-07-21T10:00:00.000Z"),
+    text: "배포 상태를 확인했습니다.",
+  });
+  const db = historyDb({
+    searchGroups: [
+      {
+        gkey: "session-other",
+        is_session: true,
+        provider_key: "codex",
+        turn_count: "1",
+        first_ts: notMatching.ts,
+        latest_ts: notMatching.ts,
+        subagent_count: "0",
+        has_managed_content: true,
+        has_legacy_content: false,
+      },
+      {
+        gkey: "session-match",
+        is_session: true,
+        provider_key: "codex",
+        turn_count: "1",
+        first_ts: matching.ts,
+        latest_ts: matching.ts,
+        subagent_count: "1",
+        has_managed_content: true,
+        has_legacy_content: false,
+      },
+    ],
+    searchRows: [
+      { ...managedRow(notMatching, 3), record_id: "1", gkey: "session-other" },
+      { ...managedRow(matching, 3), record_id: "2", gkey: "session-match" },
+    ],
+  });
+
+  const result = await searchMyHistorySessions(
+    USER_ID,
+    { ...FILTER, agentScope: "subagent" },
+    "로그인 오류",
+    undefined,
+    "cursor-secret",
+    20,
+    deps(db, {
+      managedRuntime: runtime({ requestedVersions }),
+      legacyKek: null,
+    }),
+  );
+
+  assert.equal(result.enabled, true);
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.sessions[0]?.key, "session-match");
+  assert.match(result.sessions[0]?.preview ?? "", /로그인 오류/);
+  assert.equal(result.nextCursor, null);
+  assert.deepEqual(requestedVersions, [3]);
+  const groupQuery = db.calls.find((call) => /history-search-groups/.test(call.sql));
+  const rowQuery = db.calls.find((call) => /history-search-rows/.test(call.sql));
+  assert.ok(groupQuery);
+  assert.ok(rowQuery);
+  assert.match(groupQuery.sql, /WHERE user_id = \$1/);
+  assert.match(groupQuery.sql, /agent_id IS NOT NULL/);
+  assert.doesNotMatch(rowQuery.sql, /ROW_NUMBER\(\) OVER/);
+  assert.match(rowQuery.sql, /ORDER BY id ASC/);
+});
+
+test("history search keeps another user's rows outside the decrypt path", async () => {
+  const calls = { count: 0 };
+  const db = historyDb({
+    ownerId: USER_ID,
+    searchGroups: [{
+      gkey: "session-1",
+      is_session: true,
+      provider_key: "codex",
+      turn_count: "1",
+      first_ts: FILTER.from,
+      latest_ts: FILTER.from,
+      subagent_count: "0",
+      has_managed_content: true,
+      has_legacy_content: false,
+    }],
+  });
+  const result = await searchMyHistorySessions(
+    OTHER_USER_ID,
+    FILTER,
+    "secret",
+    undefined,
+    "cursor-secret",
+    20,
+    deps(db, { managedRuntime: runtime({ calls }), legacyKek: null }),
+  );
+  assert.deepEqual(result.sessions, []);
+  assert.equal(calls.count, 0);
+  assert.equal(db.calls[0]?.params[0], OTHER_USER_ID);
+});
+
+test("history search cursor keeps the first range snapshot when an all-period request time changes", async () => {
+  const newer = prompt({
+    dedupKey: "range-new",
+    sessionId: "session-range-new",
+    ts: new Date("2026-07-21T10:00:00.000Z"),
+    text: "snapshot search newer",
+  });
+  const older = prompt({
+    dedupKey: "range-old",
+    sessionId: "session-range-old",
+    ts: new Date("2026-07-20T10:00:00.000Z"),
+    text: "snapshot search older",
+  });
+  const db = historyDb({
+    searchGroups: [newer, older].map((record) => ({
+      gkey: record.sessionId!,
+      is_session: true,
+      provider_key: record.providerKey,
+      turn_count: "1",
+      first_ts: record.ts,
+      latest_ts: record.ts,
+      subagent_count: "0",
+      has_managed_content: true,
+      has_legacy_content: false,
+    })),
+    searchRows: [
+      { ...managedRow(newer, 3), record_id: "1", gkey: newer.sessionId! },
+      { ...managedRow(older, 3), record_id: "2", gkey: older.sessionId! },
+    ],
+  });
+  const firstFilter = {
+    ...FILTER,
+    to: new Date("2026-08-01T00:00:00.000Z"),
+    searchRangeKey: "all:Asia/Seoul",
+  };
+  const first = await searchMyHistorySessions(
+    USER_ID, firstFilter, "snapshot search", undefined, "cursor-secret", 1, deps(db),
+  );
+  assert.deepEqual(first.sessions.map((session) => session.key), ["session-range-new"]);
+  assert.ok(first.nextCursor);
+
+  const second = await searchMyHistorySessions(
+    USER_ID,
+    { ...firstFilter, to: new Date("2026-08-01T00:00:01.000Z") },
+    "snapshot search",
+    first.nextCursor!,
+    "cursor-secret",
+    1,
+    deps(db),
+  );
+  assert.deepEqual(second.sessions.map((session) => session.key), ["session-range-old"]);
+  const secondGroupQuery = db.calls.filter((call) => /history-search-groups/.test(call.sql)).at(-1)!;
+  assert.equal((secondGroupQuery.params[2] as Date).toISOString(), firstFilter.to.toISOString());
+});
+
+test("history search resumes inside a long session and finds a match after the 500th turn", async () => {
+  const sessionId = "session-long-search";
+  const records = Array.from({ length: 501 }, (_, index) => prompt({
+    dedupKey: `long-${String(index + 1).padStart(4, "0")}`,
+    sessionId,
+    ts: new Date(1_720_000_000_000 + index),
+    text: index === 500 ? "needle after row budget" : `ordinary turn ${index + 1}`,
+  }));
+  const db = historyDb({
+    searchGroups: [{
+      gkey: sessionId,
+      is_session: true,
+      provider_key: "codex",
+      turn_count: "501",
+      first_ts: records[0]!.ts,
+      latest_ts: records.at(-1)!.ts,
+      subagent_count: "0",
+      has_managed_content: true,
+      has_legacy_content: false,
+    }],
+    searchRows: records.map((record, index) => ({
+      ...managedRow(record, 3),
+      record_id: String(index + 1),
+      gkey: sessionId,
+    })),
+  });
+  const filter = { ...FILTER, searchRangeKey: "all:Asia/Seoul" };
+  const first = await searchMyHistorySessions(
+    USER_ID, filter, "needle", undefined, "cursor-secret", 1, deps(db),
+  );
+  assert.deepEqual(first.sessions, []);
+  assert.ok(first.nextCursor);
+
+  const second = await searchMyHistorySessions(
+    USER_ID, filter, "needle", first.nextCursor!, "cursor-secret", 1, deps(db),
+  );
+  assert.deepEqual(second.sessions.map((session) => session.key), [sessionId]);
+  assert.equal(second.nextCursor, null);
+  const firstRequestRows = db.calls
+    .filter((call) => /history-search-rows/.test(call.sql))
+    .slice(0, 20)
+    .reduce((count, call) => count + Number(call.params.at(-1)), 0);
+  assert.equal(firstRequestRows, 500);
 });
 
 test("history decrypts mixed managed rows with each content key version and isolates one failed turn", async () => {

@@ -10,9 +10,10 @@ export type SessionUser = {
   teamId: string | null;
   teamName: string | null;
   teamOnboardingCompletedAt: Date | null;
+  sessionId?: string | null;
 };
 
-async function getUserById(id: string): Promise<SessionUser | null> {
+async function getUserById(id: string, sessionId: string | null): Promise<SessionUser | null> {
   const r = await getPool().query<{
     email: string;
     role: string;
@@ -37,6 +38,7 @@ async function getUserById(id: string): Promise<SessionUser | null> {
         teamId: row.team_id,
         teamName: row.team_name,
         teamOnboardingCompletedAt: row.team_onboarding_completed_at,
+        sessionId,
       }
     : null;
 }
@@ -46,7 +48,7 @@ export async function getSessionUser(): Promise<SessionUser | null> {
   const session = await auth();
   const id = session?.user?.id;
   if (!id) return null;
-  return getUserById(id);
+  return getUserById(id, session.mfaSessionId ?? null);
 }
 
 /** 대시보드 표시용 사용자. open 모드에서는 기존 getCurrentUserId 폴백을 사용한다. */
@@ -55,5 +57,5 @@ export async function getDashboardViewer(): Promise<SessionUser | null> {
   if (sessionUser) return sessionUser;
   if ((process.env.AUTH_MODE ?? "oauth") !== "open") return null;
   const id = await getCurrentUserId();
-  return id ? getUserById(id) : null;
+  return id ? getUserById(id, null) : null;
 }

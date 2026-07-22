@@ -5,6 +5,7 @@ import { formatVersion } from "@toard/core";
 import { auth, credentialsEnabled, oauthConfigured, signOut } from "@/auth";
 import { UserMenuDropdown } from "@/components/dashboard/user-menu-dropdown";
 import { Button } from "@/components/ui/button";
+import { clearHistoryMfaAccess } from "@/lib/history-mfa";
 import { getServerVersion } from "@/lib/version";
 
 /**
@@ -26,6 +27,7 @@ export async function UserMenu() {
         version={version}
         signOutAction={async () => {
           "use server";
+          await clearHistoryMfaAccess();
           await signOut({ redirectTo: "/" });
         }}
       />

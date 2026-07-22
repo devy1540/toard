@@ -192,6 +192,32 @@
     "recoveryPrivacy": "The 24 words and encryption key never reach the server. E2EE content collection starts only after verification.",
     "recoveryWaiting": "Waiting for local Recovery Kit verification…"
   },
+  "mfa": {
+    "passkeyTitle": "Passkey security",
+    "passkeyDescription": "Protect password sign-in and My history with Face ID, Touch ID, Windows Hello, or your device screen lock.",
+    "addPasskey": "Add passkey",
+    "passkeyOpening": "Opening device verification…",
+    "passkeyAdded": "Passkey added.",
+    "passkeyRemoved": "Passkey removed.",
+    "removePasskey": "Remove",
+    "registeredPasskeys": "Registered passkeys",
+    "syncedPasskey": "Synced",
+    "devicePasskey": "This device",
+    "passkeyLoginDescription": "Require a registered passkey after the email and password are verified.",
+    "passkeyHistoryDescription": "Unlock the history page and content APIs with a passkey for 30 minutes.",
+    "saveWithPasskey": "Verify with passkey and save",
+    "statusEnabled": "Configured",
+    "statusDisabled": "Not configured",
+    "loginProtection": "Protect password sign-in",
+    "loginProtectionNeedsPassword": "Set a password on this account before enabling this option.",
+    "historyProtection": "Protect My history",
+    "saving": "Saving…",
+    "saved": "MFA protection settings were saved.",
+    "errors": {
+      "passkeyFailed": "The passkey operation could not be completed. Try again.",
+      "passkeyRemoveFailed": "The last passkey cannot be removed while protection is enabled. Disable protection first or add another passkey."
+    }
+  },
   "historySecurity": {
     "title": "History security",
     "description": "View the server-managed encryption status of your history content.",

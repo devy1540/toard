@@ -57,7 +57,7 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">{t("title")}</h1>
-            <FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge>
+            <FeatureStatusBadge status="experiment">{t("experimental")}</FeatureStatusBadge>
           </div>
           <p className="text-muted-foreground mt-1 text-sm">{t("description")}</p>
         </div>
@@ -133,7 +133,7 @@ async function LibraryRow({ item }: { item: ToolCatalogListItem }) {
       <div className="min-w-0">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <Link className="truncate font-medium hover:underline" href={`/library/${item.slug}`}>{item.name}</Link>
-          <Badge variant={item.trustStatus === "verified" ? "default" : "outline"}>{t(`trust.${item.trustStatus}`)}</Badge>
+          <FeatureStatusBadge status="experiment">{t("experimental")}</FeatureStatusBadge>
           {item.lifecycleStatus === "deprecated" ? <Badge variant="outline">{t("lifecycle.deprecated")}</Badge> : null}
         </div>
         <p className="text-muted-foreground mt-0.5 truncate text-sm">{item.description}</p>

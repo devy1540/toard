@@ -59,9 +59,8 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">{item.name}</h1>
-            <FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge>
+            <FeatureStatusBadge status="experiment">{t("experimental")}</FeatureStatusBadge>
             <Badge variant="secondary">{t(`kind.${item.kind}`)}</Badge>
-            <Badge variant={item.trustStatus === "verified" ? "default" : "outline"}>{t(`trust.${item.trustStatus}`)}</Badge>
             {item.lifecycleStatus === "deprecated" ? <Badge variant="outline">{t("lifecycle.deprecated")}</Badge> : null}
           </div>
           <p className="text-muted-foreground mt-2 text-sm">{item.description}</p>

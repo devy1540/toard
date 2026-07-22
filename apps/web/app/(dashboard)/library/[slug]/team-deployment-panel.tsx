@@ -14,7 +14,7 @@ export function TeamDeploymentPanel({ item, deployment, enabled }: { item: ToolC
     <Card className="min-w-0">
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-2"><CardTitle>{t("title")}</CardTitle><FeatureStatusBadge status="preview">{t("experimental")}</FeatureStatusBadge></div>
+          <div className="flex flex-wrap items-center gap-2"><CardTitle>{t("title")}</CardTitle><FeatureStatusBadge status="experiment">{t("experimental")}</FeatureStatusBadge></div>
           <Badge variant="outline">{t("leaderOnly")}</Badge>
         </div>
         <CardDescription>{t("description")}</CardDescription>

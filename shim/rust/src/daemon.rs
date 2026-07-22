@@ -13,6 +13,8 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 60;
 pub const MIN_INTERVAL_SECS: u64 = 60;
 
 const LAUNCHD_LABEL: &str = "dev.toard.collect";
+// 이전 버전에서 별도 등록하던 macOS bridge LaunchAgent. 최신 버전은 collect 작업이
+// bridge를 복구하므로 이 항목을 마이그레이션 과정에서 제거한다.
 const LAUNCHD_LOCAL_LABEL: &str = "dev.toard.local-bridge";
 const SYSTEMD_UNIT: &str = "toard-collect";
 const SYSTEMD_LOCAL_UNIT: &str = "toard-local-bridge";
@@ -108,16 +110,7 @@ pub fn state() -> State {
 pub(crate) fn start_local_bridge_service_quiet() -> bool {
     #[cfg(target_os = "macos")]
     {
-        if !launchd_local_plist_path().is_some_and(|path| path.is_file()) {
-            return false;
-        }
-        let Some(uid) = current_uid() else {
-            return false;
-        };
-        quiet(
-            Command::new("launchctl")
-                .args(["kickstart", &format!("gui/{uid}/{LAUNCHD_LOCAL_LABEL}")]),
-        )
+        false
     }
     #[cfg(target_os = "linux")]
     {
@@ -136,6 +129,37 @@ pub(crate) fn start_local_bridge_service_quiet() -> bool {
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
+    }
+}
+
+/// 예전 macOS 설치가 남긴 별도 bridge LaunchAgent를 제거한다.
+///
+/// 최신 macOS 설치는 단일 collect LaunchAgent가 로그인 직후와 매 주기마다
+/// `ensure_background`를 호출해 bridge를 복구한다. 이 정리는 업데이트 후 첫 collect나
+/// 수동 bridge 시작에서도 실행되어 시스템 설정의 중복 백그라운드 항목을 없앤다.
+pub(crate) fn cleanup_legacy_local_bridge_service_quiet() {
+    #[cfg(target_os = "macos")]
+    {
+        let Some(plist_path) = launchd_local_plist_path() else {
+            return;
+        };
+        if !plist_path.is_file() {
+            return;
+        }
+        if let Some(uid) = current_uid() {
+            let domain = format!("gui/{uid}");
+            let _ = quiet(
+                Command::new("launchctl")
+                    .args(["bootout", &domain])
+                    .arg(&plist_path),
+            );
+            let _ = quiet(
+                Command::new("launchctl")
+                    .arg("bootout")
+                    .arg(format!("{domain}/{LAUNCHD_LOCAL_LABEL}")),
+            );
+        }
+        let _ = std::fs::remove_file(plist_path);
     }
 }
 
@@ -536,43 +560,6 @@ fn launchd_plist(exe: &str, interval: u64, log_out: &str, log_err: &str) -> Stri
     )
 }
 
-fn launchd_local_plist(exe: &str, log_out: &str, log_err: &str) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>{label}</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>{exe}</string>
-    <string>local</string>
-    <string>serve</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
-  <key>StandardOutPath</key>
-  <string>{log_out}</string>
-  <key>StandardErrorPath</key>
-  <string>{log_err}</string>
-</dict>
-</plist>
-"#,
-        label = LAUNCHD_LOCAL_LABEL,
-        exe = xml_escape(exe),
-        log_out = xml_escape(log_out),
-        log_err = xml_escape(log_err),
-    )
-}
-
 /// plist 에서 StartInterval 을 읽는다 (status/doctor 표시용 — 정식 파서 불필요).
 fn plist_interval(text: &str) -> Option<u64> {
     let after = text.split("<key>StartInterval</key>").nth(1)?;
@@ -592,10 +579,6 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
         eprintln!("toard-shim: HOME 이 없어 LaunchAgents 위치를 알 수 없습니다");
         return 1;
     };
-    let Some(local_plist_path) = launchd_local_plist_path() else {
-        eprintln!("toard-shim: HOME 이 없어 로컬 bridge LaunchAgent 위치를 알 수 없습니다");
-        return 1;
-    };
     let logs = fsx::state_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     let content = launchd_plist(
         exe,
@@ -603,14 +586,7 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
         &logs.join("daemon.log").display().to_string(),
         &logs.join("daemon.err.log").display().to_string(),
     );
-    let local_content = launchd_local_plist(
-        exe,
-        &logs.join("local-bridge.log").display().to_string(),
-        &logs.join("local-bridge.err.log").display().to_string(),
-    );
-    if let Err(e) = fsx::write_atomic(&plist_path, &content, 0o644)
-        .and_then(|()| fsx::write_atomic(&local_plist_path, &local_content, 0o644))
-    {
+    if let Err(e) = fsx::write_atomic(&plist_path, &content, 0o644) {
         eprintln!("toard-shim: plist 쓰기 실패: {e}");
         return 1;
     }
@@ -625,11 +601,7 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
             .args(["bootout", &domain])
             .arg(&plist_path),
     );
-    let _ = quiet(
-        Command::new("launchctl")
-            .args(["bootout", &domain])
-            .arg(&local_plist_path),
-    );
+    cleanup_legacy_local_bridge_service_quiet();
     let collector_ok = quiet(
         Command::new("launchctl")
             .args(["bootstrap", &domain])
@@ -642,19 +614,9 @@ fn launchd_install(exe: &str, interval: u64) -> i32 {
         );
         return 1;
     }
-    let local_ok = quiet(
-        Command::new("launchctl")
-            .args(["bootstrap", &domain])
-            .arg(&local_plist_path),
-    );
-    if !local_ok {
-        eprintln!(
-            "toard-shim: 경고: UI 로컬 bridge LaunchAgent를 시작하지 못했습니다 — 수집 스케줄은 정상 등록됐습니다"
-        );
-    }
     println!("  ✓ 주기 수집 등록됨 — launchd, {interval}초 간격");
     println!("    파일: {}", plist_path.display());
-    println!("    로컬 UI: {}", local_plist_path.display());
+    println!("    로컬 UI: 주기 수집이 자동 시작·복구");
     println!("    로그: {}", logs.join("daemon.err.log").display());
     println!("    제거: toard-shim daemon uninstall");
     0
@@ -991,6 +953,10 @@ mod tests {
             p.contains("<string>--quiet</string>"),
             "데몬 실행은 무변경 시 무출력"
         );
+        assert!(
+            !p.contains(LAUNCHD_LOCAL_LABEL) && !p.contains("<string>local</string>"),
+            "macOS에는 collect LaunchAgent 하나만 생성"
+        );
         assert!(p.contains("<integer>300</integer>"));
         assert_eq!(plist_interval(&p), Some(300), "쓴 간격을 그대로 읽어야 함");
     }
@@ -1000,14 +966,6 @@ mod tests {
         let p = launchd_plist("/a&b/<x>", 60, "/o", "/e");
         assert!(p.contains("/a&amp;b/&lt;x&gt;"));
         assert!(!p.contains("/a&b/<x>"));
-
-        let local = launchd_local_plist("/a&b/<x>", "/o", "/e");
-        assert!(local.contains("<string>dev.toard.local-bridge</string>"));
-        assert!(local.contains("<string>local</string>"));
-        assert!(local.contains("<string>serve</string>"));
-        assert!(local.contains("<key>KeepAlive</key>"));
-        assert!(local.contains("<key>SuccessfulExit</key>"));
-        assert!(local.contains("/a&amp;b/&lt;x&gt;"));
     }
 
     #[test]

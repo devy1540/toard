@@ -18,6 +18,7 @@ import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
 import { listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
+import { getMfaStatus } from "@/lib/mfa-store";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { AppearanceForm } from "./appearance-form";
@@ -30,6 +31,7 @@ import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
 import { HistorySecurityPanel } from "./history-security-panel";
 import { LocalShimPanel } from "./local-shim-panel";
+import { MfaSettingsPanel } from "./mfa-settings-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -100,9 +102,11 @@ async function AccountTab({
   const t = await getTranslations("settings");
   const googleConfigured = oauthProviders.includes("google");
   const googleLinked = linkedProviders.includes("google");
+  const mfaStatus = (process.env.AUTH_MODE ?? "oauth") !== "open" ? await getMfaStatus(userId) : null;
   return (
     <div className="min-w-0 space-y-4">
       {(process.env.AUTH_MODE ?? "oauth") !== "open" ? <HistorySecurityPanel userId={userId} /> : null}
+      {mfaStatus ? <MfaSettingsPanel initial={{ status: mfaStatus }} hasPassword={hasPassword} /> : null}
       <Card className="min-w-0">
         <CardHeader>
           <CardTitle>{t("appearance.title")}</CardTitle>

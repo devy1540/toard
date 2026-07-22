@@ -1,12 +1,15 @@
 import PostgresAdapter from "@auth/pg-adapter";
+import { randomUUID } from "node:crypto";
 import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import Google from "next-auth/providers/google";
 import { isEmailDomainAllowed } from "@/lib/auth-policy";
+import { getCredentialUserById, verifyCredentialUser } from "@/lib/credential-auth";
 import { getPool } from "@/lib/db";
-import { DUMMY_PASSWORD_HASH, verifyPassword } from "@/lib/password";
+import { verifySignedMfaToken } from "@/lib/mfa";
+import { isCredentialMfaRequired } from "@/lib/mfa-store";
 
 // OAuth: 자격(AUTH_*_ID/SECRET)이 설정된 provider 만 활성화 — 환경별 구성(ADR-007).
 const providers: Provider[] = [];
@@ -30,24 +33,17 @@ export const credentialsEnabled = (process.env.AUTH_CREDENTIALS_ENABLED ?? "true
 if (credentialsEnabled) {
   providers.push(
     Credentials({
-      credentials: { email: {}, password: {} },
+      credentials: { email: {}, password: {}, loginTicket: {} },
       authorize: async (creds) => {
-        const email = String(creds?.email ?? "")
-          .toLowerCase()
-          .trim();
-        const password = String(creds?.password ?? "");
-        if (!email || !password) return null;
-        const r = await getPool().query<{
-          id: string;
-          email: string;
-          name: string | null;
-          password_hash: string | null;
-        }>("SELECT id, email, name, password_hash FROM users WHERE email = $1", [email]);
-        const row = r.rows[0];
-        // 미존재/OAuth 전용 계정도 더미 해시로 비교해 응답 시간 차 완화(사용자 열거 방지).
-        const ok = await verifyPassword(password, row?.password_hash ?? DUMMY_PASSWORD_HASH);
-        if (!ok || !row?.password_hash) return null;
-        return { id: row.id, email: row.email, name: row.name };
+        const loginTicket = String(creds?.loginTicket ?? "");
+        if (loginTicket) {
+          const ticket = verifySignedMfaToken(loginTicket, "credential-ticket");
+          const user = ticket ? await getCredentialUserById(ticket.userId) : null;
+          return user ? { ...user, mfaSessionId: ticket!.nonce } : null;
+        }
+        const user = await verifyCredentialUser(String(creds?.email ?? ""), String(creds?.password ?? ""));
+        if (!user || (await isCredentialMfaRequired(user.id))) return null;
+        return user;
       },
     }),
   );
@@ -78,13 +74,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
     // JWT 에 user.id 를 실어 세션에 노출 (database 세션이 아니므로 직접 전달)
     jwt({ token, user }) {
-      if (user?.id) token.uid = user.id;
+      if (user?.id) {
+        token.uid = user.id;
+        token.mfaSid = (user as { mfaSessionId?: string }).mfaSessionId ?? randomUUID();
+      } else if (typeof token.uid === "string" && typeof token.mfaSid !== "string") {
+        token.mfaSid = randomUUID();
+      }
       return token;
     },
     session({ session, token }) {
       if (session.user && typeof token.uid === "string") {
         session.user.id = token.uid;
       }
+      if (typeof token.mfaSid === "string") session.mfaSessionId = token.mfaSid;
       return session;
     },
   },

@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   connectLocalShim,
+  connectLocalShimFromBrowser,
   connectLocalShimWithHelper,
-  isSafariBrowser,
   LOCAL_SHIM_BASE_URL,
   runLocalShimAction,
   type LocalShimFetch,
@@ -114,7 +114,7 @@ function helperHarness() {
   return { environment, emit, openedUrl: () => openedUrl, popup, sent };
 }
 
-test("Safari helper uses a top-level one-time RPC and returns only the status contract", async () => {
+test("browser helper uses a top-level one-time RPC and returns only the status contract", async () => {
   const harness = helperHarness();
   const pending = connectLocalShimWithHelper(targetId, harness.environment);
 
@@ -172,13 +172,58 @@ test("helper ignores messages from another origin or window and supports actions
   assert.equal((await pending)?.version, "0.15.43");
 });
 
-test("detects Safari without misclassifying Chromium browsers", () => {
-  assert.equal(
-    isSafariBrowser("Mozilla/5.0 Version/26.5 Safari/605.1.15"),
-    true,
-  );
-  assert.equal(
-    isSafariBrowser("Mozilla/5.0 Chrome/140.0.0.0 Safari/537.36"),
-    false,
+test("browser connection prefers the cross-browser helper without a user-agent branch", async () => {
+  const harness = helperHarness();
+  let directCalled = false;
+  const fetcher: LocalShimFetch = async () => {
+    directCalled = true;
+    return Response.json(status);
+  };
+  const pending = connectLocalShimFromBrowser(targetId, harness.environment, fetcher);
+
+  harness.emit({ protocol: "toard-helper-v1", nonce: "c".repeat(32), ready: true });
+  harness.emit({
+    protocol: "toard-helper-v1",
+    nonce: "c".repeat(32),
+    action: "status",
+    ok: true,
+    value: { ok: true, status },
+  });
+
+  assert.equal((await pending).transport, "helper");
+  assert.equal(directCalled, false);
+});
+
+test("browser connection falls back to direct loopback when the helper popup is blocked", async () => {
+  const harness = helperHarness();
+  const blockedEnvironment: LocalShimHelperEnvironment = {
+    ...harness.environment,
+    open: () => null,
+  };
+  const calls: string[] = [];
+  const fetcher: LocalShimFetch = async (input) => {
+    calls.push(String(input));
+    return Response.json(status);
+  };
+
+  const session = await connectLocalShimFromBrowser(targetId, blockedEnvironment, fetcher);
+
+  assert.equal(session.transport, "direct");
+  assert.deepEqual(calls, [`${LOCAL_SHIM_BASE_URL}/v1/status`]);
+});
+
+test("browser connection reports failure only after helper and direct transports both fail", async () => {
+  const harness = helperHarness();
+  const blockedEnvironment: LocalShimHelperEnvironment = {
+    ...harness.environment,
+    open: () => null,
+  };
+  const fetcher: LocalShimFetch = async () => {
+    throw new TypeError("loopback blocked");
+  };
+
+  await assert.rejects(
+    connectLocalShimFromBrowser(targetId, blockedEnvironment, fetcher),
+    /any browser transport/,
   );
 });

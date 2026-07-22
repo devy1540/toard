@@ -1,7 +1,7 @@
 "use client";
 
 import { Laptop, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
@@ -9,8 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   connectLocalShim,
-  connectLocalShimWithHelper,
-  isSafariBrowser,
+  connectLocalShimFromBrowser,
   runLocalShimAction,
   type LocalShimAction,
   type LocalShimSession,
@@ -33,16 +32,11 @@ export function LocalShimPanel({
   const t = useTranslations("settings.install.localControl");
   const [connection, setConnection] = useState<ConnectionState>({ kind: "idle" });
   const [running, setRunning] = useState<LocalShimAction | null>(null);
-  const [isSafari, setIsSafari] = useState(false);
-
-  useEffect(() => setIsSafari(isSafariBrowser(navigator.userAgent)), []);
 
   const connect = async () => {
     setConnection({ kind: "checking" });
     try {
-      const session = isSafariBrowser(navigator.userAgent)
-        ? await connectLocalShimWithHelper(targetId)
-        : await connectLocalShim(targetId);
+      const session = await connectLocalShimFromBrowser(targetId);
       setConnection({ kind: "connected", session });
     } catch {
       setConnection({ kind: "unavailable" });
@@ -109,7 +103,7 @@ export function LocalShimPanel({
             <div>
               <p className="text-sm font-medium">{t("unavailable")}</p>
               <p className="text-muted-foreground mt-1 text-xs">
-                {t(isSafari ? "safariFallback" : "fallback")}
+                {t("fallback")}
               </p>
             </div>
             <Button type="button" variant="outline" onClick={() => void connect()}>

@@ -529,6 +529,10 @@ fn doctor_cmd(args: &[String]) -> i32 {
 fn doctor(selected_endpoint: Option<&str>) -> i32 {
     println!("toard-shim doctor — v{}\n", version());
     let mut d = Doctor { failed: false };
+    let local_bridge_action = env::var(crate::local_bridge::BRIDGE_ACTION_ENV)
+        .ok()
+        .as_deref()
+        == Some("1");
 
     // 1–2. target별 자격 증명·endpoint·최근 전송 상태. registry가 권위이며,
     // --target-env는 endpoint 선택에만 사용하고 env token은 의도적으로 무시한다.
@@ -622,35 +626,42 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
         println!();
     }
 
-    // 3. PATH 가로채기 순서 + 진짜 바이너리
-    let self_canon = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
-    for (tool, path_required) in [("claude", true), ("codex", false)] {
-        match first_in_path(tool) {
-            Some(first) => {
-                let first_canon = first.canonicalize().ok();
-                let first_is_shim = first_canon.as_deref().is_some_and(|candidate| {
-                    self_canon.as_deref().is_some_and(|current| {
-                        is_shim_executable_path(candidate, current, cfg!(windows))
-                    })
-                });
-                if first_is_shim {
-                    ok(&format!("PATH: '{tool}' 은 shim 이 우선 가로챕니다"));
-                    match find_real_binary(tool) {
-                        Some(real) => ok(&format!("진짜 {tool}: {}", real.display())),
-                        None => info(&format!("진짜 {tool} 없음 (Desktop/IDE 수집만 쓰면 무시)")),
+    // 3. PATH 가로채기 순서 + 진짜 바이너리. 로컬 bridge는 launchd/systemd의
+    // 서비스 PATH를 상속하므로 사용자 로그인 셸의 PATH를 판정할 수 없다.
+    if local_bridge_action {
+        info("PATH 점검 생략 — 로컬 bridge 서비스 환경은 사용자 셸 PATH와 다릅니다");
+    } else {
+        let self_canon = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
+        for (tool, path_required) in [("claude", true), ("codex", false)] {
+            match first_in_path(tool) {
+                Some(first) => {
+                    let first_canon = first.canonicalize().ok();
+                    let first_is_shim = first_canon.as_deref().is_some_and(|candidate| {
+                        self_canon.as_deref().is_some_and(|current| {
+                            is_shim_executable_path(candidate, current, cfg!(windows))
+                        })
+                    });
+                    if first_is_shim {
+                        ok(&format!("PATH: '{tool}' 은 shim 이 우선 가로챕니다"));
+                        match find_real_binary(tool) {
+                            Some(real) => ok(&format!("진짜 {tool}: {}", real.display())),
+                            None => {
+                                info(&format!("진짜 {tool} 없음 (Desktop/IDE 수집만 쓰면 무시)"))
+                            }
+                        }
+                    } else {
+                        d.fail(&format!(
+                            "PATH: shim 보다 '{}' 가 먼저 옵니다 — 수집되지 않습니다. PATH 에서 shim 디렉토리를 앞에 두세요",
+                            first.display()
+                        ));
                     }
-                } else {
-                    d.fail(&format!(
-                        "PATH: shim 보다 '{}' 가 먼저 옵니다 — 수집되지 않습니다. PATH 에서 shim 디렉토리를 앞에 두세요",
-                        first.display()
-                    ));
                 }
-            }
-            None => {
-                if path_required {
-                    d.fail("PATH 에 claude 가 없습니다 — shim 디렉토리를 PATH 에 추가하세요");
-                } else {
-                    info("codex: PATH 에 없음 (미사용 시 무시)");
+                None => {
+                    if path_required {
+                        d.fail("PATH 에 claude 가 없습니다 — shim 디렉토리를 PATH 에 추가하세요");
+                    } else {
+                        info("codex: PATH 에 없음 (미사용 시 무시)");
+                    }
                 }
             }
         }
@@ -732,7 +743,7 @@ fn doctor(selected_endpoint: Option<&str>) -> i32 {
         },
         None => info("수집 실행 기록 없음 — 첫 수집 전이거나 트리거 미발동"),
     }
-    if crate::local_bridge::is_running() {
+    if local_bridge_action || crate::local_bridge::is_running() {
         ok("UI 로컬 bridge 실행 중 — loopback 전용");
     } else {
         warn("UI 로컬 bridge 미실행 — 다음 주기 수집 또는 'toard-shim local start'로 복구");

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { E2EE_MAX_CIPHERTEXT_BYTES } from "./e2ee-contract";
 import { VALID_E2EE_RECORD } from "./e2ee-test-fixtures";
-import { parsePromptBatch, parsePromptRecordWire } from "./prompt-wire";
+import {
+  parsePromptAgentMetadataReconciliationBody,
+  parsePromptBatch,
+  parsePromptRecordWire,
+} from "./prompt-wire";
 
 const validRecord = {
   dedupKey: "legacy-1",
@@ -83,5 +87,41 @@ test("prompt agent metadata를 파싱하고 기존 payload는 root로 호환한�
       agent: { id: "agent-1", parentId: null, depth: 0, name: null, role: null },
     }),
     /agent\.depth/,
+  );
+});
+
+test("agent metadata reconciliation은 본문 없이 정확한 SHA 키와 지원 provider만 받는다", () => {
+  const record = {
+    dedupKey: "a".repeat(64),
+    providerKey: "codex",
+    agent: {
+      id: "agent-1",
+      parentId: "root-1",
+      depth: 1,
+      name: "Reviewer",
+      role: "reviewer",
+    },
+  };
+  assert.deepEqual(
+    parsePromptAgentMetadataReconciliationBody({ records: [record] }),
+    [record],
+  );
+  assert.throws(
+    () => parsePromptAgentMetadataReconciliationBody({ records: [{ ...record, dedupKey: "short" }] }),
+    /SHA-256/,
+  );
+  assert.throws(
+    () => parsePromptAgentMetadataReconciliationBody({ records: [{ ...record, providerKey: "gemini" }] }),
+    /providerKey/,
+  );
+  assert.throws(
+    () => parsePromptAgentMetadataReconciliationBody({ records: [{ ...record, agent: null }] }),
+    /agent가 필요/,
+  );
+  assert.throws(
+    () => parsePromptAgentMetadataReconciliationBody({
+      records: Array.from({ length: 1_001 }, () => record),
+    }),
+    /최대 1000개/,
   );
 });

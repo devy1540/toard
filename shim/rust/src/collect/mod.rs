@@ -32,6 +32,7 @@ pub const SPAWN_ARG: &str = "___toard-spawn-collector";
 pub const RUN_ARG: &str = "___toard-collect";
 const DEFAULT_INTERVAL_SECS: u64 = 600;
 const CODEX_REPLAY_RECONCILIATION_VERSION: u32 = 1;
+const PROMPT_AGENT_METADATA_RECONCILIATION_VERSION: u32 = 1;
 
 /// wrap 경로에서 호출 — 토큰 있는 머신만, 기본 10분 스로틀로 백그라운드 수집.
 /// 도구를 쓸 때마다 수집이 따라오므로 데몬 관리가 필요 없다. 동시 실행 레이스로
@@ -104,6 +105,12 @@ pub struct RawPromptAgent {
     pub depth: Option<u8>,
     pub name: Option<String>,
     pub role: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PromptAgentMetadataReconciliation {
+    dedup_key: String,
+    agent: RawPromptAgent,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -265,6 +272,16 @@ fn prepare_cached_adapters(
             let tools_active = target_collect_tools(&target.credentials)
                 && post::unsupported_probe_due(&target.state_dir, "tool-events");
             let content_active = target_content_mode(&target.credentials).is_enabled();
+            let content_reconciliation_scan = content_active
+                && prompt_agent_metadata_reconciliation_active(
+                    adapter.key(),
+                    content_cursor.reconciliation_version,
+                    post::unsupported_probe_due(
+                        &target.state_dir,
+                        "prompt-agent-metadata-reconciliation",
+                    ),
+                    dry_run,
+                );
             for file in &files {
                 let Some(stamp) = cursor::stamp(file) else {
                     continue;
@@ -276,7 +293,12 @@ fn prepare_cached_adapters(
                     && tool_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
                 let content_changed = content_active
                     && content_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
-                if usage_changed || tools_changed || content_changed || reconciliation_scan {
+                if usage_changed
+                    || tools_changed
+                    || content_changed
+                    || reconciliation_scan
+                    || content_reconciliation_scan
+                {
                     changed_paths.insert(path);
                 }
             }
@@ -333,6 +355,16 @@ fn reconciliation_active(
 ) -> bool {
     adapter == "codex"
         && (dry_run || (cursor_version < CODEX_REPLAY_RECONCILIATION_VERSION && probe_due))
+}
+
+fn prompt_agent_metadata_reconciliation_active(
+    adapter: &str,
+    cursor_version: u32,
+    probe_due: bool,
+    dry_run: bool,
+) -> bool {
+    matches!(adapter, "claude_code" | "codex" | "cursor")
+        && (dry_run || (cursor_version < PROMPT_AGENT_METADATA_RECONCILIATION_VERSION && probe_due))
 }
 
 /// 디렉토리를 재귀 순회하며 확장자가 일치하는 파일 수집 (심링크 루프 방지 깊이 캡).
@@ -548,6 +580,26 @@ fn to_prompts_body(adapter: &str, records: &[RawContent]) -> String {
         })
         .collect();
     serde_json::Value::Array(arr).to_string()
+}
+
+fn to_prompt_agent_metadata_reconciliation_body(
+    adapter: &str,
+    records: &[PromptAgentMetadataReconciliation],
+) -> String {
+    serde_json::json!({
+        "records": records.iter().map(|record| serde_json::json!({
+            "dedupKey": record.dedup_key,
+            "providerKey": adapter,
+            "agent": {
+                "id": record.agent.id,
+                "parentId": record.agent.parent_id,
+                "depth": record.agent.depth,
+                "name": record.agent.name,
+                "role": record.agent.role,
+            },
+        })).collect::<Vec<_>>(),
+    })
+    .to_string()
 }
 
 fn to_e2ee_prompts_body(
@@ -1350,6 +1402,11 @@ fn run_target(
     }
     for (name, label, enabled) in [
         ("usage-reconciliation", "사용량 재생 보정", true),
+        (
+            "prompt-agent-metadata-reconciliation",
+            "과거 agent 메타데이터 보정",
+            target_content_mode(creds).is_enabled(),
+        ),
         ("tool-events", "도구 활동", collect_tools),
         ("tool-inventory", "도구 인벤토리", collect_tools),
     ] {
@@ -1432,19 +1489,27 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
     let cursor_key = format!("{key}-content");
     let files = adapter.discover_files();
     let mut cur = cursor::load(state_dir, &cursor_key);
+    let reconciliation_scan = prompt_agent_metadata_reconciliation_active(
+        key,
+        cur.reconciliation_version,
+        post::unsupported_probe_due(state_dir, "prompt-agent-metadata-reconciliation"),
+        *dry_run,
+    );
 
     // usage 루프와 동일한 파일별 전송 필터 — since 는 최초 opt-in 시각으로 고정되므로
     // 컷오프 필터 결과도 파일 내용에 대해 결정적이라 prefix 판정이 유효하다.
     let mut changed = 0usize;
     let mut parsed_total = 0usize;
     let mut records: Vec<RawContent> = Vec::new();
+    let mut reconciliation_records: Vec<PromptAgentMetadataReconciliation> = Vec::new();
+    let mut reconciliation_keys = HashSet::new();
     let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
     for file in &files {
         let Some(stamp) = cursor::stamp(file) else {
             continue;
         };
         let path = file.display().to_string();
-        if cur.files.get(&path).map(|s| s.stamp()) == Some(stamp) {
+        if cur.files.get(&path).map(|s| s.stamp()) == Some(stamp) && !reconciliation_scan {
             continue;
         }
         changed += 1;
@@ -1452,6 +1517,15 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
         file_records.retain(|r| r.ts_ms >= *since_ms);
         parsed_total += file_records.len();
+        if reconciliation_scan {
+            reconciliation_records.extend(file_records.iter().filter_map(|record| {
+                let agent = record.agent.clone()?;
+                let dedup_key = content_dedup_key(key, record);
+                reconciliation_keys
+                    .insert(dedup_key.clone())
+                    .then_some(PromptAgentMetadataReconciliation { dedup_key, agent })
+            }));
+        }
         let keys: Vec<String> = file_records
             .iter()
             .map(|r| content_dedup_key(key, r))
@@ -1478,9 +1552,10 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
     if *dry_run {
         let scheme = content_collection_label(content_mode);
         println!(
-            "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건 · {scheme} (since {}) [dry-run]",
+            "{key} 본문: 파일 {}개 (변경 {changed}개) → 레코드 {parsed_total}건, 전송 대상 {}건, agent 보정 후보 {}건 · {scheme} (since {}) [dry-run]",
             files.len(),
             records.len(),
+            reconciliation_records.len(),
             if *since_ms <= 0 {
                 "전체".to_string()
             } else {
@@ -1582,6 +1657,60 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         );
     }
 
+    let mut reconciliation_complete = !reconciliation_scan;
+    if reconciliation_scan {
+        if reconciliation_records.is_empty() {
+            reconciliation_complete = true;
+        } else {
+            let token = token.expect("dry_run 아니면 토큰 존재");
+            let mut reconciled = 0u64;
+            let mut reconciliation_ok = true;
+            for chunk in reconciliation_records.chunks(CHUNK) {
+                match transport.post_prompt_agent_metadata_reconciliation(
+                    endpoint,
+                    token,
+                    &to_prompt_agent_metadata_reconciliation_body(key, chunk),
+                ) {
+                    post::EndpointResult::Ok(result) => reconciled += result.reconciled,
+                    post::EndpointResult::Unsupported => {
+                        if *state_dir == *global_state || credentials_path.is_file() {
+                            post::mark_unsupported(
+                                state_dir,
+                                "prompt-agent-metadata-reconciliation",
+                            );
+                        }
+                        reconciliation_ok = false;
+                        break;
+                    }
+                    post::EndpointResult::Unauthorized => {
+                        diagnostics.fail(
+                            crate::delivery::DeliveryKind::Unauthorized,
+                            format!(
+                                "toard-shim: {key} agent 메타데이터 보정 실패 — 토큰이 유효하지 않습니다"
+                            ),
+                        );
+                        return true;
+                    }
+                    post::EndpointResult::Err(error) => {
+                        diagnostics.fail(
+                            classify_transport_error(&error),
+                            format!("toard-shim: {key} agent 메타데이터 보정 실패 — {error}"),
+                        );
+                        return true;
+                    }
+                }
+            }
+            if reconciliation_ok {
+                post::clear_unsupported(state_dir, "prompt-agent-metadata-reconciliation");
+                println!(
+                    "{key} agent 메타데이터: 후보 {}건 · 기존 기록 {reconciled}건 보정",
+                    reconciliation_records.len()
+                );
+                reconciliation_complete = true;
+            }
+        }
+    }
+
     if *state_dir != *global_state && !credentials_path.is_file() {
         return false;
     }
@@ -1591,6 +1720,9 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
     let alive: std::collections::HashSet<String> =
         files.iter().map(|f| f.display().to_string()).collect();
     cur.files.retain(|k, _| alive.contains(k));
+    if reconciliation_scan && reconciliation_complete {
+        cur.reconciliation_version = PROMPT_AGENT_METADATA_RECONCILIATION_VERSION;
+    }
     cursor::save(state_dir, &cursor_key, &cur);
     false
 }
@@ -1609,6 +1741,12 @@ mod tests {
     struct ContentFanoutTestAdapter {
         file: PathBuf,
         parse_calls: Rc<Cell<usize>>,
+    }
+
+    struct AgentBackfillTestAdapter {
+        file: PathBuf,
+        parse_calls: Rc<Cell<usize>>,
+        record: RawContent,
     }
 
     struct ToolFirstRunAdapter {
@@ -1694,6 +1832,40 @@ mod tests {
         }
     }
 
+    impl LogAdapter for AgentBackfillTestAdapter {
+        fn key(&self) -> &'static str {
+            "codex"
+        }
+
+        fn collects_usage(&self) -> bool {
+            false
+        }
+
+        fn discover_files(&self) -> Vec<PathBuf> {
+            vec![self.file.clone()]
+        }
+
+        fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
+            Vec::new()
+        }
+
+        fn parse_changed(
+            &self,
+            _path: &Path,
+            include_content: bool,
+            _include_tools: bool,
+        ) -> ParsedLog {
+            self.parse_calls.set(self.parse_calls.get() + 1);
+            ParsedLog {
+                content: include_content
+                    .then(|| self.record.clone())
+                    .into_iter()
+                    .collect(),
+                ..ParsedLog::default()
+            }
+        }
+    }
+
     impl LogAdapter for FanoutTestAdapter {
         fn key(&self) -> &'static str {
             "fanout_test"
@@ -1725,9 +1897,11 @@ mod tests {
         replace_target_revision: RefCell<Option<PathBuf>>,
         prompt_calls: RefCell<Vec<String>>,
         tool_calls: RefCell<Vec<String>>,
+        prompt_agent_reconciliation_calls: RefCell<Vec<(String, String)>>,
         fail_company_prompts: Cell<bool>,
         disable_prompts: Cell<bool>,
         support_inventory: Cell<bool>,
+        support_prompt_agent_reconciliation: Cell<bool>,
     }
 
     impl post::Transport for FanoutTestTransport {
@@ -1793,6 +1967,25 @@ mod tests {
             _body: &str,
         ) -> post::EndpointResult {
             post::EndpointResult::Unsupported
+        }
+
+        fn post_prompt_agent_metadata_reconciliation(
+            &self,
+            endpoint: &str,
+            _token: &str,
+            body: &str,
+        ) -> post::EndpointResult {
+            self.prompt_agent_reconciliation_calls
+                .borrow_mut()
+                .push((endpoint.to_string(), body.to_string()));
+            if self.support_prompt_agent_reconciliation.get() {
+                post::EndpointResult::Ok(post::PostResult {
+                    reconciled: 1,
+                    ..post::PostResult::default()
+                })
+            } else {
+                post::EndpointResult::Unsupported
+            }
         }
 
         fn put_tool_inventory(
@@ -2128,6 +2321,106 @@ mod tests {
     }
 
     #[test]
+    fn previously_sent_prompt_agent_metadata_is_reconciled_once_without_resending_text() {
+        let root = std::env::temp_dir().join(format!(
+            "toard-agent-backfill-{}-{}",
+            std::process::id(),
+            crate::bg::now_unix()
+        ));
+        let file = root.join("session.jsonl");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, "fixture").unwrap();
+        let store = crate::targets::TargetStore::from_root(root.join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("personal-token".into()),
+                endpoint: Some("https://personal.example/api".into()),
+                collect_content: crate::credentials::ContentCollectionMode::ServerManaged,
+                collect_content_since: Some("all".into()),
+                collect_tools: false,
+                ..crate::credentials::Credentials::default()
+            })
+            .unwrap();
+        let record = RawContent {
+            ts_ms: 1_700_000_000_000,
+            session_id: Some("root-session".into()),
+            message_id: Some("message-1".into()),
+            role: "assistant",
+            text: "secret historical response".into(),
+            agent: Some(RawPromptAgent {
+                id: "agent-reviewer".into(),
+                parent_id: Some("root-session".into()),
+                depth: Some(1),
+                name: Some("Reviewer".into()),
+                role: Some("reviewer".into()),
+            }),
+        };
+        let dedup_key = content_dedup_key("codex", &record);
+        let stamp = cursor::stamp(&file).unwrap();
+        let mut previous = cursor::Cursor::default();
+        previous.files.insert(
+            file.display().to_string(),
+            cursor::FileState {
+                mtime_ms: stamp.mtime_ms,
+                size: stamp.size,
+                sent: 1,
+                sent_hash: keys_hash(&[dedup_key.as_str()]),
+            },
+        );
+        cursor::save(&target.state_dir, "codex-content", &previous);
+
+        let parse_calls = Rc::new(Cell::new(0));
+        let transport = FanoutTestTransport::default();
+        transport.support_prompt_agent_reconciliation.set(true);
+
+        let run = || {
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(AgentBackfillTestAdapter {
+                    file: file.clone(),
+                    parse_calls: Rc::clone(&parse_calls),
+                    record: record.clone(),
+                })],
+                Some("codex"),
+                false,
+                true,
+            )
+        };
+
+        assert_eq!(run(), 0);
+        assert_eq!(parse_calls.get(), 1);
+        assert!(transport.prompt_calls.borrow().is_empty());
+        let reconciliation_calls = transport.prompt_agent_reconciliation_calls.borrow();
+        assert_eq!(reconciliation_calls.len(), 1);
+        assert_eq!(reconciliation_calls[0].0, "https://personal.example/api");
+        assert!(!reconciliation_calls[0]
+            .1
+            .contains("secret historical response"));
+        let body: serde_json::Value = serde_json::from_str(&reconciliation_calls[0].1).unwrap();
+        assert_eq!(body["records"][0]["dedupKey"], dedup_key);
+        assert_eq!(body["records"][0]["providerKey"], "codex");
+        assert_eq!(body["records"][0]["agent"]["id"], "agent-reviewer");
+        drop(reconciliation_calls);
+        assert_eq!(
+            cursor::load(&target.state_dir, "codex-content").reconciliation_version,
+            PROMPT_AGENT_METADATA_RECONCILIATION_VERSION
+        );
+
+        assert_eq!(run(), 0);
+        assert_eq!(
+            parse_calls.get(),
+            1,
+            "완료 버전에서는 전체 로그를 다시 파싱하지 않음"
+        );
+        assert_eq!(
+            transport.prompt_agent_reconciliation_calls.borrow().len(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn first_collect_sends_tools_created_after_target_registration() {
         let root = std::env::temp_dir().join(format!(
             "toard-tool-first-run-{}-{}",
@@ -2347,6 +2640,33 @@ mod tests {
         assert!(!reconciliation_active("codex", 1, true, false));
         assert!(!reconciliation_active("claude", 0, true, false));
         assert!(reconciliation_active("codex", 1, false, true));
+    }
+
+    #[test]
+    fn prompt_agent_metadata_reconciliation_supports_only_agent_aware_adapters() {
+        for adapter in ["claude_code", "codex", "cursor"] {
+            assert!(prompt_agent_metadata_reconciliation_active(
+                adapter, 0, true, false
+            ));
+            assert!(!prompt_agent_metadata_reconciliation_active(
+                adapter,
+                PROMPT_AGENT_METADATA_RECONCILIATION_VERSION,
+                true,
+                false
+            ));
+        }
+        assert!(!prompt_agent_metadata_reconciliation_active(
+            "gemini", 0, true, false
+        ));
+        assert!(!prompt_agent_metadata_reconciliation_active(
+            "codex", 0, false, false
+        ));
+        assert!(prompt_agent_metadata_reconciliation_active(
+            "codex",
+            PROMPT_AGENT_METADATA_RECONCILIATION_VERSION,
+            false,
+            true
+        ));
     }
 
     #[test]

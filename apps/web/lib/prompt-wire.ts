@@ -38,6 +38,19 @@ export interface PromptAgentWire {
   role: string | null;
 }
 
+export interface PromptAgentMetadataReconciliationWire {
+  dedupKey: string;
+  providerKey: string;
+  agent: PromptAgentWire;
+}
+
+const SHA256_DEDUP_KEY = /^[a-f0-9]{64}$/;
+const AGENT_METADATA_RECONCILIATION_PROVIDERS = new Set([
+  "claude_code",
+  "codex",
+  "cursor",
+]);
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -63,7 +76,7 @@ function boundedNullableString(v: unknown, field: string, max: number): string |
   return value;
 }
 
-function parsePromptAgentWire(v: unknown): PromptAgentWire | null {
+export function parsePromptAgentWire(v: unknown): PromptAgentWire | null {
   if (v === null || v === undefined) return null;
   if (!isRecord(v)) throw new PromptWireError("agent 는 객체 또는 null 이어야 합니다");
   const id = boundedNullableString(v.id, "agent.id", 255);
@@ -79,6 +92,42 @@ function parsePromptAgentWire(v: unknown): PromptAgentWire | null {
     depth = Number(v.depth);
   }
   return { id, parentId, depth, name, role };
+}
+
+/**
+ * 과거 prompt_records의 서브에이전트 메타데이터만 보정하는 본문을 파싱한다.
+ * 원문·세션·시각은 받지 않고, 기존 수집 때 계산한 정확한 dedupKey만 허용한다.
+ */
+export function parsePromptAgentMetadataReconciliationBody(
+  body: unknown,
+): PromptAgentMetadataReconciliationWire[] {
+  if (!isRecord(body) || !Array.isArray(body.records)) {
+    throw new PromptWireError("records 배열이 필요합니다");
+  }
+  if (body.records.length > 1_000) {
+    throw new PromptWireError("records는 최대 1000개입니다");
+  }
+  return body.records.map((item, index) => {
+    try {
+      if (!isRecord(item)) throw new PromptWireError("레코드는 객체여야 합니다");
+      const dedupKey = nonEmptyString(item.dedupKey, "dedupKey");
+      if (!SHA256_DEDUP_KEY.test(dedupKey)) {
+        throw new PromptWireError("dedupKey는 64자리 소문자 SHA-256이어야 합니다");
+      }
+      const providerKey = nonEmptyString(item.providerKey, "providerKey");
+      if (!AGENT_METADATA_RECONCILIATION_PROVIDERS.has(providerKey)) {
+        throw new PromptWireError("providerKey는 claude_code, codex, cursor 중 하나여야 합니다");
+      }
+      const agent = parsePromptAgentWire(item.agent);
+      if (agent === null) throw new PromptWireError("agent가 필요합니다");
+      return { dedupKey, providerKey, agent };
+    } catch (error) {
+      if (error instanceof PromptWireError && error.index === undefined) {
+        throw new PromptWireError(error.message.replace(/^records\[\d+\]: /, ""), index);
+      }
+      throw error;
+    }
+  });
 }
 
 /** 와이어 JSON(unknown) 1건 → PromptRecordWire. 실패 시 PromptWireError. */

@@ -91,9 +91,10 @@ test("unsupported actions are rejected before a request is sent", async () => {
   assert.equal(called, false);
 });
 
-function helperHarness() {
+function helperHarness(nonce = "c".repeat(32)) {
   let listener: ((event: MessageEvent) => void) | undefined;
   let openedUrl = "";
+  let openedWindowName = "";
   const sent: Array<{ message: unknown; origin: string }> = [];
   const popup = {
     closed: false,
@@ -101,17 +102,28 @@ function helperHarness() {
     postMessage(message: unknown, origin: string) { sent.push({ message, origin }); },
   };
   const environment: LocalShimHelperEnvironment = {
-    open(url) { openedUrl = url; return popup; },
+    open(url, windowName) {
+      openedUrl = url;
+      openedWindowName = windowName;
+      return popup;
+    },
     addMessageListener(next) { listener = next; },
     removeMessageListener(next) { if (listener === next) listener = undefined; },
-    randomNonce: () => "c".repeat(32),
+    randomNonce: () => nonce,
     setTimer: () => 1 as unknown as ReturnType<typeof setTimeout>,
     clearTimer: () => {},
   };
   const emit = (data: unknown, origin = LOCAL_SHIM_BASE_URL, source: unknown = popup) => {
     listener?.({ data, origin, source } as MessageEvent);
   };
-  return { environment, emit, openedUrl: () => openedUrl, popup, sent };
+  return {
+    environment,
+    emit,
+    openedUrl: () => openedUrl,
+    openedWindowName: () => openedWindowName,
+    popup,
+    sent,
+  };
 }
 
 test("browser helper uses a top-level one-time RPC and returns only the status contract", async () => {
@@ -122,6 +134,7 @@ test("browser helper uses a top-level one-time RPC and returns only the status c
     harness.openedUrl(),
     `${LOCAL_SHIM_BASE_URL}/v1/helper?target=${targetId}&nonce=${"c".repeat(32)}`,
   );
+  assert.equal(harness.openedWindowName(), `toard-local-shim-${"c".repeat(32)}`);
   harness.emit({ protocol: "toard-helper-v1", nonce: "c".repeat(32), ready: true });
   assert.deepEqual(harness.sent[0], {
     message: { protocol: "toard-helper-v1", nonce: "c".repeat(32), action: "status" },
@@ -139,6 +152,43 @@ test("browser helper uses a top-level one-time RPC and returns only the status c
   assert.equal(session.transport, "helper");
   assert.equal(session.status.host, "my-mac");
   assert.equal(harness.popup.closed, true);
+});
+
+test("each helper RPC opens a fresh popup browsing context", async () => {
+  const firstNonce = "c".repeat(32);
+  const secondNonce = "d".repeat(32);
+  const first = helperHarness(firstNonce);
+  const firstPending = connectLocalShimWithHelper(targetId, first.environment);
+  first.emit({ protocol: "toard-helper-v1", nonce: firstNonce, ready: true });
+  first.emit({
+    protocol: "toard-helper-v1",
+    nonce: firstNonce,
+    action: "status",
+    ok: true,
+    value: { ok: true, status },
+  });
+  await firstPending;
+
+  const second = helperHarness(secondNonce);
+  const secondPending = runLocalShimAction(
+    { transport: "helper", status: { ...status }, targetId },
+    "update",
+    undefined,
+    second.environment,
+  );
+  second.emit({ protocol: "toard-helper-v1", nonce: secondNonce, ready: true });
+  second.emit({
+    protocol: "toard-helper-v1",
+    nonce: secondNonce,
+    action: "update",
+    ok: true,
+    value: { ok: true, status },
+  });
+  await secondPending;
+
+  assert.notEqual(first.openedWindowName(), second.openedWindowName());
+  assert.equal(first.openedWindowName(), `toard-local-shim-${firstNonce}`);
+  assert.equal(second.openedWindowName(), `toard-local-shim-${secondNonce}`);
 });
 
 test("helper ignores messages from another origin or window and supports actions", async () => {

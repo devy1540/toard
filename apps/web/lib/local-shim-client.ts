@@ -51,7 +51,7 @@ type LocalShimHelperMessage = {
 };
 
 export type LocalShimHelperEnvironment = {
-  open(url: string): LocalShimHelperWindow | null;
+  open(url: string, windowName: string): LocalShimHelperWindow | null;
   addMessageListener(listener: (event: MessageEvent) => void): void;
   removeMessageListener(listener: (event: MessageEvent) => void): void;
   randomNonce(): string;
@@ -197,9 +197,9 @@ export async function runLocalShimAction(
 
 function browserHelperEnvironment(): LocalShimHelperEnvironment {
   return {
-    open: (url) => window.open(
+    open: (url, windowName) => window.open(
       url,
-      "toard-local-shim",
+      windowName,
       "popup,width=420,height=320,resizable=yes,scrollbars=yes",
     ),
     addMessageListener: (listener) => window.addEventListener("message", listener),
@@ -260,7 +260,9 @@ function helperRequest(
       resolve(status);
     };
     environment.addMessageListener(onMessage);
-    popup = environment.open(url);
+    // Bind the window name to this one-time nonce so a later RPC never reuses
+    // the previous helper's browsing context or opener.
+    popup = environment.open(url, `toard-local-shim-${nonce}`);
     if (!popup) {
       fail(new Error("local shim helper popup blocked"));
       return;

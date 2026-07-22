@@ -6,6 +6,7 @@ import Credentials from "next-auth/providers/credentials";
 import GitHub from "next-auth/providers/github";
 import Google from "next-auth/providers/google";
 import { isEmailDomainAllowed } from "@/lib/auth-policy";
+import { resolveMfaSessionId } from "@/lib/auth-session";
 import { getCredentialUserById, verifyCredentialUser } from "@/lib/credential-auth";
 import { getPool } from "@/lib/db";
 import { verifySignedMfaToken } from "@/lib/mfa";
@@ -76,10 +77,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     jwt({ token, user }) {
       if (user?.id) {
         token.uid = user.id;
-        token.mfaSid = (user as { mfaSessionId?: string }).mfaSessionId ?? randomUUID();
-      } else if (typeof token.uid === "string" && typeof token.mfaSid !== "string") {
-        token.mfaSid = randomUUID();
       }
+      const signInSessionId = user?.id
+        ? (user as { mfaSessionId?: string }).mfaSessionId ?? randomUUID()
+        : undefined;
+      const mfaSessionId = resolveMfaSessionId(token, signInSessionId);
+      if (mfaSessionId) token.mfaSid = mfaSessionId;
       return token;
     },
     session({ session, token }) {

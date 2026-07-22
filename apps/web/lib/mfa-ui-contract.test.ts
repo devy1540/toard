@@ -69,8 +69,19 @@ test("sign-out clears the history step-up cookie", () => {
 
 test("history step-up is bound to the current login session", () => {
   const auth = source("auth.ts");
+  const session = source("lib/auth-session.ts");
   const gate = source("lib/history-mfa.ts");
-  assert.match(auth, /token\.mfaSid/);
+  assert.match(auth, /resolveMfaSessionId/);
+  assert.match(session, /token\.jti/);
+  assert.match(session, /token\.uid[\s\S]*token\.iat/);
   assert.match(auth, /session\.mfaSessionId/);
   assert.match(gate, /payload\.nonce === sessionId/);
+});
+
+test("successful history passkey verification navigates without catching a redirect exception", () => {
+  const action = source("app/(dashboard)/history/mfa-actions.ts");
+  const unlock = source("app/(dashboard)/history/history-mfa-unlock.tsx");
+  assert.doesNotMatch(action, /from "next\/navigation"/);
+  assert.match(action, /return \{ returnTo: safeHistoryReturnTo\(input\.returnTo\) \}/);
+  assert.match(unlock, /completeHistoryPasskeyAction[\s\S]*window\.location\.replace\(result\.returnTo\)/);
 });

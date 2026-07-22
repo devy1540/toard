@@ -160,6 +160,20 @@ test("managed history search executes real PostgreSQL filters and signed cursor 
       turnRole: "user", ts: new Date("2026-07-24T02:00:00.000Z"),
       text: "다른 사용자의 로그인 오류는 절대 보이면 안 됩니다.",
     }, otherUserId, "agent-other");
+    await admin.query("ALTER TABLE prompt_records DISABLE TRIGGER prompt_records_session_id_length");
+    try {
+      await insert({
+        dedupKey: "6".repeat(64), sessionId: "l".repeat(256), providerKey: "codex",
+        turnRole: "user", ts: new Date("2026-06-25T02:00:00.000Z"),
+        text: "기존 장문 session id 행은 무관한 UPDATE를 계속 허용해야 합니다.",
+      }, userId, null);
+    } finally {
+      await admin.query("ALTER TABLE prompt_records ENABLE TRIGGER prompt_records_session_id_length");
+    }
+    await admin.query(
+      "UPDATE prompt_records SET received_at = received_at + interval '1 second' WHERE dedup_key = $1",
+      ["6".repeat(64)],
+    );
     await assert.rejects(
       insert({
         dedupKey: "5".repeat(64), sessionId: "s".repeat(256), providerKey: "codex",

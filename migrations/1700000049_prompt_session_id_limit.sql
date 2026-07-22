@@ -1,11 +1,29 @@
 -- Up Migration
 -- 신규 prompt session id는 URL·cursor·provider 계약의 공통 상한(255자)을 따른다.
--- NOT VALID는 기존 설치에 비정상 장문 행이 있어도 배포를 막지 않으면서 신규 쓰기에는 즉시 적용된다.
-ALTER TABLE prompt_records
-  ADD CONSTRAINT prompt_records_session_id_length
-  CHECK (session_id IS NULL OR char_length(session_id) BETWEEN 1 AND 255)
-  NOT VALID;
+-- 기존 장문 행은 보존하며, 무관한 본문/메타데이터 UPDATE도 계속 허용한다.
+CREATE FUNCTION enforce_prompt_records_session_id_length()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+  IF (TG_OP = 'INSERT' OR NEW.session_id IS DISTINCT FROM OLD.session_id)
+     AND NEW.session_id IS NOT NULL
+     AND char_length(NEW.session_id) NOT BETWEEN 1 AND 255 THEN
+    RAISE EXCEPTION USING
+      ERRCODE = '23514',
+      MESSAGE = 'prompt_records session_id length must be between 1 and 255',
+      CONSTRAINT = 'prompt_records_session_id_length';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER prompt_records_session_id_length
+BEFORE INSERT OR UPDATE OF session_id ON prompt_records
+FOR EACH ROW
+EXECUTE FUNCTION enforce_prompt_records_session_id_length();
 
 -- Down Migration
-ALTER TABLE prompt_records
-  DROP CONSTRAINT IF EXISTS prompt_records_session_id_length;
+DROP TRIGGER IF EXISTS prompt_records_session_id_length ON prompt_records;
+DROP FUNCTION IF EXISTS enforce_prompt_records_session_id_length();

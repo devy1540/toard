@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { encryptContent } from "./legacy-content-crypto";
 import { encryptManagedContent } from "./managed-content-crypto";
@@ -397,6 +398,22 @@ test("history search cursor keeps the first range snapshot when an all-period re
   );
   assert.deepEqual(first.sessions.map((session) => session.key), ["session-range-new"]);
   assert.ok(first.nextCursor);
+  const [encodedCursorPayload] = first.nextCursor.split(".");
+  const cursorPayload = JSON.parse(
+    Buffer.from(encodedCursorPayload!, "base64url").toString("utf8"),
+  ) as { scope: string };
+  const predictableScope = createHash("sha256").update(JSON.stringify({
+    userId: USER_ID,
+    query: "snapshot search",
+    rangeKey: firstFilter.searchRangeKey,
+    providerKey: null,
+    agentScope: null,
+  })).digest("base64url");
+  assert.notEqual(cursorPayload.scope, predictableScope);
+  assert.doesNotMatch(
+    Buffer.from(encodedCursorPayload!, "base64url").toString("utf8"),
+    /snapshot search/,
+  );
 
   const second = await searchMyHistorySessions(
     USER_ID,

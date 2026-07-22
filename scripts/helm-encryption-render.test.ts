@@ -189,7 +189,7 @@ contentAdmin:
 test("실제 Helm renderer를 사용한다", () => {
   const version = helm(["version", "--short"]);
   assert.equal(version.status, 0, version.stderr);
-  assert.match(version.stdout, /v3\./);
+  assert.match(version.stdout, /v(?:3|4)\./);
 });
 
 test("default chart에는 content-admin과 encryption ConfigMap이 없다", () => {

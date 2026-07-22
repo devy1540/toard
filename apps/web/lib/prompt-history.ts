@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { decryptContent, loadKek } from "@/lib/content-crypto";
 import {
   decodeHistorySearchCursor,
@@ -342,17 +342,25 @@ export function toHistorySearchSnippet(text: string, query: string, maxLength = 
   return `${start > 0 ? "…" : ""}${normalized.slice(start, end).trim()}${end < normalized.length ? "…" : ""}`;
 }
 
-function historySearchScope(userId: string, filter: HistoryFilter, query: string): string {
-  return createHash("sha256").update(JSON.stringify({
-    userId,
-    query,
-    rangeKey: filter.searchRangeKey ?? {
-      from: filter.from.toISOString(),
-      to: filter.to.toISOString(),
-    },
-    providerKey: filter.providerKey ?? null,
-    agentScope: filter.agentScope ?? null,
-  })).digest("base64url");
+function historySearchScope(
+  userId: string,
+  filter: HistoryFilter,
+  query: string,
+  secret: string,
+): string {
+  return createHmac("sha256", secret)
+    .update("toard:history-search-cursor-scope:v1\0", "utf8")
+    .update(JSON.stringify({
+      userId,
+      query,
+      rangeKey: filter.searchRangeKey ?? {
+        from: filter.from.toISOString(),
+        to: filter.to.toISOString(),
+      },
+      providerKey: filter.providerKey ?? null,
+      agentScope: filter.agentScope ?? null,
+    }))
+    .digest("base64url");
 }
 
 async function runHistoryContext<T>(
@@ -697,7 +705,7 @@ export async function searchMyHistorySessions(
     HISTORY_PAGE_SIZE_LIMIT,
     Math.max(1, Math.trunc(pageSize) || HISTORY_PAGE_SIZE_LIMIT),
   );
-  const scope = historySearchScope(userId, filter, query);
+  const scope = historySearchScope(userId, filter, query, cursorSecret);
   const decodedCursor = decodeHistorySearchCursor(cursor, scope, cursorSecret);
   const initialState: HistorySearchCursorState = decodedCursor ?? {
     from: filter.from,

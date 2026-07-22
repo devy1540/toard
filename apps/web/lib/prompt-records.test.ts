@@ -5,7 +5,11 @@ import { VALID_E2EE_RECORD, createRecordingDb } from "./e2ee-test-fixtures";
 import { decryptManagedContent } from "./managed-content-crypto";
 import type { ManagedContentRuntime } from "./managed-content-runtime";
 import type { PromptRecordWire } from "./prompt-wire";
-import { saveE2eePromptRecords, saveManagedPromptRecords } from "./prompt-records";
+import {
+  reconcilePromptAgentMetadata,
+  saveE2eePromptRecords,
+  saveManagedPromptRecords,
+} from "./prompt-records";
 
 const USER_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_USER_ID = "22222222-2222-4222-8222-222222222222";
@@ -136,6 +140,53 @@ test("managed records preserve subagent identity columns", async () => {
     "Reviewer",
     "reviewer",
   ]);
+});
+
+test("agent metadata reconciliation은 사용자·provider·dedup 키가 일치하는 NULL 분류만 갱신한다", async () => {
+  const db = createManagedDb([2]);
+  const records = [{
+    dedupKey: "a".repeat(64),
+    providerKey: "codex",
+    agent: {
+      id: "agent-reviewer",
+      parentId: "root-session",
+      depth: 1,
+      name: "Reviewer",
+      role: "reviewer",
+    },
+  }];
+
+  assert.deepEqual(
+    await reconcilePromptAgentMetadata(USER_ID, records, db),
+    { reconciled: 2 },
+  );
+  assert.equal(db.calls.length, 1);
+  const update = db.calls[0]!;
+  assert.match(update.sql, /UPDATE prompt_records/);
+  assert.match(update.sql, /existing\.user_id = \$1/);
+  assert.match(update.sql, /existing\.provider_key = incoming\.provider_key/);
+  assert.match(update.sql, /existing\.dedup_key = incoming\.dedup_key/);
+  assert.match(update.sql, /existing\.agent_id IS NULL/);
+  assert.doesNotMatch(update.sql, /ciphertext\s*=/);
+  assert.equal(update.params[0], USER_ID);
+  assert.deepEqual(JSON.parse(update.params[1] as string), [{
+    dedup_key: "a".repeat(64),
+    provider_key: "codex",
+    agent_id: "agent-reviewer",
+    parent_agent_id: "root-session",
+    agent_depth: 1,
+    agent_name: "Reviewer",
+    agent_role: "reviewer",
+  }]);
+});
+
+test("빈 agent metadata reconciliation은 DB를 호출하지 않는다", async () => {
+  const db = createManagedDb();
+  assert.deepEqual(
+    await reconcilePromptAgentMetadata(USER_ID, [], db),
+    { reconciled: 0 },
+  );
+  assert.equal(db.calls.length, 0);
 });
 
 test("managed 저장은 trusted userId와 암호화한 canonical metadata만 사용한다", async () => {

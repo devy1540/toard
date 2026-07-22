@@ -1,7 +1,10 @@
 import { encryptManagedContent } from "@/lib/managed-content-crypto";
 import type { ManagedContentRuntime } from "@/lib/managed-content-runtime";
 import { withUserContext } from "@/lib/rls";
-import type { PromptRecordWire } from "@/lib/prompt-wire";
+import type {
+  PromptAgentMetadataReconciliationWire,
+  PromptRecordWire,
+} from "@/lib/prompt-wire";
 import { fromBase64Url, type E2eePromptRecordWire } from "@/lib/e2ee-contract";
 import type { PoolClient } from "pg";
 
@@ -59,6 +62,57 @@ export type PromptDb = {
     params?: unknown[],
   ): Promise<{ rows: Record<string, unknown>[]; rowCount?: number | null }>;
 };
+
+/**
+ * 이미 저장된 프롬프트의 서브에이전트 계층만 한 번 보정한다.
+ *
+ * - ingest token의 userId 범위 안에서만 동작한다.
+ * - 정확한 provider + dedup_key가 모두 일치해야 한다.
+ * - agent_id가 NULL인 기존 행만 채우며 기존 분류는 덮어쓰지 않는다.
+ * - 본문·암호문·키 메타데이터는 읽거나 수정하지 않는다.
+ */
+export async function reconcilePromptAgentMetadata(
+  userId: string,
+  records: PromptAgentMetadataReconciliationWire[],
+  db?: PromptDb,
+): Promise<{ reconciled: number }> {
+  if (records.length === 0) return { reconciled: 0 };
+  const payload = records.map((record) => ({
+    dedup_key: record.dedupKey,
+    provider_key: record.providerKey,
+    agent_id: record.agent.id,
+    parent_agent_id: record.agent.parentId,
+    agent_depth: record.agent.depth,
+    agent_name: record.agent.name,
+    agent_role: record.agent.role,
+  }));
+
+  return runPromptContext(userId, db, async (tx) => {
+    const result = await tx.query(
+      `UPDATE prompt_records AS existing
+       SET agent_id = incoming.agent_id,
+           parent_agent_id = incoming.parent_agent_id,
+           agent_depth = incoming.agent_depth,
+           agent_name = incoming.agent_name,
+           agent_role = incoming.agent_role
+       FROM jsonb_to_recordset($2::jsonb) AS incoming(
+         dedup_key TEXT,
+         provider_key TEXT,
+         agent_id TEXT,
+         parent_agent_id TEXT,
+         agent_depth SMALLINT,
+         agent_name TEXT,
+         agent_role TEXT
+       )
+       WHERE existing.user_id = $1
+         AND existing.provider_key = incoming.provider_key
+         AND existing.dedup_key = incoming.dedup_key
+         AND existing.agent_id IS NULL`,
+      [userId, JSON.stringify(payload)],
+    );
+    return { reconciled: result.rowCount ?? 0 };
+  });
+}
 
 export async function saveManagedPromptRecords(
   userId: string,

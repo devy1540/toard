@@ -162,6 +162,12 @@ pub trait Transport {
     ) -> Result<Option<PostResult>, String>;
     fn post_tool_events(&self, endpoint: &str, token: &str, body: &str) -> EndpointResult;
     fn post_usage_reconciliation(&self, endpoint: &str, token: &str, body: &str) -> EndpointResult;
+    fn post_prompt_agent_metadata_reconciliation(
+        &self,
+        endpoint: &str,
+        token: &str,
+        body: &str,
+    ) -> EndpointResult;
     fn put_tool_inventory(&self, endpoint: &str, token: &str, body: &str) -> EndpointResult;
 }
 
@@ -187,6 +193,15 @@ impl Transport for CurlTransport {
 
     fn post_usage_reconciliation(&self, endpoint: &str, token: &str, body: &str) -> EndpointResult {
         post_usage_reconciliation(endpoint, token, body)
+    }
+
+    fn post_prompt_agent_metadata_reconciliation(
+        &self,
+        endpoint: &str,
+        token: &str,
+        body: &str,
+    ) -> EndpointResult {
+        post_prompt_agent_metadata_reconciliation(endpoint, token, body)
     }
 
     fn put_tool_inventory(&self, endpoint: &str, token: &str, body: &str) -> EndpointResult {
@@ -218,6 +233,27 @@ pub fn post_usage_reconciliation(endpoint: &str, token: &str, body: &str) -> End
         "POST",
         "/v1/events/reconcile",
         "usage-reconciliation",
+        body,
+    ) {
+        Outcome::Ok(result) => EndpointResult::Ok(result),
+        Outcome::Unsupported => EndpointResult::Unsupported,
+        Outcome::Unauthorized => EndpointResult::Unauthorized,
+        Outcome::Disabled => EndpointResult::Err("HTTP 503".into()),
+        Outcome::Err(error) => EndpointResult::Err(error),
+    }
+}
+
+pub fn post_prompt_agent_metadata_reconciliation(
+    endpoint: &str,
+    token: &str,
+    body: &str,
+) -> EndpointResult {
+    match post_batch(
+        endpoint,
+        token,
+        "POST",
+        "/v1/prompts/reconcile",
+        "prompt-agent-metadata-reconciliation",
         body,
     ) {
         Outcome::Ok(result) => EndpointResult::Ok(result),
@@ -301,6 +337,15 @@ mod tests {
         }
 
         fn post_usage_reconciliation(
+            &self,
+            _endpoint: &str,
+            _token: &str,
+            _body: &str,
+        ) -> EndpointResult {
+            EndpointResult::Unsupported
+        }
+
+        fn post_prompt_agent_metadata_reconciliation(
             &self,
             _endpoint: &str,
             _token: &str,

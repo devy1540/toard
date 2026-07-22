@@ -6,7 +6,8 @@
 // 다운로드는 install.sh 와 동일하게 curl + SHA256SUMS 검증, 교체는 rename(원자적).
 
 use std::env;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::bg;
 use crate::cli::version;
@@ -16,6 +17,7 @@ const CHECK_INTERVAL_SECS: u64 = 2 * 60 * 60;
 /// 내부 argv — 사용자 커맨드와 충돌하지 않도록 언더스코어 프리픽스
 pub const SPAWN_ARG: &str = "___toard-spawn-updater";
 pub const RUN_ARG: &str = "___toard-self-update";
+pub const START_LOCAL_AFTER_UPDATE_ARG: &str = "___toard-start-local-after-update";
 
 fn repo() -> String {
     env::var("TOARD_REPO").unwrap_or_else(|_| "devy1540/toard".into())
@@ -86,17 +88,83 @@ pub fn run_self_update(quiet: bool) -> i32 {
     };
     if latest == current {
         say!("이미 최신 버전입니다 (v{current})");
-        return 0;
+        return finish_with_local_bridge(current_executable(), quiet);
     }
     say!("업데이트: v{current} → v{latest}");
     match download_and_replace(&latest) {
         Ok(path) => {
-            say!("교체 완료: {path} — 다음 실행부터 v{latest} 가 적용됩니다");
-            0
+            say!(
+                "교체 완료: {} — 다음 실행부터 v{latest} 가 적용됩니다",
+                path.display()
+            );
+            finish_with_local_bridge(Ok(path), quiet)
         }
         Err(e) => {
             if !quiet {
                 eprintln!("toard-shim: 업데이트 실패 — {e}");
+            }
+            if quiet {
+                0
+            } else {
+                1
+            }
+        }
+    }
+}
+
+fn current_executable() -> Result<PathBuf, String> {
+    env::current_exe()
+        .and_then(|path| path.canonicalize())
+        .map_err(|error| format!("설치 경로 확인 실패: {error}"))
+}
+
+fn should_start_local_bridge_after_update(bridge_action: Option<&str>) -> bool {
+    bridge_action != Some("1")
+}
+
+fn local_bridge_start_command(exe: &Path) -> Command {
+    let mut command = Command::new(exe);
+    command
+        .arg(START_LOCAL_AFTER_UPDATE_ARG)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command
+}
+
+fn start_local_bridge_after_update(exe: &Path) -> Result<(), String> {
+    let status = local_bridge_start_command(exe)
+        .status()
+        .map_err(|error| format!("새 shim 실행 실패: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "새 shim의 로컬 bridge 시작 실패(exit={})",
+            status.code().unwrap_or(1)
+        ))
+    }
+}
+
+fn finish_with_local_bridge(exe: Result<PathBuf, String>, quiet: bool) -> i32 {
+    if !should_start_local_bridge_after_update(
+        env::var(crate::local_bridge::BRIDGE_ACTION_ENV)
+            .ok()
+            .as_deref(),
+    ) {
+        return 0;
+    }
+    let result = exe.and_then(|path| start_local_bridge_after_update(&path));
+    match result {
+        Ok(()) => {
+            if !quiet {
+                println!("UI 로컬 bridge 자동 기동 완료");
+            }
+            0
+        }
+        Err(error) => {
+            if !quiet {
+                eprintln!("toard-shim: 업데이트 후 UI 로컬 bridge 시작 실패 — {error}");
             }
             if quiet {
                 0
@@ -302,7 +370,7 @@ where
 }
 
 /// 다운로드 → SHA256 검증 → chmod 755 → rename 으로 자기 자신 교체(원자적).
-fn download_and_replace(latest: &str) -> Result<String, String> {
+fn download_and_replace(latest: &str) -> Result<PathBuf, String> {
     let exe = env::current_exe()
         .and_then(|p| p.canonicalize())
         .map_err(|e| format!("설치 경로 확인 실패: {e}"))?;
@@ -354,7 +422,7 @@ fn download_and_replace(latest: &str) -> Result<String, String> {
     }
     #[cfg(windows)]
     sync_sibling_copies(&exe);
-    Ok(exe.display().to_string())
+    Ok(exe)
 }
 
 #[cfg(unix)]
@@ -423,6 +491,25 @@ mod tests {
                 "toard-shim-background-x86_64-pc-windows-msvc.exe".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn post_update_bridge_start_uses_the_replaced_binary_internal_entrypoint() {
+        let exe = std::path::Path::new("/installed/toard-shim");
+        let command = local_bridge_start_command(exe);
+
+        assert_eq!(command.get_program(), exe.as_os_str());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            vec![std::ffi::OsStr::new(START_LOCAL_AFTER_UPDATE_ARG)]
+        );
+    }
+
+    #[test]
+    fn bridge_managed_update_leaves_restart_to_the_existing_bridge() {
+        assert!(!should_start_local_bridge_after_update(Some("1")));
+        assert!(should_start_local_bridge_after_update(None));
+        assert!(should_start_local_bridge_after_update(Some("0")));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 import { getE2eeHistorySession } from "@/lib/e2ee-history";
 import { isContentAuthOpen, requireContentSession } from "@/lib/content-session";
+import { getHistoryMfaGate } from "@/lib/history-mfa";
 
 type RouteContext = { params: Promise<{ key: string }> };
 
@@ -7,6 +8,8 @@ export async function GET(_request: Request, context: RouteContext): Promise<Res
   if (isContentAuthOpen()) return problem(403, "E2EE_AUTH_REQUIRED");
   const userId = await requireContentSession();
   if (!userId) return problem(401, "UNAUTHORIZED");
+  const mfa = await getHistoryMfaGate(userId);
+  if (mfa.required && !mfa.verified) return problem(403, "MFA_REQUIRED");
 
   const { key } = await context.params;
   try {

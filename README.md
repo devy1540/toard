@@ -259,6 +259,13 @@ BOOTSTRAP_ADMIN_PASSWORD=...                # Optional: seed stores an admin pas
 
 Passwords are stored only as bcrypt hashes with cost 12. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.
 
+**Passkey multi-factor authentication** — users can register one or more WebAuthn passkeys under `/settings` and enable either or both policies independently:
+
+- require a registered passkey after a successful email/password check;
+- require passkey verification before the My history page or its content APIs can be opened.
+
+OAuth provider sign-in is not given a duplicate TOARD login challenge. OAuth users can still enable the separate My history lock. History access is held in a signed HttpOnly cookie for 30 minutes and is bound to the current login session, user, and MFA policy version. It is rejected after a new login session and invalidated whenever the passkey policy changes. Passkey public keys and monotonic counters are stored server-side; private keys remain with the user's platform credential provider. WebAuthn requires HTTPS, except for localhost development.
+
 **OAuth** — only providers with configured credentials are enabled. Development without a configured provider falls back to the first user:
 
 ```bash

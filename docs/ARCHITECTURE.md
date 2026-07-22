@@ -85,6 +85,7 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 ### ADR-007 — 인증: Auth.js (NextAuth), AUTH_MODE + JWT 세션
 - **결정:** 인증은 **Auth.js**. 계정·user 는 **Postgres**(adapter), 세션은 **JWT**(Credentials 는 database 세션 미지원). `AUTH_MODE` 로 배포 시 선택: `oauth`(GitHub/Google **+ id/pw credentials**)·`open`(인증 없음·내부망 전제). credentials 는 `AUTH_CREDENTIALS_ENABLED`(기본 on)로 토글 — 로그인 `/login`·가입 `/signup`(도메인 게이팅)·비번 변경/설정 `/settings`. 비번은 **bcrypt(cost 12)** 해시로만 저장. magic-link 는 확장 예정. 이메일 도메인 제한 + 검증된 identity.
 - **근거:** ADR-003(메타·계정은 항상 PG)과 일치. 조직마다 인증 요구가 달라(OAuth 불필요한 내부망 조직도 존재) 모드 선택이 필요. Supabase Auth(zeude·day1co) 대비 외부 종속 없음. **JWT 트레이드오프:** 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(database 세션의 즉시 무효화는 포기). **credentials 보안:** 기존 OAuth 이메일로는 가입 불가(계정 탈취 방지), 미존재/OAuth 전용 계정도 더미 해시 비교로 사용자 열거(timing) 완화.
+- **MFA 확장:** 자체 credentials 로그인은 비밀번호 확인 뒤 WebAuthn 패스키 사용자 검증을 선택적으로 요구한다. OAuth 로그인은 IdP 인증을 중복하지 않되, OAuth 사용자도 `내 히스토리` 전용 패스키 잠금을 켤 수 있다. 로그인과 히스토리는 같은 패스키 목록을 사용하지만 정책은 독립적이다. RP ID·origin·5분 일회용 challenge와 사용자 검증을 필수로 확인하며 서버에는 public key와 counter만 저장한다. 히스토리 잠금 해제는 현재 로그인 세션 ID·사용자·MFA 설정 버전·30분 만료에 결합한 서명 HttpOnly 쿠키이며 서버 렌더링과 `/api/content/history/*`가 같은 검사를 수행한다. 새 로그인 세션은 이전 잠금 해제 쿠키를 승계하지 않는다. 이 인증용 패스키는 기존 E2EE 콘텐츠 키 PRF wrapper와 분리한다.
 
 ### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4) · **표출은 뷰어 타임존 (v4 개정)**
 - **결정:** 이벤트 `ts`는 항상 **UTC `timestamptz`** 저장(불변). 일별 집계·리더보드의 "하루" 경계는 **조직 단위 타임존 설정 `ORG_TIMEZONE`**(IANA, 기본 `UTC`)으로 결정한다. 앱이 env를 읽어 검증(무효 시 UTC 폴백) 후 `StorageBackend` 생성자에 주입 — 패키지는 env를 직접 읽지 않는다(core 의존성 0 유지).

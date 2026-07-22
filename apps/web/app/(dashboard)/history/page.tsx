@@ -20,11 +20,13 @@ import { getMyHistorySessions } from "@/lib/prompt-history";
 import { getEnabledProviders } from "@/lib/providers";
 import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
+import { getHistoryMfaGate } from "@/lib/history-mfa";
 import { SessionDetail } from "./session-detail";
 import { E2eeHistoryClient } from "./e2ee-history-client";
 import { HistorySecurityLink } from "./history-security-link";
 import { HistorySessionList } from "./history-session-list";
 import type { HistoryListItem } from "./history-list-view";
+import { HistoryMfaUnlock } from "./history-mfa-unlock";
 
 export const dynamic = "force-dynamic";
 
@@ -102,7 +104,14 @@ export default async function HistoryPage({
   }
 
   const sp = await searchParams;
-  const e2eeAllowed = (process.env.AUTH_MODE ?? "oauth") !== "open";
+  const authEnabled = (process.env.AUTH_MODE ?? "oauth") !== "open";
+  if (authEnabled) {
+    const historyMfa = await getHistoryMfaGate(userId);
+    if (historyMfa.required && !historyMfa.verified) {
+      return <HistoryMfaUnlock returnTo={historyHref(sp, {})} />;
+    }
+  }
+  const e2eeAllowed = authEnabled;
   const providers = await getEnabledProviders();
   const providerLabel = (key: string): string => providers.find((p) => p.key === key)?.label ?? key;
   const locale = await getLocale();

@@ -213,6 +213,13 @@
     "codeDiagramRendering": "Rendering diagram.",
     "codeDiagramFailed": "Couldn't render the diagram. Use Read or Raw to inspect the source.",
     "codeCopied": "Code copied.",
+    "mfa": {
+      "passkeyDescription": "Verify with a registered passkey before opening sensitive prompts and responses. The unlock lasts 30 minutes.",
+      "unlockWithPasskey": "Unlock with passkey",
+      "invalidPasskey": "Passkey verification could not be completed. Try again.",
+      "title": "My history is locked",
+      "unlocking": "Verifying…"
+    },
     "e2ee": {
       "title": "End-to-end encrypted history",
       "loading": "Checking encryption status…",

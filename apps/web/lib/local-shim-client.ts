@@ -138,6 +138,33 @@ export function connectLocalShimWithHelper(
   }));
 }
 
+/**
+ * Browser-independent connection flow.
+ *
+ * A top-level helper window works across browser engines even when an HTTPS page
+ * cannot fetch an HTTP loopback address directly. The helper is opened first so
+ * the call still has the user's click activation. Browsers that block pop-ups
+ * can fall back to the direct CORS/PNA path when they support it.
+ */
+export async function connectLocalShimFromBrowser(
+  targetId: string,
+  helperEnvironment: LocalShimHelperEnvironment = browserHelperEnvironment(),
+  fetcher: LocalShimFetch = fetch,
+): Promise<LocalShimSession> {
+  try {
+    return await connectLocalShimWithHelper(targetId, helperEnvironment);
+  } catch (helperError) {
+    try {
+      return await connectLocalShim(targetId, fetcher);
+    } catch (directError) {
+      throw new AggregateError(
+        [helperError, directError],
+        "could not connect to the local shim with any browser transport",
+      );
+    }
+  }
+}
+
 export async function runLocalShimAction(
   session: LocalShimSession,
   action: LocalShimAction,
@@ -166,10 +193,6 @@ export async function runLocalShimAction(
   const result = await response.json() as { ok?: boolean };
   if (result.ok !== true) throw new Error("local shim action failed");
   return null;
-}
-
-export function isSafariBrowser(userAgent: string): boolean {
-  return /Safari\//.test(userAgent) && !/(Chrome|Chromium|CriOS|FxiOS|Edg|OPR)\//.test(userAgent);
 }
 
 function browserHelperEnvironment(): LocalShimHelperEnvironment {

@@ -34,9 +34,9 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 
 - 브라우저 `Origin`이 설치 때 기록한 실제 UI origin과 정확히 일치하고 전체 target ID도 맞을 때만 응답한다. 경로가 다른 same-origin target이나 UI/ingest URL이 분리된 프록시에서도 현재 서버 target만 선택한다.
 - 상태 연결 때 발급한 10분짜리 메모리 세션을 작업 요청의 `Authorization: Bearer`로 요구한다. 세션은 origin과 target ID에 함께 묶이고 재시작하면 사라진다.
-- Safari처럼 HTTPS 페이지의 HTTP loopback fetch를 막는 브라우저는 사용자 클릭으로 작은 loopback helper 창을 연다. helper는 저장된 UI origin의 `postMessage`만 받고 target에 묶인 30초짜리 일회 capability로 동일-origin 요청을 실행한 뒤 결과만 원래 설정 UI에 돌려주고 닫힌다.
+- 브라우저 종류와 무관하게 사용자 클릭으로 작은 loopback helper 창을 먼저 연다. helper는 저장된 UI origin의 `postMessage`만 받고 target에 묶인 30초짜리 일회 capability로 동일-origin 요청을 실행한 뒤 결과만 원래 설정 UI에 돌려주고 닫힌다.
 - ingest token, credentials, endpoint, 명령 출력, 원문 로그는 응답하지 않는다. 내부 종료 요청은 `~/.toard/state/local-bridge-secret`의 별도 0600 secret으로 인증한다.
-- 직접 연결에는 CORS와 Private Network Access 응답 헤더를 제공한다. helper HTML은 외부 subresource·frame을 막는 CSP를 사용하며 구버전 shim에서만 기존 수동 명령 UI를 유지한다.
+- helper 창이 즉시 차단된 브라우저를 위해 직접 연결에는 CORS와 Private Network Access 응답 헤더를 제공한다. helper HTML은 외부 subresource·frame을 막는 CSP를 사용하며 구버전 shim에서만 기존 수동 명령 UI를 유지한다.
 
 ### target 저장 구조와 구버전 이전
 

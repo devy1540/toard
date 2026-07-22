@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import { useEffect, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import { formatVersion } from "@toard/core";
@@ -75,6 +76,10 @@ export function ServerUpdatePanel({
   if (!status.available) {
     return (
       <div className="space-y-1 text-sm">
+        <p>
+          <span className="text-muted-foreground">{t("system.updateCurrent")}</span>{" "}
+          <span className="font-mono">{formatVersion(status.currentVersion ?? currentVersion)}</span>
+        </p>
         <p className="text-muted-foreground">{t("system.updateUnavailable")}</p>
         <p className="text-muted-foreground text-xs">{t("system.updateUnavailableHint")}</p>
         {status.error ? <p className="text-destructive text-xs">{status.error}</p> : null}

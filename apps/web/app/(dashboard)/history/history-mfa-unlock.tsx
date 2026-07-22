@@ -19,7 +19,8 @@ export function HistoryMfaUnlock({ returnTo }: { returnTo: string }) {
     try {
       const ceremony = await beginHistoryPasskeyAction();
       const response = await startAuthentication({ optionsJSON: ceremony.options });
-      await completeHistoryPasskeyAction({ challengeId: ceremony.challengeId, response, returnTo });
+      const result = await completeHistoryPasskeyAction({ challengeId: ceremony.challengeId, response, returnTo });
+      window.location.replace(result.returnTo);
     } catch {
       setError(t("invalidPasskey"));
     } finally {

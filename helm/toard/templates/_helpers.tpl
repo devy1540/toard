@@ -83,7 +83,7 @@
 {{- end -}}
 
 {{/* packages/core/src/deployment-release.ts와 Helm render test가 drift를 차단한다. */}}
-{{- define "toard.expectedSchemaVersion" -}}1700000049{{- end -}}
+{{- define "toard.expectedSchemaVersion" -}}1700000050{{- end -}}
 
 {{- define "toard.deploymentId" -}}
 {{- printf "%s/%s" .Release.Namespace .Release.Name -}}

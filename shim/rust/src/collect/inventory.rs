@@ -119,6 +119,18 @@ fn save_scan_state(global_state_dir: &Path, state: &InventoryScanState) {
     }
 }
 
+/// 서버가 도구 인벤토리에서 기기를 식별할 때 사용하는 값과 같은 식별자다.
+/// 제어 동기화가 인벤토리 재스캔 여부와 무관하게 안정된 기기 ID를 사용할 수 있게 한다.
+pub fn device_id(global_state_dir: &Path) -> Option<String> {
+    let mut state = load_scan_state(global_state_dir);
+    if state.device_id.len() == 64 && state.device_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Some(state.device_id);
+    }
+    state.device_id = random_device_id();
+    save_scan_state(global_state_dir, &state);
+    Some(state.device_id)
+}
+
 fn watched_paths(home: &Path) -> Vec<PathBuf> {
     vec![
         home.join(".claude/settings.json"),

@@ -12,17 +12,18 @@ import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims } from "@/lib/host-shims";
-import { getPublicBaseUrl, getRequestOrigin, localShimTargetId } from "@/lib/public-url";
+import { getPublicBaseUrl, getRequestOrigin } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
 import { listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
 import { getMfaStatus } from "@/lib/mfa-store";
+import { getDeviceControlRepository, type DeviceControlView } from "@/lib/device-control-repository";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { AppearanceForm } from "./appearance-form";
-import { DeviceActions } from "./device-actions";
+import { DeviceActions, type DeviceControlClientView } from "./device-actions";
 import { DeviceInventory } from "./device-inventory";
 import { OnboardingPanel } from "./onboarding-panel";
 import { OnboardingWizard } from "./onboarding-wizard";
@@ -30,7 +31,6 @@ import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
 import { HistorySecurityPanel } from "./history-security-panel";
-import { LocalShimPanel } from "./local-shim-panel";
 import { MfaSettingsPanel } from "./mfa-settings-panel";
 
 export const dynamic = "force-dynamic";
@@ -167,13 +167,14 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [tokens, baseUrl, uiOrigin, devices, shims, inventories] = await Promise.all([
+  const [tokens, baseUrl, uiOrigin, devices, shims, inventories, controls] = await Promise.all([
     listActiveTokens(userId),
     getPublicBaseUrl(),
     getRequestOrigin(),
     getStorage().getUserHosts(userId),
     getHostShims(userId),
     getMyDeviceInventories(userId),
+    getDeviceControlRepository().listUserDevices(userId),
   ]);
   const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
@@ -212,12 +213,15 @@ async function InstallTab({ userId }: { userId: string }) {
         </CardContent>
       </Card>
 
-      <LocalShimPanel
-        serverVersion={serverVersion}
-        targetId={localShimTargetId(`${baseUrl.replace(/\/+$/, "")}/api`)}
-      />
       <TokenManagementPanel tokens={tokenRows} />
-      <DeviceList devices={devices} shims={shims} inventories={inventories} serverVersion={serverVersion} />
+      <DeviceList
+        devices={devices}
+        shims={shims}
+        inventories={inventories}
+        controls={controls}
+        serverVersion={serverVersion}
+        contentEnabled={contentEnabled}
+      />
     </div>
   );
 }
@@ -226,12 +230,16 @@ async function DeviceList({
   devices,
   shims,
   inventories,
+  controls,
   serverVersion,
+  contentEnabled,
 }: {
   devices: DeviceInfo[];
   shims: Map<string, { version: string; lastSeenAt: Date }>;
   inventories: import("@toard/core").DeviceToolInventory[];
+  controls: DeviceControlView[];
   serverVersion: string;
+  contentEnabled: boolean;
 }) {
   const t = await getTranslations("settings");
   const locale = await getLocale();
@@ -267,8 +275,37 @@ async function DeviceList({
               {devices.map((d) => {
                 const shim = d.host ? shims.get(d.host) : undefined;
                 const inventory = inventories.find((item) => item.host === d.host);
+                const control = inventory
+                  ? controls.find(
+                      (item) =>
+                        item.tokenId === inventory.tokenId &&
+                        item.deviceFingerprint === inventory.fingerprint,
+                    )
+                  : undefined;
                 const outdated = shim ? isShimOutdated(shim.version, serverVersion) : false;
-                const primaryAction = !shim ? "doctor" : outdated ? "update" : "collect";
+                const controlView: DeviceControlClientView | null = control
+                  ? {
+                      tokenId: control.tokenId,
+                      deviceFingerprint: control.deviceFingerprint,
+                      desiredGeneration: control.desiredGeneration,
+                      desiredContentMode: control.desiredContentMode,
+                      appliedGeneration: control.appliedGeneration,
+                      appliedContentMode: control.appliedContentMode,
+                      daemonActive: control.daemonActive,
+                      lastSyncAt: control.lastSyncAt?.toISOString() ?? null,
+                      lastSyncLabel: control.lastSyncAt
+                        ? fmtWhen.format(control.lastSyncAt)
+                        : null,
+                      errorCode: control.errorCode,
+                      command: control.command
+                        ? {
+                            type: control.command.type,
+                            status: control.command.status,
+                            resultCode: control.command.resultCode,
+                          }
+                        : null,
+                    }
+                  : null;
                 return (
                   <TableRow key={d.host ?? "__unknown__"}>
                     <TableCell>
@@ -308,7 +345,7 @@ async function DeviceList({
                       {fmtWhen.format(d.lastSeenAt)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <DeviceActions primary={primaryAction} />
+                      <DeviceActions control={controlView} contentEnabled={contentEnabled} />
                     </TableCell>
                   </TableRow>
                 );

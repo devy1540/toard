@@ -824,6 +824,10 @@ fn run_with_selected(
         });
     }
 
+    // 서버에서 마지막으로 적용한 target별 본문 수집 정책을 실제 수집 전에 반영한다.
+    // 자격 증명 파일은 설치 정책의 복구 기준으로 남겨 두고 제어 상태만 덮어쓴다.
+    crate::device_control::apply_overrides(&mut targets);
+
     if let Some(endpoint) = selected_endpoint {
         targets.retain(|target| target.endpoint == endpoint);
         if targets.is_empty() {

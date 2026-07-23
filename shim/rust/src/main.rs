@@ -17,6 +17,7 @@ pub mod credentials;
 mod cursor_hook;
 mod daemon;
 pub mod delivery;
+mod device_control;
 mod e2ee_setup;
 mod fsx;
 mod host;

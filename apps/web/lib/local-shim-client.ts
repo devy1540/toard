@@ -1,4 +1,7 @@
 export const LOCAL_SHIM_BASE_URL = "http://127.0.0.1:38473";
+const LOCAL_SHIM_STATUS_TIMEOUT_MS = 3_000;
+const LOCAL_SHIM_ACTION_TIMEOUT_MS = 30_000;
+const LOCAL_SHIM_LONG_ACTION_TIMEOUT_MS = 120_000;
 
 export type LocalShimAction = "collect" | "doctor" | "update";
 
@@ -119,7 +122,7 @@ export async function connectLocalShim(
     fetcher,
     "/v1/status",
     { method: "GET", headers: { "X-Toard-Target": targetId } },
-    3_000,
+    LOCAL_SHIM_STATUS_TIMEOUT_MS,
   );
   if (!response.ok) throw new Error(`local shim status failed: ${response.status}`);
   const value: unknown = await response.json();
@@ -187,7 +190,9 @@ export async function runLocalShimAction(
         "X-Toard-Target": session.targetId,
       },
     },
-    action === "collect" || action === "update" ? 120_000 : 30_000,
+    action === "collect" || action === "update"
+      ? LOCAL_SHIM_LONG_ACTION_TIMEOUT_MS
+      : LOCAL_SHIM_ACTION_TIMEOUT_MS,
   );
   if (!response.ok) throw new Error(`local shim action failed: ${response.status}`);
   const result = await response.json() as { ok?: boolean };
@@ -267,7 +272,11 @@ function helperRequest(
       fail(new Error("local shim helper popup blocked"));
       return;
     }
-    const timeoutMs = action === "collect" || action === "update" ? 120_000 : 30_000;
+    const timeoutMs = action === "status"
+      ? LOCAL_SHIM_STATUS_TIMEOUT_MS
+      : action === "collect" || action === "update"
+        ? LOCAL_SHIM_LONG_ACTION_TIMEOUT_MS
+        : LOCAL_SHIM_ACTION_TIMEOUT_MS;
     timer = environment.setTimer(
       () => fail(new Error("local shim helper timed out")),
       timeoutMs,

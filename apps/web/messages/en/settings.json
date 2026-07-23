@@ -47,6 +47,40 @@
       "update": "Update",
       "more": "More device actions"
     },
+    "deviceControl": {
+      "waiting": "Waiting for headless control",
+      "history": "History collection",
+      "on": "ON",
+      "off": "OFF",
+      "legacy": "Legacy E2EE",
+      "applying": "Pending",
+      "collect": "Collect now",
+      "doctor": "Diagnose",
+      "saved": "Saved. The shim will apply it on the next sync.",
+      "failed": "Could not save the device control request.",
+      "serverDisabled": "Content collection is disabled on this server.",
+      "shimError": "The shim reported a problem applying the latest state.",
+      "periodicInactive": "Periodic collection is off, so changes may be delayed.",
+      "lastSync": "Control synced {time}",
+      "queued": {
+        "collect": "Collection command queued.",
+        "doctor": "Diagnostic command queued."
+      },
+      "running": {
+        "collect": "The device is processing the collection command.",
+        "doctor": "The device is processing the diagnostic command."
+      },
+      "completed": {
+        "collect": {
+          "succeeded": "The last collection command completed.",
+          "failed": "The last collection command failed."
+        },
+        "doctor": {
+          "succeeded": "The last diagnostic command completed.",
+          "failed": "The last diagnostic command failed."
+        }
+      }
+    },
     "localControl": {
       "title": "Control this computer's shim",
       "description": "Connect safely from the browser to toard-shim on this computer only.",

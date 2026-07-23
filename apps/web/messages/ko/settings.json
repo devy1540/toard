@@ -47,6 +47,40 @@
       "update": "업데이트",
       "more": "기기 작업 더보기"
     },
+    "deviceControl": {
+      "waiting": "headless 제어 대기",
+      "history": "히스토리 수집",
+      "on": "ON",
+      "off": "OFF",
+      "legacy": "기존 E2EE",
+      "applying": "적용 대기",
+      "collect": "지금 수집",
+      "doctor": "진단",
+      "saved": "설정을 저장했습니다. 다음 shim 동기화 때 적용됩니다.",
+      "failed": "기기 제어 요청을 저장하지 못했습니다.",
+      "serverDisabled": "서버에서 본문 수집이 비활성화되어 있습니다.",
+      "shimError": "마지막 shim 적용에 문제가 있습니다.",
+      "periodicInactive": "주기 수집이 꺼져 있어 적용이 지연될 수 있습니다.",
+      "lastSync": "제어 동기화 {time}",
+      "queued": {
+        "collect": "수집 명령을 보냈습니다.",
+        "doctor": "진단 명령을 보냈습니다."
+      },
+      "running": {
+        "collect": "기기에서 수집 명령을 처리 중입니다.",
+        "doctor": "기기에서 진단 명령을 처리 중입니다."
+      },
+      "completed": {
+        "collect": {
+          "succeeded": "마지막 수집 명령을 완료했습니다.",
+          "failed": "마지막 수집 명령이 실패했습니다."
+        },
+        "doctor": {
+          "succeeded": "마지막 진단 명령을 완료했습니다.",
+          "failed": "마지막 진단 명령이 실패했습니다."
+        }
+      }
+    },
     "localControl": {
       "title": "이 컴퓨터의 shim 직접 제어",
       "description": "브라우저에서 이 컴퓨터의 toard-shim에만 안전하게 연결합니다.",

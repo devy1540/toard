@@ -95,6 +95,8 @@ function helperHarness(nonce = "c".repeat(32)) {
   let listener: ((event: MessageEvent) => void) | undefined;
   let openedUrl = "";
   let openedWindowName = "";
+  let timerCallback: (() => void) | undefined;
+  let timerTimeoutMs: number | undefined;
   const sent: Array<{ message: unknown; origin: string }> = [];
   const popup = {
     closed: false,
@@ -110,8 +112,15 @@ function helperHarness(nonce = "c".repeat(32)) {
     addMessageListener(next) { listener = next; },
     removeMessageListener(next) { if (listener === next) listener = undefined; },
     randomNonce: () => nonce,
-    setTimer: () => 1 as unknown as ReturnType<typeof setTimeout>,
-    clearTimer: () => {},
+    setTimer(callback, timeoutMs) {
+      timerCallback = callback;
+      timerTimeoutMs = timeoutMs;
+      return 1 as unknown as ReturnType<typeof setTimeout>;
+    },
+    clearTimer: () => {
+      timerCallback = undefined;
+      timerTimeoutMs = undefined;
+    },
   };
   const emit = (data: unknown, origin = LOCAL_SHIM_BASE_URL, source: unknown = popup) => {
     listener?.({ data, origin, source } as MessageEvent);
@@ -121,6 +130,8 @@ function helperHarness(nonce = "c".repeat(32)) {
     emit,
     openedUrl: () => openedUrl,
     openedWindowName: () => openedWindowName,
+    fireTimer: () => timerCallback?.(),
+    timerTimeoutMs: () => timerTimeoutMs,
     popup,
     sent,
   };
@@ -276,4 +287,15 @@ test("browser connection reports failure only after helper and direct transports
     connectLocalShimFromBrowser(targetId, blockedEnvironment, fetcher),
     /any browser transport/,
   );
+});
+
+test("missing local helper closes its error popup after the short status timeout", async () => {
+  const harness = helperHarness();
+  const pending = connectLocalShimWithHelper(targetId, harness.environment);
+
+  assert.equal(harness.timerTimeoutMs(), 3_000);
+  harness.fireTimer();
+
+  await assert.rejects(pending, /helper timed out/);
+  assert.equal(harness.popup.closed, true);
 });

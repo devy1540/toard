@@ -344,10 +344,34 @@ fn collect_cmd(args: &[String]) -> i32 {
         dry_run,
         quiet,
     );
-    if !dry_run {
-        let _ = crate::tool_deployment::run_once();
-    }
+    run_post_collect_maintenance(
+        dry_run,
+        || {
+            let _ = crate::device_control::sync_all();
+        },
+        || {
+            let _ = crate::tool_deployment::run_once();
+        },
+        // Desktop/IDE만 사용하는 설치도 daemon의 주기 collect를 통해 최신
+        // shim으로 이동해야 한다. wrapper(claude/codex) 실행에만 업데이트
+        // 체크를 묶으면 해당 사용자는 새 로컬 bridge 기능을 받을 수 없다.
+        crate::update::maybe_spawn_background_check,
+    );
     result
+}
+
+fn run_post_collect_maintenance(
+    dry_run: bool,
+    sync_device_control: impl FnOnce(),
+    reconcile_tools: impl FnOnce(),
+    check_for_update: impl FnOnce(),
+) {
+    if dry_run {
+        return;
+    }
+    sync_device_control();
+    reconcile_tools();
+    check_for_update();
 }
 
 // ── claude-env — settings.json env 주입 관리 ──
@@ -526,7 +550,7 @@ fn doctor_cmd(args: &[String]) -> i32 {
     }
 }
 
-fn doctor(selected_endpoint: Option<&str>) -> i32 {
+pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
     println!("toard-shim doctor — v{}\n", version());
     let mut d = Doctor { failed: false };
     let local_bridge_action = env::var(crate::local_bridge::BRIDGE_ACTION_ENV)
@@ -861,6 +885,7 @@ fn probe_ingest(endpoint: &str, token: &str) -> Result<u16, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn legacy_e2ee_warning_says_new_connections_do_not_need_it() {
@@ -878,5 +903,29 @@ mod tests {
         assert!(usage[..legacy_section].contains("서버 관리형 암호화"));
         assert!(!usage[..legacy_section].contains("e2ee setup"));
         assert!(usage[legacy_section..].contains("e2ee setup"));
+    }
+
+    #[test]
+    fn periodic_collect_runs_update_maintenance_but_dry_run_stays_read_only() {
+        let control_syncs = Cell::new(0);
+        let reconciles = Cell::new(0);
+        let update_checks = Cell::new(0);
+
+        run_post_collect_maintenance(
+            false,
+            || control_syncs.set(control_syncs.get() + 1),
+            || reconciles.set(reconciles.get() + 1),
+            || update_checks.set(update_checks.get() + 1),
+        );
+        run_post_collect_maintenance(
+            true,
+            || control_syncs.set(control_syncs.get() + 1),
+            || reconciles.set(reconciles.get() + 1),
+            || update_checks.set(update_checks.get() + 1),
+        );
+
+        assert_eq!(control_syncs.get(), 1);
+        assert_eq!(reconciles.get(), 1);
+        assert_eq!(update_checks.get(), 1);
     }
 }

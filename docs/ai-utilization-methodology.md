@@ -2,7 +2,7 @@
 
 ## 1. 버전과 상태
 
-- 방법론 버전: `utilization-v1`
+- 방법론 버전: `utilization-v2`
 - 제품 표시: `AI 활용 지수 Beta`
 - 상태: 초기 방법론
 - 상위 정책: [AI 활용 지수 정책](ai-utilization-policy.md)
@@ -16,7 +16,7 @@
 - 개인의 과거 28일을 기준선으로 사용한다.
 - 현재 7일의 세부 축을 기준선의 일별 분포와 비교한다.
 - 기준선 중앙값을 50점으로 둔다.
-- 계산 가능한 세부 축이 2개 이상일 때만 종합점수를 제공한다.
+- 컨텍스트 재사용률과 도구 실행 성공률이 모두 계산될 때만 종합점수를 제공한다.
 - 원시 비율과 신뢰도를 점수와 함께 제공한다.
 
 ### 채택하지 않음: 절대 기준 지수
@@ -107,22 +107,23 @@ knownOutcomeCoverage = knownCalls / (successes + failures + unknown)
 - unknown이 많은 경우 점수가 좋아지는 것을 막기 위해 결과 확인 범위를 별도로 요구한다.
 - 값 범위는 0~1이며 높을수록 확인된 실행 실패가 적다.
 
-### 6.3 복구 부담
+### 6.3 실패 후 복구율
 
-같은 세션에서 같은 도구가 실패한 뒤 짧은 시간 안에 다시 실패한 비율이다.
+같은 세션에서 같은 도구가 실패한 뒤 30분 안에 결과가 확인되는 재시도를 했을 때 성공한 비율이다.
 
-도구 이벤트를 사용자, 세션, `activityKind`, `itemKey`, 시각, dedup key 순서로 정렬한다. 다음 조건을 모두 만족하는 실패를 반복 실패로 센다.
+도구 이벤트를 사용자, 세션, `activityKind`, `itemKey`, 시각, dedup key 순서로 정렬한다. 다음 조건을 모두 만족하면 복구 시도로 센다.
 
-1. 현재 이벤트가 `failure`다.
-2. 같은 세션·종류·도구의 직전 결과 확인 이벤트도 `failure`다.
+1. 같은 세션·종류·도구의 직전 결과 확인 이벤트가 `failure`다.
+2. 현재 이벤트의 결과가 `success` 또는 `failure`로 확인된다.
 3. 두 이벤트의 간격이 30분 이하다.
 
 ```text
-recoveryBurden = repeatedFailures / knownCalls
+recoveryRate = successfulRecoveries / recoveryAttempts
 ```
 
-- `sessionId`가 없는 이벤트는 반복 실패 판정에서 제외한다.
-- 값 범위는 0~1이며 낮을수록 반복 실패 부담이 적다.
+- `sessionId`가 없거나 이후 재시도가 없는 실패는 복구율 분모에서 제외한다.
+- 값 범위는 0~1이며 높을수록 확인된 재시도에서 복구된 비율이 높다.
+- 도구 실행 성공률과 같은 실패를 중복 반영하지 않도록 종합점수에는 포함하지 않고 진단값으로만 표시한다.
 
 ## 7. 중립 관측값
 
@@ -160,12 +161,14 @@ recoveryBurden = repeatedFailures / knownCalls
 - 현재 기간 결과 확인 호출 10회 이상
 - 기준 기간 결과 확인 호출 10회 이상
 - 현재·기준 기간 `knownOutcomeCoverage >= 0.70`
+- 현재 기간 계산 가능 일 2일 이상
 - 기준 기간 계산 가능 일 7일 이상
 
-복구 부담:
+실패 후 복구율:
 
-- 실행 안정성과 같은 호출·coverage 조건
-- 현재·기준 기간에 세션 ID가 있는 결과 확인 호출 10회 이상
+- 현재 기간에 결과가 확인되는 실패 후 재시도가 있을 때만 비율을 표시
+- 재시도가 없으면 0%가 아니라 `unavailable`로 표시
+- 종합점수와 신뢰도에는 포함하지 않음
 
 조건을 충족하지 못한 축은 0점이 아니라 `unavailable`이다.
 
@@ -185,7 +188,6 @@ robustScale = max(1.4826 * mad, 0.05)
 
 - 컨텍스트 연속성: `+1`
 - 실행 안정성: `+1`
-- 복구 부담: `-1`
 
 ```text
 robustZ = direction * (currentValue - baselineMedian) / robustScale
@@ -198,15 +200,15 @@ dimensionScore = clamp(round(50 + 15 * robustZ), 0, 100)
 
 ## 10. 종합점수
 
-- 유효한 세부 축이 2개 이상일 때만 계산한다.
-- 유효한 축을 동일 가중치로 산술평균하고 반올림한다.
-- 계산되지 않은 축은 0점으로 넣지 않고 가중치에서 제외한다.
+- 컨텍스트 재사용률과 도구 실행 성공률이 모두 계산될 때만 계산한다.
+- 두 축을 동일 가중치로 산술평균하고 반올림한다.
+- 계산되지 않은 축을 제외하고 가변 평균하지 않는다.
 
 ```text
 overallScore = round(sum(validDimensionScores) / validDimensionCount)
 ```
 
-특정 축에 임의의 높은 가중치를 부여하지 않는다. 실제 사용자 데이터와 해석 오류를 검증한 뒤 가중치를 변경하려면 방법론 버전을 올린다.
+실패 후 복구율과 사용량 관측값은 종합점수에 넣지 않는다. 실제 사용자 데이터와 해석 오류를 검증한 뒤 구성이나 가중치를 변경하려면 방법론 버전을 올린다.
 
 ## 11. 신뢰도
 
@@ -214,14 +216,14 @@ overallScore = round(sum(validDimensionScores) / validDimensionCount)
 
 ### 높음
 
-- 세 축 모두 계산 가능
+- 두 점수 축 모두 계산 가능
 - 기준 기간 활성일 14일 이상
 - 도구 결과 확인 범위 90% 이상
 - 지원되지 않는 사용량 이벤트가 전체 이벤트의 10% 이하
 
 ### 보통
 
-- 두 축 이상 계산 가능
+- 두 점수 축 모두 계산 가능
 - 기준 기간 활성일 7일 이상
 - 계산에 사용된 도구 축의 결과 확인 범위 70% 이상
 
@@ -265,8 +267,8 @@ overallScore = round(sum(validDimensionScores) / validDimensionCount)
 - `unsupported_cache_signal`
 - `insufficient_context_days`
 - `insufficient_known_tool_calls`
+- `insufficient_tool_days`
 - `low_tool_outcome_coverage`
-- `insufficient_session_tool_calls`
 - `insufficient_valid_dimensions`
 - `suppressed_small_cohort`
 - `insufficient_eligible_users`
@@ -300,3 +302,4 @@ score = round(50 + 15 * 1.686) = 75
 | 버전 | 적용일 | 내용 |
 |---|---|---|
 | `utilization-v1` | 구현 출시일 | 자기 기준 3축, 7일 현재 기간, 28일 기준선 |
+| `utilization-v2` | 2026-07-24 | 고정 2축 종합지수, 복구 진단 분리, provider capability 정합성, 12주 추세 |

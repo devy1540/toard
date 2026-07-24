@@ -70,29 +70,66 @@
   "utilization": {
     "title": "AI utilization index",
     "experiment": "Experimental",
-    "description": "Compares context continuity, execution stability, and recovery burden with your own usual working pattern—not how much AI you used.",
-    "selfBaseline": "Your baseline median is 50.",
+    "description": "Compares your recent workflow with your own usual pattern. Usage volume does not affect the score.",
+    "comparisonWindow": "Last 7 completed days · previous 28-day baseline",
+    "summaryDescription": "50 represents your usual level. Higher or lower does not mean better or worse work.",
+    "summary": {
+      "above": "This is above your usual workflow",
+      "usual": "This is within your usual range",
+      "below": "This is below your usual workflow",
+      "unavailable": "There is not enough data to compare yet"
+    },
+    "indexLabel": "Relative index",
+    "selfBaseline": "50 = your usual level",
     "unavailable": "There is not enough data to calculate the index",
+    "unavailableShort": "Unavailable",
     "baseline": "Baseline period: {range}",
     "currentPeriod": "Current period: {range}",
     "periodRange": "{from}–{to}",
     "calculatedAt": "Calculated at {time}",
     "delay": "Data can be delayed by up to 10 minutes.",
-    "dimensionValues": "Current {current} · baseline {baseline}",
+    "percentagePoint": " pp",
+    "dimensionComparison": "Usual {baseline} · difference {delta}",
+    "dimensionScore": "Relative index {score}",
+    "samples": "Current sample {current} · baseline sample {baseline}",
+    "signals": {
+      "title": "Signals used in the index",
+      "description": "The overall index is available only when both signals can be calculated."
+    },
     "dimensions": {
-      "context_continuity": "Context continuity",
-      "execution_stability": "Execution stability",
-      "recovery_burden": "Recovery burden"
+      "context_continuity": "Context reuse rate",
+      "execution_stability": "Tool execution success rate"
+    },
+    "dimensionDescriptions": {
+      "context_continuity": "The share of input context reused from cache.",
+      "execution_stability": "The success rate among MCP and skill calls with a known outcome."
+    },
+    "recovery": {
+      "title": "Recovery rate after failure",
+      "description": "Results of retries within 30 minutes for the same tool and session. This is not counted again in the overall index.",
+      "samples": "Recovered {success}/{attempts} · consecutive failures {repeated}",
+      "noAttempts": "There were no post-failure retries with a known outcome in the current period."
     },
     "confidence": {
       "high": "High confidence",
       "medium": "Medium confidence",
       "low": "Low confidence"
     },
-    "observations": {
-      "title": "Neutral observations",
+    "evidence": {
+      "title": "Data evidence",
       "activeDays": "Active days",
       "sessions": "Sessions",
+      "knownToolCalls": "Tool calls with known outcomes",
+      "toolOutcomeCoverage": "Tool outcome coverage"
+    },
+    "trend": {
+      "title": "12-week trend",
+      "description": "Shows {count} weeks that can be calculated with the same methodology.",
+      "baseline": "Dashed line = your usual 50",
+      "aria": "AI utilization index trend over 12 weeks. {count} weeks can be calculated"
+    },
+    "observations": {
+      "title": "Reference metrics · not scored",
       "toolSessionRate": "Tool-active session rate",
       "distinctTools": "Maximum daily tool types"
     },
@@ -103,8 +140,8 @@
       "unsupported_cache_signal": "The current collector does not report cache signals.",
       "insufficient_context_days": "There are not enough daily signals for context continuity.",
       "insufficient_known_tool_calls": "There are fewer than 10 tool calls with a known outcome.",
+      "insufficient_tool_days": "There are not enough daily signals to compare tool execution success.",
       "low_tool_outcome_coverage": "Tool outcome coverage is below 70%.",
-      "insufficient_session_tool_calls": "There are fewer than 10 tool calls with a known session.",
       "insufficient_valid_dimensions": "Fewer than 2 dimensions can be calculated.",
       "suppressed_small_cohort": "The organization minimum cohort is not met.",
       "insufficient_eligible_users": "Too few users meet the confidence threshold.",

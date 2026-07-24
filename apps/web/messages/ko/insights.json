@@ -70,29 +70,66 @@
   "utilization": {
     "title": "AI 활용 지수",
     "experiment": "실험",
-    "description": "많이 썼는지가 아니라, 내 평소 작업 방식과 비교한 맥락 유지·실행 안정성·복구 부담을 보여줍니다.",
-    "selfBaseline": "내 기준선 중앙값은 50입니다.",
+    "description": "최근 작업 흐름을 내 평소와 비교합니다. 사용량 자체는 점수에 넣지 않습니다.",
+    "comparisonWindow": "최근 완료 7일 · 직전 28일 기준",
+    "summaryDescription": "50은 내 평소 수준이며 높고 낮음이 업무 성과를 뜻하지 않습니다.",
+    "summary": {
+      "above": "내 평소보다 높은 흐름입니다",
+      "usual": "내 평소 범위입니다",
+      "below": "내 평소보다 낮은 흐름입니다",
+      "unavailable": "아직 비교할 데이터가 부족합니다"
+    },
+    "indexLabel": "상대 지수",
+    "selfBaseline": "50 = 내 평소",
     "unavailable": "계산할 데이터가 부족합니다",
+    "unavailableShort": "계산 불가",
     "baseline": "기준 기간: {range}",
     "currentPeriod": "현재 기간: {range}",
     "periodRange": "{from}~{to}",
     "calculatedAt": "계산 시각 {time}",
     "delay": "데이터는 최대 10분 지연될 수 있습니다.",
-    "dimensionValues": "현재 {current} · 기준 {baseline}",
+    "percentagePoint": "%p",
+    "dimensionComparison": "평소 {baseline} · 차이 {delta}",
+    "dimensionScore": "상대 지수 {score}",
+    "samples": "현재 표본 {current}건 · 기준 표본 {baseline}건",
+    "signals": {
+      "title": "점수를 구성하는 신호",
+      "description": "두 신호가 모두 계산될 때만 종합지수를 제공합니다."
+    },
     "dimensions": {
-      "context_continuity": "맥락 연속성",
-      "execution_stability": "실행 안정성",
-      "recovery_burden": "복구 부담"
+      "context_continuity": "컨텍스트 재사용률",
+      "execution_stability": "도구 실행 성공률"
+    },
+    "dimensionDescriptions": {
+      "context_continuity": "전체 입력 컨텍스트 중 캐시에서 다시 사용한 비율입니다.",
+      "execution_stability": "결과가 확인된 MCP·스킬 호출 중 성공한 비율입니다."
+    },
+    "recovery": {
+      "title": "실패 후 복구율",
+      "description": "같은 세션과 도구에서 실패 후 30분 안에 다시 실행한 결과입니다. 종합지수에는 중복 반영하지 않습니다.",
+      "samples": "복구 {success}/{attempts}건 · 연속 실패 {repeated}건",
+      "noAttempts": "현재 기간에는 결과를 확인할 수 있는 실패 후 재시도가 없습니다."
     },
     "confidence": {
       "high": "높은 신뢰도",
       "medium": "보통 신뢰도",
       "low": "낮은 신뢰도"
     },
-    "observations": {
-      "title": "중립 관측값",
+    "evidence": {
+      "title": "데이터 근거",
       "activeDays": "활성일",
       "sessions": "세션",
+      "knownToolCalls": "결과 확인 도구 호출",
+      "toolOutcomeCoverage": "도구 결과 확인 범위"
+    },
+    "trend": {
+      "title": "최근 12주 추세",
+      "description": "동일한 방법론으로 계산 가능한 {count}개 주를 표시합니다.",
+      "baseline": "점선 = 내 평소 50",
+      "aria": "최근 12주 AI 활용 지수 추세. 계산 가능한 주 {count}개"
+    },
+    "observations": {
+      "title": "참고 지표 · 점수 미반영",
       "toolSessionRate": "도구 사용 세션 비율",
       "distinctTools": "하루 최대 도구 종류"
     },
@@ -103,8 +140,8 @@
       "unsupported_cache_signal": "현재 수집원은 cache 신호를 지원하지 않습니다.",
       "insufficient_context_days": "맥락 연속성을 계산할 일별 신호가 부족합니다.",
       "insufficient_known_tool_calls": "결과가 확인된 도구 호출이 10회 미만입니다.",
+      "insufficient_tool_days": "도구 실행 성공률을 비교할 일별 신호가 부족합니다.",
       "low_tool_outcome_coverage": "도구 실행 결과 확인 범위가 70% 미만입니다.",
-      "insufficient_session_tool_calls": "세션이 확인된 도구 호출이 10회 미만입니다.",
       "insufficient_valid_dimensions": "계산 가능한 세부 축이 2개 미만입니다.",
       "suppressed_small_cohort": "조직 최소 표본 기준을 충족하지 않습니다.",
       "insufficient_eligible_users": "신뢰도 기준을 충족한 사용자가 부족합니다.",

@@ -45,7 +45,7 @@ const toolActivity: ToolActivitySummary = {
 };
 const utilization: OrganizationUtilizationResult = {
   state: "suppressed",
-  methodologyVersion: "utilization-v1",
+  methodologyVersion: "utilization-v2",
   reason: "suppressed_small_cohort",
 };
 

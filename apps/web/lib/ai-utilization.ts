@@ -1,7 +1,9 @@
 import {
+  addLocalCalendarDays,
   aggregateOrganizationUtilization,
   buildUtilizationPeriods,
   calculatePersonalUtilization,
+  firstInstantOfLocalDate,
   localDateKey,
   UTILIZATION_METHODOLOGY_VERSION,
   type OrganizationUtilizationResult,
@@ -17,7 +19,18 @@ import { getOrgTimezone } from "./org-time";
 import { getStorage } from "./storage";
 
 const featureKey = (userId: string, day: string): string => `${userId}\0${day}`;
-export type PersonalUtilizationView = PersonalUtilizationResult & { calculatedAt: string };
+const UTILIZATION_HISTORY_WEEKS = 12;
+
+export type PersonalUtilizationHistoryPoint = {
+  currentPeriod: { from: Date; to: Date };
+  score: number | null;
+  confidence: PersonalUtilizationResult["confidence"];
+};
+
+export type PersonalUtilizationView = PersonalUtilizationResult & {
+  calculatedAt: string;
+  history: PersonalUtilizationHistoryPoint[];
+};
 const reviveDate = (value: Date | string): Date =>
   value instanceof Date ? new Date(value.getTime()) : new Date(value);
 
@@ -41,6 +54,8 @@ function emptyFeature(usage: UtilizationUsageDay): UtilizationDailyFeature {
     toolFailures: 0,
     toolUnknown: 0,
     repeatedToolFailures: 0,
+    recoveryAttempts: 0,
+    successfulRecoveries: 0,
     sessionToolKnownCalls: 0,
     toolActiveSessions: 0,
     distinctTools: 0,
@@ -62,6 +77,8 @@ export function mergeUtilizationDays(
     feature.toolFailures = tool.failures;
     feature.toolUnknown = tool.unknown;
     feature.repeatedToolFailures = tool.repeatedFailures;
+    feature.recoveryAttempts = tool.recoveryAttempts;
+    feature.successfulRecoveries = tool.successfulRecoveries;
     feature.sessionToolKnownCalls = tool.sessionToolKnownCalls;
     feature.toolActiveSessions = tool.toolActiveSessions;
     feature.distinctTools = tool.distinctTools;
@@ -70,6 +87,18 @@ export function mergeUtilizationDays(
   return [...merged.values()].sort(
     (left, right) => left.day.localeCompare(right.day) || left.userId.localeCompare(right.userId),
   );
+}
+
+export function buildUtilizationHistoryPeriods(
+  periods: UtilizationPeriods,
+  weeks = UTILIZATION_HISTORY_WEEKS,
+): UtilizationPeriods[] {
+  const currentToDay = localDateKey(periods.current.to, periods.timezone);
+  return Array.from({ length: weeks }, (_, index) => {
+    const weeksAgo = weeks - index - 1;
+    const anchorDay = addLocalCalendarDays(currentToDay, -7 * weeksAgo);
+    return buildUtilizationPeriods(firstInstantOfLocalDate(anchorDay, periods.timezone), periods.timezone);
+  });
 }
 
 function utilizationRange(periods: UtilizationPeriods) {
@@ -84,14 +113,29 @@ async function calculatePersonalForPeriods(
   userId: string,
   periods: UtilizationPeriods,
 ): Promise<PersonalUtilizationView> {
-  const range = utilizationRange(periods);
+  const historyPeriods = buildUtilizationHistoryPeriods(periods);
+  const range = {
+    from: historyPeriods[0]?.baseline.from ?? periods.baseline.from,
+    to: periods.current.to,
+    timezone: periods.timezone,
+  };
   const [usage, tools] = await Promise.all([
     getStorage().getUserUtilizationUsage(userId, range),
     getUserUtilizationToolDays(userId, range, periods.timezone),
   ]);
+  const rows = mergeUtilizationDays(usage, tools);
+  const result = calculatePersonalUtilization(rows, periods);
   return {
-    ...calculatePersonalUtilization(mergeUtilizationDays(usage, tools), periods),
+    ...result,
     calculatedAt: new Date().toISOString(),
+    history: historyPeriods.map((historyPeriod) => {
+      const historyResult = calculatePersonalUtilization(rows, historyPeriod);
+      return {
+        currentPeriod: historyResult.currentPeriod,
+        score: historyResult.score,
+        confidence: historyResult.confidence,
+      };
+    }),
   };
 }
 
@@ -192,7 +236,7 @@ const readCachedPersonal = unstable_cache(
     userId,
     periodsFromCacheArgs(baselineFrom, currentFrom, currentTo, timezone),
   ),
-  ["personal-utilization-v1"],
+  ["personal-utilization-v2"],
   { revalidate: 600 },
 );
 
@@ -206,7 +250,7 @@ const readCachedOrganization = unstable_cache(
   ) => calculateOrganizationForPeriods(
     periodsFromCacheArgs(baselineFrom, currentFrom, currentTo, timezone),
   ),
-  ["organization-utilization-v1"],
+  ["organization-utilization-v2"],
   { revalidate: 600 },
 );
 
@@ -223,6 +267,13 @@ export async function getCachedPersonalUtilization(userId: string, now = new Dat
       from: reviveDate(result.baselinePeriod.from),
       to: reviveDate(result.baselinePeriod.to),
     },
+    history: result.history.map((point) => ({
+      ...point,
+      currentPeriod: {
+        from: reviveDate(point.currentPeriod.from),
+        to: reviveDate(point.currentPeriod.to),
+      },
+    })),
   } satisfies PersonalUtilizationView;
 }
 

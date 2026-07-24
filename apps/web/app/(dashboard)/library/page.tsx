@@ -2,13 +2,16 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { LibraryBig, Search } from "lucide-react";
-import type { CatalogInstallState, ToolCatalogKind, ToolCatalogScope } from "@toard/core";
+import type { ToolCatalogKind, ToolCatalogScope } from "@toard/core";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
+import { FormField } from "@/components/forms/form-field";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { catalogInstallStateMessageKey } from "@/lib/catalog-install-state";
 import { listToolCatalog, type CatalogListFilter, type ToolCatalogListItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
 
@@ -31,13 +34,6 @@ function libraryHref(scope: ToolCatalogScope, kind: ToolCatalogKind | "all", que
   if (query) params.set("q", query);
   const search = params.toString();
   return search ? `/library?${search}` : "/library";
-}
-
-function stateKey(state: CatalogInstallState): string {
-  if (state.status === "not_installed" || state.status === "unavailable") return `state.${state.status}`;
-  if (state.versionRelation === "same") return "state.sameVersion";
-  if (state.versionRelation === "different") return "state.differentVersion";
-  return "state.versionUnknown";
 }
 
 export default async function LibraryPage({ searchParams }: { searchParams: Promise<LibrarySearchParams> }) {
@@ -78,22 +74,28 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
 
         <form method="get" className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3 sm:flex-row sm:items-end">
           <input type="hidden" name="scope" value={filter.scope} />
-          <label className="min-w-0 flex-1 text-xs font-medium">
-            <span className="sr-only">{t("filters.searchLabel")}</span>
-            <Input name="q" defaultValue={filter.query} placeholder={t("filters.searchPlaceholder")} />
-          </label>
-          <label className="text-xs font-medium">
-            <span className="sr-only">{t("filters.kindLabel")}</span>
-            <select
+          <FormField
+            htmlFor="library-search"
+            label={<span className="sr-only">{t("filters.searchLabel")}</span>}
+            className="min-w-0 flex-1"
+          >
+            <Input id="library-search" name="q" defaultValue={filter.query} placeholder={t("filters.searchPlaceholder")} />
+          </FormField>
+          <FormField
+            htmlFor="library-kind"
+            label={<span className="sr-only">{t("filters.kindLabel")}</span>}
+            className="sm:w-40"
+          >
+            <NativeSelect
+              id="library-kind"
               name="kind"
               defaultValue={filter.kind}
-              className="border-input bg-background h-9 w-full rounded-md border px-3 text-sm sm:w-40"
             >
               {(["all", "mcp", "skill", "plugin"] as const).map((kind) => (
-                <option key={kind} value={kind}>{t(`kind.${kind}`)}</option>
+                <NativeSelectOption key={kind} value={kind}>{t(`kind.${kind}`)}</NativeSelectOption>
               ))}
-            </select>
-          </label>
+            </NativeSelect>
+          </FormField>
           <div className="flex gap-2">
             <Button type="submit" size="sm"><Search />{t("filters.apply")}</Button>
             <Button asChild type="button" size="sm" variant="outline"><Link href="/library">{t("filters.reset")}</Link></Button>
@@ -137,11 +139,11 @@ async function LibraryRow({ item }: { item: ToolCatalogListItem }) {
           {item.lifecycleStatus === "deprecated" ? <Badge variant="outline">{t("lifecycle.deprecated")}</Badge> : null}
         </div>
         <p className="text-muted-foreground mt-0.5 truncate text-sm">{item.description}</p>
-        <p className="text-muted-foreground mt-1 truncate text-xs md:hidden">{origin} · {t(stateKey(item.installState) as "state.not_installed")}</p>
+        <p className="text-muted-foreground mt-1 truncate text-xs md:hidden">{origin} · {t(catalogInstallStateMessageKey(item.installState))}</p>
       </div>
       <Badge variant="secondary" className="hidden md:inline-flex">{t(`kind.${item.kind}`)}</Badge>
       <span className="hidden truncate text-sm md:block">{origin}</span>
-      <span className="hidden text-sm md:block">{t(stateKey(item.installState) as "state.not_installed")}</span>
+      <span className="hidden text-sm md:block">{t(catalogInstallStateMessageKey(item.installState))}</span>
       <Button asChild size="sm" variant="outline"><Link href={`/library/${item.slug}`}>{t("table.detail")}</Link></Button>
     </div>
   );

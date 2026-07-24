@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import type {
   DeviceControlCommandStatus,
@@ -133,9 +134,12 @@ export function DeviceActions({
 
   return (
     <div className="flex min-w-[18rem] flex-col items-end gap-2">
-      <label className="flex items-center gap-2 text-sm">
-        <span>{t("install.deviceControl.history")}</span>
+      <Field orientation="horizontal" className="w-auto items-center gap-2">
+        <FieldLabel htmlFor={`device-history-${control.deviceFingerprint}`} className="font-normal">
+          {t("install.deviceControl.history")}
+        </FieldLabel>
         <Switch
+          id={`device-history-${control.deviceFingerprint}`}
           checked={desiredOn}
           disabled={pending || !contentEnabled}
           onCheckedChange={setHistory}
@@ -150,7 +154,7 @@ export function DeviceActions({
                 ? t("install.deviceControl.on")
                 : t("install.deviceControl.off")}
         </Badge>
-      </label>
+      </Field>
       <div className="flex items-center justify-end gap-2">
         <Button
           type="button"

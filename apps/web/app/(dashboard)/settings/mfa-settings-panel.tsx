@@ -3,9 +3,11 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { useState } from "react";
 import { useTranslations } from "next-intl";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Field, FieldContent, FieldDescription, FieldTitle } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import type { MfaStatus } from "@/lib/mfa-store";
 import {
@@ -65,8 +67,16 @@ export function MfaSettingsPanel({ initial, hasPassword }: { initial: { status: 
         <CardDescription>{t("passkeyDescription")}</CardDescription>
       </CardHeader>
       <CardContent className="min-w-0 space-y-5">
-        {error ? <p role="alert" className="border-destructive/40 bg-destructive/5 rounded-lg border p-3 text-sm">{error}</p> : null}
-        {notice ? <p role="status" className="bg-muted rounded-lg p-3 text-sm">{notice}</p> : null}
+        {error ? (
+          <Alert variant="destructive" className="border-destructive/40 bg-destructive/5">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        ) : null}
+        {notice ? (
+          <Alert role="status" className="border-0 bg-muted">
+            <AlertDescription>{notice}</AlertDescription>
+          </Alert>
+        ) : null}
         <Button type="button" onClick={register} disabled={pending}>{pending ? t("passkeyOpening") : t("addPasskey")}</Button>
         {status.passkeys.length ? (
           <ul className="divide-y rounded-lg border" aria-label={t("registeredPasskeys")}>
@@ -81,14 +91,22 @@ export function MfaSettingsPanel({ initial, hasPassword }: { initial: { status: 
         {status.enrolled ? (
           <div className="space-y-4 border-t pt-4">
             <div className="divide-y rounded-lg border">
-              <label className="flex items-start justify-between gap-4 p-4">
-                <span><span className="block text-sm font-medium">{t("loginProtection")}</span><span className="text-muted-foreground mt-1 block text-xs">{hasPassword ? t("passkeyLoginDescription") : t("loginProtectionNeedsPassword")}</span></span>
+              <Field orientation="horizontal" className="items-start justify-between p-4">
+                <FieldContent>
+                  <FieldTitle>{t("loginProtection")}</FieldTitle>
+                  <FieldDescription className="text-xs">
+                    {hasPassword ? t("passkeyLoginDescription") : t("loginProtectionNeedsPassword")}
+                  </FieldDescription>
+                </FieldContent>
                 <Switch checked={loginRequired} onCheckedChange={setLoginRequired} disabled={!hasPassword} aria-label={t("loginProtection")} />
-              </label>
-              <label className="flex items-start justify-between gap-4 p-4">
-                <span><span className="block text-sm font-medium">{t("historyProtection")}</span><span className="text-muted-foreground mt-1 block text-xs">{t("passkeyHistoryDescription")}</span></span>
+              </Field>
+              <Field orientation="horizontal" className="items-start justify-between p-4">
+                <FieldContent>
+                  <FieldTitle>{t("historyProtection")}</FieldTitle>
+                  <FieldDescription className="text-xs">{t("passkeyHistoryDescription")}</FieldDescription>
+                </FieldContent>
                 <Switch checked={historyRequired} onCheckedChange={setHistoryRequired} aria-label={t("historyProtection")} />
-              </label>
+              </Field>
             </div>
             <Button type="button" onClick={save} disabled={pending}>{pending ? t("saving") : t("saveWithPasskey")}</Button>
           </div>

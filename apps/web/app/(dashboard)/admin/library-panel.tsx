@@ -3,10 +3,15 @@
 import { useActionState } from "react";
 import { useTranslations } from "next-intl";
 import type { ToolCatalogItem } from "@toard/core";
+import { FormField } from "@/components/forms/form-field";
+import { LibraryNotice } from "@/components/library/library-notice";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import {
   type LibraryModerationState,
   moderateToolCatalogAction,
@@ -24,10 +29,7 @@ export function LibraryPanel({ workspaceItems, publicItems }: { workspaceItems: 
   const libraryT = useTranslations("library");
   return (
     <div className="min-w-0 space-y-4">
-      <div className="rounded-lg border border-sky-500/30 bg-sky-500/5 p-4 text-sm">
-        <p className="font-medium">{t("library.immediateNotice")}</p>
-        <p className="text-muted-foreground mt-1">{t("library.description")}</p>
-      </div>
+      <LibraryNotice title={t("library.immediateNotice")} description={t("library.description")} />
 
       <Card className="min-w-0">
         <CardHeader><CardTitle>{t("library.workspaceTitle", { count: workspaceItems.length })}</CardTitle><CardDescription>{t("library.workspaceDescription")}</CardDescription></CardHeader>
@@ -65,9 +67,21 @@ function ModerationRow({ item }: { item: AdminToolItem }) {
         <p className="text-muted-foreground shrink-0 text-xs" suppressHydrationWarning>{new Date(item.updatedAt).toLocaleDateString()}</p>
       </div>
       <div className="grid min-w-0 gap-3 md:grid-cols-[auto_12rem_minmax(12rem,1fr)_auto] md:items-end">
-        <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="verified" defaultChecked={item.trustStatus === "verified"} className="size-4" />{t("library.verified")}</label>
-        <label className="text-xs font-medium">{t("library.lifecycle")}<select name="lifecycleStatus" defaultValue={item.lifecycleStatus} className="border-input bg-background mt-1 h-9 w-full rounded-md border px-3 text-sm"><option value="published">{libraryT("lifecycle.published")}</option><option value="deprecated">{libraryT("lifecycle.deprecated")}</option><option value="blocked">{libraryT("lifecycle.blocked")}</option><option value="archived">{libraryT("lifecycle.archived")}</option></select></label>
-        <label className="text-xs font-medium">{t("library.reason")}<Input name="statusReason" defaultValue={item.statusReason ?? ""} placeholder={t("library.reasonPlaceholder")} className="mt-1" /></label>
+        <Field orientation="horizontal" className="h-9 w-auto gap-2">
+          <Checkbox id={`verified-${item.id}`} name="verified" defaultChecked={item.trustStatus === "verified"} />
+          <FieldLabel htmlFor={`verified-${item.id}`} className="font-normal">{t("library.verified")}</FieldLabel>
+        </Field>
+        <FormField htmlFor={`lifecycle-${item.id}`} label={t("library.lifecycle")}>
+          <NativeSelect id={`lifecycle-${item.id}`} name="lifecycleStatus" defaultValue={item.lifecycleStatus}>
+            <NativeSelectOption value="published">{libraryT("lifecycle.published")}</NativeSelectOption>
+            <NativeSelectOption value="deprecated">{libraryT("lifecycle.deprecated")}</NativeSelectOption>
+            <NativeSelectOption value="blocked">{libraryT("lifecycle.blocked")}</NativeSelectOption>
+            <NativeSelectOption value="archived">{libraryT("lifecycle.archived")}</NativeSelectOption>
+          </NativeSelect>
+        </FormField>
+        <FormField htmlFor={`reason-${item.id}`} label={t("library.reason")}>
+          <Input id={`reason-${item.id}`} name="statusReason" defaultValue={item.statusReason ?? ""} placeholder={t("library.reasonPlaceholder")} />
+        </FormField>
         <Button type="submit" size="sm" disabled={pending}>{pending ? t("library.saving") : t("library.save")}</Button>
       </div>
       {state.error ? <p className="text-destructive text-xs">{t(`library.errors.${state.error}`)}</p> : null}

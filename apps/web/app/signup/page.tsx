@@ -2,8 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
 import { auth, credentialsEnabled } from "@/auth";
-import { LogoMark } from "@/components/logo-mark";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { allowedDomains } from "@/lib/auth-policy";
 import { SignupForm } from "./signup-form";
 
@@ -16,27 +15,22 @@ export default async function SignupPage() {
   const t = await getTranslations("auth");
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <LogoMark size={32} className="mb-1" />
-          <CardTitle className="text-xl">{t("signup.title")}</CardTitle>
-          <CardDescription>
-            {allowedDomains.length > 0
-              ? t("signup.descriptionWithDomains", { domains: allowedDomains.join(", ") })
-              : t("signup.descriptionNoDomains")}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-4">
-          <SignupForm />
-          <p className="text-muted-foreground text-center text-sm">
-            {t("signup.haveAccount")}{" "}
-            <Link href="/login" className="text-primary underline-offset-4 hover:underline">
-              {t("signup.loginLink")}
-            </Link>
-          </p>
-        </CardContent>
-      </Card>
-    </div>
+    <AuthPageShell
+      title={t("signup.title")}
+      description={
+        allowedDomains.length > 0
+          ? t("signup.descriptionWithDomains", { domains: allowedDomains.join(", ") })
+          : t("signup.descriptionNoDomains")
+      }
+      contentClassName="flex flex-col gap-4"
+    >
+      <SignupForm />
+      <p className="text-muted-foreground text-center text-sm">
+        {t("signup.haveAccount")}{" "}
+        <Link href="/login" className="text-primary underline-offset-4 hover:underline">
+          {t("signup.loginLink")}
+        </Link>
+      </p>
+    </AuthPageShell>
   );
 }

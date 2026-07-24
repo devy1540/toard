@@ -1,5 +1,6 @@
 import { useTranslations } from "next-intl";
 import type { ToolCatalogItem } from "@toard/core";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Button } from "@/components/ui/button";
@@ -44,7 +45,11 @@ export function TeamDeploymentPanel({ item, deployment, enabled }: { item: ToolC
           </form>
         ) : null}
         <p className="text-muted-foreground text-xs">{t("rolloutNotice")}</p>
-        {!enabled ? <p className="text-muted-foreground rounded-md border border-orange-500/30 bg-orange-500/5 p-3 text-xs">{t("disabledDescription")}</p> : null}
+        {!enabled ? (
+          <Alert className="border-orange-500/30 bg-orange-500/5">
+            <AlertDescription className="text-xs">{t("disabledDescription")}</AlertDescription>
+          </Alert>
+        ) : null}
       </CardContent>
     </Card>
   );

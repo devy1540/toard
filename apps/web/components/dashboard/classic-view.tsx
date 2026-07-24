@@ -4,41 +4,25 @@ import { Activity, ArrowUpDown, DollarSign, Inbox } from "lucide-react";
 import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import type { ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
+import { ShareBar } from "@/components/dashboard/share-bar";
 import { StatCard } from "@/components/dashboard/stat-card";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
+import { formatCoveredCost, usageTitleKey } from "@/lib/dashboard-usage";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
+import { legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
-import type { UsageCostCoverage } from "@toard/core";
-
-function coveredCost(
-  costUsd: number,
-  coverage: UsageCostCoverage,
-  labels: { partial: string; unpriced: string; legacy: string },
-): string {
-  return formatCostForCoverage(fmtUsd(costUsd), coverage, labels);
-}
 
 /** 비중 바 — 분모가 0(가격 미동기화 등)이면 토큰 기준으로 폴백. */
 function shareOf(cost: number, tokens: number, costSum: number, tokenSum: number): number {
   if (costSum > 0) return cost / costSum;
   if (tokenSum > 0) return tokens / tokenSum;
   return 0;
-}
-
-function ShareBar({ share }: { share: number }) {
-  const pct = share > 0 ? Math.max(2, Math.round(share * 100)) : 0;
-  return (
-    <div className="bg-muted h-1.5 overflow-hidden rounded-full">
-      <div className="bg-chart-1 h-full rounded-full" style={{ width: `${pct}%` }} />
-    </div>
-  );
 }
 
 /** 분해 카드 공통 행 — 이름 + 비용 + 보조 텍스트 + 비중 바 (모델별·기기별이 공유) */
@@ -75,13 +59,6 @@ function BreakdownRow({
 
 /** 사이드 리스트가 세로로 길어지지 않게 상위 N개만 — 나머지는 개수로 요약 */
 const MODELS_SHOWN = 6;
-
-function usageTitleKey(bucket: DashboardPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
-  if (bucket === "day") return "dailyUsage";
-  if (bucket === "hour") return "hourlyUsage";
-  if (bucket === "30m") return "usage30m";
-  return "usage15m";
-}
 
 /** 클래식 뷰 — 스탯카드·면적 차트·분해 카드 (기존 대시보드 그대로, toard.view=classic). */
 export async function ClassicView({
@@ -168,7 +145,7 @@ export async function ClassicView({
         />
         <StatCard
           label={t(`costLabel.${period.preset}`)}
-          value={coveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
+          value={formatCoveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
           delta={costDelta}
           hint={costHint}
           spark={spark.cost}
@@ -235,7 +212,7 @@ export async function ClassicView({
                     key={m.model}
                     name={formatModelName(m.model) ?? m.model}
                     hoverTitle={m.model}
-                    cost={coveredCost(m.costUsd, m.costCoverage, costLabels)}
+                    cost={formatCoveredCost(m.costUsd, m.costCoverage, costLabels)}
                     sub={t("breakdownSub", { tokens: fmtCompact(m.totalTokens), sessions: fmtNum(m.sessions) })}
                     share={shareOf(m.costUsd, m.totalTokens, modelCostSum, modelTokenSum)}
                   />
@@ -271,7 +248,7 @@ export async function ClassicView({
                     key={h.host ?? "__unknown__"}
                     name={h.host ?? t("unknownHost")}
                     muted={h.host == null}
-                    cost={coveredCost(h.costUsd, h.costCoverage, costLabels)}
+                    cost={formatCoveredCost(h.costUsd, h.costCoverage, costLabels)}
                     sub={t("breakdownSub", { tokens: fmtCompact(h.totalTokens), sessions: fmtNum(h.sessions) })}
                     share={shareOf(h.costUsd, h.totalTokens, hostCostSum, hostTokenSum)}
                   />

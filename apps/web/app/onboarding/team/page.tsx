@@ -1,7 +1,6 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { LogoMark } from "@/components/logo-mark";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { getSessionUser } from "@/lib/session-user";
 import { isTeamOnboardingPending, listTeamOptions } from "@/lib/team-onboarding";
 import { TeamOnboardingForm } from "./team-form";
@@ -18,17 +17,11 @@ export default async function TeamOnboardingPage() {
   const t = await getTranslations("auth");
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-6">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <LogoMark size={32} className="mb-1" />
-          <CardTitle className="text-xl">{t("teamOnboarding.title")}</CardTitle>
-          <CardDescription>{t("teamOnboarding.description")}</CardDescription>
-        </CardHeader>
-        <CardContent>
-          <TeamOnboardingForm teams={teams} />
-        </CardContent>
-      </Card>
-    </div>
+    <AuthPageShell
+      title={t("teamOnboarding.title")}
+      description={t("teamOnboarding.description")}
+    >
+      <TeamOnboardingForm teams={teams} />
+    </AuthPageShell>
   );
 }

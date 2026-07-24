@@ -81,6 +81,7 @@
     },
     "indexLabel": "Relative index",
     "selfBaseline": "50 = your usual level",
+    "scaleAria": "Relative index {score}, compared with your usual level of 50",
     "unavailable": "There is not enough data to calculate the index",
     "unavailableShort": "Unavailable",
     "baseline": "Baseline period: {range}",
@@ -89,6 +90,7 @@
     "calculatedAt": "Calculated at {time}",
     "delay": "Data can be delayed by up to 10 minutes.",
     "percentagePoint": " pp",
+    "dimensionCurrent": "Current {value}",
     "dimensionComparison": "Usual {baseline} · difference {delta}",
     "dimensionScore": "Relative index {score}",
     "samples": "Current sample {current} · baseline sample {baseline}",
@@ -120,13 +122,16 @@
       "activeDays": "Active days",
       "sessions": "Sessions",
       "knownToolCalls": "Tool calls with known outcomes",
-      "toolOutcomeCoverage": "Tool outcome coverage"
+      "toolOutcomeCoverage": "Tool outcome coverage",
+      "coverage": "Outcome coverage {value}"
     },
     "trend": {
       "title": "12-week trend",
       "description": "Shows {count} weeks that can be calculated with the same methodology.",
       "baseline": "Dashed line = your usual 50",
-      "aria": "AI utilization index trend over 12 weeks. {count} weeks can be calculated"
+      "aria": "AI utilization index trend over 12 weeks. {count} weeks can be calculated",
+      "accumulating": "Collecting data: {count} of {total} weeks",
+      "minimum": "The trend line appears after at least {count} weeks can be calculated."
     },
     "observations": {
       "title": "Reference metrics · not scored",

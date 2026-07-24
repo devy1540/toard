@@ -81,6 +81,7 @@
     },
     "indexLabel": "상대 지수",
     "selfBaseline": "50 = 내 평소",
+    "scaleAria": "내 평소 50을 기준으로 한 상대 지수 {score}",
     "unavailable": "계산할 데이터가 부족합니다",
     "unavailableShort": "계산 불가",
     "baseline": "기준 기간: {range}",
@@ -89,6 +90,7 @@
     "calculatedAt": "계산 시각 {time}",
     "delay": "데이터는 최대 10분 지연될 수 있습니다.",
     "percentagePoint": "%p",
+    "dimensionCurrent": "현재 {value}",
     "dimensionComparison": "평소 {baseline} · 차이 {delta}",
     "dimensionScore": "상대 지수 {score}",
     "samples": "현재 표본 {current}건 · 기준 표본 {baseline}건",
@@ -120,13 +122,16 @@
       "activeDays": "활성일",
       "sessions": "세션",
       "knownToolCalls": "결과 확인 도구 호출",
-      "toolOutcomeCoverage": "도구 결과 확인 범위"
+      "toolOutcomeCoverage": "도구 결과 확인 범위",
+      "coverage": "결과 확인 범위 {value}"
     },
     "trend": {
       "title": "최근 12주 추세",
       "description": "동일한 방법론으로 계산 가능한 {count}개 주를 표시합니다.",
       "baseline": "점선 = 내 평소 50",
-      "aria": "최근 12주 AI 활용 지수 추세. 계산 가능한 주 {count}개"
+      "aria": "최근 12주 AI 활용 지수 추세. 계산 가능한 주 {count}개",
+      "accumulating": "{total}주 중 {count}주 데이터 축적 중",
+      "minimum": "{count}주 이상 계산되면 추세선을 표시합니다."
     },
     "observations": {
       "title": "참고 지표 · 점수 미반영",

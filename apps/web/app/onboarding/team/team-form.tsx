@@ -2,8 +2,9 @@
 
 import { useActionState, useState } from "react";
 import { useTranslations } from "next-intl";
+import { FormField } from "@/components/forms/form-field";
 import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
+import { FieldError } from "@/components/ui/field";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { TeamOption } from "@/lib/team-onboarding";
 import { chooseTeamAction, type TeamOnboardingState } from "./actions";
@@ -18,8 +19,7 @@ export function TeamOnboardingForm({ teams }: { teams: TeamOption[] }) {
   return (
     <form action={action} className="flex flex-col gap-4">
       <input type="hidden" name="teamId" value={value} />
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="team-select">{t("teamOnboarding.teamLabel")}</Label>
+      <FormField htmlFor="team-select" label={t("teamOnboarding.teamLabel")}>
         <Select value={value} onValueChange={setValue} disabled={pending}>
           <SelectTrigger id="team-select" className="w-full">
             <SelectValue placeholder={t("teamOnboarding.teamPlaceholder")} />
@@ -32,8 +32,8 @@ export function TeamOnboardingForm({ teams }: { teams: TeamOption[] }) {
             ))}
           </SelectContent>
         </Select>
-      </div>
-      {state.error ? <p className="text-destructive text-sm">{state.error}</p> : null}
+      </FormField>
+      {state.error ? <FieldError>{state.error}</FieldError> : null}
       <Button type="submit" disabled={pending || !value}>
         {pending ? t("teamOnboarding.submitting") : t("teamOnboarding.submit")}
       </Button>

@@ -4,9 +4,10 @@ import { startAuthentication } from "@simplewebauthn/browser";
 import { useActionState, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import Link from "next/link";
+import { FormField } from "@/components/forms/form-field";
 import { Button } from "@/components/ui/button";
+import { FieldError, FieldGroup } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { loginAction, type LoginState } from "./actions";
 
 const INITIAL: LoginState = {};
@@ -39,7 +40,7 @@ export function LoginForm() {
     return (
       <div className="flex flex-col gap-4">
         <p className="text-muted-foreground text-sm">{t("login.passkeyDescription")}</p>
-        {state.error || passkeyError ? <p role="alert" className="text-destructive text-sm">{state.error ?? passkeyError}</p> : null}
+        {state.error || passkeyError ? <FieldError>{state.error ?? passkeyError}</FieldError> : null}
         <Button type="button" onClick={verifyPasskey} disabled={pending || launching} autoFocus>
           {pending || launching ? t("login.verifyingMfa") : t("login.verifyPasskey")}
         </Button>
@@ -51,8 +52,8 @@ export function LoginForm() {
   }
   return (
     <form action={action} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="email">{t("login.emailLabel")}</Label>
+      <FieldGroup className="gap-4">
+        <FormField htmlFor="email" label={t("login.emailLabel")}>
         <Input
           id="email"
           name="email"
@@ -61,12 +62,12 @@ export function LoginForm() {
           required
           placeholder="you@company.com"
         />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label htmlFor="password">{t("login.passwordLabel")}</Label>
-        <Input id="password" name="password" type="password" autoComplete="current-password" required />
-      </div>
-      {state.error ? <p role="alert" className="text-destructive text-sm">{state.error}</p> : null}
+        </FormField>
+        <FormField htmlFor="password" label={t("login.passwordLabel")}>
+          <Input id="password" name="password" type="password" autoComplete="current-password" required />
+        </FormField>
+      </FieldGroup>
+      {state.error ? <FieldError>{state.error}</FieldError> : null}
       <Button type="submit" disabled={pending}>
         {pending ? t("login.submitting") : t("login.submit")}
       </Button>

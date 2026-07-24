@@ -2,12 +2,12 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { getLocale, getTranslations } from "next-intl/server";
 import { ArrowLeft, ExternalLink, ShieldAlert } from "lucide-react";
-import type { CatalogInstallState } from "@toard/core";
 import { CopyButton } from "@/components/dashboard/copy-button";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { catalogInstallStateMessageKey } from "@/lib/catalog-install-state";
 import { getToolCatalogItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getToolDeploymentView } from "@/lib/tool-deployment-view";
@@ -17,13 +17,6 @@ import { TeamDeploymentPanel } from "./team-deployment-panel";
 import { ToolInstallPanel } from "./tool-install-panel";
 
 export const dynamic = "force-dynamic";
-
-function stateKey(state: CatalogInstallState): string {
-  if (state.status === "not_installed" || state.status === "unavailable") return `state.${state.status}`;
-  if (state.versionRelation === "same") return "state.sameVersion";
-  if (state.versionRelation === "different") return "state.differentVersion";
-  return "state.versionUnknown";
-}
 
 export default async function LibraryDetailPage({ params }: { params: Promise<{ slug: string }> }) {
   const viewer = await getDashboardViewer();
@@ -50,7 +43,7 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
   }
 
   const date = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(item.updatedAt);
-  const installState = t(stateKey(item.installState) as "state.not_installed");
+  const installState = t(catalogInstallStateMessageKey(item.installState));
 
   return (
     <div className="min-w-0 space-y-5">

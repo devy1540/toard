@@ -17,6 +17,7 @@ import { TeamAttributionFence } from "@/components/dashboard/team-attribution-fe
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
+import { formatCoveredCost, usageTitleKey } from "@/lib/dashboard-usage";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { loadOrganizationDashboardData } from "@/lib/org-dashboard-data";
 import {
@@ -30,7 +31,7 @@ import {
   usagePerActiveUser,
 } from "@/lib/org-overview";
 import { fillSeriesGaps, parseDashboardPeriod, previousPeriod, type DashboardSearchParams } from "@/lib/period";
-import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
+import { legacyCostHintCount } from "@/lib/pricing";
 import { getEnabledProviders, type ProviderOption } from "@/lib/providers";
 import { getDashboardViewer } from "@/lib/session-user";
 import { pctDelta } from "@/lib/stat-delta";
@@ -76,13 +77,6 @@ function UnavailableSectionCard({
   );
 }
 
-function usageTitleKey(bucket: OrgPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
-  if (bucket === "day") return "dailyUsage";
-  if (bucket === "hour") return "hourlyUsage";
-  if (bucket === "30m") return "usage30m";
-  return "usage15m";
-}
-
 function RankRow({
   row,
   rank,
@@ -116,7 +110,7 @@ function RankRow({
     share = row.costCoverage.unpricedEvents === 0 && total > 0
       ? Math.round((row.costUsd / total) * 100)
       : null;
-    value = formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels);
+    value = formatCoveredCost(row.costUsd, row.costCoverage, costLabels);
   }
 
   return (
@@ -478,7 +472,7 @@ async function OverviewTab({
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
   };
-  const costValue = formatCostForCoverage(fmtUsd(overview.totalCostUsd), overview.costCoverage, costLabels);
+  const costValue = formatCoveredCost(overview.totalCostUsd, overview.costCoverage, costLabels);
   const tokens = totalUsageTokens({
     input: overview.totalInputTokens,
     output: overview.totalOutputTokens,
@@ -577,7 +571,7 @@ async function OverviewTab({
         <SupportingMetric
           label={t("costPerUser")}
           value={overview.activeUsers > 0
-            ? formatCostForCoverage(fmtUsd(overview.totalCostUsd / overview.activeUsers), overview.costCoverage, costLabels)
+            ? formatCoveredCost(overview.totalCostUsd / overview.activeUsers, overview.costCoverage, costLabels)
             : "—"}
           sub={t("hero.activeUsersSub")}
           icon={<DollarSign className="size-4" />}

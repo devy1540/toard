@@ -62,8 +62,8 @@ export default async function MyUsagePage({
         filterTrailing={<MetricToggle value={metric} />}
         trailing={
           <>
-            <ViewToggle view={view} />
-            <AutoRefresh />
+            <ViewToggle key="view-toggle" view={view} />
+            <AutoRefresh key="auto-refresh" />
           </>
         }
       />

@@ -1,5 +1,14 @@
 import type { ReactNode } from "react";
 import { HistoryCodeBlock } from "@/components/dashboard/history-code-block";
+import { Disclosure } from "@/components/ui/disclosure";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 // 히스토리 턴 본문 — 길면 CSS 만으로 접는다(체크박스+label, JS 불필요 → 서버 렌더로도 동작).
 // 짧은 본문은 토글 없이 그대로 노출. id 는 페이지에서 턴마다 유니크하게 넘긴다.
@@ -263,36 +272,38 @@ function TurnTextBlocks({ text }: { text: string }) {
         }
         if (block.type === "table") {
           return (
-            <div key={index} className="-mx-1 overflow-x-auto py-1">
-              <table className="w-full min-w-max border-separate border-spacing-0 text-left text-[13px] leading-5">
-                <thead>
-                  <tr>
+            <Table
+              key={index}
+              containerClassName="-mx-1 py-1"
+              className="min-w-max border-separate border-spacing-0 text-left text-[13px] leading-5"
+            >
+                <TableHeader className="[&_tr]:border-0">
+                  <TableRow className="border-0 hover:bg-transparent">
                     {block.header.map((cell, ci) => (
-                      <th
+                      <TableHead
                         key={ci}
-                        className="bg-muted/70 border-border border-y border-l px-2 py-1.5 font-semibold first:rounded-l-md last:rounded-r-md last:border-r"
+                        className="bg-muted/70 border-border h-auto border-y border-l px-2 py-1.5 text-foreground font-semibold whitespace-normal first:rounded-l-md last:rounded-r-md last:border-r"
                       >
                         {renderInline(cell, `t-${index}-h-${ci}`)}
-                      </th>
+                      </TableHead>
                     ))}
-                  </tr>
-                </thead>
-                <tbody>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
                   {block.rows.map((row, ri) => (
-                    <tr key={ri}>
+                    <TableRow key={ri} className="border-0 hover:bg-transparent">
                       {block.header.map((_, ci) => (
-                        <td
+                        <TableCell
                           key={ci}
-                          className="border-border border-b border-l px-2 py-1.5 align-top last:border-r"
+                          className="border-border border-b border-l px-2 py-1.5 align-top whitespace-normal last:border-r"
                         >
                           {renderInline(row[ci] ?? "", `t-${index}-${ri}-${ci}`)}
-                        </td>
+                        </TableCell>
                       ))}
-                    </tr>
+                    </TableRow>
                   ))}
-                </tbody>
-              </table>
-            </div>
+                </TableBody>
+            </Table>
           );
         }
         if (block.type === "list") {
@@ -340,18 +351,23 @@ export function TurnText({
   const link =
     "text-muted-foreground hover:text-foreground mt-1 cursor-pointer text-xs font-medium select-none";
   return (
-    <div>
-      <input type="checkbox" id={id} className="peer sr-only" />
-      <div className="max-h-36 overflow-hidden peer-checked:max-h-none">
-        <TurnTextBlocks text={text} />
-      </div>
-      {/* 두 label 모두 input 의 형제 → peer-checked 로 교차 토글 */}
-      <label htmlFor={id} className={`${link} inline-block peer-checked:hidden`}>
-        {more}
-      </label>
-      <label htmlFor={id} className={`${link} hidden peer-checked:inline-block`}>
-        {less}
-      </label>
-    </div>
+    <Disclosure
+      key={id}
+      preview={(
+        <div className="max-h-36 overflow-hidden">
+          <TurnTextBlocks text={text} />
+        </div>
+      )}
+      trigger={(
+        <>
+          <span className="group-data-[state=open]/disclosure-trigger:hidden">{more}</span>
+          <span className="hidden group-data-[state=open]/disclosure-trigger:inline">{less}</span>
+        </>
+      )}
+      triggerPlacement="after"
+      triggerClassName={link}
+    >
+      <TurnTextBlocks text={text} />
+    </Disclosure>
   );
 }

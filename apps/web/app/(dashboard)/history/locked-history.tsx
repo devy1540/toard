@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { KeyRound, Laptop, ShieldAlert } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { FormField } from "@/components/forms/form-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Textarea } from "@/components/ui/textarea";
 
 export function LockedHistory({
   approval,
@@ -79,17 +81,20 @@ export function LockedHistory({
               onRecover(mnemonic);
             }}
           >
-            <label className="block min-w-0 text-sm font-medium">
-              {t("recoveryWords")}
-              <textarea
-                className="border-input bg-background mt-2 min-h-28 w-full min-w-0 resize-y rounded-md border px-3 py-2 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            <FormField
+              htmlFor="history-recovery-words"
+              label={t("recoveryWords")}
+              description={t("recoveryLocalOnly")}
+            >
+              <Textarea
+                id="history-recovery-words"
+                className="min-h-28 min-w-0 resize-y font-mono"
                 autoComplete="off"
                 spellCheck={false}
                 value={mnemonic}
                 onChange={(event) => setMnemonic(event.target.value)}
               />
-            </label>
-            <p className="text-muted-foreground text-xs">{t("recoveryLocalOnly")}</p>
+            </FormField>
             <Button type="submit" disabled={busy || mnemonic.trim().length === 0}>
               {t("recover")}
             </Button>

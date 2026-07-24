@@ -5,7 +5,6 @@ import Link from "next/link";
 import { ArrowLeft, Inbox, KeyRound, LockKeyhole } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
@@ -43,6 +42,7 @@ import { fmtUsd } from "@/lib/format";
 import { groupHistoryAgents } from "@/lib/history-grouping";
 import { toHistoryPreview } from "@/lib/history-preview";
 import type { ProviderOption } from "@/lib/providers";
+import { totalSessionUsageTokens } from "@/lib/session-usage";
 import { initialE2eeHistoryState, reduceE2eeHistory } from "./e2ee-history-state";
 import { HistorySessionList } from "./history-session-list";
 import { historyPagination, type HistoryListItem } from "./history-list-view";
@@ -478,7 +478,7 @@ export function E2eeHistoryClient({
       models: usage?.models ?? [],
       preview: session.preview || dashboardT("history.previewUnavailable"),
       turnLabel: dashboardT("history.turns", { count: session.turnCount }),
-      totalTokens: usage ? totalUsageTokens(usage) : null,
+      totalTokens: usage ? totalSessionUsageTokens(usage) : null,
       tokenUnit: dashboardT("tokens"),
       hosts: usage?.hosts ?? [],
       costLabel: usage ? formatCostForCoverage(fmtUsd(usage.costUsd), usage.costCoverage, {
@@ -683,13 +683,6 @@ function historyClientHref(
   }
   const query = params.toString();
   return query ? `/history?${query}` : "/history";
-}
-
-function totalUsageTokens(usage: SessionUsageSummary): number {
-  return usage.inputTokens
-    + usage.outputTokens
-    + usage.cacheReadTokens
-    + usage.cacheCreationTokens;
 }
 
 async function fetchJson<T = unknown>(

@@ -1,7 +1,6 @@
 import Link from "next/link";
 import { getLocale, getTranslations } from "next-intl/server";
 import { ChevronRight, Inbox, Lock } from "lucide-react";
-import type { SessionUsageSummary } from "@toard/core";
 import { DashboardFilters } from "@/components/dashboard/dashboard-filters";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import {
@@ -24,6 +23,7 @@ import {
   searchMyHistorySessions,
 } from "@/lib/prompt-history";
 import { getEnabledProviders } from "@/lib/providers";
+import { totalSessionUsageTokens } from "@/lib/session-usage";
 import { getStorage } from "@/lib/storage";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHistoryMfaGate } from "@/lib/history-mfa";
@@ -84,10 +84,6 @@ function historyHref(sp: HistorySearchParams, overrides: Record<string, string |
   }
   const s = p.toString();
   return s ? `/history?${s}` : "/history";
-}
-
-function totalUsageTokens(usage: SessionUsageSummary): number {
-  return usage.inputTokens + usage.outputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;
 }
 
 /** 내 히스토리 — 본인 프롬프트·응답만. 관리자·타 사용자는 조회 불가(RLS + at-rest 암호화).
@@ -249,7 +245,7 @@ export default async function HistoryPage({
       models: usage?.models ?? [],
       preview: session.preview || t("history.previewUnavailable"),
       turnLabel: t("history.turns", { count: session.turnCount }),
-      totalTokens: usage ? totalUsageTokens(usage) : null,
+      totalTokens: usage ? totalSessionUsageTokens(usage) : null,
       tokenUnit: t("tokens"),
       hosts: usage?.hosts ?? [],
       costLabel: usage

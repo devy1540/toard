@@ -1,6 +1,7 @@
 import { getLocale, getTranslations } from "next-intl/server";
 import { KeyRound, MonitorSmartphone, ShieldCheck } from "lucide-react";
 import * as React from "react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -133,16 +134,16 @@ export function HistorySecurityPanelView({
               </div>
             </dl>
             {status.managed.state === "attention" ? (
-              <p className="border-destructive/40 bg-destructive/5 rounded-lg border p-3 text-sm">
-                {translate("statusUnavailable")}
-              </p>
+              <Alert variant="destructive" className="border-destructive/40 bg-destructive/5">
+                <AlertDescription>{translate("statusUnavailable")}</AlertDescription>
+              </Alert>
             ) : null}
             <p className="text-muted-foreground text-xs">{translate("privacyBoundary")}</p>
           </>
         ) : (
-          <p className="border-destructive/40 bg-destructive/5 rounded-lg border p-3 text-sm">
-            {translate("statusUnavailable")}
-          </p>
+          <Alert variant="destructive" className="border-destructive/40 bg-destructive/5">
+            <AlertDescription>{translate("statusUnavailable")}</AlertDescription>
+          </Alert>
         )}
 
         {legacy ? (

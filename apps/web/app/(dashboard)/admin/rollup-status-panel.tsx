@@ -4,6 +4,14 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import type { RollupStorageTable } from "@toard/storage-clickhouse";
 import type {
   RollupAdminStatus,
@@ -372,25 +380,25 @@ export function RollupStatusPanel({
           })}
         </p>
         {status.storage ? (
-          <div className="overflow-x-auto rounded-md border">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-muted/50">
-                <tr>
-                  <th className="px-3 py-2 font-medium">{t("rollup.storage.table")}</th>
-                  <th className="px-3 py-2 text-right font-medium">{t("rollup.storage.rows")}</th>
-                  <th className="px-3 py-2 text-right font-medium">{t("rollup.storage.bytes")}</th>
-                </tr>
-              </thead>
-              <tbody>
+          <div className="overflow-hidden rounded-md border">
+            <Table className="text-xs">
+              <TableHeader className="bg-muted/50">
+                <TableRow>
+                  <TableHead className="h-auto px-3 py-2 text-foreground">{t("rollup.storage.table")}</TableHead>
+                  <TableHead className="h-auto px-3 py-2 text-right text-foreground">{t("rollup.storage.rows")}</TableHead>
+                  <TableHead className="h-auto px-3 py-2 text-right text-foreground">{t("rollup.storage.bytes")}</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {tableEntries.map(([table, stats]) => (
-                  <tr key={table} className="border-t">
-                    <td className="px-3 py-2 font-mono">{t(`rollup.storage.tables.${table}`)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatNumber(stats.rows, locale)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatBytes(stats.bytes, locale)}</td>
-                  </tr>
+                  <TableRow key={table}>
+                    <TableCell className="px-3 py-2 font-mono">{t(`rollup.storage.tables.${table}`)}</TableCell>
+                    <TableCell className="px-3 py-2 text-right tabular-nums">{formatNumber(stats.rows, locale)}</TableCell>
+                    <TableCell className="px-3 py-2 text-right tabular-nums">{formatBytes(stats.bytes, locale)}</TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         ) : (
           <p className="text-muted-foreground text-xs">{t("rollup.storage.unavailable")}</p>

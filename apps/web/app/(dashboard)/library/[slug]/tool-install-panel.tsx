@@ -2,8 +2,19 @@ import { useTranslations } from "next-intl";
 import type { ToolCatalogItem } from "@toard/core";
 import { Badge } from "@/components/ui/badge";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Disclosure } from "@/components/ui/disclosure";
+import {
+  Field,
+  FieldContent,
+  FieldDescription,
+  FieldLabel,
+  FieldTitle,
+} from "@/components/ui/field";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import type { ToolDeploymentView } from "@/lib/tool-deployment-view";
 import { excludeTeamDefaultAction, installToolAction } from "./tool-install-actions";
 
@@ -27,43 +38,70 @@ export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCata
         </div>
 
         {!enabled ? (
-          <div className="rounded-md border border-orange-500/30 bg-orange-500/5 p-3 text-sm">
-            <p className="font-medium">{t("disabledTitle")}</p>
-            <p className="text-muted-foreground mt-1">{t("disabledDescription")}</p>
-          </div>
+          <Alert className="border-orange-500/30 bg-orange-500/5">
+            <AlertTitle>{t("disabledTitle")}</AlertTitle>
+            <AlertDescription>{t("disabledDescription")}</AlertDescription>
+          </Alert>
         ) : deployment.versionId ? (
           <form action={installToolAction} className="space-y-3">
             <input type="hidden" name="catalogItemId" value={item.id} />
             <input type="hidden" name="versionId" value={deployment.versionId} />
             <input type="hidden" name="slug" value={item.slug} />
-            <label className="flex items-start gap-3 rounded-md border p-3 text-sm">
-              <input type="radio" name="scope" value="all_devices" defaultChecked={deployment.selectedScope === "all_devices"} className="mt-1" />
-              <span><strong className="block">{t("installAllDevices")}</strong><span className="text-muted-foreground">{t("installAllDevicesDescription")}</span></span>
-            </label>
-            <details className="rounded-md border p-3">
-              <summary className="cursor-pointer text-sm font-medium">{t("advancedDeviceSelection")}</summary>
-              <label className="mt-3 flex items-start gap-3 text-sm">
-                <input type="radio" name="scope" value="selected_devices" defaultChecked={deployment.selectedScope === "selected_devices"} className="mt-1" />
-                <span>{t("selectedDevices")}</span>
-              </label>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                {deployment.devices.map((device) => (
-                  <label key={device.fingerprint} className="flex items-start gap-2 rounded border p-2 text-xs">
-                    <input type="checkbox" name="deviceFingerprints" value={device.fingerprint} defaultChecked={deployment.selectedDevices.includes(device.fingerprint)} />
-                    <span className="min-w-0"><strong className="block truncate">{device.host ?? t("unknownDevice")}</strong><code className="text-muted-foreground">{device.fingerprint.slice(0, 12)}…</code></span>
-                  </label>
-                ))}
-                {deployment.devices.length === 0 ? <p className="text-muted-foreground">{t("noDevices")}</p> : null}
-              </div>
-            </details>
+            <RadioGroup name="scope" defaultValue={deployment.selectedScope}>
+              <FieldLabel htmlFor="install-all-devices" className="w-full cursor-pointer">
+                <Field orientation="horizontal" className="items-start">
+                  <RadioGroupItem id="install-all-devices" value="all_devices" className="mt-1" />
+                  <FieldContent>
+                    <FieldTitle>{t("installAllDevices")}</FieldTitle>
+                    <FieldDescription>{t("installAllDevicesDescription")}</FieldDescription>
+                  </FieldContent>
+                </Field>
+              </FieldLabel>
+              <Disclosure
+                forceMount
+                className="rounded-md border"
+                trigger={t("advancedDeviceSelection")}
+                triggerClassName="w-full justify-between px-3 py-3 text-left font-medium"
+                contentClassName="px-3 pb-3"
+              >
+                <Field orientation="horizontal" className="mt-1 w-auto items-start gap-3">
+                  <RadioGroupItem id="install-selected-devices" value="selected_devices" className="mt-1" />
+                  <FieldLabel htmlFor="install-selected-devices" className="font-normal">
+                    {t("selectedDevices")}
+                  </FieldLabel>
+                </Field>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {deployment.devices.map((device) => {
+                    const id = `install-device-${device.fingerprint}`;
+                    return (
+                      <Field key={device.fingerprint} orientation="horizontal" className="items-start gap-2 rounded border p-2 text-xs">
+                        <Checkbox
+                          id={id}
+                          name="deviceFingerprints"
+                          value={device.fingerprint}
+                          defaultChecked={deployment.selectedDevices.includes(device.fingerprint)}
+                        />
+                        <FieldLabel htmlFor={id} className="min-w-0 font-normal">
+                          <span className="min-w-0">
+                            <strong className="block truncate">{device.host ?? t("unknownDevice")}</strong>
+                            <code className="text-muted-foreground">{device.fingerprint.slice(0, 12)}…</code>
+                          </span>
+                        </FieldLabel>
+                      </Field>
+                    );
+                  })}
+                  {deployment.devices.length === 0 ? <p className="text-muted-foreground">{t("noDevices")}</p> : null}
+                </div>
+              </Disclosure>
+            </RadioGroup>
             <Button type="submit">{t("install")}</Button>
             <p className="text-muted-foreground text-xs">{t("nextShimRun")}</p>
           </form>
         ) : (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-sm">
-            <p className="font-medium">{t("versionUnavailable")}</p>
-            <p className="text-muted-foreground mt-1">{t("versionUnavailableDescription")}</p>
-          </div>
+          <Alert className="border-amber-500/30 bg-amber-500/5">
+            <AlertTitle>{t("versionUnavailable")}</AlertTitle>
+            <AlertDescription>{t("versionUnavailableDescription")}</AlertDescription>
+          </Alert>
         )}
 
         {deployment.reports.length > 0 ? (

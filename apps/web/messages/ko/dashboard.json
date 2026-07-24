@@ -129,18 +129,6 @@
     "overview": "개요",
     "classic": "클래식"
   },
-  "stats": {
-    "lessThanPrev": "직전 기간({prev})보다 {diff} 적게 썼습니다",
-    "moreThanPrev": "직전 기간({prev})보다 {diff} 더 썼습니다",
-    "activeDays": "활동일",
-    "activeHours": "활동 시간",
-    "activeBuckets": "활동 구간",
-    "topModel": "주 사용 모델",
-    "byModelDaily": "기간 · 모델별",
-    "hourlyRhythm": "시간대 리듬",
-    "breakdown": "비용 분해",
-    "othersLabel": "기타"
-  },
   "autoRefresh": {
     "off": "자동 새로고침 끔",
     "sec10": "10초",

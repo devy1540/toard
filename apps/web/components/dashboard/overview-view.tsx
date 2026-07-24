@@ -6,37 +6,21 @@ import { UsageAreaChart } from "@/components/charts/usage-area-chart";
 import { CompositionToggle, type CompositionDimension } from "@/components/dashboard/composition-toggle";
 import type { ChartMetric } from "@/components/dashboard/metric-toggle";
 import { PricingNotice } from "@/components/dashboard/pricing-notice";
+import { ShareBar } from "@/components/dashboard/share-bar";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { ToolActivityCard } from "@/components/dashboard/tool-activity-card";
 import { Button } from "@/components/ui/button";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { orderByTokens, tokenShare } from "@/lib/composition";
+import { formatCoveredCost, usageTitleKey } from "@/lib/dashboard-usage";
 import { fmtCompact, fmtNum, fmtUsd } from "@/lib/format";
 import { formatModelName } from "@/lib/model-names";
 import { fillSeriesGaps, previousPeriod, type DashboardPeriod } from "@/lib/period";
-import { formatCostForCoverage, legacyCostHintCount } from "@/lib/pricing";
+import { legacyCostHintCount } from "@/lib/pricing";
 import { pctDelta } from "@/lib/stat-delta";
 import { getStorage } from "@/lib/storage";
 import { getActiveTokenMeta } from "@/lib/tokens";
 import { cn } from "@/lib/utils";
-import type { UsageCostCoverage } from "@toard/core";
-
-function coveredCost(
-  costUsd: number,
-  coverage: UsageCostCoverage,
-  labels: { partial: string; unpriced: string; legacy: string },
-): string {
-  return formatCostForCoverage(fmtUsd(costUsd), coverage, labels);
-}
-
-function ShareBar({ share }: { share: number }) {
-  const pct = share > 0 ? Math.max(2, Math.round(share * 100)) : 0;
-  return (
-    <div className="bg-muted h-1.5 overflow-hidden rounded-full">
-      <div className="bg-chart-1 h-full rounded-full" style={{ width: `${pct}%` }} />
-    </div>
-  );
-}
 
 function SummaryMetric({
   label,
@@ -119,13 +103,6 @@ const HEAT_COLORS = [
   "color-mix(in oklab, var(--brand) 52%, var(--background))",
   "var(--brand)",
 ];
-
-function usageTitleKey(bucket: DashboardPeriod["bucket"]): "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m" {
-  if (bucket === "day") return "dailyUsage";
-  if (bucket === "hour") return "hourlyUsage";
-  if (bucket === "30m") return "usage30m";
-  return "usage15m";
-}
 
 /** 개요 뷰 — 요약 스트립·차트 우선·우측 구성 패널로 재정렬한 운영형 대시보드. */
 export async function OverviewView({
@@ -227,7 +204,7 @@ export async function OverviewView({
           />
           <SummaryMetric
             label={t(`costLabel.${period.preset}`)}
-            value={coveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
+            value={formatCoveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
             sub={costHint}
             badge={costDelta ? <DeltaBadge delta={costDelta} /> : undefined}
             icon={<DollarSign className="size-3.5" />}
@@ -310,7 +287,7 @@ export async function OverviewView({
                       name={formatModelName(m.model) ?? m.model}
                       hoverTitle={m.model}
                       tokens={fmtCompact(m.totalTokens)}
-                      cost={coveredCost(m.costUsd, m.costCoverage, costLabels)}
+                      cost={formatCoveredCost(m.costUsd, m.costCoverage, costLabels)}
                       sessions={t("sessionCount", { count: fmtNum(m.sessions) })}
                       share={tokenShare(m.totalTokens, modelTokenSum)}
                       marker={<span className="bg-chart-1 inline-block size-2 rounded-[3px]" style={{ opacity: Math.max(0.35, 1 - i * 0.12) }} />}
@@ -331,7 +308,7 @@ export async function OverviewView({
                     name={h.host ?? t("unknownHost")}
                     muted={h.host == null}
                     tokens={fmtCompact(h.totalTokens)}
-                    cost={coveredCost(h.costUsd, h.costCoverage, costLabels)}
+                    cost={formatCoveredCost(h.costUsd, h.costCoverage, costLabels)}
                     sessions={t("sessionCount", { count: fmtNum(h.sessions) })}
                     share={tokenShare(h.totalTokens, hostTokenSum)}
                     marker={<Laptop className="text-muted-foreground size-3.5" />}

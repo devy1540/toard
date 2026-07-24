@@ -129,18 +129,6 @@
     "overview": "Overview",
     "classic": "Classic"
   },
-  "stats": {
-    "lessThanPrev": "{diff} less than the previous period ({prev})",
-    "moreThanPrev": "{diff} more than the previous period ({prev})",
-    "activeDays": "Active days",
-    "activeHours": "Active hours",
-    "activeBuckets": "Active intervals",
-    "topModel": "Top model",
-    "byModelDaily": "By model over time",
-    "hourlyRhythm": "Hourly rhythm",
-    "breakdown": "Cost breakdown",
-    "othersLabel": "Other"
-  },
   "autoRefresh": {
     "off": "Auto-refresh off",
     "sec10": "10s",

@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { FieldError } from "@/components/ui/field";
 
 export function managedMigrationStateBody(action: "resume"): { action: "resume" };
 export function managedMigrationStateBody(action: "block"): {
@@ -92,7 +93,7 @@ export function ManagedMigrationPanel({
           <KeyRound className="mt-0.5 size-4 shrink-0" />
           <span>{t("ciphertextPreserved")}</span>
         </p>
-        {error ? <p role="alert" className="text-sm text-destructive">{t("error", { code: error })}</p> : null}
+        {error ? <FieldError>{t("error", { code: error })}</FieldError> : null}
 
         <div className="flex flex-wrap gap-2">
           {blocked ? (

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+const WEB_ROOT = fileURLToPath(new URL("../", import.meta.url));
 
 function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
@@ -8,6 +12,13 @@ function source(path: string): string {
 
 function repoSource(path: string): string {
   return readFileSync(new URL(`../../../${path}`, import.meta.url), "utf8");
+}
+
+function tsxFiles(path: string): string[] {
+  const root = join(WEB_ROOT, path);
+  return readdirSync(root, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".tsx") && !entry.name.includes(".test."))
+    .map((entry) => join(entry.parentPath, entry.name));
 }
 
 function messageShape(value: unknown): unknown {
@@ -197,6 +208,93 @@ test("dashboard filters delegate their visual shell to the shared toolbar", () =
   assert.match(filters, /<DashboardToolbar[\s\S]*filters=\{filterControls\}/);
   assert.match(filters, /showCustom[\s\S]*<DateRangePicker/);
   assert.match(filters, /<Button size="sm" onClick=\{applyCustom\} disabled=\{!from \|\| !to\}>/);
+});
+
+test("표시되는 폼 컨트롤과 표는 shadcn 공용 계층을 우회하지 않는다", () => {
+  const files = [
+    ...tsxFiles("app"),
+    ...tsxFiles("components").filter((path) => !path.includes(`${join("components", "ui")}/`)),
+  ];
+
+  for (const path of files) {
+    const contents = readFileSync(path, "utf8");
+    const label = relative(WEB_ROOT, path);
+    assert.doesNotMatch(
+      contents,
+      /<(?:button|select|textarea|table|details|summary|label)\b/,
+      `${label} contains a visible native control outside components/ui`,
+    );
+    for (const match of contents.matchAll(/<input\b[^>]*>/g)) {
+      assert.match(match[0], /type="hidden"/, `${label} contains a visible native input`);
+    }
+    assert.doesNotMatch(
+      contents,
+      /from "?(?:@radix-ui|radix-ui)/,
+      `${label} imports Radix outside components/ui`,
+    );
+  }
+});
+
+test("library 폼은 shadcn field와 폼 참여형 공용 컨트롤을 사용한다", () => {
+  const share = source("app/(dashboard)/library/share/tool-share-form.tsx");
+  const install = source("app/(dashboard)/library/[slug]/tool-install-panel.tsx");
+  const moderation = source("app/(dashboard)/admin/library-panel.tsx");
+
+  for (const form of [share, install, moderation]) {
+    assert.doesNotMatch(form, /<(?:select|textarea|details|summary|label)\b/);
+  }
+  assert.match(share, /@\/components\/ui\/native-select/);
+  assert.match(share, /@\/components\/ui\/textarea/);
+  assert.match(share, /@\/components\/ui\/radio-group/);
+  assert.match(share, /@\/components\/ui\/checkbox/);
+  assert.match(share, /<Disclosure[\s\S]*forceMount/);
+  assert.match(install, /<Disclosure[\s\S]*forceMount/);
+  assert.match(moderation, /@\/components\/library\/library-notice/);
+});
+
+test("인증 진입 화면은 하나의 공용 shell과 field 구성을 사용한다", () => {
+  for (const path of [
+    "app/login/page.tsx",
+    "app/signup/page.tsx",
+    "app/setup/page.tsx",
+    "app/invite/[token]/page.tsx",
+    "app/onboarding/team/page.tsx",
+  ]) {
+    const page = source(path);
+    assert.match(page, /<AuthPageShell/);
+    assert.doesNotMatch(page, /min-h-screen|<Card/);
+  }
+
+  for (const path of [
+    "app/login/login-form.tsx",
+    "app/signup/signup-form.tsx",
+    "app/setup/setup-form.tsx",
+    "app/invite/[token]/accept-form.tsx",
+    "app/onboarding/team/team-form.tsx",
+  ]) {
+    assert.match(source(path), /@\/components\/forms\/form-field/);
+  }
+});
+
+test("legacy stats UI와 단독 전용 차트는 제거되어 있다", () => {
+  assert.equal(existsSync(join(WEB_ROOT, "components/dashboard/stats-view.tsx")), false);
+  assert.equal(existsSync(join(WEB_ROOT, "components/charts/model-stacked-bar-chart.tsx")), false);
+  assert.doesNotMatch(source("messages/en/dashboard.json"), /"stats"\s*:/);
+  assert.doesNotMatch(source("messages/ko/dashboard.json"), /"stats"\s*:/);
+});
+
+test("공통 대시보드 표시 로직은 화면 파일에 중복 정의하지 않는다", () => {
+  const classic = source("components/dashboard/classic-view.tsx");
+  const overview = source("components/dashboard/overview-view.tsx");
+  const org = source("app/(dashboard)/org/page.tsx");
+  const usage = source("lib/dashboard-usage.ts");
+
+  for (const page of [classic, overview, org]) {
+    assert.match(page, /formatCoveredCost|usageTitleKey/);
+    assert.doesNotMatch(page, /function (?:coveredCost|usageTitleKey|ShareBar)\b/);
+  }
+  assert.match(usage, /export function formatCoveredCost/);
+  assert.match(usage, /export function usageTitleKey/);
 });
 
 test("demo open mode can render settings with the dashboard viewer fallback", () => {

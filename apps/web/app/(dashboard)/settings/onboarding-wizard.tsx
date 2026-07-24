@@ -5,6 +5,7 @@ import { useEffect, useMemo, useReducer, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { FieldLabel } from "@/components/ui/field";
 import { Switch } from "@/components/ui/switch";
 import {
   buildInstallCommand,
@@ -129,9 +130,9 @@ export function OnboardingWizard({
         {contentEnabled ? (
           <div className="bg-muted/50 flex items-start justify-between gap-4 rounded-lg p-4 text-left">
             <div className="space-y-1">
-              <label className="text-sm font-medium" htmlFor="wizard-content">
+              <FieldLabel htmlFor="wizard-content">
                 {t("wizard.contentLabel")}
-              </label>
+              </FieldLabel>
               <p className="text-muted-foreground text-xs">
                 {t(collectContent ? "wizard.contentWithPrompts" : "wizard.contentMetadataOnly")}
               </p>

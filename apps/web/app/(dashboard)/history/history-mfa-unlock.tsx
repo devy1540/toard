@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { FieldError } from "@/components/ui/field";
 import { beginHistoryPasskeyAction, completeHistoryPasskeyAction } from "./mfa-actions";
 
 export function HistoryMfaUnlock({ returnTo }: { returnTo: string }) {
@@ -39,7 +40,7 @@ export function HistoryMfaUnlock({ returnTo }: { returnTo: string }) {
           <CardDescription>{t("passkeyDescription")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {error ? <p role="alert" className="text-destructive text-sm">{error}</p> : null}
+          {error ? <FieldError>{error}</FieldError> : null}
           <Button type="button" className="w-full" onClick={unlock} disabled={pending} autoFocus>
             {pending ? t("unlocking") : t("unlockWithPasskey")}
           </Button>

@@ -67,22 +67,13 @@ export async function replaceDeviceInventoryWithDb(
   snapshot: ToolInventorySnapshot,
 ): Promise<{ unchanged: boolean; items: number }> {
   const host = snapshot.host ?? "";
-  const current = await db.query(
-    `SELECT id, fingerprint FROM device_tool_inventory_snapshots
-     WHERE ingest_token_id = $1 AND host = $2 FOR UPDATE`,
-    [owner.tokenId, host],
-  );
-  if (current.rows[0]?.fingerprint === snapshot.fingerprint) {
-    return { unchanged: true, items: snapshot.items.length };
-  }
-
   const saved = await db.query(
     `INSERT INTO device_tool_inventory_snapshots
        (user_id, ingest_token_id, host, fingerprint, observed_at, received_at)
      VALUES ($1,$2,$3,$4,$5,now())
-     ON CONFLICT (ingest_token_id, host) DO UPDATE SET
+     ON CONFLICT (ingest_token_id, fingerprint) DO UPDATE SET
        user_id = EXCLUDED.user_id,
-       fingerprint = EXCLUDED.fingerprint,
+       host = EXCLUDED.host,
        observed_at = EXCLUDED.observed_at,
        received_at = now()
      RETURNING id`,

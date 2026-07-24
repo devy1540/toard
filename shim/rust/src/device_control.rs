@@ -54,6 +54,8 @@ struct ControlState {
     #[serde(default)]
     pending_results: Vec<CommandResult>,
     #[serde(default)]
+    pending_collect_command_ids: Vec<String>,
+    #[serde(default)]
     error_code: Option<String>,
 }
 
@@ -111,11 +113,20 @@ trait Transport {
 }
 
 trait Executor {
-    fn execute(&self, target: &Target, command_type: CommandType) -> i32;
+    fn execute(&self, target: &Target, command_type: CommandType) -> Execution;
 }
 
 struct CurlTransport;
 struct LocalExecutor;
+
+#[derive(Debug, Eq, PartialEq)]
+enum Execution {
+    Completed {
+        code: i32,
+        result_code: Option<String>,
+    },
+    DeferredCollect,
+}
 
 fn state_path(target: &Target) -> std::path::PathBuf {
     target.state_dir.join("device-control.json")
@@ -146,6 +157,7 @@ fn initial_state(target: &Target) -> ControlState {
         applied_content_since: normalized_content_since(target),
         completed_command_ids: Vec::new(),
         pending_results: Vec::new(),
+        pending_collect_command_ids: Vec::new(),
         error_code: None,
     }
 }
@@ -275,24 +287,28 @@ fn execute_commands(
         {
             continue;
         }
-        let code = executor.execute(target, command.command_type);
+        let execution = executor.execute(target, command.command_type);
         state.completed_command_ids.push(command.id.clone());
         if state.completed_command_ids.len() > MAX_COMPLETED_COMMANDS {
             let excess = state.completed_command_ids.len() - MAX_COMPLETED_COMMANDS;
             state.completed_command_ids.drain(0..excess);
         }
-        state.pending_results.push(CommandResult {
-            command_id: command.id,
-            status: if code == 0 {
-                CommandResultStatus::Succeeded
-            } else {
-                CommandResultStatus::Failed
-            },
-            result_code: (code != 0).then(|| match command.command_type {
-                CommandType::Collect => "collect_failed".into(),
-                CommandType::Doctor => "doctor_failed".into(),
-            }),
-        });
+        match execution {
+            Execution::Completed { code, result_code } => {
+                state.pending_results.push(CommandResult {
+                    command_id: command.id,
+                    status: if code == 0 {
+                        CommandResultStatus::Succeeded
+                    } else {
+                        CommandResultStatus::Failed
+                    },
+                    result_code,
+                });
+            }
+            Execution::DeferredCollect => {
+                state.pending_collect_command_ids.push(command.id);
+            }
+        }
         if state.pending_results.len() > MAX_PENDING_RESULTS {
             let excess = state.pending_results.len() - MAX_PENDING_RESULTS;
             state.pending_results.drain(0..excess);
@@ -301,6 +317,31 @@ fn execute_commands(
         changed = true;
     }
     Ok(changed)
+}
+
+fn complete_collect(target: &Target, code: i32) -> Result<bool, SyncError> {
+    let mut state = load_state(target);
+    if state.pending_collect_command_ids.is_empty() {
+        return Ok(false);
+    }
+    let command_ids = std::mem::take(&mut state.pending_collect_command_ids);
+    for command_id in command_ids {
+        state.pending_results.push(CommandResult {
+            command_id,
+            status: if code == 0 {
+                CommandResultStatus::Succeeded
+            } else {
+                CommandResultStatus::Failed
+            },
+            result_code: (code != 0).then(|| "collect_failed".into()),
+        });
+    }
+    if state.pending_results.len() > MAX_PENDING_RESULTS {
+        let excess = state.pending_results.len() - MAX_PENDING_RESULTS;
+        state.pending_results.drain(0..excess);
+    }
+    save_state(target, &state)?;
+    Ok(true)
 }
 
 fn sync_once(
@@ -405,6 +446,27 @@ pub fn sync_all() -> i32 {
     ))
 }
 
+pub fn complete_collects(target_codes: &std::collections::HashMap<String, i32>) -> i32 {
+    let store = match TargetStore::from_home() {
+        Ok(store) => store,
+        Err(_) => return 1,
+    };
+    let targets = match store.load_or_migrate() {
+        Ok(targets) => targets,
+        Err(_) => return 1,
+    };
+    let mut failed = false;
+    for target in targets {
+        let Some(code) = target_codes.get(&target.endpoint).copied() else {
+            continue;
+        };
+        if complete_collect(&target, code).is_err() {
+            failed = true;
+        }
+    }
+    i32::from(failed)
+}
+
 fn auth_config(token: &str) -> Result<String, SyncError> {
     if token.contains(['\r', '\n']) {
         return Err(SyncError::Unavailable);
@@ -497,12 +559,16 @@ impl Transport for CurlTransport {
 }
 
 impl Executor for LocalExecutor {
-    fn execute(&self, target: &Target, command_type: CommandType) -> i32 {
+    fn execute(&self, target: &Target, command_type: CommandType) -> Execution {
         match command_type {
-            CommandType::Collect => {
-                crate::collect::run_selected(None, Some(&target.endpoint), false, true)
+            CommandType::Collect => Execution::DeferredCollect,
+            CommandType::Doctor => {
+                let report = crate::cli::doctor_headless(Some(&target.endpoint));
+                Execution::Completed {
+                    code: report.code,
+                    result_code: report.result_code,
+                }
             }
-            CommandType::Doctor => crate::cli::doctor(Some(&target.endpoint)),
         }
     }
 }
@@ -655,9 +721,15 @@ mod tests {
     }
 
     impl Executor for FakeExecutor {
-        fn execute(&self, _target: &Target, _command_type: CommandType) -> i32 {
+        fn execute(&self, _target: &Target, command_type: CommandType) -> Execution {
             self.calls.set(self.calls.get() + 1);
-            0
+            match command_type {
+                CommandType::Collect => Execution::DeferredCollect,
+                CommandType::Doctor => Execution::Completed {
+                    code: 0,
+                    result_code: None,
+                },
+            }
         }
     }
 
@@ -697,9 +769,34 @@ mod tests {
         let saved = load_state(&target);
         assert_eq!(saved.applied_generation, 2);
         assert_eq!(saved.applied_content_mode, ContentMode::ServerV1);
-        assert_eq!(saved.pending_results.len(), 1);
+        assert!(saved.pending_results.is_empty());
+        assert_eq!(
+            saved.pending_collect_command_ids,
+            ["123e4567-e89b-12d3-a456-426614174000"]
+        );
         assert_eq!(executor.calls.get(), 1);
         assert_eq!(transport.calls.get(), 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deferred_collect_is_completed_with_the_real_collection_result() {
+        let root = temp_dir("collect-result");
+        let target = test_target(&root, "rev-1");
+        let mut state = initial_state(&target);
+        state.pending_collect_command_ids = vec!["123e4567-e89b-12d3-a456-426614174000".into()];
+        save_state(&target, &state).unwrap();
+
+        assert!(complete_collect(&target, 1).unwrap());
+
+        let saved = load_state(&target);
+        assert!(saved.pending_collect_command_ids.is_empty());
+        assert_eq!(saved.pending_results.len(), 1);
+        assert_eq!(saved.pending_results[0].status, CommandResultStatus::Failed);
+        assert_eq!(
+            saved.pending_results[0].result_code.as_deref(),
+            Some("collect_failed")
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -93,9 +93,32 @@ test(
       );
       await client.query(
         `INSERT INTO device_tool_inventory_snapshots
+           (user_id, ingest_token_id, host, fingerprint, observed_at, received_at)
+         VALUES($1,$2,'old-box',$3,now() - interval '1 day',now() - interval '1 day')`,
+        [userId, tokenId, fingerprint],
+      );
+      await client.query(
+        `INSERT INTO device_tool_inventory_snapshots
            (user_id, ingest_token_id, host, fingerprint, observed_at)
          VALUES($1,$2,'box',$3,now())`,
         [userId, tokenId, fingerprint],
+      );
+      await client.query(await part("1700000051_device_inventory_identity.sql", "up"));
+      assert.deepEqual(
+        (
+          await client.query(
+            `SELECT host FROM device_tool_inventory_snapshots
+             WHERE ingest_token_id=$1 AND fingerprint=$2`,
+            [tokenId, fingerprint],
+          )
+        ).rows,
+        [{ host: "box" }],
+      );
+      await client.query(
+        `INSERT INTO device_tool_inventory_snapshots
+           (user_id, ingest_token_id, host, fingerprint, observed_at)
+         VALUES($1,$2,'box',$3,now())`,
+        [userId, tokenId, "c".repeat(64)],
       );
       await client.query(
         `INSERT INTO device_control_policies
@@ -248,6 +271,7 @@ test(
       await pool.end();
       pool = null;
 
+      await client.query(await part("1700000051_device_inventory_identity.sql", "down"));
       await client.query(await part("1700000050_device_control.sql", "down"));
       for (const table of [
         "device_control_policies",

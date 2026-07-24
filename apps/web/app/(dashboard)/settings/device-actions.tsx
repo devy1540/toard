@@ -18,6 +18,23 @@ import {
   setDeviceHistoryAction,
 } from "./device-control-actions";
 
+const DOCTOR_RESULT_CODES = [
+  "scheduler_inactive",
+  "collection_stale",
+  "token_invalid",
+  "endpoint_not_found",
+  "endpoint_unreachable",
+  "endpoint_unhealthy",
+  "target_unavailable",
+  "path_misconfigured",
+  "doctor_failed",
+] as const;
+type DoctorResultCode = (typeof DOCTOR_RESULT_CODES)[number];
+
+function isDoctorResultCode(value: string): value is DoctorResultCode {
+  return (DOCTOR_RESULT_CODES as readonly string[]).includes(value);
+}
+
 export type DeviceControlClientView = {
   tokenId: string;
   deviceFingerprint: string;
@@ -28,7 +45,7 @@ export type DeviceControlClientView = {
   daemonActive: boolean | null;
   lastSyncAt: string | null;
   lastSyncLabel: string | null;
-  errorCode: string | null;
+  syncStale: boolean;
   command: {
     type: DeviceControlCommandType;
     status: DeviceControlCommandStatus;
@@ -39,9 +56,11 @@ export type DeviceControlClientView = {
 export function DeviceActions({
   control,
   contentEnabled,
+  pollWhenMissing = false,
 }: {
   control: DeviceControlClientView | null;
   contentEnabled: boolean;
+  pollWhenMissing?: boolean;
 }) {
   const t = useTranslations("settings");
   const router = useRouter();
@@ -51,7 +70,14 @@ export function DeviceActions({
     control?.desiredGeneration !== control?.appliedGeneration;
   const commandActive =
     control?.command?.status === "pending" || control?.command?.status === "claimed";
-  const needsRefresh = !control?.lastSyncAt || applying || commandActive;
+  const doctorResultCode =
+    control?.command?.type === "doctor" &&
+    control.command.resultCode &&
+    isDoctorResultCode(control.command.resultCode)
+      ? control.command.resultCode
+      : null;
+  const needsRefresh =
+    (!control?.lastSyncAt && pollWhenMissing) || applying || commandActive;
 
   useEffect(() => {
     if (!needsRefresh) return;
@@ -147,27 +173,43 @@ export function DeviceActions({
           {t("install.deviceControl.doctor")}
         </Button>
       </div>
-      {!contentEnabled ? (
-        <span className="text-muted-foreground text-xs">
-          {t("install.deviceControl.serverDisabled")}
-        </span>
-      ) : commandActive ? (
+      {commandActive ? (
         <span className="text-muted-foreground text-xs">
           {t(`install.deviceControl.running.${control.command?.type ?? "collect"}`)}
         </span>
-      ) : control.errorCode ? (
-        <span className="text-destructive text-xs">{t("install.deviceControl.shimError")}</span>
+      ) : control.command?.status === "expired" ? (
+        <span className="text-amber-600 text-xs dark:text-amber-500">
+          {t("install.deviceControl.expired")}
+        </span>
       ) : control.command?.status === "failed" ? (
         <span className="text-destructive text-xs">
-          {t(`install.deviceControl.completed.${control.command.type}.failed`)}
+          {doctorResultCode
+            ? t(`install.deviceControl.diagnostic.${doctorResultCode}`)
+            : t(`install.deviceControl.completed.${control.command.type}.failed`)}
         </span>
       ) : control.command?.status === "succeeded" ? (
-        <span className="text-muted-foreground text-xs">
-          {t(`install.deviceControl.completed.${control.command.type}.succeeded`)}
+        <span
+          className={
+            doctorResultCode
+              ? "text-amber-600 text-xs dark:text-amber-500"
+              : "text-muted-foreground text-xs"
+          }
+        >
+          {doctorResultCode
+            ? t(`install.deviceControl.diagnostic.${doctorResultCode}`)
+            : t(`install.deviceControl.completed.${control.command.type}.succeeded`)}
         </span>
       ) : control.daemonActive === false ? (
         <span className="text-amber-600 text-xs dark:text-amber-500">
           {t("install.deviceControl.periodicInactive")}
+        </span>
+      ) : control.syncStale ? (
+        <span className="text-amber-600 text-xs dark:text-amber-500">
+          {t("install.deviceControl.syncStale")}
+        </span>
+      ) : !contentEnabled ? (
+        <span className="text-muted-foreground text-xs">
+          {t("install.deviceControl.serverDisabled")}
         </span>
       ) : control.lastSyncLabel ? (
         <span className="text-muted-foreground text-xs">

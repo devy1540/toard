@@ -338,7 +338,10 @@ fn collect_cmd(args: &[String]) -> i32 {
     {
         crate::local_bridge::ensure_background_quiet();
     }
-    let result = crate::collect::run_selected(
+    run_pre_collect_maintenance(dry_run, || {
+        let _ = crate::device_control::sync_all();
+    });
+    let report = crate::collect::run_selected_report(
         only.as_deref(),
         selected_endpoint.as_deref(),
         dry_run,
@@ -346,6 +349,11 @@ fn collect_cmd(args: &[String]) -> i32 {
     );
     run_post_collect_maintenance(
         dry_run,
+        only.is_none(),
+        &report.target_codes,
+        |target_codes| {
+            let _ = crate::device_control::complete_collects(target_codes);
+        },
         || {
             let _ = crate::device_control::sync_all();
         },
@@ -357,17 +365,29 @@ fn collect_cmd(args: &[String]) -> i32 {
         // 체크를 묶으면 해당 사용자는 새 로컬 bridge 기능을 받을 수 없다.
         crate::update::maybe_spawn_background_check,
     );
-    result
+    report.code
+}
+
+fn run_pre_collect_maintenance(dry_run: bool, sync_device_control: impl FnOnce()) {
+    if !dry_run {
+        sync_device_control();
+    }
 }
 
 fn run_post_collect_maintenance(
     dry_run: bool,
+    full_collect: bool,
+    target_codes: &std::collections::HashMap<String, i32>,
+    complete_collects: impl FnOnce(&std::collections::HashMap<String, i32>),
     sync_device_control: impl FnOnce(),
     reconcile_tools: impl FnOnce(),
     check_for_update: impl FnOnce(),
 ) {
     if dry_run {
         return;
+    }
+    if full_collect {
+        complete_collects(target_codes);
     }
     sync_device_control();
     reconcile_tools();
@@ -513,13 +533,29 @@ fn warn(msg: &str) {
 
 struct Doctor {
     failed: bool,
+    result_code: Option<&'static str>,
 }
 
 impl Doctor {
-    fn fail(&mut self, msg: &str) {
+    fn fail_with(&mut self, result_code: &'static str, msg: &str) {
         println!("  ✗ {msg}");
+        if !self.failed {
+            self.result_code = Some(result_code);
+        }
         self.failed = true;
     }
+
+    fn advisory(&mut self, result_code: &'static str, msg: &str) {
+        warn(msg);
+        if self.result_code.is_none() {
+            self.result_code = Some(result_code);
+        }
+    }
+}
+
+pub(crate) struct DoctorReport {
+    pub code: i32,
+    pub result_code: Option<String>,
 }
 
 fn doctor_cmd(args: &[String]) -> i32 {
@@ -551,8 +587,19 @@ fn doctor_cmd(args: &[String]) -> i32 {
 }
 
 pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
+    doctor_report(selected_endpoint, false).code
+}
+
+pub(crate) fn doctor_headless(selected_endpoint: Option<&str>) -> DoctorReport {
+    doctor_report(selected_endpoint, true)
+}
+
+fn doctor_report(selected_endpoint: Option<&str>, service_context: bool) -> DoctorReport {
     println!("toard-shim doctor — v{}\n", version());
-    let mut d = Doctor { failed: false };
+    let mut d = Doctor {
+        failed: false,
+        result_code: None,
+    };
     let local_bridge_action = env::var(crate::local_bridge::BRIDGE_ACTION_ENV)
         .ok()
         .as_deref()
@@ -564,7 +611,10 @@ pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
     let mut targets = match store.and_then(|store| store.load_or_migrate()) {
         Ok(targets) => targets,
         Err(error) => {
-            d.fail(&format!("target 저장소를 읽을 수 없습니다: {error}"));
+            d.fail_with(
+                "target_unavailable",
+                &format!("target 저장소를 읽을 수 없습니다: {error}"),
+            );
             Vec::new()
         }
     };
@@ -591,44 +641,59 @@ pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
     if let Some(endpoint) = selected_endpoint {
         targets.retain(|target| target.endpoint == endpoint);
         if targets.is_empty() {
-            d.fail(&format!("등록된 target을 찾을 수 없습니다: {endpoint}"));
+            d.fail_with(
+                "target_unavailable",
+                &format!("등록된 target을 찾을 수 없습니다: {endpoint}"),
+            );
         }
     } else if targets.is_empty() {
-        d.fail("등록된 target이 없습니다 — 서버 설치 스크립트로 연결하세요");
+        d.fail_with(
+            "target_unavailable",
+            "등록된 target이 없습니다 — 서버 설치 스크립트로 연결하세요",
+        );
     }
 
     let strict_target_probe = selected_endpoint.is_some();
     for target in &targets {
         println!("target {} — {}", &target.id[..12], target.endpoint);
         let Some(token) = target.credentials.token.as_deref() else {
-            d.fail(&format!("자격 증명 없음: {}", target.endpoint));
+            d.fail_with(
+                "target_unavailable",
+                &format!("자격 증명 없음: {}", target.endpoint),
+            );
             continue;
         };
         ok("토큰 로드됨 (target credentials)");
         check_credentials_permissions(&target.credentials_path);
         match probe_ingest(&target.endpoint, token) {
             Ok(200) => ok(&format!("endpoint 연결 + 토큰 유효: {}", target.endpoint)),
-            Ok(401) => d.fail(&format!(
-                "토큰이 유효하지 않습니다(만료/폐기): {}",
-                target.endpoint
-            )),
-            Ok(404) => d.fail(&format!(
-                "{}/v1/logs 가 없습니다 — endpoint 값을 확인하세요",
-                target.endpoint
-            )),
-            Ok(0) => d.fail(&format!("endpoint 연결 실패: {}", target.endpoint)),
-            Ok(code) if strict_target_probe => d.fail(&format!(
-                "endpoint 연결 확인 실패: {} HTTP {code}",
-                target.endpoint
-            )),
+            Ok(401) => d.fail_with(
+                "token_invalid",
+                &format!("토큰이 유효하지 않습니다(만료/폐기): {}", target.endpoint),
+            ),
+            Ok(404) => d.fail_with(
+                "endpoint_not_found",
+                &format!(
+                    "{}/v1/logs 가 없습니다 — endpoint 값을 확인하세요",
+                    target.endpoint
+                ),
+            ),
+            Ok(0) => d.fail_with(
+                "endpoint_unreachable",
+                &format!("endpoint 연결 실패: {}", target.endpoint),
+            ),
+            Ok(code) if strict_target_probe => d.fail_with(
+                "endpoint_unhealthy",
+                &format!("endpoint 연결 확인 실패: {} HTTP {code}", target.endpoint),
+            ),
             Ok(code) => warn(&format!(
                 "endpoint 응답이 예상 밖입니다: {} HTTP {code}",
                 target.endpoint
             )),
-            Err(error) if strict_target_probe => d.fail(&format!(
-                "endpoint 점검 실패: {} — {error}",
-                target.endpoint
-            )),
+            Err(error) if strict_target_probe => d.fail_with(
+                "endpoint_unreachable",
+                &format!("endpoint 점검 실패: {} — {error}", target.endpoint),
+            ),
             Err(error) => warn(&format!(
                 "endpoint 점검 생략: {} — {error}",
                 target.endpoint
@@ -652,8 +717,8 @@ pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
 
     // 3. PATH 가로채기 순서 + 진짜 바이너리. 로컬 bridge는 launchd/systemd의
     // 서비스 PATH를 상속하므로 사용자 로그인 셸의 PATH를 판정할 수 없다.
-    if local_bridge_action {
-        info("PATH 점검 생략 — 로컬 bridge 서비스 환경은 사용자 셸 PATH와 다릅니다");
+    if local_bridge_action || service_context {
+        info("PATH 점검 생략 — 백그라운드 서비스 환경은 사용자 셸 PATH와 다릅니다");
     } else {
         let self_canon = env::current_exe().ok().and_then(|p| p.canonicalize().ok());
         for (tool, path_required) in [("claude", true), ("codex", false)] {
@@ -674,15 +739,21 @@ pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
                             }
                         }
                     } else {
-                        d.fail(&format!(
-                            "PATH: shim 보다 '{}' 가 먼저 옵니다 — 수집되지 않습니다. PATH 에서 shim 디렉토리를 앞에 두세요",
-                            first.display()
-                        ));
+                        d.fail_with(
+                            "path_misconfigured",
+                            &format!(
+                                "PATH: shim 보다 '{}' 가 먼저 옵니다 — 수집되지 않습니다. PATH 에서 shim 디렉토리를 앞에 두세요",
+                                first.display()
+                            ),
+                        );
                     }
                 }
                 None => {
                     if path_required {
-                        d.fail("PATH 에 claude 가 없습니다 — shim 디렉토리를 PATH 에 추가하세요");
+                        d.fail_with(
+                            "path_misconfigured",
+                            "PATH 에 claude 가 없습니다 — shim 디렉토리를 PATH 에 추가하세요",
+                        );
                     } else {
                         info("codex: PATH 에 없음 (미사용 시 무시)");
                     }
@@ -747,22 +818,31 @@ pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
             ..
         } => {
             // 활성 판정은 환경(user bus 부재 등)에 따라 오탐 가능 — ✗ 대신 경고로
-            warn(&format!(
-                "주기 수집({backend}) 파일은 있으나 비활성으로 보입니다 — toard-shim daemon install 로 재등록"
-            ));
+            d.advisory(
+                "scheduler_inactive",
+                &format!(
+                    "주기 수집({backend}) 파일은 있으나 비활성으로 보입니다 — toard-shim daemon install 로 재등록"
+                ),
+            );
             None
         }
         crate::daemon::State::NotInstalled => {
-            info("주기 수집 미등록 — Desktop/IDE 만 쓰는 날은 다음 CLI 실행까지 수집이 지연됩니다 (등록: toard-shim daemon install)");
+            d.advisory(
+                "scheduler_inactive",
+                "주기 수집 미등록 — Desktop/IDE 만 쓰는 날은 다음 CLI 실행까지 수집이 지연됩니다 (등록: toard-shim daemon install)",
+            );
             None
         }
     };
     match last_collect_age() {
         Some(age) => match daemon_interval {
-            Some(i) if age > i.saturating_mul(3) => warn(&format!(
-                "마지막 수집 {} 전 — 데몬 간격({i}초)의 3배 초과, ~/.toard/state/daemon.err.log 확인",
-                human_age(age)
-            )),
+            Some(i) if age > i.saturating_mul(3) => d.advisory(
+                "collection_stale",
+                &format!(
+                    "마지막 수집 {} 전 — 데몬 간격({i}초)의 3배 초과, ~/.toard/state/daemon.err.log 확인",
+                    human_age(age)
+                ),
+            ),
             _ => ok(&format!("마지막 수집 {} 전", human_age(age))),
         },
         None => info("수집 실행 기록 없음 — 첫 수집 전이거나 트리거 미발동"),
@@ -774,12 +854,16 @@ pub(crate) fn doctor(selected_endpoint: Option<&str>) -> i32 {
     }
 
     println!();
-    if d.failed {
+    let code = if d.failed {
         println!("문제가 발견됐습니다 — 위 ✗ 항목을 해결하세요.");
         1
     } else {
         println!("모든 점검 통과.");
         0
+    };
+    DoctorReport {
+        code,
+        result_code: d.result_code.map(str::to_owned),
     }
 }
 
@@ -906,26 +990,86 @@ mod tests {
     }
 
     #[test]
+    fn doctor_failure_code_overrides_an_earlier_advisory_without_exposing_output() {
+        let mut doctor = Doctor {
+            failed: false,
+            result_code: None,
+        };
+        doctor.advisory("scheduler_inactive", "scheduler warning");
+        doctor.fail_with("token_invalid", "token failure");
+
+        assert!(doctor.failed);
+        assert_eq!(doctor.result_code, Some("token_invalid"));
+    }
+
+    #[test]
     fn periodic_collect_runs_update_maintenance_but_dry_run_stays_read_only() {
+        let completions = Cell::new(0);
         let control_syncs = Cell::new(0);
         let reconciles = Cell::new(0);
         let update_checks = Cell::new(0);
+        let target_codes =
+            std::collections::HashMap::from([("https://toard.example/api".to_string(), 0)]);
 
         run_post_collect_maintenance(
             false,
+            true,
+            &target_codes,
+            |_| completions.set(completions.get() + 1),
             || control_syncs.set(control_syncs.get() + 1),
             || reconciles.set(reconciles.get() + 1),
             || update_checks.set(update_checks.get() + 1),
         );
         run_post_collect_maintenance(
             true,
+            true,
+            &target_codes,
+            |_| completions.set(completions.get() + 1),
+            || control_syncs.set(control_syncs.get() + 1),
+            || reconciles.set(reconciles.get() + 1),
+            || update_checks.set(update_checks.get() + 1),
+        );
+        run_post_collect_maintenance(
+            false,
+            false,
+            &target_codes,
+            |_| completions.set(completions.get() + 1),
             || control_syncs.set(control_syncs.get() + 1),
             || reconciles.set(reconciles.get() + 1),
             || update_checks.set(update_checks.get() + 1),
         );
 
-        assert_eq!(control_syncs.get(), 1);
-        assert_eq!(reconciles.get(), 1);
-        assert_eq!(update_checks.get(), 1);
+        assert_eq!(completions.get(), 1);
+        assert_eq!(control_syncs.get(), 2);
+        assert_eq!(reconciles.get(), 2);
+        assert_eq!(update_checks.get(), 2);
+    }
+
+    #[test]
+    fn device_policy_sync_precedes_collection_and_result_confirmation() {
+        let events = std::cell::RefCell::new(Vec::new());
+        run_pre_collect_maintenance(false, || events.borrow_mut().push("pre-sync"));
+        events.borrow_mut().push("collect");
+        let target_codes = std::collections::HashMap::new();
+        run_post_collect_maintenance(
+            false,
+            true,
+            &target_codes,
+            |_| events.borrow_mut().push("complete"),
+            || events.borrow_mut().push("post-sync"),
+            || events.borrow_mut().push("tools"),
+            || events.borrow_mut().push("update"),
+        );
+        assert_eq!(
+            events.into_inner(),
+            [
+                "pre-sync",
+                "collect",
+                "complete",
+                "post-sync",
+                "tools",
+                "update"
+            ]
+        );
     }
 }

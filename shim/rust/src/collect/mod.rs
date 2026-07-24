@@ -732,14 +732,31 @@ pub fn run_selected(
     dry_run: bool,
     quiet: bool,
 ) -> i32 {
+    run_selected_report(only, selected_endpoint, dry_run, quiet).code
+}
+
+pub(crate) struct CollectReport {
+    pub code: i32,
+    pub target_codes: HashMap<String, i32>,
+}
+
+pub(crate) fn run_selected_report(
+    only: Option<&str>,
+    selected_endpoint: Option<&str>,
+    dry_run: bool,
+    quiet: bool,
+) -> CollectReport {
     let store = match TargetStore::from_home() {
         Ok(store) => store,
         Err(error) => {
             eprintln!("toard-shim: target 저장소를 열 수 없습니다 — {error}");
-            return 1;
+            return CollectReport {
+                code: 1,
+                target_codes: HashMap::new(),
+            };
         }
     };
-    run_with_selected(
+    run_with_selected_report(
         &store,
         &post::CurlTransport,
         adapters(),
@@ -758,7 +775,7 @@ pub fn run_with(
     dry_run: bool,
     quiet: bool,
 ) -> i32 {
-    run_with_selected(
+    run_with_selected_report(
         store,
         transport,
         source_adapters,
@@ -767,8 +784,10 @@ pub fn run_with(
         dry_run,
         quiet,
     )
+    .code
 }
 
+#[cfg(test)]
 fn run_with_selected(
     store: &TargetStore,
     transport: &dyn post::Transport,
@@ -778,6 +797,27 @@ fn run_with_selected(
     dry_run: bool,
     quiet: bool,
 ) -> i32 {
+    run_with_selected_report(
+        store,
+        transport,
+        source_adapters,
+        only,
+        selected_endpoint,
+        dry_run,
+        quiet,
+    )
+    .code
+}
+
+fn run_with_selected_report(
+    store: &TargetStore,
+    transport: &dyn post::Transport,
+    source_adapters: Vec<Box<dyn LogAdapter>>,
+    only: Option<&str>,
+    selected_endpoint: Option<&str>,
+    dry_run: bool,
+    quiet: bool,
+) -> CollectReport {
     let target_result = if dry_run {
         store.load_readonly()
     } else {
@@ -787,14 +827,20 @@ fn run_with_selected(
         Ok(targets) => targets,
         Err(error) => {
             eprintln!("toard-shim: target 설정을 읽을 수 없습니다 — {error}");
-            return 1;
+            return CollectReport {
+                code: 1,
+                target_codes: HashMap::new(),
+            };
         }
     };
     let global_state = store.root().join("state");
     if !dry_run {
         if let Err(error) = std::fs::create_dir_all(&global_state) {
             eprintln!("toard-shim: 전역 상태 디렉터리를 만들 수 없습니다 — {error}");
-            return 1;
+            return CollectReport {
+                code: 1,
+                target_codes: HashMap::new(),
+            };
         }
         let _ = crate::fsx::set_mode(&global_state, 0o700);
     }
@@ -806,12 +852,18 @@ fn run_with_selected(
             Ok(endpoint) => endpoint,
             Err(error) => {
                 eprintln!("toard-shim: endpoint 설정이 잘못되었습니다 — {error}");
-                return 1;
+                return CollectReport {
+                    code: 1,
+                    target_codes: HashMap::new(),
+                };
             }
         };
         if credentials.token.is_none() && !dry_run {
             eprintln!("toard-shim: 자격 증명이 없습니다 — 설치 스크립트로 target을 추가하세요");
-            return 1;
+            return CollectReport {
+                code: 1,
+                target_codes: HashMap::new(),
+            };
         }
         credentials.endpoint = Some(endpoint.clone());
         targets.push(Target {
@@ -832,7 +884,10 @@ fn run_with_selected(
         targets.retain(|target| target.endpoint == endpoint);
         if targets.is_empty() {
             eprintln!("toard-shim: 등록된 target을 찾을 수 없습니다: {endpoint}");
-            return 2;
+            return CollectReport {
+                code: 2,
+                target_codes: HashMap::new(),
+            };
         }
     }
 
@@ -842,7 +897,10 @@ fn run_with_selected(
             "toard-shim: 어댑터를 찾을 수 없습니다: {}",
             only.unwrap_or("?")
         );
-        return 2;
+        return CollectReport {
+            code: 2,
+            target_codes: HashMap::new(),
+        };
     }
 
     if only.is_none() && !dry_run {
@@ -851,6 +909,7 @@ fn run_with_selected(
     }
     let host = crate::host::host_label();
     let mut failed = false;
+    let mut target_codes = HashMap::new();
     for target in &targets {
         if !target_still_exists(target, &global_state) {
             continue;
@@ -868,11 +927,15 @@ fn run_with_selected(
             quiet,
             host.as_deref(),
         );
+        target_codes.insert(target.endpoint.clone(), outcome.code);
         if outcome.code == 2 {
             for message in outcome.diagnostics.messages {
                 eprintln!("{message}");
             }
-            return 2;
+            return CollectReport {
+                code: 2,
+                target_codes,
+            };
         }
         if outcome.code == 0 && !outcome.diagnostics.degraded {
             if !dry_run && target_still_exists(target, &global_state) {
@@ -901,7 +964,10 @@ fn run_with_selected(
             }
         }
     }
-    i32::from(failed)
+    CollectReport {
+        code: i32::from(failed),
+        target_codes,
+    }
 }
 
 #[derive(Default)]

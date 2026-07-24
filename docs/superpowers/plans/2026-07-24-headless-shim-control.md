@@ -34,3 +34,11 @@
 - [x] Rust 전체 테스트와 format/clippy
 - [x] web test/typecheck/Next production build
 - [x] 임시 로컬 DB에서 sync → desired 변경 → command claim → result report E2E
+
+## Task 5: 출시 전 보완
+
+- [x] 수집 전 control sync로 OFF 정책을 현재 회차부터 적용
+- [x] collect command를 중첩 실행하지 않고 실제 정기 수집 결과로 완료
+- [x] 만료 command를 조회 시 expired로 처리해 UI 재시도 허용
+- [x] 기기 인벤토리를 `(ingest token, fingerprint)`로 식별하고 hostname 충돌 분리
+- [x] 최근 control sync 지연과 제한된 doctor 사유 코드 표시

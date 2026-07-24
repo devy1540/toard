@@ -22,13 +22,14 @@
     "issueTitle": "Connect my computer",
     "issueDescription": "See Claude and Codex usage in your account.",
     "issueDescriptionWithContent": "See Claude and Codex usage in your account.",
-    "devicesTitle": "My devices · Receive check",
-    "devicesDescription": "Last received time and shim version per device.",
+    "devicesTitle": "My devices · Collection status",
+    "devicesDescription": "Recent events, control sync, and shim version per device.",
     "deviceComputer": "Computer",
     "deviceEvents": "Events",
-    "deviceLastSeen": "Last seen",
+    "deviceLastSeen": "Recent event",
     "deviceActions": "Actions",
     "unknownHost": "(unknown)",
+    "sharedHost": "Multiple devices use this computer name, so event totals cannot be separated.",
     "noDevices": "No devices yet. After installing the shim, using <code>claude</code>/<code>codex</code> will make devices appear here.",
     "deviceShim": "Shim version",
     "shimUnreported": "Not reported (old shim)",
@@ -36,8 +37,6 @@
     "deviceCommandCopied": "Copied the command.",
     "inventory": {
       "missing": "AI tool inventory not received",
-      "fresh": "Current",
-      "stale": "Delayed",
       "summary": "{mcp} MCP · {skills} skills · {plugins} plugins",
       "kind": { "mcp": "MCP", "skill": "Skills", "plugin": "Plugins" }
     },
@@ -54,20 +53,32 @@
       "off": "OFF",
       "legacy": "Legacy E2EE",
       "applying": "Pending",
-      "collect": "Collect now",
+      "collect": "Request collection",
       "doctor": "Diagnose",
       "saved": "Saved. The shim will apply it on the next sync.",
       "failed": "Could not save the device control request.",
       "serverDisabled": "Content collection is disabled on this server.",
-      "shimError": "The shim reported a problem applying the latest state.",
       "periodicInactive": "Periodic collection is off, so changes may be delayed.",
+      "syncStale": "The last control sync is more than 15 minutes old.",
+      "expired": "The device did not respond before the request expired. You can try again.",
+      "diagnostic": {
+        "scheduler_inactive": "Periodic collection is not installed or is inactive.",
+        "collection_stale": "Collection is delayed beyond the configured schedule.",
+        "token_invalid": "The device token has expired or was revoked.",
+        "endpoint_not_found": "The collection server address is not valid.",
+        "endpoint_unreachable": "The device cannot reach the collection server.",
+        "endpoint_unhealthy": "The collection server did not return a healthy response.",
+        "target_unavailable": "This server connection is missing on the device.",
+        "path_misconfigured": "The shim path comes after the AI tool path.",
+        "doctor_failed": "The device diagnostic found a problem."
+      },
       "lastSync": "Control synced {time}",
       "queued": {
-        "collect": "Collection command queued.",
+        "collect": "Collection was requested for the next device sync.",
         "doctor": "Diagnostic command queued."
       },
       "running": {
-        "collect": "The device is processing the collection command.",
+        "collect": "The device is processing the collection request.",
         "doctor": "The device is processing the diagnostic command."
       },
       "completed": {

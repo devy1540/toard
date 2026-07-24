@@ -145,6 +145,19 @@ export function createDeviceControlRepository(db: DeviceControlDb): DeviceContro
       return inTransaction(db, async (client) => {
         if (!(await deviceBelongsToOwner(client, owner, observation.deviceFingerprint))) return null;
 
+        await client.query(
+          `UPDATE device_tool_inventory_snapshots
+           SET host = COALESCE($4, '')
+           WHERE user_id = $1 AND ingest_token_id = $2 AND fingerprint = $3
+             AND host IS DISTINCT FROM COALESCE($4, '')`,
+          [
+            owner.userId,
+            owner.tokenId,
+            observation.deviceFingerprint,
+            observation.host,
+          ],
+        );
+
         for (const result of observation.commandResults) {
           await client.query(
             `UPDATE device_control_commands
@@ -460,7 +473,13 @@ export function createDeviceControlRepository(db: DeviceControlDb): DeviceContro
           AND o.ingest_token_id = d.ingest_token_id
           AND o.device_fingerprint = d.fingerprint
          LEFT JOIN LATERAL (
-           SELECT id, command_type, status, result_code, created_at
+           SELECT id, command_type,
+                  CASE
+                    WHEN status IN ('pending', 'claimed') AND expires_at <= now()
+                      THEN 'expired'
+                    ELSE status
+                  END AS status,
+                  result_code, created_at
            FROM device_control_commands
            WHERE user_id = $1
              AND ingest_token_id = d.ingest_token_id

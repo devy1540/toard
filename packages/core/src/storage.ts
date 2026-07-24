@@ -184,7 +184,7 @@ export interface HostBreakdown {
 /** 내 기기 목록 1행 — 기간 무관(유휴 기기도 노출). host=null 은 "(알 수 없음)". */
 export interface DeviceInfo {
   host: string | null;
-  /** 마지막 수신 시각 (UTC) */
+  /** 마지막 사용 이벤트 수신 시각 (UTC). 기기 제어 heartbeat가 아니다. */
   lastSeenAt: Date;
   /** 전체 이력의 이벤트 수 */
   eventCount: number;

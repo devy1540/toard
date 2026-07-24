@@ -1,18 +1,16 @@
 import type { DeviceToolInventory, ToolInventoryKind } from "@toard/core";
 import { getTranslations } from "next-intl/server";
-import { Badge } from "@/components/ui/badge";
 import { Disclosure } from "@/components/ui/disclosure";
 
 export async function DeviceInventory({ inventory }: { inventory?: DeviceToolInventory }) {
   const t = await getTranslations("settings.install.inventory");
   if (!inventory) return <span className="text-muted-foreground mt-1 block text-xs">{t("missing")}</span>;
-  const stale = Date.now() - inventory.receivedAt.getTime() > 48 * 60 * 60 * 1000;
   const counts = countKinds(inventory);
   return (
     <Disclosure
       className="mt-1"
       triggerClassName="text-muted-foreground text-xs"
-      trigger={<span>{t("summary", { mcp: counts.mcp, skills: counts.skill, plugins: counts.plugin })} <Badge variant="outline">{t(stale ? "stale" : "fresh")}</Badge></span>}
+      trigger={<span>{t("summary", { mcp: counts.mcp, skills: counts.skill, plugins: counts.plugin })}</span>}
       contentClassName="mt-2 space-y-2 rounded-md border p-2"
     >
       {(["mcp", "skill", "plugin"] as const).map((kind) => {

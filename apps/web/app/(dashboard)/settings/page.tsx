@@ -20,6 +20,7 @@ import { listActiveTokens } from "@/lib/tokens";
 import { getServerVersion } from "@/lib/version";
 import { getMfaStatus } from "@/lib/mfa-store";
 import { getDeviceControlRepository, type DeviceControlView } from "@/lib/device-control-repository";
+import { buildSettingsDeviceRows } from "@/lib/settings-device-rows";
 import type { DeviceInfo } from "@toard/core";
 import { formatVersion, isShimOutdated } from "@toard/core";
 import { AppearanceForm } from "./appearance-form";
@@ -248,6 +249,8 @@ async function DeviceList({
     dateStyle: "medium",
     timeStyle: "short",
   });
+  const rows = buildSettingsDeviceRows(devices, inventories, controls);
+  const staleBefore = Date.now() - 15 * 60 * 1000;
   return (
     <Card className="min-w-0">
       <CardHeader>
@@ -260,7 +263,7 @@ async function DeviceList({
         </CardDescription>
       </CardHeader>
       <CardContent className="min-w-0">
-        {devices.length > 0 ? (
+        {rows.length > 0 ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -272,17 +275,16 @@ async function DeviceList({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {devices.map((d) => {
-                const shim = d.host ? shims.get(d.host) : undefined;
-                const inventory = inventories.find((item) => item.host === d.host);
-                const control = inventory
-                  ? controls.find(
-                      (item) =>
-                        item.tokenId === inventory.tokenId &&
-                        item.deviceFingerprint === inventory.fingerprint,
-                    )
-                  : undefined;
-                const outdated = shim ? isShimOutdated(shim.version, serverVersion) : false;
+              {rows.map((row) => {
+                const hostShim = row.host ? shims.get(row.host) : undefined;
+                const shimVersion = row.control?.shimVersion ?? hostShim?.version ?? null;
+                const syncStale =
+                  row.control?.lastSyncAt != null &&
+                  row.control.lastSyncAt.getTime() < staleBefore;
+                const outdated = shimVersion
+                  ? isShimOutdated(shimVersion, serverVersion)
+                  : false;
+                const control = row.control;
                 const controlView: DeviceControlClientView | null = control
                   ? {
                       tokenId: control.tokenId,
@@ -296,7 +298,7 @@ async function DeviceList({
                       lastSyncLabel: control.lastSyncAt
                         ? fmtWhen.format(control.lastSyncAt)
                         : null,
-                      errorCode: control.errorCode,
+                      syncStale,
                       command: control.command
                         ? {
                             type: control.command.type,
@@ -307,27 +309,41 @@ async function DeviceList({
                     }
                   : null;
                 return (
-                  <TableRow key={d.host ?? "__unknown__"}>
+                  <TableRow key={row.key}>
                     <TableCell>
                       <span className="flex min-w-0 items-center gap-2">
                         <span
                           className={
-                            shim
+                            control?.lastSyncAt && !syncStale
                               ? "size-2 shrink-0 rounded-full bg-emerald-500"
                               : "bg-muted-foreground/40 size-2 shrink-0 rounded-full"
                           }
                         />
-                        <span className={d.host ? "truncate font-medium" : "text-muted-foreground"}>
-                          {d.host ?? t("install.unknownHost")}
+                        <span
+                          className={row.host ? "truncate font-medium" : "text-muted-foreground"}
+                        >
+                          {row.host ?? t("install.unknownHost")}
                         </span>
+                        {row.inventory ? (
+                          <span className="text-muted-foreground font-mono text-[11px]">
+                            #{row.inventory.fingerprint.slice(0, 8)}
+                          </span>
+                        ) : null}
                       </span>
-                      <DeviceInventory inventory={inventory} />
+                      {row.sharedHost ? (
+                        <span className="text-amber-600 mt-1 block text-xs dark:text-amber-500">
+                          {t("install.sharedHost")}
+                        </span>
+                      ) : null}
+                      <DeviceInventory inventory={row.inventory ?? undefined} />
                     </TableCell>
-                    <TableCell className="text-right">{fmtNum(d.eventCount)}</TableCell>
+                    <TableCell className="text-right">
+                      {row.sharedHost || !row.device ? "—" : fmtNum(row.device.eventCount)}
+                    </TableCell>
                     <TableCell>
-                      {shim ? (
+                      {shimVersion ? (
                         <span className="flex items-center gap-2">
-                          <span className="font-mono text-xs">{formatVersion(shim.version)}</span>
+                          <span className="font-mono text-xs">{formatVersion(shimVersion)}</span>
                           {outdated ? (
                             <Badge
                               variant="outline"
@@ -342,10 +358,16 @@ async function DeviceList({
                       )}
                     </TableCell>
                     <TableCell className="text-muted-foreground text-right">
-                      {fmtWhen.format(d.lastSeenAt)}
+                      {row.sharedHost || !row.device
+                        ? "—"
+                        : fmtWhen.format(row.device.lastSeenAt)}
                     </TableCell>
                     <TableCell className="text-right">
-                      <DeviceActions control={controlView} contentEnabled={contentEnabled} />
+                      <DeviceActions
+                        control={controlView}
+                        contentEnabled={contentEnabled}
+                        pollWhenMissing={row.inventory != null}
+                      />
                     </TableCell>
                   </TableRow>
                 );

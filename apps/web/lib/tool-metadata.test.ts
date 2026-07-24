@@ -5,6 +5,8 @@ import {
   getOrgToolSummaryWithDb,
   getUtilizationToolDaysWithDb,
   insertToolActivityWithDb,
+  replaceDeviceInventoryWithDb,
+  type ToolMetadataDb,
 } from "./tool-metadata";
 
 type Call = { sql: string; params?: unknown[] };
@@ -113,4 +115,43 @@ test("활용 지수 도구 집계는 일별 결과와 30분 이내 반복 실패
     toolActiveSessions: 2,
     distinctTools: 3,
   });
+});
+
+test("기기 인벤토리는 안정 fingerprint로 upsert하고 같은 기기의 변경 항목도 교체한다", async () => {
+  const calls: Array<{ sql: string; params?: unknown[] }> = [];
+  const db: ToolMetadataDb = {
+    async query(sql, params) {
+      calls.push({ sql, params });
+      if (sql.includes("RETURNING id")) return { rows: [{ id: 41 }] };
+      return { rows: [] };
+    },
+  };
+
+  const result = await replaceDeviceInventoryWithDb(
+    db,
+    { userId: "user-1", tokenId: "token-1" },
+    {
+      host: "renamed-host",
+      fingerprint: "a".repeat(64),
+      observedAt: new Date("2026-07-24T00:00:00.000Z"),
+      items: [
+        {
+          kind: "skill",
+          itemKey: "review",
+          displayName: "Review",
+          sourceProvider: "codex",
+          pluginKey: null,
+          version: null,
+          enabled: true,
+        },
+      ],
+    },
+  );
+
+  assert.deepEqual(result, { unchanged: false, items: 1 });
+  assert.equal(calls.length, 3);
+  assert.match(calls[0]!.sql, /ON CONFLICT \(ingest_token_id, fingerprint\)/);
+  assert.match(calls[0]!.sql, /host = EXCLUDED\.host/);
+  assert.match(calls[1]!.sql, /DELETE FROM device_tool_inventory_items/);
+  assert.match(calls[2]!.sql, /INSERT INTO device_tool_inventory_items/);
 });

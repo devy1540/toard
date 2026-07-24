@@ -1,8 +1,9 @@
 import { addLocalCalendarDays, firstInstantOfLocalDate, localDateKey } from "./timezone";
 import type { PeriodQuery } from "./storage";
 
-export const UTILIZATION_METHODOLOGY_VERSION = "utilization-v1" as const;
+export const UTILIZATION_METHODOLOGY_VERSION = "utilization-v2" as const;
 export const CACHE_SIGNAL_PROVIDER_KEYS = ["claude_code", "codex", "cursor", "gemini", "qwen"] as const;
+export const TOOL_OUTCOME_PROVIDER_KEYS = ["claude_code", "codex", "cursor"] as const;
 
 export type UtilizationReason =
   | "insufficient_current_days"
@@ -11,8 +12,8 @@ export type UtilizationReason =
   | "unsupported_cache_signal"
   | "insufficient_context_days"
   | "insufficient_known_tool_calls"
+  | "insufficient_tool_days"
   | "low_tool_outcome_coverage"
-  | "insufficient_session_tool_calls"
   | "insufficient_valid_dimensions"
   | "suppressed_small_cohort"
   | "insufficient_eligible_users"
@@ -20,8 +21,7 @@ export type UtilizationReason =
 
 export type UtilizationDimensionKey =
   | "context_continuity"
-  | "execution_stability"
-  | "recovery_burden";
+  | "execution_stability";
 
 export interface UtilizationPeriods {
   current: { from: Date; to: Date };
@@ -57,6 +57,8 @@ export interface UtilizationToolDay {
   failures: number;
   unknown: number;
   repeatedFailures: number;
+  recoveryAttempts: number;
+  successfulRecoveries: number;
   sessionToolKnownCalls: number;
   toolActiveSessions: number;
   distinctTools: number;
@@ -67,6 +69,8 @@ export interface UtilizationDailyFeature extends UtilizationUsageDay {
   toolFailures: number;
   toolUnknown: number;
   repeatedToolFailures: number;
+  recoveryAttempts: number;
+  successfulRecoveries: number;
   sessionToolKnownCalls: number;
   toolActiveSessions: number;
   distinctTools: number;
@@ -77,6 +81,8 @@ export interface UtilizationDimensionResult {
   score: number | null;
   currentValue: number | null;
   baselineMedian: number | null;
+  currentSampleSize: number;
+  baselineSampleSize: number;
   reason: UtilizationReason | null;
 }
 
@@ -93,6 +99,12 @@ export interface PersonalUtilizationResult {
     sessions: number;
     toolActiveSessionRate: number | null;
     distinctTools: number;
+    knownToolCalls: number;
+    toolOutcomeCoverage: number | null;
+    repeatedToolFailures: number;
+    recoveryAttempts: number;
+    successfulRecoveries: number;
+    recoveryRate: number | null;
   };
 }
 export type OrganizationUtilizationResult =
@@ -118,10 +130,11 @@ export type OrganizationUtilizationResult =
     };
 
 const CACHE_PROVIDER_SET = new Set<string>(CACHE_SIGNAL_PROVIDER_KEYS);
+const TOOL_OUTCOME_PROVIDER_SET = new Set<string>(TOOL_OUTCOME_PROVIDER_KEYS);
 
 export function getUtilizationProviderCapability(providerKey: string): UtilizationProviderCapability {
   const currentLogProvider = CACHE_PROVIDER_SET.has(providerKey);
-  const reportsTools = providerKey === "claude_code" || providerKey === "codex";
+  const reportsTools = TOOL_OUTCOME_PROVIDER_SET.has(providerKey);
   return {
     reportsCacheRead: currentLogProvider,
     reportsToolOutcome: reportsTools,
@@ -193,13 +206,6 @@ function executionValues(rows: UtilizationDailyFeature[]): number[] {
   });
 }
 
-function recoveryValues(rows: UtilizationDailyFeature[]): number[] {
-  return rows.flatMap((row) => {
-    const known = row.toolSuccesses + row.toolFailures;
-    return known > 0 ? [row.repeatedToolFailures / known] : [];
-  });
-}
-
 function toolTotals(rows: UtilizationDailyFeature[]) {
   return rows.reduce(
     (sum, row) => ({
@@ -207,8 +213,19 @@ function toolTotals(rows: UtilizationDailyFeature[]) {
       failures: sum.failures + row.toolFailures,
       unknown: sum.unknown + row.toolUnknown,
       sessionKnown: sum.sessionKnown + row.sessionToolKnownCalls,
+      repeatedFailures: sum.repeatedFailures + row.repeatedToolFailures,
+      recoveryAttempts: sum.recoveryAttempts + row.recoveryAttempts,
+      successfulRecoveries: sum.successfulRecoveries + row.successfulRecoveries,
     }),
-    { successes: 0, failures: 0, unknown: 0, sessionKnown: 0 },
+    {
+      successes: 0,
+      failures: 0,
+      unknown: 0,
+      sessionKnown: 0,
+      repeatedFailures: 0,
+      recoveryAttempts: 0,
+      successfulRecoveries: 0,
+    },
   );
 }
 
@@ -220,8 +237,18 @@ function toolCoverage(totals: ReturnType<typeof toolTotals>): number {
 function unavailableDimension(
   key: UtilizationDimensionKey,
   reason: UtilizationReason,
+  currentSampleSize = 0,
+  baselineSampleSize = 0,
 ): UtilizationDimensionResult {
-  return { key, score: null, currentValue: null, baselineMedian: null, reason };
+  return {
+    key,
+    score: null,
+    currentValue: null,
+    baselineMedian: null,
+    currentSampleSize,
+    baselineSampleSize,
+    reason,
+  };
 }
 
 function contextDimension(
@@ -230,13 +257,25 @@ function contextDimension(
 ): UtilizationDimensionResult {
   const current = contextValues(currentRows);
   const baseline = contextValues(baselineRows);
+  const currentSamples = currentRows.reduce((sum, row) => sum + row.cacheSignalEvents, 0);
+  const baselineSamples = baselineRows.reduce((sum, row) => sum + row.cacheSignalEvents, 0);
   const supported = [...currentRows, ...baselineRows].reduce((sum, row) => sum + row.cacheSignalEvents, 0);
   const unsupported = [...currentRows, ...baselineRows].reduce((sum, row) => sum + row.cacheUnsupportedEvents, 0);
   if (supported === 0 && unsupported > 0) {
-    return unavailableDimension("context_continuity", "unsupported_cache_signal");
+    return unavailableDimension(
+      "context_continuity",
+      "unsupported_cache_signal",
+      currentSamples,
+      baselineSamples,
+    );
   }
   if (current.length < 3 || baseline.length < 7) {
-    return unavailableDimension("context_continuity", "insufficient_context_days");
+    return unavailableDimension(
+      "context_continuity",
+      "insufficient_context_days",
+      currentSamples,
+      baselineSamples,
+    );
   }
   const currentValue = median(current);
   const baselineMedian = median(baseline);
@@ -245,12 +284,13 @@ function contextDimension(
     score: normalizeUtilizationDimension(currentValue, baseline, 1),
     currentValue,
     baselineMedian,
+    currentSampleSize: currentSamples,
+    baselineSampleSize: baselineSamples,
     reason: null,
   };
 }
 
-function toolDimension(
-  key: "execution_stability" | "recovery_burden",
+function executionDimension(
   currentRows: UtilizationDailyFeature[],
   baselineRows: UtilizationDailyFeature[],
 ): UtilizationDimensionResult {
@@ -259,26 +299,40 @@ function toolDimension(
   const currentKnown = currentTotals.successes + currentTotals.failures;
   const baselineKnown = baselineTotals.successes + baselineTotals.failures;
   if (currentKnown < 10 || baselineKnown < 10) {
-    return unavailableDimension(key, "insufficient_known_tool_calls");
+    return unavailableDimension(
+      "execution_stability",
+      "insufficient_known_tool_calls",
+      currentKnown,
+      baselineKnown,
+    );
   }
   if (toolCoverage(currentTotals) < 0.7 || toolCoverage(baselineTotals) < 0.7) {
-    return unavailableDimension(key, "low_tool_outcome_coverage");
+    return unavailableDimension(
+      "execution_stability",
+      "low_tool_outcome_coverage",
+      currentKnown,
+      baselineKnown,
+    );
   }
-  if (key === "recovery_burden" && (currentTotals.sessionKnown < 10 || baselineTotals.sessionKnown < 10)) {
-    return unavailableDimension(key, "insufficient_session_tool_calls");
-  }
-  const current = key === "execution_stability" ? executionValues(currentRows) : recoveryValues(currentRows);
-  const baseline = key === "execution_stability" ? executionValues(baselineRows) : recoveryValues(baselineRows);
-  if (baseline.length < 7 || current.length === 0) {
-    return unavailableDimension(key, "insufficient_baseline_days");
+  const current = executionValues(currentRows);
+  const baseline = executionValues(baselineRows);
+  if (baseline.length < 7 || current.length < 2) {
+    return unavailableDimension(
+      "execution_stability",
+      "insufficient_tool_days",
+      currentKnown,
+      baselineKnown,
+    );
   }
   const currentValue = median(current);
   const baselineMedian = median(baseline);
   return {
-    key,
-    score: normalizeUtilizationDimension(currentValue, baseline, key === "execution_stability" ? 1 : -1),
+    key: "execution_stability",
+    score: normalizeUtilizationDimension(currentValue, baseline, 1),
     currentValue,
     baselineMedian,
+    currentSampleSize: currentKnown,
+    baselineSampleSize: baselineKnown,
     reason: null,
   };
 }
@@ -306,8 +360,7 @@ export function calculatePersonalUtilization(
 
   const dimensions = [
     contextDimension(currentRows, baselineRows),
-    toolDimension("execution_stability", currentRows, baselineRows),
-    toolDimension("recovery_burden", currentRows, baselineRows),
+    executionDimension(currentRows, baselineRows),
   ];
   const validScores = dimensions.flatMap((dimension) => dimension.score == null ? [] : [dimension.score]);
   const commonEligible = reasons.length === 0;
@@ -318,7 +371,7 @@ export function calculatePersonalUtilization(
   const currentTool = toolTotals(currentRows);
   const baselineTool = toolTotals(baselineRows);
   const highConfidence = score != null
-    && validScores.length === 3
+    && validScores.length === dimensions.length
     && baselineActiveDays >= 14
     && toolCoverage(currentTool) >= 0.9
     && toolCoverage(baselineTool) >= 0.9
@@ -339,6 +392,16 @@ export function calculatePersonalUtilization(
       sessions: currentSessions,
       toolActiveSessionRate: currentSessions > 0 ? Math.min(1, toolActiveSessions / currentSessions) : null,
       distinctTools: currentRows.reduce((maximum, row) => Math.max(maximum, row.distinctTools), 0),
+      knownToolCalls: currentTool.successes + currentTool.failures,
+      toolOutcomeCoverage: currentTool.successes + currentTool.failures + currentTool.unknown > 0
+        ? toolCoverage(currentTool)
+        : null,
+      repeatedToolFailures: currentTool.repeatedFailures,
+      recoveryAttempts: currentTool.recoveryAttempts,
+      successfulRecoveries: currentTool.successfulRecoveries,
+      recoveryRate: currentTool.recoveryAttempts > 0
+        ? currentTool.successfulRecoveries / currentTool.recoveryAttempts
+        : null,
     },
   };
 }
@@ -379,7 +442,7 @@ export function aggregateOrganizationUtilization(
   }
   const scores = eligible.map((result) => result.score);
   const dimensionMedians = Object.fromEntries(
-    (["context_continuity", "execution_stability", "recovery_burden"] as const).map((key) => {
+    (["context_continuity", "execution_stability"] as const).map((key) => {
       const dimensionScores = eligible.flatMap((result) => {
         const score = result.dimensions.find((dimension) => dimension.key === key)?.score;
         return score == null ? [] : [score];

@@ -7,6 +7,7 @@ import {
 } from "@toard/core";
 import {
   calculateOrganizationUtilizationFromRows,
+  buildUtilizationHistoryPeriods,
   mergeUtilizationDays,
   utilizationCacheArgs,
 } from "./ai-utilization";
@@ -42,6 +43,8 @@ test("활용 지수 서비스는 사용량과 도구 일별 행의 합집합을 
       failures: 3,
       unknown: 2,
       repeatedFailures: 1,
+      recoveryAttempts: 2,
+      successfulRecoveries: 1,
       sessionToolKnownCalls: 10,
       toolActiveSessions: 2,
       distinctTools: 3,
@@ -53,6 +56,8 @@ test("활용 지수 서비스는 사용량과 도구 일별 행의 합집합을 
       failures: 0,
       unknown: 0,
       repeatedFailures: 0,
+      recoveryAttempts: 0,
+      successfulRecoveries: 0,
       sessionToolKnownCalls: 1,
       toolActiveSessions: 1,
       distinctTools: 1,
@@ -74,6 +79,8 @@ test("활용 지수 서비스는 사용량과 도구 일별 행의 합집합을 
     toolFailures: 3,
     toolUnknown: 2,
     repeatedToolFailures: 1,
+    recoveryAttempts: 2,
+    successfulRecoveries: 1,
     sessionToolKnownCalls: 10,
     toolActiveSessions: 2,
     distinctTools: 3,
@@ -106,6 +113,8 @@ function organizationRows(userCount: number) {
         failures: current ? 0 : 1,
         unknown: 0,
         repeatedFailures: current ? 0 : 1,
+        recoveryAttempts: current ? 0 : 1,
+        successfulRecoveries: current ? 0 : 0,
         sessionToolKnownCalls: 10,
         toolActiveSessions: 1,
         distinctTools: 3,
@@ -136,7 +145,23 @@ test("활용 지수 개인 캐시 키는 사용자·기간·시간대·방법론
 
   assert.equal(args[0], "user-1");
   assert.ok(args.includes("Asia/Seoul"));
-  assert.ok(args.includes("utilization-v1"));
+  assert.ok(args.includes("utilization-v2"));
   assert.ok(args.includes(periods.baseline.from.toISOString()));
   assert.ok(args.includes(periods.current.to.toISOString()));
+});
+
+test("활용 지수 과거 추세는 동일한 7일/28일 창을 12주 생성한다", () => {
+  const periods = buildUtilizationPeriods(new Date("2026-07-15T12:00:00Z"), "Asia/Seoul");
+  const history = buildUtilizationHistoryPeriods(periods);
+
+  assert.equal(history.length, 12);
+  assert.equal(history.at(-1)?.current.to.toISOString(), periods.current.to.toISOString());
+  assert.equal(
+    history[1]!.current.to.getTime() - history[0]!.current.to.getTime(),
+    7 * 24 * 60 * 60 * 1000,
+  );
+  assert.equal(
+    history[0]!.current.from.getTime() - history[0]!.baseline.from.getTime(),
+    28 * 24 * 60 * 60 * 1000,
+  );
 });

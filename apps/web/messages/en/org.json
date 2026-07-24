@@ -95,15 +95,14 @@
   "utilization": {
     "title": "Organization AI utilization index",
     "experiment": "Experimental",
-    "description": "An anonymous median of members' results against their own baselines.",
+    "description": "An anonymous median of members' self-baseline context reuse and tool execution success results.",
     "range": "Middle 50% range {p25}–{p75}",
     "sample": "{included} included · {excluded} below the threshold",
     "policy": "View utilization index policy",
     "disclaimer": "Not for personal ranking or performance evaluation.",
     "dimensions": {
-      "context_continuity": "Context continuity median",
-      "execution_stability": "Execution stability median",
-      "recovery_burden": "Recovery burden median"
+      "context_continuity": "Context reuse median",
+      "execution_stability": "Tool execution success median"
     },
     "distribution": {
       "title": "Distribution against each member's baseline",

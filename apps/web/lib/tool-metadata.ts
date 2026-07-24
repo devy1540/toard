@@ -1,11 +1,12 @@
-import type {
-  DeviceToolInventory,
-  PeriodQuery,
-  ToolActivityEvent,
-  ToolActivityRow,
-  ToolActivitySummary,
-  ToolInventorySnapshot,
-  UtilizationToolDay,
+import {
+  TOOL_OUTCOME_PROVIDER_KEYS,
+  type DeviceToolInventory,
+  type PeriodQuery,
+  type ToolActivityEvent,
+  type ToolActivityRow,
+  type ToolActivitySummary,
+  type ToolInventorySnapshot,
+  type UtilizationToolDay,
 } from "@toard/core";
 import { getPool } from "./db";
 
@@ -220,7 +221,7 @@ export async function getUtilizationToolDaysWithDb(
   timezone: string,
   userId?: string,
 ): Promise<UtilizationToolDay[]> {
-  const params: unknown[] = [query.from, query.to, timezone];
+  const params: unknown[] = [query.from, query.to, timezone, [...TOOL_OUTCOME_PROVIDER_KEYS]];
   const userClause = userId ? `AND user_id = $${params.push(userId)}` : "";
   const result = await db.query(
     `WITH ordered AS (
@@ -235,6 +236,7 @@ export async function getUtilizationToolDaysWithDb(
               ) AS previous_ts
        FROM tool_activity_events
        WHERE ts >= $1 AND ts < $2
+         AND provider_key = ANY($4::text[])
          ${userClause}
      ), tagged AS (
        SELECT *, to_char((ts AT TIME ZONE $3::text)::date, 'YYYY-MM-DD') AS day
@@ -250,6 +252,18 @@ export async function getUtilizationToolDaysWithDb(
                 AND previous_outcome = 'failure'
                 AND ts - previous_ts <= INTERVAL '30 minutes'
             ) AS repeated_failures,
+            COUNT(*) FILTER (
+              WHERE session_id IS NOT NULL
+                AND outcome <> 'unknown'
+                AND previous_outcome = 'failure'
+                AND ts - previous_ts <= INTERVAL '30 minutes'
+            ) AS recovery_attempts,
+            COUNT(*) FILTER (
+              WHERE session_id IS NOT NULL
+                AND outcome = 'success'
+                AND previous_outcome = 'failure'
+                AND ts - previous_ts <= INTERVAL '30 minutes'
+            ) AS successful_recoveries,
             COUNT(*) FILTER (
               WHERE outcome <> 'unknown' AND session_id IS NOT NULL
             ) AS session_tool_known_calls,
@@ -269,6 +283,8 @@ export async function getUtilizationToolDaysWithDb(
     failures: num(row.failures),
     unknown: num(row.unknown),
     repeatedFailures: num(row.repeated_failures),
+    recoveryAttempts: num(row.recovery_attempts),
+    successfulRecoveries: num(row.successful_recoveries),
     sessionToolKnownCalls: num(row.session_tool_known_calls),
     toolActiveSessions: num(row.tool_active_sessions),
     distinctTools: num(row.distinct_tools),

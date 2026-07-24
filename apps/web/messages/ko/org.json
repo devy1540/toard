@@ -95,15 +95,14 @@
   "utilization": {
     "title": "조직 AI 활용 지수",
     "experiment": "실험",
-    "description": "구성원의 자기 기준 결과를 익명 집계한 중앙값입니다.",
+    "description": "구성원의 컨텍스트 재사용률과 도구 실행 성공률을 자기 기준으로 비교한 익명 중앙값입니다.",
     "range": "가운데 50% 범위 {p25}~{p75}",
     "sample": "포함 {included}명 · 기준 미충족 {excluded}명",
     "policy": "활용 지수 정책 보기",
     "disclaimer": "개인 순위나 성과평가에 사용하지 않습니다.",
     "dimensions": {
-      "context_continuity": "맥락 연속성 중앙값",
-      "execution_stability": "실행 안정성 중앙값",
-      "recovery_burden": "복구 부담 중앙값"
+      "context_continuity": "컨텍스트 재사용률 중앙값",
+      "execution_stability": "도구 실행 성공률 중앙값"
     },
     "distribution": {
       "title": "자기 기준 상태 분포",

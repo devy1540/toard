@@ -69,7 +69,7 @@ test("조직 도구 집계는 범주 숫자만 반환한다", async () => {
   assert.doesNotMatch(db.calls[0]?.sql ?? "", /SELECT\s+(?:item_key|display_name|session_id)\b/i);
 });
 
-test("활용 지수 도구 집계는 일별 결과와 30분 이내 반복 실패만 반환한다", async () => {
+test("활용 지수 도구 집계는 지원 provider의 일별 결과와 30분 이내 복구를 반환한다", async () => {
   const db = new RecordingDb([
     {
       user_id: "user-1",
@@ -78,6 +78,8 @@ test("활용 지수 도구 집계는 일별 결과와 30분 이내 반복 실패
       failures: "3",
       unknown: "2",
       repeated_failures: "1",
+      recovery_attempts: "2",
+      successful_recoveries: "1",
       session_tool_known_calls: "10",
       tool_active_sessions: "2",
       distinct_tools: "3",
@@ -98,10 +100,12 @@ test("활용 지수 도구 집계는 일별 결과와 30분 이내 반복 실패
     /PARTITION BY user_id, session_id, activity_kind, item_key/,
   );
   assert.match(db.calls[0]?.sql ?? "", /session_id IS NOT NULL/);
+  assert.match(db.calls[0]?.sql ?? "", /provider_key = ANY\(\$4::text\[\]\)/);
   assert.deepEqual(db.calls[0]?.params, [
     new Date("2026-07-01T00:00:00Z"),
     new Date("2026-07-11T00:00:00Z"),
     "Asia/Seoul",
+    ["claude_code", "codex", "cursor"],
     "user-1",
   ]);
   assert.deepEqual(result[0], {
@@ -111,6 +115,8 @@ test("활용 지수 도구 집계는 일별 결과와 30분 이내 반복 실패
     failures: 3,
     unknown: 2,
     repeatedFailures: 1,
+    recoveryAttempts: 2,
+    successfulRecoveries: 1,
     sessionToolKnownCalls: 10,
     toolActiveSessions: 2,
     distinctTools: 3,

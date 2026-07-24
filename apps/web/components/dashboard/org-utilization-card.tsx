@@ -6,7 +6,6 @@ import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge"
 const dimensions: UtilizationDimensionKey[] = [
   "context_continuity",
   "execution_stability",
-  "recovery_burden",
 ];
 
 export async function OrgUtilizationCard({ result }: { result: OrganizationUtilizationResult }) {
@@ -71,7 +70,7 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
           </span>
         </div>
 
-        <div className="grid gap-3 sm:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2">
           {dimensions.map((dimension) => (
             <div key={dimension} className="border-border/70 rounded-lg border px-3 py-3">
               <p className="text-muted-foreground text-xs">{t(`utilization.dimensions.${dimension}`)}</p>

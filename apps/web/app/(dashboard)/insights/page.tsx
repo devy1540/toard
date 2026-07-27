@@ -237,7 +237,7 @@ export default async function InsightsPage({
               <p className="text-muted-foreground mt-0.5 text-xs">{t("summary.description")}</p>
             </div>
             {candidates.length === 0 ? (
-              <Card className="bg-muted/30 gap-3 py-5">
+              <Card variant="muted" className="gap-3 py-5">
                 <CardContent className="text-muted-foreground flex items-center gap-2 px-5 text-sm">
                   <Lightbulb className="size-4 shrink-0" />
                   {t("summary.empty")}
@@ -246,7 +246,7 @@ export default async function InsightsPage({
             ) : (
               <div className="grid gap-4 lg:grid-cols-3">
                 {candidates.map((candidate, index) => (
-                  <Card key={`${candidate.key}-${index}`} className="border-chart-1/30 bg-muted/30 gap-3 py-5">
+                  <Card key={`${candidate.key}-${index}`} variant="muted" className="border-chart-1/30 gap-3 py-5">
                     <CardContent className="flex items-start gap-2 px-5 text-sm leading-relaxed">
                       <Lightbulb className="text-chart-1 mt-0.5 size-4 shrink-0" />
                       <span>{translateCandidate(candidate.key, candidate.values)}</span>

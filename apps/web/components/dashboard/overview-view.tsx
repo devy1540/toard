@@ -10,6 +10,7 @@ import { ShareBar } from "@/components/dashboard/share-bar";
 import { DeltaBadge } from "@/components/dashboard/stat-card";
 import { ToolActivityCard } from "@/components/dashboard/tool-activity-card";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { orderByTokens, tokenShare } from "@/lib/composition";
 import { formatCoveredCost, usageTitleKey } from "@/lib/dashboard-usage";
@@ -189,177 +190,193 @@ export async function OverviewView({
     <>
       <PricingNotice coverage={overview.costCoverage} />
 
-      <section data-dashboard-ready="user-overview" className="rounded-lg border p-4">
-        <div className="grid gap-4 lg:grid-cols-5">
-          <SummaryMetric
-            label={t("statTokens")}
-            value={fmtCompact(totalTokens)}
-            sub={t("tokensHint", {
-              in: fmtCompact(overview.totalInputTokens),
-              out: fmtCompact(overview.totalOutputTokens),
-              cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
-            })}
-            badge={tokensDelta ? <DeltaBadge delta={tokensDelta} /> : undefined}
-            icon={<ArrowUpDown className="size-3.5" />}
-          />
-          <SummaryMetric
-            label={t(`costLabel.${period.preset}`)}
-            value={formatCoveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
-            sub={costHint}
-            badge={costDelta ? <DeltaBadge delta={costDelta} /> : undefined}
-            icon={<DollarSign className="size-3.5" />}
-          />
-          <SummaryMetric
-            label={t("statSessions")}
-            value={fmtNum(overview.totalSessions)}
-            sub={t("sessionsHint")}
-            badge={sessionsDelta ? <DeltaBadge delta={sessionsDelta} /> : undefined}
-            icon={<Activity className="size-3.5" />}
-          />
-          <SummaryMetric
-            label={t("topModel")}
-            value={topModelName}
-            sub={topModel ? t("breakdownSub", { tokens: fmtCompact(topModel.totalTokens), sessions: fmtNum(topModel.sessions) }) : undefined}
-            icon={<Bot className="size-3.5" />}
-          />
-          <SummaryMetric label={t("topDevice")} value={topHost} icon={<Laptop className="size-3.5" />} />
-        </div>
-      </section>
+      <Card asChild density="compact">
+        <section data-dashboard-ready="user-overview">
+          <CardContent className="p-4">
+            <div className="grid gap-4 lg:grid-cols-5">
+              <SummaryMetric
+                label={t("statTokens")}
+                value={fmtCompact(totalTokens)}
+                sub={t("tokensHint", {
+                  in: fmtCompact(overview.totalInputTokens),
+                  out: fmtCompact(overview.totalOutputTokens),
+                  cache: fmtCompact(overview.totalCacheReadTokens + overview.totalCacheCreationTokens),
+                })}
+                badge={tokensDelta ? <DeltaBadge delta={tokensDelta} /> : undefined}
+                icon={<ArrowUpDown className="size-3.5" />}
+              />
+              <SummaryMetric
+                label={t(`costLabel.${period.preset}`)}
+                value={formatCoveredCost(overview.totalCostUsd, overview.costCoverage, costLabels)}
+                sub={costHint}
+                badge={costDelta ? <DeltaBadge delta={costDelta} /> : undefined}
+                icon={<DollarSign className="size-3.5" />}
+              />
+              <SummaryMetric
+                label={t("statSessions")}
+                value={fmtNum(overview.totalSessions)}
+                sub={t("sessionsHint")}
+                badge={sessionsDelta ? <DeltaBadge delta={sessionsDelta} /> : undefined}
+                icon={<Activity className="size-3.5" />}
+              />
+              <SummaryMetric
+                label={t("topModel")}
+                value={topModelName}
+                sub={topModel ? t("breakdownSub", { tokens: fmtCompact(topModel.totalTokens), sessions: fmtNum(topModel.sessions) }) : undefined}
+                icon={<Bot className="size-3.5" />}
+              />
+              <SummaryMetric label={t("topDevice")} value={topHost} icon={<Laptop className="size-3.5" />} />
+            </div>
+          </CardContent>
+        </section>
+      </Card>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(280px,0.9fr)]">
-        <section className="min-w-0 rounded-lg border p-4">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-medium">{t("trendTitle")}</h2>
-              <p className="text-muted-foreground mt-0.5 text-xs">{t(usageTitleKey(period.bucket))}</p>
-            </div>
-            <div className="text-muted-foreground text-xs">{metric === "cost" ? t("chart.cost") : t("chart.tokens")}</div>
-          </div>
-          <div className="min-w-0">
-            {daily.length > 0 ? (
-              <UsageAreaChart data={series} metric={metric} bucket={period.bucket} markNow={period.preset === "today"} />
-            ) : notInstalled ? (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
-                  <EmptyDescription>{t("noCollectedUsageDescription")}</EmptyDescription>
-                </EmptyHeader>
-                <EmptyContent>
-                  <Button asChild size="sm">
-                    <Link href="/settings?tab=install">{t("installShim")}</Link>
-                  </Button>
-                </EmptyContent>
-              </Empty>
-            ) : (
-              <Empty>
-                <EmptyHeader>
-                  <EmptyMedia variant="icon">
-                    <Inbox />
-                  </EmptyMedia>
-                  <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
-                  <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-            )}
-          </div>
-        </section>
+        <Card asChild density="compact">
+          <section className="min-w-0">
+            <CardContent className="p-4">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-medium">{t("trendTitle")}</h2>
+                  <p className="text-muted-foreground mt-0.5 text-xs">{t(usageTitleKey(period.bucket))}</p>
+                </div>
+                <div className="text-muted-foreground text-xs">{metric === "cost" ? t("chart.cost") : t("chart.tokens")}</div>
+              </div>
+              <div className="min-w-0">
+                {daily.length > 0 ? (
+                  <UsageAreaChart data={series} metric={metric} bucket={period.bucket} markNow={period.preset === "today"} />
+                ) : notInstalled ? (
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <Inbox />
+                      </EmptyMedia>
+                      <EmptyTitle>{t("noCollectedUsageTitle")}</EmptyTitle>
+                      <EmptyDescription>{t("noCollectedUsageDescription")}</EmptyDescription>
+                    </EmptyHeader>
+                    <EmptyContent>
+                      <Button asChild size="sm">
+                        <Link href="/settings?tab=install">{t("installShim")}</Link>
+                      </Button>
+                    </EmptyContent>
+                  </Empty>
+                ) : (
+                  <Empty>
+                    <EmptyHeader>
+                      <EmptyMedia variant="icon">
+                        <Inbox />
+                      </EmptyMedia>
+                      <EmptyTitle>{t("noDataTitle")}</EmptyTitle>
+                      <EmptyDescription>{t("noMyUsageDescription")}</EmptyDescription>
+                    </EmptyHeader>
+                  </Empty>
+                )}
+              </div>
+            </CardContent>
+          </section>
+        </Card>
 
-        <aside className="flex min-w-0 flex-col rounded-lg border p-4 xl:sticky xl:top-4">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-medium">{t("compositionTitle")}</h2>
-              <p className="text-muted-foreground mt-0.5 text-xs">
-                {t(composition === "model" ? "compositionModelDescription" : "compositionDeviceDescription")}
-              </p>
-            </div>
-            <CompositionToggle value={composition} />
-          </div>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-            {composition === "model" ? (
-              modelComposition.length > 0 ? (
-                <>
-                  {modelComposition.slice(0, MODELS_SHOWN).map((m, i) => (
-                    <CompositionRow
-                      key={m.model}
-                      name={formatModelName(m.model) ?? m.model}
-                      hoverTitle={m.model}
-                      tokens={fmtCompact(m.totalTokens)}
-                      cost={formatCoveredCost(m.costUsd, m.costCoverage, costLabels)}
-                      sessions={t("sessionCount", { count: fmtNum(m.sessions) })}
-                      share={tokenShare(m.totalTokens, modelTokenSum)}
-                      marker={<span className="bg-chart-1 inline-block size-2 rounded-[3px]" style={{ opacity: Math.max(0.35, 1 - i * 0.12) }} />}
-                    />
-                  ))}
-                  {modelComposition.length > MODELS_SHOWN ? (
-                    <div className="text-muted-foreground pl-5 text-xs">{t("moreModels", { n: modelComposition.length - MODELS_SHOWN })}</div>
-                  ) : null}
-                </>
-              ) : (
-                <div className="text-muted-foreground text-sm">{t("noModelDataTitle")}</div>
-              )
-            ) : hasNamedHost ? (
-              <>
-                {hostComposition.slice(0, HOSTS_SHOWN).map((h) => (
-                  <CompositionRow
-                    key={h.host ?? "__unknown__"}
-                    name={h.host ?? t("unknownHost")}
-                    muted={h.host == null}
-                    tokens={fmtCompact(h.totalTokens)}
-                    cost={formatCoveredCost(h.costUsd, h.costCoverage, costLabels)}
-                    sessions={t("sessionCount", { count: fmtNum(h.sessions) })}
-                    share={tokenShare(h.totalTokens, hostTokenSum)}
-                    marker={<Laptop className="text-muted-foreground size-3.5" />}
-                  />
-                ))}
-                {hostComposition.length > HOSTS_SHOWN ? (
-                  <div className="text-muted-foreground pl-5 text-xs">{t("moreDevices", { n: hostComposition.length - HOSTS_SHOWN })}</div>
-                ) : null}
-              </>
-            ) : (
-              <div className="text-muted-foreground text-sm">{t("noDeviceDataTitle")}</div>
-            )}
-          </div>
-        </aside>
+        <Card asChild density="compact">
+          <aside className="min-w-0 xl:sticky xl:top-4">
+            <CardContent className="flex h-full min-w-0 flex-col p-4">
+              <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <h2 className="text-sm font-medium">{t("compositionTitle")}</h2>
+                  <p className="text-muted-foreground mt-0.5 text-xs">
+                    {t(composition === "model" ? "compositionModelDescription" : "compositionDeviceDescription")}
+                  </p>
+                </div>
+                <CompositionToggle value={composition} />
+              </div>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
+                {composition === "model" ? (
+                  modelComposition.length > 0 ? (
+                    <>
+                      {modelComposition.slice(0, MODELS_SHOWN).map((m, i) => (
+                        <CompositionRow
+                          key={m.model}
+                          name={formatModelName(m.model) ?? m.model}
+                          hoverTitle={m.model}
+                          tokens={fmtCompact(m.totalTokens)}
+                          cost={formatCoveredCost(m.costUsd, m.costCoverage, costLabels)}
+                          sessions={t("sessionCount", { count: fmtNum(m.sessions) })}
+                          share={tokenShare(m.totalTokens, modelTokenSum)}
+                          marker={<span className="bg-chart-1 inline-block size-2 rounded-[3px]" style={{ opacity: Math.max(0.35, 1 - i * 0.12) }} />}
+                        />
+                      ))}
+                      {modelComposition.length > MODELS_SHOWN ? (
+                        <div className="text-muted-foreground pl-5 text-xs">{t("moreModels", { n: modelComposition.length - MODELS_SHOWN })}</div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="text-muted-foreground text-sm">{t("noModelDataTitle")}</div>
+                  )
+                ) : hasNamedHost ? (
+                  <>
+                    {hostComposition.slice(0, HOSTS_SHOWN).map((h) => (
+                      <CompositionRow
+                        key={h.host ?? "__unknown__"}
+                        name={h.host ?? t("unknownHost")}
+                        muted={h.host == null}
+                        tokens={fmtCompact(h.totalTokens)}
+                        cost={formatCoveredCost(h.costUsd, h.costCoverage, costLabels)}
+                        sessions={t("sessionCount", { count: fmtNum(h.sessions) })}
+                        share={tokenShare(h.totalTokens, hostTokenSum)}
+                        marker={<Laptop className="text-muted-foreground size-3.5" />}
+                      />
+                    ))}
+                    {hostComposition.length > HOSTS_SHOWN ? (
+                      <div className="text-muted-foreground pl-5 text-xs">{t("moreDevices", { n: hostComposition.length - HOSTS_SHOWN })}</div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="text-muted-foreground text-sm">{t("noDeviceDataTitle")}</div>
+                )}
+              </div>
+            </CardContent>
+          </aside>
+        </Card>
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)]">
         <ToolActivityCard userId={userId} period={period} className="h-full" />
 
-        <section className="min-w-0 rounded-lg border p-4">
-          <div className="mb-3">
-            <h2 className="text-sm font-medium">{t("rhythmTitle")}</h2>
-            <p className="text-muted-foreground mt-0.5 text-xs">{t("rhythmDescription")}</p>
-          </div>
-          <div className="overflow-x-auto pb-1">
-            <div className="min-w-[360px]">
-              <div className="grid grid-cols-[minmax(24px,auto)_repeat(24,1fr)] items-center gap-[3px]">
-                {Array.from({ length: 7 }, (_, dow) => (
-                  <Fragment key={dow}>
-                    <span className="text-muted-foreground pr-1 text-[10px]">{dowLabels[dow]}</span>
-                    {Array.from({ length: 24 }, (_, h) => (
-                      <span
-                        key={h}
-                        title={`${dowLabels[dow]} ${String(h).padStart(2, "0")}:00 — ${fmtCompact(cell.get(`${dow}-${h}`) ?? 0)}`}
-                        className="h-3.5 rounded-[3px]"
-                        style={{ background: HEAT_COLORS[levelOf(cell.get(`${dow}-${h}`))] }}
-                      />
+        <Card asChild density="compact">
+          <section className="min-w-0">
+            <CardContent className="p-4">
+              <div className="mb-3">
+                <h2 className="text-sm font-medium">{t("rhythmTitle")}</h2>
+                <p className="text-muted-foreground mt-0.5 text-xs">{t("rhythmDescription")}</p>
+              </div>
+              <div className="overflow-x-auto pb-1">
+                <div className="min-w-[360px]">
+                  <div className="grid grid-cols-[minmax(24px,auto)_repeat(24,1fr)] items-center gap-[3px]">
+                    {Array.from({ length: 7 }, (_, dow) => (
+                      <Fragment key={dow}>
+                        <span className="text-muted-foreground pr-1 text-[10px]">{dowLabels[dow]}</span>
+                        {Array.from({ length: 24 }, (_, h) => (
+                          <span
+                            key={h}
+                            title={`${dowLabels[dow]} ${String(h).padStart(2, "0")}:00 — ${fmtCompact(cell.get(`${dow}-${h}`) ?? 0)}`}
+                            className="h-3.5 rounded-[3px]"
+                            style={{ background: HEAT_COLORS[levelOf(cell.get(`${dow}-${h}`))] }}
+                          />
+                        ))}
+                      </Fragment>
                     ))}
-                  </Fragment>
-                ))}
+                  </div>
+                  <div className="text-muted-foreground mt-1.5 flex justify-between pl-7 text-[10px]">
+                    <span>0</span>
+                    <span>6</span>
+                    <span>12</span>
+                    <span>18</span>
+                    <span>23</span>
+                  </div>
+                </div>
               </div>
-              <div className="text-muted-foreground mt-1.5 flex justify-between pl-7 text-[10px]">
-                <span>0</span>
-                <span>6</span>
-                <span>12</span>
-                <span>18</span>
-                <span>23</span>
-              </div>
-            </div>
-          </div>
-        </section>
+            </CardContent>
+          </section>
+        </Card>
       </div>
     </>
   );

@@ -10,6 +10,7 @@ import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import {
   Empty,
   EmptyDescription,
@@ -623,14 +624,14 @@ export function E2eeHistoryClient({
                 />
               ) : (
                 <div key={item.turn.dedupKey} className={item.turn.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                  <div className="max-w-[92%] min-w-0 rounded-xl border bg-muted/30 px-3 py-2 sm:max-w-[80%]">
+                  <Surface variant="muted" radius="lg" className="max-w-[92%] px-3 py-2 sm:max-w-[80%]">
                     <span className="sr-only">{item.turn.role === "user" ? t("prompt") : t("response")}</span>
                     {item.turn.contentUnavailable ? (
                       <p className="text-muted-foreground text-sm italic">{t("contentUnavailable")}</p>
                     ) : (
                       <TurnText id={`e2ee-${index}`} text={item.turn.text} more={t("more")} less={t("less")} />
                     )}
-                  </div>
+                  </Surface>
                 </div>
               ))}
             </CardContent>

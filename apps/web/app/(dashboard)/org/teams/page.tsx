@@ -69,38 +69,42 @@ function TeamRankingHero({
   topShareSub: string;
 }) {
   return (
-    <section className="border-border/80 bg-card rounded-xl border px-5 py-5">
-      <div className="flex flex-wrap items-end justify-between gap-6">
-        <div className="min-w-0">
-          <div className="text-muted-foreground text-xs tracking-wide uppercase">{totalCostLabel}</div>
-          <div className="mt-2 text-4xl font-semibold tracking-tight tabular-nums">
-            {formatCostForCoverage(fmtUsd(totalCost), coverage, costLabels)}
-          </div>
-          <div className="text-muted-foreground mt-1 text-xs">{totalCostSub}</div>
-        </div>
+    <Card asChild>
+      <section>
+        <CardContent className="px-5 py-5">
+          <div className="flex flex-wrap items-end justify-between gap-6">
+            <div className="min-w-0">
+              <div className="text-muted-foreground text-xs tracking-wide uppercase">{totalCostLabel}</div>
+              <div className="mt-2 text-4xl font-semibold tracking-tight tabular-nums">
+                {formatCostForCoverage(fmtUsd(totalCost), coverage, costLabels)}
+              </div>
+              <div className="text-muted-foreground mt-1 text-xs">{totalCostSub}</div>
+            </div>
 
-        <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
-          <SummaryTile
-            label={rankCountLabel}
-            value={fmtNum(rankCount)}
-            sub={rankCountSub}
-            icon={<Trophy className="size-3.5" />}
-          />
-          <SummaryTile
-            label={totalSessionsLabel}
-            value={fmtNum(totalSessions)}
-            sub={totalSessionsSub}
-            icon={<Activity className="size-3.5" />}
-          />
-          <SummaryTile
-            label={topShareLabel}
-            value={topShare}
-            sub={topShareSub}
-            icon={<TrendingUp className="size-3.5" />}
-          />
-        </div>
-      </div>
-    </section>
+            <div className="grid w-full gap-4 sm:grid-cols-3 xl:w-auto xl:min-w-[520px]">
+              <SummaryTile
+                label={rankCountLabel}
+                value={fmtNum(rankCount)}
+                sub={rankCountSub}
+                icon={<Trophy className="size-3.5" />}
+              />
+              <SummaryTile
+                label={totalSessionsLabel}
+                value={fmtNum(totalSessions)}
+                sub={totalSessionsSub}
+                icon={<Activity className="size-3.5" />}
+              />
+              <SummaryTile
+                label={topShareLabel}
+                value={topShare}
+                sub={topShareSub}
+                icon={<TrendingUp className="size-3.5" />}
+              />
+            </div>
+          </div>
+        </CardContent>
+      </section>
+    </Card>
   );
 }
 
@@ -132,45 +136,49 @@ function PodiumCard({
   costLabels: CostLabels;
 }) {
   return (
-    <div
+    <Card
+      variant="inset"
+      density="compact"
       className={cn(
-        "border-border bg-background min-w-0 rounded-lg border p-4",
+        "border-border min-w-0",
         rank === 1 && "border-primary/40 bg-primary/5",
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-muted-foreground text-xs font-medium">#{rank}</div>
-          <div className="mt-1 truncate text-lg font-semibold" title={row.label}>
-            {row.label}
+      <CardContent className="p-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-muted-foreground text-xs font-medium">#{rank}</div>
+            <div className="mt-1 truncate text-lg font-semibold" title={row.label}>
+              {row.label}
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="font-semibold tabular-nums">
+              {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+            </div>
+            <div className="text-muted-foreground text-xs tabular-nums">
+              {row.costCoverage.unpricedEvents > 0 ? "—" : shareText(row.costUsd, totalCost)}
+            </div>
           </div>
         </div>
-        <div className="text-right">
-          <div className="font-semibold tabular-nums">
-            {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <div className="text-muted-foreground text-xs">{sessionsLabel}</div>
+            <div className="font-medium tabular-nums">{fmtNum(row.sessions)}</div>
           </div>
-          <div className="text-muted-foreground text-xs tabular-nums">
-            {row.costCoverage.unpricedEvents > 0 ? "—" : shareText(row.costUsd, totalCost)}
+          <div>
+            <div className="text-muted-foreground text-xs">{tokensLabel}</div>
+            <div className="font-medium tabular-nums">{fmtCompact(row.totalTokens)}</div>
           </div>
         </div>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <div>
-          <div className="text-muted-foreground text-xs">{sessionsLabel}</div>
-          <div className="font-medium tabular-nums">{fmtNum(row.sessions)}</div>
+        <div className="bg-muted mt-4 h-1.5 overflow-hidden rounded-full">
+          <div
+            className="bg-chart-1 h-full rounded-full"
+            style={{ width: `${totalTokens > 0 ? Math.max(3, Math.round((row.totalTokens / totalTokens) * 100)) : 0}%` }}
+          />
         </div>
-        <div>
-          <div className="text-muted-foreground text-xs">{tokensLabel}</div>
-          <div className="font-medium tabular-nums">{fmtCompact(row.totalTokens)}</div>
-        </div>
-      </div>
-      <div className="bg-muted mt-4 h-1.5 overflow-hidden rounded-full">
-        <div
-          className="bg-chart-1 h-full rounded-full"
-          style={{ width: `${totalTokens > 0 ? Math.max(3, Math.round((row.totalTokens / totalTokens) * 100)) : 0}%` }}
-        />
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -196,37 +204,39 @@ function RankingListRow({
   const width = maxCost > 0 ? Math.max(3, Math.round((row.costUsd / maxCost) * 100)) : 0;
 
   return (
-    <div className="border-border/80 bg-background rounded-lg border p-3">
-      <div className="grid min-w-0 gap-3 sm:grid-cols-[2rem_minmax(0,1fr)_auto] sm:items-center">
-        <div className="text-muted-foreground text-sm tabular-nums">#{rank}</div>
-        <div className="min-w-0">
-          <div className="truncate font-medium" title={row.label}>
-            {row.label}
+    <Card variant="inset" density="compact" className="border-border/80">
+      <CardContent className="p-3">
+        <div className="grid min-w-0 gap-3 sm:grid-cols-[2rem_minmax(0,1fr)_auto] sm:items-center">
+          <div className="text-muted-foreground text-sm tabular-nums">#{rank}</div>
+          <div className="min-w-0">
+            <div className="truncate font-medium" title={row.label}>
+              {row.label}
+            </div>
+            <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs">
+              <span>
+                {sessionsLabel}: {fmtNum(row.sessions)}
+              </span>
+              <span>
+                {tokensLabel}: {fmtCompact(row.totalTokens)}
+              </span>
+            </div>
           </div>
-          <div className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-            <span>
-              {sessionsLabel}: {fmtNum(row.sessions)}
-            </span>
-            <span>
-              {tokensLabel}: {fmtCompact(row.totalTokens)}
-            </span>
+          <div className="sm:text-right">
+            <div className="font-semibold tabular-nums">
+              {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
+            </div>
+            <div className="text-muted-foreground text-xs tabular-nums">
+              {costShareLabel}: {row.costCoverage.unpricedEvents > 0 ? "—" : shareText(row.costUsd, totalCost)}
+            </div>
           </div>
         </div>
-        <div className="sm:text-right">
-          <div className="font-semibold tabular-nums">
-            {formatCostForCoverage(fmtUsd(row.costUsd), row.costCoverage, costLabels)}
-          </div>
-          <div className="text-muted-foreground text-xs tabular-nums">
-            {costShareLabel}: {row.costCoverage.unpricedEvents > 0 ? "—" : shareText(row.costUsd, totalCost)}
+        <div className="mt-3 flex items-center gap-2">
+          <div className="bg-muted h-1.5 min-w-0 flex-1 overflow-hidden rounded-full">
+            <div className="bg-chart-1 h-full rounded-full" style={{ width: `${width}%` }} />
           </div>
         </div>
-      </div>
-      <div className="mt-3 flex items-center gap-2">
-        <div className="bg-muted h-1.5 min-w-0 flex-1 overflow-hidden rounded-full">
-          <div className="bg-chart-1 h-full rounded-full" style={{ width: `${width}%` }} />
-        </div>
-      </div>
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 

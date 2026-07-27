@@ -19,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Textarea } from "@/components/ui/textarea";
+import { Surface } from "@/components/ui/surface";
 import {
   createToolCatalogAction,
   type ShareToolState,
@@ -108,7 +109,7 @@ export function ToolShareForm({
             </FieldLabel>
           </RadioGroup>
           {sourceMode === "device" ? (
-            <div className="rounded-lg border bg-card p-4">
+            <Surface padding="lg">
               <FormField
                 htmlFor="detectedTool"
                 label={t("form.detectedTool")}
@@ -148,12 +149,13 @@ export function ToolShareForm({
                   ))}
                 </NativeSelect>
               </FormField>
-            </div>
+            </Surface>
           ) : null}
         </section>
       ) : null}
 
-      <section className="grid min-w-0 gap-4 rounded-lg border bg-card p-4 sm:grid-cols-2">
+      <Surface asChild variant="default" padding="lg">
+        <section className="grid gap-4 sm:grid-cols-2">
         <FormField htmlFor="name" label={t("form.name")} error={error("name")}><Input id="name" name="name" defaultValue={initial.name} required maxLength={100} /></FormField>
         <FormField htmlFor="slug" label={t("form.slug")} description={t("form.slugHelp")} error={error("slug")}><Input id="slug" name="slug" defaultValue={initial.slug} required maxLength={100} pattern="[a-z0-9]+(?:-[a-z0-9]+)*" /></FormField>
         <FormField htmlFor="description" className="sm:col-span-2" label={t("form.descriptionLabel")} error={error("description")}><Textarea id="description" name="description" defaultValue={initial.description} required maxLength={500} rows={3} /></FormField>
@@ -170,9 +172,11 @@ export function ToolShareForm({
             <Check name="supportedClients" value="claude_code" label="Claude Code" checked={initial.supportedClients.includes("claude_code")} />
           </div>
         </FormField>
-      </section>
+        </section>
+      </Surface>
 
-      <section className="grid min-w-0 gap-4 rounded-lg border bg-card p-4 sm:grid-cols-2">
+      <Surface asChild variant="default" padding="lg">
+        <section className="grid gap-4 sm:grid-cols-2">
         <FormField htmlFor="sourceUrl" className="sm:col-span-2" label={t("form.sourceUrl")} description={t("form.sourceUrlHelp")} error={error("sourceUrl")}><Input id="sourceUrl" name="sourceUrl" type="url" defaultValue={initial.sourceUrl} required placeholder="https://github.com/owner/repository" /></FormField>
         <FormField htmlFor="sourceRef" label={t("form.sourceRef")} description={t("form.sourceRefHelp")} error={error("sourceRef")}><Input id="sourceRef" name="sourceRef" defaultValue={initial.sourceRef} required placeholder="v1.2.3" /></FormField>
         <FormField htmlFor="inventorySourceProvider" label={t("form.inventorySourceProvider")} error={error("inventorySourceProvider")}>
@@ -182,12 +186,13 @@ export function ToolShareForm({
           </NativeSelect>
         </FormField>
         <FormField htmlFor="inventoryItemKey" className="sm:col-span-2" label={t("form.inventoryItemKey")} description={t("form.inventoryItemKeyHelp")} error={error("inventoryItemKey")}><Input id="inventoryItemKey" name="inventoryItemKey" defaultValue={initial.inventoryItemKey} required maxLength={200} /></FormField>
-      </section>
+        </section>
+      </Surface>
 
       <Disclosure
         defaultOpen={mode === "edit"}
         forceMount
-        className="rounded-lg border bg-card"
+        surface="default"
         trigger={t("form.advanced")}
         triggerClassName="w-full justify-between px-4 py-3 text-left font-medium"
         contentClassName="border-t"

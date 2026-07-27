@@ -5,6 +5,7 @@ import { useEffect, useState, useTransition } from "react";
 import { useTranslations } from "next-intl";
 import { formatVersion } from "@toard/core";
 import { Button } from "@/components/ui/button";
+import { Surface } from "@/components/ui/surface";
 import type { ServerUpdatePhase, ServerUpdateStatus } from "@/lib/server-update";
 
 const POLL_MS = 2_000;
@@ -120,9 +121,15 @@ export function ServerUpdatePanel({
 
       {status.error ? <p className="text-destructive text-xs">{status.error}</p> : null}
       {lastLogs.length > 0 ? (
-        <pre className="bg-muted max-h-32 overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">
-          {lastLogs.join("\n")}
-        </pre>
+        <Surface
+          asChild
+          variant="muted"
+          radius="sm"
+          padding="md"
+          className="max-h-32 overflow-auto border-0 text-xs whitespace-pre-wrap"
+        >
+          <pre>{lastLogs.join("\n")}</pre>
+        </Surface>
       ) : null}
     </div>
   );

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import type { ToolDeploymentView } from "@/lib/tool-deployment-view";
 import { approveTeamRolloutAction, deployTeamDefaultAction } from "./tool-install-actions";
 
@@ -56,5 +57,5 @@ export function TeamDeploymentPanel({ item, deployment, enabled }: { item: ToolC
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
-  return <div className="rounded-md bg-muted p-2"><strong className="block text-base">{value}</strong><span className="text-muted-foreground text-xs">{label}</span></div>;
+  return <Surface variant="muted" radius="sm" padding="sm" className="border-0"><strong className="block text-base">{value}</strong><span className="text-muted-foreground text-xs">{label}</span></Surface>;
 }

@@ -81,6 +81,8 @@ test("관리자 가격 화면은 수동 action과 DB 토글 없이 읽기 전용
   assert.equal(existsSync(new URL("app/(dashboard)/admin/pricing-actions.ts", root)), false);
   assert.doesNotMatch(panel, /syncPricingAction|setPricingAutoSyncAction|useActionState|<Switch|syncNow/);
   assert.match(panel, /setInterval[\s\S]*30_000/);
+  assert.match(panel, /useLocale/);
+  assert.doesNotMatch(panel, /\.toLocaleString\(/);
   assert.doesNotMatch(autoSync, /getAppSetting|setAppSetting|isAutoSyncEnabled/);
   assert.doesNotMatch(notice, /getSessionUser|href="\/admin|<Link/);
   assert.match(ko.pricingNotice.unpricedAction, /자동|별도 조작 없이/);

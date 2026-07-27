@@ -7,6 +7,7 @@ import { LockKeyhole } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { FieldError } from "@/components/ui/field";
+import { Surface } from "@/components/ui/surface";
 import { beginHistoryPasskeyAction, completeHistoryPasskeyAction } from "./mfa-actions";
 
 export function HistoryMfaUnlock({ returnTo }: { returnTo: string }) {
@@ -33,9 +34,14 @@ export function HistoryMfaUnlock({ returnTo }: { returnTo: string }) {
     <div className="mx-auto w-full max-w-md py-8 sm:py-12">
       <Card>
         <CardHeader>
-          <div className="bg-muted mb-1 flex size-10 items-center justify-center rounded-full">
+          <Surface
+            variant="muted"
+            radius="full"
+            padding="none"
+            className="mb-1 flex size-10 items-center justify-center border-0"
+          >
             <LockKeyhole className="size-5" aria-hidden="true" />
-          </div>
+          </Surface>
           <CardTitle>{t("title")}</CardTitle>
           <CardDescription>{t("passkeyDescription")}</CardDescription>
         </CardHeader>

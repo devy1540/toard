@@ -1,12 +1,44 @@
 import * as React from "react";
+import { Slot } from "@radix-ui/react-slot";
+import { cva, type VariantProps } from "class-variance-authority";
+import { surfaceVariants, type SurfaceVariant } from "@/components/ui/surface";
 import { cn } from "@/lib/utils";
 
-function Card({ className, ...props }: React.ComponentProps<"div">) {
+const cardVariants = cva("flex flex-col", {
+  variants: {
+    density: {
+      default: "gap-6 py-6",
+      compact: "gap-0 py-0",
+    },
+  },
+  defaultVariants: {
+    density: "default",
+  },
+});
+
+function Card({
+  className,
+  variant,
+  density,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"div"> &
+  VariantProps<typeof cardVariants> & {
+    variant?: SurfaceVariant;
+    asChild?: boolean;
+  }) {
+  const Comp = asChild ? Slot : "div";
   return (
-    <div
+    <Comp
       data-slot="card"
+      data-variant={variant ?? "default"}
+      data-density={density ?? "default"}
       className={cn(
-        "bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm",
+        surfaceVariants({
+          variant: variant ?? "default",
+          radius: density === "compact" ? "md" : "lg",
+        }),
+        cardVariants({ density }),
         className,
       )}
       {...props}
@@ -53,4 +85,4 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   return <div data-slot="card-footer" className={cn("flex items-center px-6 [.border-t]:pt-6", className)} {...props} />;
 }
 
-export { Card, CardHeader, CardFooter, CardTitle, CardAction, CardDescription, CardContent };
+export { Card, CardHeader, CardFooter, CardTitle, CardAction, CardDescription, CardContent, cardVariants };

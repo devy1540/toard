@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Disclosure } from "@/components/ui/disclosure";
+import { Surface } from "@/components/ui/surface";
 import {
   Empty,
   EmptyContent,
@@ -250,36 +251,36 @@ export async function SessionDetail({
                           </span>
                           </>
                         }
-                        triggerClassName="text-muted-foreground hover:text-foreground bg-muted/40 rounded-full border px-3 py-1 text-xs"
+                        triggerVariant="pill"
                       >
-                        <pre className="bg-muted/40 mt-2 overflow-x-auto rounded-lg border p-3 text-left font-mono text-xs break-words whitespace-pre-wrap">
-                          {turn.text}
-                        </pre>
+                        <Surface asChild variant="muted" padding="md" className="mt-2 overflow-x-auto text-left font-mono text-xs break-words whitespace-pre-wrap">
+                          <pre>{turn.text}</pre>
+                        </Surface>
                       </Disclosure>
                     ) : isUser ? (
                       <div className="flex flex-col items-end">
-                        <div className="bg-primary/10 max-w-[85%] rounded-2xl rounded-br-md px-3.5 py-2.5 sm:max-w-[70%]">
+                        <Surface variant="accent" radius="xl" className="max-w-[85%] rounded-br-md px-3.5 py-2.5 sm:max-w-[70%]">
                           <span className="sr-only">{t("history.rolePrompt")}</span>
                           {content}
-                        </div>
+                        </Surface>
                         <span className="text-muted-foreground mt-1 text-[11px] tabular-nums">
                           {fmtTime(turn.ts)}
                         </span>
                       </div>
                     ) : (
                       <div className="flex max-w-[95%] gap-2.5 sm:max-w-[88%]">
-                        <div className="bg-muted text-muted-foreground mt-1 flex size-6 shrink-0 items-center justify-center rounded-full border">
+                        <Surface variant="muted" radius="full" className="text-muted-foreground mt-1 flex size-6 shrink-0 items-center justify-center">
                           <ProviderIcon
                             providerKey={turn.providerKey}
                             className="size-3.5"
                             fallback={<Sparkles className="size-3.5" />}
                           />
-                        </div>
+                        </Surface>
                         <div className="min-w-0 flex-1">
-                          <div className="bg-muted/40 rounded-2xl rounded-tl-md border px-3.5 py-2.5">
+                          <Surface variant="muted" radius="xl" className="rounded-tl-md px-3.5 py-2.5">
                             <span className="sr-only">{t("history.roleResponse")}</span>
                             {content}
-                          </div>
+                          </Surface>
                           <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
                             {usage ? (
                               <span className="font-mono">

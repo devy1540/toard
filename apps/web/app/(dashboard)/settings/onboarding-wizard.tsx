@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { FieldLabel } from "@/components/ui/field";
+import { Surface } from "@/components/ui/surface";
 import { Switch } from "@/components/ui/switch";
 import {
   buildInstallCommand,
@@ -128,7 +129,11 @@ export function OnboardingWizard({
           <p className="text-muted-foreground text-sm">{t("wizard.introDescription")}</p>
         </div>
         {contentEnabled ? (
-          <div className="bg-muted/50 flex items-start justify-between gap-4 rounded-lg p-4 text-left">
+          <Surface
+            variant="muted"
+            padding="lg"
+            className="flex items-start justify-between gap-4 border-0 text-left"
+          >
             <div className="space-y-1">
               <FieldLabel htmlFor="wizard-content">
                 {t("wizard.contentLabel")}
@@ -142,11 +147,11 @@ export function OnboardingWizard({
               checked={collectContent}
               onCheckedChange={setCollectContent}
             />
-          </div>
+          </Surface>
         ) : (
-          <p className="bg-muted/50 rounded-lg p-4 text-left text-xs">
-            {t("wizard.introPrivacyMetadata")}
-          </p>
+          <Surface asChild variant="muted" padding="lg" className="border-0 text-left text-xs">
+            <p>{t("wizard.introPrivacyMetadata")}</p>
+          </Surface>
         )}
         <Button className="w-full sm:w-auto" onClick={() => dispatch({ type: "start" })}>
           {t("wizard.start")}
@@ -194,9 +199,14 @@ export function OnboardingWizard({
           <li><b>2.</b> {t("wizard.copyInstall")}</li>
           <li><b>3.</b> {t("wizard.pasteAndRun")}</li>
         </ol>
-        <pre className="bg-muted max-w-full overflow-x-auto rounded-lg p-3 text-left text-xs">
-          <code>{installCommand}</code>
-        </pre>
+        <Surface
+          asChild
+          variant="muted"
+          padding="md"
+          className="max-w-full overflow-x-auto border-0 text-left text-xs"
+        >
+          <pre><code>{installCommand}</code></pre>
+        </Surface>
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button variant="outline" onClick={() => void copy("install", installCommand)}>
             {copied === "install" ? t("wizard.copiedInstall") : t("wizard.copyInstall")}
@@ -212,9 +222,14 @@ export function OnboardingWizard({
       <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t("wizard.verifyTitle")}</h2>
         <p className="text-muted-foreground text-sm">{t("wizard.verifyDescription")}</p>
-        <div className="bg-muted/50 rounded-lg p-5 text-center text-sm" role="status">
+        <Surface
+          variant="muted"
+          padding="lg"
+          className="border-0 text-center text-sm"
+          role="status"
+        >
           {t("wizard.waiting")}
-        </div>
+        </Surface>
       </WizardStep>
     );
   }

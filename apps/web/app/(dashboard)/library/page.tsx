@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { Surface } from "@/components/ui/surface";
 import { catalogInstallStateMessageKey } from "@/lib/catalog-install-state";
 import { listToolCatalog, type CatalogListFilter, type ToolCatalogListItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
@@ -72,35 +73,37 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           }))}
         />
 
-        <form method="get" className="flex min-w-0 flex-col gap-2 rounded-lg border bg-card p-3 sm:flex-row sm:items-end">
-          <input type="hidden" name="scope" value={filter.scope} />
-          <FormField
-            htmlFor="library-search"
-            label={<span className="sr-only">{t("filters.searchLabel")}</span>}
-            className="min-w-0 flex-1"
-          >
-            <Input id="library-search" name="q" defaultValue={filter.query} placeholder={t("filters.searchPlaceholder")} />
-          </FormField>
-          <FormField
-            htmlFor="library-kind"
-            label={<span className="sr-only">{t("filters.kindLabel")}</span>}
-            className="sm:w-40"
-          >
-            <NativeSelect
-              id="library-kind"
-              name="kind"
-              defaultValue={filter.kind}
+        <Surface asChild variant="default" padding="md">
+          <form method="get" className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            <input type="hidden" name="scope" value={filter.scope} />
+            <FormField
+              htmlFor="library-search"
+              label={<span className="sr-only">{t("filters.searchLabel")}</span>}
+              className="min-w-0 flex-1"
             >
-              {(["all", "mcp", "skill", "plugin"] as const).map((kind) => (
-                <NativeSelectOption key={kind} value={kind}>{t(`kind.${kind}`)}</NativeSelectOption>
-              ))}
-            </NativeSelect>
-          </FormField>
-          <div className="flex gap-2">
-            <Button type="submit" size="sm"><Search />{t("filters.apply")}</Button>
-            <Button asChild type="button" size="sm" variant="outline"><Link href="/library">{t("filters.reset")}</Link></Button>
-          </div>
-        </form>
+              <Input id="library-search" name="q" defaultValue={filter.query} placeholder={t("filters.searchPlaceholder")} />
+            </FormField>
+            <FormField
+              htmlFor="library-kind"
+              label={<span className="sr-only">{t("filters.kindLabel")}</span>}
+              className="sm:w-40"
+            >
+              <NativeSelect
+                id="library-kind"
+                name="kind"
+                defaultValue={filter.kind}
+              >
+                {(["all", "mcp", "skill", "plugin"] as const).map((kind) => (
+                  <NativeSelectOption key={kind} value={kind}>{t(`kind.${kind}`)}</NativeSelectOption>
+                ))}
+              </NativeSelect>
+            </FormField>
+            <div className="flex gap-2">
+              <Button type="submit" size="sm"><Search />{t("filters.apply")}</Button>
+              <Button asChild type="button" size="sm" variant="outline"><Link href="/library">{t("filters.reset")}</Link></Button>
+            </div>
+          </form>
+        </Surface>
       </div>
 
       {items.length === 0 ? (
@@ -112,14 +115,14 @@ export default async function LibraryPage({ searchParams }: { searchParams: Prom
           </EmptyHeader>
         </Empty>
       ) : (
-        <div className="min-w-0 overflow-hidden rounded-lg border bg-card">
+        <Surface variant="default" className="overflow-hidden">
           <div className="text-muted-foreground hidden grid-cols-[minmax(0,2fr)_7rem_10rem_11rem_4rem] gap-3 border-b bg-muted/40 px-4 py-2 text-xs font-medium md:grid">
             <span>{t("table.tool")}</span><span>{t("table.kind")}</span><span>{t("table.origin")}</span><span>{t("table.state")}</span><span />
           </div>
           <div className="divide-y">
             {items.map((item) => <LibraryRow key={item.id} item={item} />)}
           </div>
-        </div>
+        </Surface>
       )}
     </div>
   );

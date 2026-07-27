@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { CopyButton } from "@/components/dashboard/copy-button";
 import { Button } from "@/components/ui/button";
 import { Disclosure } from "@/components/ui/disclosure";
+import { Surface } from "@/components/ui/surface";
 import {
   buildManagementCommands,
   detectInstallPlatform,
@@ -38,7 +39,7 @@ export function OnboardingPanel({ baseUrl, uiOrigin }: { baseUrl: string; uiOrig
       trigger={t("management.title")}
       triggerClassName="text-muted-foreground hover:text-foreground text-sm"
     >
-      <div className="mt-3 space-y-5 rounded-lg border p-4">
+      <Surface className="mt-3 space-y-5" padding="lg">
         <p className="text-muted-foreground text-xs">{t("management.description")}</p>
         <div className="space-y-2">
           <p className="text-xs font-medium">{t("management.platform")}</p>
@@ -61,7 +62,7 @@ export function OnboardingPanel({ baseUrl, uiOrigin }: { baseUrl: string; uiOrig
         <ManagementCommand title={t("management.doctor")} command={commands.doctor} />
         <ManagementCommand title={t("management.update")} command={commands.update} />
         <ManagementCommand title={t("management.uninstall")} command={commands.uninstall} />
-      </div>
+      </Surface>
     </Disclosure>
   );
 }
@@ -74,9 +75,15 @@ function ManagementCommand({ title, command }: { title: string; command: string 
         <h3 className="text-sm font-medium">{title}</h3>
         <CopyButton text={command} label={t("management.copy")} />
       </div>
-      <pre className="bg-muted max-w-full overflow-x-auto rounded-md p-3 text-xs leading-relaxed">
-        <code>{command}</code>
-      </pre>
+      <Surface
+        asChild
+        variant="muted"
+        radius="sm"
+        padding="md"
+        className="max-w-full overflow-x-auto border-0 text-xs leading-relaxed"
+      >
+        <pre><code>{command}</code></pre>
+      </Surface>
     </div>
   );
 }

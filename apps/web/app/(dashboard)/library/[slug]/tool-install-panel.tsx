@@ -15,6 +15,7 @@ import {
   FieldTitle,
 } from "@/components/ui/field";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Surface } from "@/components/ui/surface";
 import type { ToolDeploymentView } from "@/lib/tool-deployment-view";
 import { excludeTeamDefaultAction, installToolAction } from "./tool-install-actions";
 
@@ -31,11 +32,15 @@ export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCata
         <CardDescription>{t("description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="grid gap-3 rounded-lg bg-muted/50 p-4 text-sm sm:grid-cols-3">
+        <Surface
+          variant="muted"
+          padding="lg"
+          className="grid gap-3 border-0 text-sm sm:grid-cols-3"
+        >
           <Summary label={t("source")} value={item.sourceRef} />
           <Summary label={t("clients")} value={item.supportedClients.map((client) => client === "codex" ? "Codex" : "Claude Code").join(", ")} />
           <Summary label={t("permissions")} value={t("permissionCount", { env: item.requiredEnv.length, hosts: item.networkHosts.length })} />
-        </div>
+        </Surface>
 
         {!enabled ? (
           <Alert className="border-orange-500/30 bg-orange-500/5">
@@ -59,7 +64,7 @@ export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCata
               </FieldLabel>
               <Disclosure
                 forceMount
-                className="rounded-md border"
+                surface="inset"
                 trigger={t("advancedDeviceSelection")}
                 triggerClassName="w-full justify-between px-3 py-3 text-left font-medium"
                 contentClassName="px-3 pb-3"
@@ -74,20 +79,22 @@ export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCata
                   {deployment.devices.map((device) => {
                     const id = `install-device-${device.fingerprint}`;
                     return (
-                      <Field key={device.fingerprint} orientation="horizontal" className="items-start gap-2 rounded border p-2 text-xs">
-                        <Checkbox
-                          id={id}
-                          name="deviceFingerprints"
-                          value={device.fingerprint}
-                          defaultChecked={deployment.selectedDevices.includes(device.fingerprint)}
-                        />
-                        <FieldLabel htmlFor={id} className="min-w-0 font-normal">
-                          <span className="min-w-0">
-                            <strong className="block truncate">{device.host ?? t("unknownDevice")}</strong>
-                            <code className="text-muted-foreground">{device.fingerprint.slice(0, 12)}…</code>
-                          </span>
-                        </FieldLabel>
-                      </Field>
+                      <Surface asChild key={device.fingerprint} radius="sm" padding="sm">
+                        <Field orientation="horizontal" className="items-start gap-2 text-xs">
+                          <Checkbox
+                            id={id}
+                            name="deviceFingerprints"
+                            value={device.fingerprint}
+                            defaultChecked={deployment.selectedDevices.includes(device.fingerprint)}
+                          />
+                          <FieldLabel htmlFor={id} className="min-w-0 font-normal">
+                            <span className="min-w-0">
+                              <strong className="block truncate">{device.host ?? t("unknownDevice")}</strong>
+                              <code className="text-muted-foreground">{device.fingerprint.slice(0, 12)}…</code>
+                            </span>
+                          </FieldLabel>
+                        </Field>
+                      </Surface>
                     );
                   })}
                   {deployment.devices.length === 0 ? <p className="text-muted-foreground">{t("noDevices")}</p> : null}
@@ -108,11 +115,21 @@ export function ToolInstallPanel({ item, deployment, enabled }: { item: ToolCata
           <div className="space-y-2">
             <h3 className="text-sm font-medium">{t("deviceStatus")}</h3>
             {deployment.reports.map((report) => (
-              <div key={report.fingerprint} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2 text-sm">
+              <Surface key={report.fingerprint} radius="sm" className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 text-sm">
                 <span>{report.host ?? `${report.fingerprint.slice(0, 12)}…`}</span>
                 <Badge variant={report.status === "installed" ? "default" : "outline"}>{t(`status.${report.status}`)}</Badge>
-                {report.status === "settings_required" ? <code className="w-full rounded bg-muted p-2 text-xs">{settingsRequiredCommand}</code> : null}
-              </div>
+                {report.status === "settings_required" ? (
+                  <Surface
+                    asChild
+                    variant="muted"
+                    radius="sm"
+                    padding="sm"
+                    className="w-full border-0 text-xs"
+                  >
+                    <code>{settingsRequiredCommand}</code>
+                  </Surface>
+                ) : null}
+              </Surface>
             ))}
             <p className="text-muted-foreground text-xs">{t("settingsRequiredCommand")}: <code>{settingsRequiredCommand}</code></p>
           </div>

@@ -3,6 +3,7 @@ import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { TurnText } from "@/components/dashboard/turn-text";
 import { Badge } from "@/components/ui/badge";
 import { Disclosure } from "@/components/ui/disclosure";
+import { Surface } from "@/components/ui/surface";
 import { costCoverageForStatus, formatCostForCoverage } from "@/lib/cost-coverage";
 import { fmtCompact, fmtUsd } from "@/lib/format";
 import type { HistoryAgentRun, TurnUsage } from "@/lib/history-grouping";
@@ -54,7 +55,7 @@ export function HistoryAgentGroup({
         <Disclosure
           key={agent.id}
           defaultOpen={agentIndex === 0}
-          triggerClassName="w-full min-w-0 justify-between rounded-xl border bg-muted/20 px-3 py-2 text-left hover:bg-muted/40"
+          triggerVariant="panel"
           contentClassName="ml-2 border-l pl-3"
           trigger={(
             <span key={`${agent.id}-trigger`} className="flex min-w-0 flex-1 flex-col gap-1.5">
@@ -97,28 +98,28 @@ export function HistoryAgentGroup({
                     {turnIndex === 0 ? (
                       <span className="text-muted-foreground mb-1 text-[11px]">{labels.assigned}</span>
                     ) : null}
-                    <div className="bg-primary/10 max-w-[90%] rounded-2xl rounded-br-md px-3.5 py-2.5">
+                    <Surface variant="accent" radius="xl" className="max-w-[90%] rounded-br-md px-3.5 py-2.5">
                       <span className="sr-only">{labels.rolePrompt}</span>
                       {content}
-                    </div>
+                    </Surface>
                     <span className="text-muted-foreground mt-1 text-[11px] tabular-nums">{fmtTime(turn.ts)}</span>
                   </div>
                 );
               }
               return (
                 <div key={turn.dedupKey} className="flex max-w-[96%] gap-2.5">
-                  <div className="bg-muted text-muted-foreground mt-1 flex size-6 shrink-0 items-center justify-center rounded-full border">
+                  <Surface variant="muted" radius="full" className="text-muted-foreground mt-1 flex size-6 shrink-0 items-center justify-center">
                     <ProviderIcon
                       providerKey={turn.providerKey}
                       className="size-3.5"
                       fallback={<Sparkles className="size-3.5" />}
                     />
-                  </div>
+                  </Surface>
                   <div className="min-w-0 flex-1">
-                    <div className="bg-muted/40 rounded-2xl rounded-tl-md border px-3.5 py-2.5">
+                    <Surface variant="muted" radius="xl" className="rounded-tl-md px-3.5 py-2.5">
                       <span className="sr-only">{labels.roleResponse}</span>
                       {content}
-                    </div>
+                    </Surface>
                     <div className="text-muted-foreground mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
                       {usage ? (
                         <span className="font-mono">

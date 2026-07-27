@@ -2,6 +2,7 @@ import { getTranslations } from "next-intl/server";
 import Link from "next/link";
 import { Blocks, Puzzle, Wrench } from "lucide-react";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { fmtNum } from "@/lib/format";
@@ -27,8 +28,8 @@ export async function ToolActivityCard({
   const top = rows.slice(0, 3);
 
   return (
-    <Card className={cn("min-w-0", className)}>
-      <CardHeader className="flex flex-row items-start justify-between gap-3">
+    <Card density="compact" className={cn("min-w-0 gap-4", className)}>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 p-4 pb-0">
         <div>
           <div className="flex items-center gap-2">
             <CardTitle>{t("title")}</CardTitle>
@@ -40,7 +41,7 @@ export async function ToolActivityCard({
           <Link href={`/tools?${params.toString()}`}>{t("details")}</Link>
         </Button>
       </CardHeader>
-      <CardContent>
+      <CardContent className="px-4 pb-4">
         <div className="grid gap-4 sm:grid-cols-3">
           <Metric icon={<Wrench className="size-4" />} label={t("mcpLabel")} value={fmtNum(summary.mcpCalls)} />
           <Metric icon={<Blocks className="size-4" />} label={t("skillLabel")} value={fmtNum(summary.distinctSkills)} />
@@ -49,9 +50,13 @@ export async function ToolActivityCard({
         {top.length > 0 ? (
           <div className="mt-4 flex flex-wrap gap-2">
             {top.map((row) => (
-              <span key={`${row.activityKind}:${row.itemKey}:${row.detection}`} className="bg-muted rounded-md px-2 py-1 text-xs">
+              <Badge
+                key={`${row.activityKind}:${row.itemKey}:${row.detection}`}
+                variant="secondary"
+                className="font-normal"
+              >
                 {row.displayName} · {t("calls", { count: row.calls })}
-              </span>
+              </Badge>
             ))}
           </div>
         ) : (

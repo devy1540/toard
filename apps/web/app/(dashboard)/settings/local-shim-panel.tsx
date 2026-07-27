@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import {
   connectLocalShim,
   connectLocalShimFromBrowser,
@@ -161,9 +162,9 @@ async function reconnectAfterUpdate(targetId: string): Promise<LocalShimSession>
 
 function StatusItem({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-muted/40 min-w-0 rounded-lg p-3">
+    <Surface variant="muted" padding="md" className="min-w-0 border-0">
       <p className="text-muted-foreground text-xs">{label}</p>
       <p className="mt-1 break-words font-medium [overflow-wrap:anywhere]">{value}</p>
-    </div>
+    </Surface>
   );
 }

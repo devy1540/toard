@@ -70,7 +70,9 @@ test("조직 지표는 페이지 로컬 복제 없이 shared 제품 컴포넌트
   assert.match(summary, /function SummaryTile/);
   assert.match(summary, /border-border\/70 min-w-0 border-l pl-3/);
   assert.match(supporting, /@\/components\/ui\/card/);
-  assert.match(supporting, /border-border\/80 bg-card min-w-0 gap-0 rounded-xl border px-4 py-4 shadow-sm/);
+  assert.match(supporting, /<Card density="compact">/);
+  assert.match(supporting, /<CardContent className="p-4">/);
+  assert.doesNotMatch(supporting, /bg-card|rounded-xl|shadow-sm/);
 
   for (const page of [org, team, teams]) {
     assert.match(page, /@\/components\/dashboard\/summary-tile/);

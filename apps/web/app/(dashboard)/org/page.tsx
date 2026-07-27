@@ -259,27 +259,31 @@ function OrgHero({
   const delta = pctDelta(tokens, previousTokens);
 
   return (
-    <section className="border-border/80 bg-card rounded-xl border px-5 py-5">
-      <div className="flex flex-wrap items-end justify-between gap-6">
-        <div className="min-w-0">
-          <div className="text-muted-foreground text-xs tracking-wide uppercase">{tokenLabel}</div>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <span className="text-4xl font-semibold tracking-tight tabular-nums">{fmtCompact(tokens)}</span>
-            {delta ? (
-              <span className="text-xs">
-                <DeltaBadge delta={delta} />
-              </span>
-            ) : null}
-          </div>
-          <p className="text-muted-foreground mt-1 text-sm">{tokenComparison}</p>
-        </div>
+    <Card asChild>
+      <section>
+        <CardContent className="px-5 py-5">
+          <div className="flex flex-wrap items-end justify-between gap-6">
+            <div className="min-w-0">
+              <div className="text-muted-foreground text-xs tracking-wide uppercase">{tokenLabel}</div>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <span className="text-4xl font-semibold tracking-tight tabular-nums">{fmtCompact(tokens)}</span>
+                {delta ? (
+                  <span className="text-xs">
+                    <DeltaBadge delta={delta} />
+                  </span>
+                ) : null}
+              </div>
+              <p className="text-muted-foreground mt-1 text-sm">{tokenComparison}</p>
+            </div>
 
-        <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-auto xl:min-w-[390px]">
-          <SummaryTile label={costLabel} value={costValue} sub={costComparison} />
-          <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
-        </div>
-      </div>
-    </section>
+            <div className="grid w-full gap-4 sm:grid-cols-2 xl:w-auto xl:min-w-[390px]">
+              <SummaryTile label={costLabel} value={costValue} sub={costComparison} />
+              <SummaryTile label={activeUsersLabel} value={fmtNum(overview.activeUsers)} sub={activeUsersSub} />
+            </div>
+          </div>
+        </CardContent>
+      </section>
+    </Card>
   );
 }
 

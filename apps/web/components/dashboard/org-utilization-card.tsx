@@ -2,6 +2,7 @@ import type { OrganizationUtilizationResult, UtilizationDimensionKey } from "@to
 import { getFormatter, getTranslations } from "next-intl/server";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
+import { Surface } from "@/components/ui/surface";
 
 const dimensions: UtilizationDimensionKey[] = [
   "context_continuity",
@@ -22,10 +23,10 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="bg-muted/35 rounded-lg px-4 py-4">
+          <Surface variant="muted" className="border-0 px-4 py-4">
             <p className="font-medium">{t("utilization.suppressed.title")}</p>
             <p className="text-muted-foreground mt-1 text-sm">{t("utilization.suppressed.description")}</p>
-          </div>
+          </Surface>
         </CardContent>
         <PolicyFooter label={t("utilization.policy")} disclaimer={t("utilization.disclaimer")} />
       </Card>
@@ -43,10 +44,10 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="bg-muted/35 rounded-lg px-4 py-4">
+          <Surface variant="muted" className="border-0 px-4 py-4">
             <p className="font-medium">{t("utilization.insufficient.title")}</p>
             <p className="text-muted-foreground mt-1 text-sm">{t(`utilization.insufficient.${result.reason}`)}</p>
-          </div>
+          </Surface>
         </CardContent>
         <PolicyFooter label={t("utilization.policy")} disclaimer={t("utilization.disclaimer")} />
       </Card>
@@ -63,23 +64,23 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
         <CardDescription>{t("utilization.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
-        <div className="bg-muted/35 flex flex-wrap items-end gap-x-4 gap-y-1 rounded-lg px-4 py-4">
+        <Surface variant="muted" className="flex flex-wrap items-end gap-x-4 gap-y-1 border-0 px-4 py-4">
           <span className="text-4xl font-semibold tabular-nums">{format.number(result.median)}</span>
           <span className="text-muted-foreground pb-1 text-sm">
             {t("utilization.range", { p25: result.range.p25, p75: result.range.p75 })}
           </span>
-        </div>
+        </Surface>
 
         <div className="grid gap-3 sm:grid-cols-2">
           {dimensions.map((dimension) => (
-            <div key={dimension} className="border-border/70 rounded-lg border px-3 py-3">
+            <Surface key={dimension} padding="md">
               <p className="text-muted-foreground text-xs">{t(`utilization.dimensions.${dimension}`)}</p>
               <p className="mt-1 text-2xl font-semibold tabular-nums">
                 {result.dimensionMedians[dimension] == null
                   ? "—"
                   : format.number(result.dimensionMedians[dimension])}
               </p>
-            </div>
+            </Surface>
           ))}
         </div>
 

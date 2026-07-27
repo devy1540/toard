@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Card } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 
 function SupportingMetric({
   label,
@@ -13,13 +13,15 @@ function SupportingMetric({
   icon: ReactNode;
 }) {
   return (
-    <Card className="border-border/80 bg-card min-w-0 gap-0 rounded-xl border px-4 py-4 shadow-sm">
-      <div className="text-muted-foreground flex items-center gap-2 text-sm">
-        {icon}
-        <span className="truncate">{label}</span>
-      </div>
-      <div className="mt-2 truncate text-2xl font-bold tracking-tight tabular-nums">{value}</div>
-      <div className="text-muted-foreground mt-1 truncate text-xs">{sub}</div>
+    <Card density="compact">
+      <CardContent className="p-4">
+        <div className="text-muted-foreground flex items-center gap-2 text-sm">
+          {icon}
+          <span className="truncate">{label}</span>
+        </div>
+        <div className="mt-2 truncate text-2xl font-bold tracking-tight tabular-nums">{value}</div>
+        <div className="text-muted-foreground mt-1 truncate text-xs">{sub}</div>
+      </CardContent>
     </Card>
   );
 }

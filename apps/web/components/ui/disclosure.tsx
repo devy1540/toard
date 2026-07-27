@@ -3,7 +3,25 @@
 import * as React from "react";
 import { ChevronRight } from "lucide-react";
 import { Collapsible as CollapsiblePrimitive } from "radix-ui";
+import { cva, type VariantProps } from "class-variance-authority";
+import { surfaceVariants, type SurfaceVariant } from "@/components/ui/surface";
 import { cn } from "@/lib/utils";
+
+const disclosureTriggerVariants = cva(
+  "group/disclosure-trigger focus-visible:border-ring focus-visible:ring-ring/50 inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md outline-none transition-colors focus-visible:ring-[3px]",
+  {
+    variants: {
+      variant: {
+        plain: "",
+        pill: "text-muted-foreground hover:text-foreground bg-muted/40 rounded-full border px-3 py-1 text-xs",
+        panel: "bg-muted/20 hover:bg-muted/40 w-full min-w-0 justify-between rounded-xl border px-3 py-2 text-left",
+      },
+    },
+    defaultVariants: {
+      variant: "plain",
+    },
+  },
+);
 
 function Disclosure({
   className,
@@ -13,6 +31,8 @@ function Disclosure({
   preview,
   triggerPlacement = "before",
   forceMount = false,
+  surface = "none",
+  triggerVariant,
   children,
   defaultOpen,
   ...props
@@ -23,14 +43,13 @@ function Disclosure({
     preview?: React.ReactNode;
     triggerPlacement?: "before" | "after";
     forceMount?: boolean;
+    surface?: "none" | SurfaceVariant;
+    triggerVariant?: VariantProps<typeof disclosureTriggerVariants>["variant"];
   }) {
   const triggerElement = (
     <CollapsiblePrimitive.Trigger
       data-slot="disclosure-trigger"
-      className={cn(
-        "group/disclosure-trigger focus-visible:border-ring focus-visible:ring-ring/50 inline-flex max-w-full cursor-pointer items-center gap-1.5 rounded-md outline-none transition-colors focus-visible:ring-[3px]",
-        triggerClassName,
-      )}
+      className={cn(disclosureTriggerVariants({ variant: triggerVariant }), triggerClassName)}
     >
       {trigger}
       <ChevronRight
@@ -43,8 +62,13 @@ function Disclosure({
   return (
     <CollapsiblePrimitive.Root
       data-slot="disclosure"
+      data-surface={surface}
       defaultOpen={defaultOpen}
-      className={cn("group/disclosure text-sm", className)}
+      className={cn(
+        "group/disclosure text-sm",
+        surface === "none" ? null : surfaceVariants({ variant: surface }),
+        className,
+      )}
       {...props}
     >
       {preview ? (

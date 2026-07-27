@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldContent, FieldDescription, FieldTitle } from "@/components/ui/field";
+import { Surface } from "@/components/ui/surface";
 import { Switch } from "@/components/ui/switch";
 import type { MfaStatus } from "@/lib/mfa-store";
 import {
@@ -79,35 +80,37 @@ export function MfaSettingsPanel({ initial, hasPassword }: { initial: { status: 
         ) : null}
         <Button type="button" onClick={register} disabled={pending}>{pending ? t("passkeyOpening") : t("addPasskey")}</Button>
         {status.passkeys.length ? (
-          <ul className="divide-y rounded-lg border" aria-label={t("registeredPasskeys")}>
-            {status.passkeys.map((key, index) => (
-              <li key={key.id} className="flex items-center justify-between gap-3 p-3 text-sm">
-                <span>{key.label} {status.passkeys.length > 1 ? index + 1 : ""}</span>
-                <span className="flex items-center gap-2"><span className="text-muted-foreground">{key.backedUp ? t("syncedPasskey") : t("devicePasskey")}</span><Button type="button" size="sm" variant="ghost" onClick={() => remove(key.id)} disabled={pending}>{t("removePasskey")}</Button></span>
-              </li>
-            ))}
-          </ul>
+          <Surface asChild>
+            <ul className="divide-y" aria-label={t("registeredPasskeys")}>
+              {status.passkeys.map((key, index) => (
+                <li key={key.id} className="flex items-center justify-between gap-3 p-3 text-sm">
+                  <span>{key.label} {status.passkeys.length > 1 ? index + 1 : ""}</span>
+                  <span className="flex items-center gap-2"><span className="text-muted-foreground">{key.backedUp ? t("syncedPasskey") : t("devicePasskey")}</span><Button type="button" size="sm" variant="ghost" onClick={() => remove(key.id)} disabled={pending}>{t("removePasskey")}</Button></span>
+                </li>
+              ))}
+            </ul>
+          </Surface>
         ) : null}
         {status.enrolled ? (
           <div className="space-y-4 border-t pt-4">
-            <div className="divide-y rounded-lg border">
-              <Field orientation="horizontal" className="items-start justify-between p-4">
-                <FieldContent>
-                  <FieldTitle>{t("loginProtection")}</FieldTitle>
-                  <FieldDescription className="text-xs">
-                    {hasPassword ? t("passkeyLoginDescription") : t("loginProtectionNeedsPassword")}
-                  </FieldDescription>
-                </FieldContent>
-                <Switch checked={loginRequired} onCheckedChange={setLoginRequired} disabled={!hasPassword} aria-label={t("loginProtection")} />
-              </Field>
-              <Field orientation="horizontal" className="items-start justify-between p-4">
-                <FieldContent>
-                  <FieldTitle>{t("historyProtection")}</FieldTitle>
-                  <FieldDescription className="text-xs">{t("passkeyHistoryDescription")}</FieldDescription>
-                </FieldContent>
-                <Switch checked={historyRequired} onCheckedChange={setHistoryRequired} aria-label={t("historyProtection")} />
-              </Field>
-            </div>
+            <Surface className="divide-y">
+                <Field orientation="horizontal" className="items-start justify-between p-4">
+                  <FieldContent>
+                    <FieldTitle>{t("loginProtection")}</FieldTitle>
+                    <FieldDescription className="text-xs">
+                      {hasPassword ? t("passkeyLoginDescription") : t("loginProtectionNeedsPassword")}
+                    </FieldDescription>
+                  </FieldContent>
+                  <Switch checked={loginRequired} onCheckedChange={setLoginRequired} disabled={!hasPassword} aria-label={t("loginProtection")} />
+                </Field>
+                <Field orientation="horizontal" className="items-start justify-between p-4">
+                  <FieldContent>
+                    <FieldTitle>{t("historyProtection")}</FieldTitle>
+                    <FieldDescription className="text-xs">{t("passkeyHistoryDescription")}</FieldDescription>
+                  </FieldContent>
+                  <Switch checked={historyRequired} onCheckedChange={setHistoryRequired} aria-label={t("historyProtection")} />
+                </Field>
+            </Surface>
             <Button type="button" onClick={save} disabled={pending}>{pending ? t("saving") : t("saveWithPasskey")}</Button>
           </div>
         ) : null}

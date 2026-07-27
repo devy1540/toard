@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Surface } from "@/components/ui/surface";
 import {
   Table,
   TableBody,
@@ -191,22 +192,24 @@ export function RollupStatusPanel({
 
       {requestFailed ? <p className="text-destructive text-xs">{t("rollup.requestFailed")}</p> : null}
 
-      <section className="space-y-3 rounded-md border p-3" aria-label={t("rollup.coordinator.title")}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="space-y-1">
-            <h3 className="font-medium">{t("rollup.coordinator.title")}</h3>
-            <p className="text-muted-foreground text-xs">{t("rollup.coordinator.description")}</p>
+      <Surface asChild radius="sm" padding="md">
+        <section className="space-y-3" aria-label={t("rollup.coordinator.title")}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="space-y-1">
+              <h3 className="font-medium">{t("rollup.coordinator.title")}</h3>
+              <p className="text-muted-foreground text-xs">{t("rollup.coordinator.description")}</p>
+            </div>
+            <Badge variant={status.scheduler.state === "stalled" || status.scheduler.state === "unavailable" ? "destructive" : "outline"}>
+              {t(`rollup.coordinator.states.${status.scheduler.state}`)}
+            </Badge>
           </div>
-          <Badge variant={status.scheduler.state === "stalled" || status.scheduler.state === "unavailable" ? "destructive" : "outline"}>
-            {t(`rollup.coordinator.states.${status.scheduler.state}`)}
-          </Badge>
-        </div>
-        <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
-          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastHeartbeat")}: </dt><dd className="inline">{formatDateTime(status.scheduler.lastHeartbeatAt, locale)}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastTask")}: </dt><dd className="inline">{status.scheduler.lastSelectedTask ? t(`rollup.coordinator.tasks.${status.scheduler.lastSelectedTask}`) : "—"}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastOutcome")}: </dt><dd className="inline">{status.scheduler.lastTaskOutcome ? t(`rollup.coordinator.outcomes.${status.scheduler.lastTaskOutcome}`) : "—"}</dd></div>
-        </dl>
-      </section>
+          <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-3">
+            <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastHeartbeat")}: </dt><dd className="inline">{formatDateTime(status.scheduler.lastHeartbeatAt, locale)}</dd></div>
+            <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastTask")}: </dt><dd className="inline">{status.scheduler.lastSelectedTask ? t(`rollup.coordinator.tasks.${status.scheduler.lastSelectedTask}`) : "—"}</dd></div>
+            <div><dt className="text-muted-foreground inline">{t("rollup.coordinator.lastOutcome")}: </dt><dd className="inline">{status.scheduler.lastTaskOutcome ? t(`rollup.coordinator.outcomes.${status.scheduler.lastTaskOutcome}`) : "—"}</dd></div>
+          </dl>
+        </section>
+      </Surface>
 
       <section className="space-y-3" aria-label={t("rollup.cutover.title")}>
         <div className="flex flex-wrap items-start justify-between gap-2">
@@ -227,7 +230,8 @@ export function RollupStatusPanel({
             );
             const stateDanger = value.state === "fallback" || value.state === "unavailable";
             return (
-              <article key={key} className="space-y-3 rounded-md border p-3">
+              <Surface asChild key={key} radius="sm" padding="md">
+                <article className="space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h4 className="font-medium">{t(`rollup.cutover.layer.${key}`)}</h4>
                   <Badge variant={stateDanger ? "destructive" : "outline"}>
@@ -251,7 +255,8 @@ export function RollupStatusPanel({
                   <div><dt className="text-muted-foreground inline">{t("rollup.cutover.lastValidation")}: </dt><dd className="inline">{formatDateTime(value.lastValidationAt, locale)}</dd></div>
                   <div className="sm:col-span-2"><dt className="text-muted-foreground inline">{t("rollup.cutover.failure")}: </dt><dd className="inline">{value.lastFailureKind ? t(`rollup.cutover.failures.${value.lastFailureKind}`) : "—"}</dd></div>
                 </dl>
-              </article>
+                </article>
+              </Surface>
             );
           })}
         </div>
@@ -275,7 +280,8 @@ export function RollupStatusPanel({
             : t("rollup.watermark", { value: formatDateTime(worker.watermark, locale) });
 
           return (
-            <section key={key} className="space-y-3 rounded-md border p-3" aria-label={t(`rollup.worker.${key}`)}>
+            <Surface asChild key={key} radius="sm" padding="md">
+              <section className="space-y-3" aria-label={t(`rollup.worker.${key}`)}>
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <h3 className="font-medium">{t(`rollup.worker.${key}`)}</h3>
@@ -361,7 +367,8 @@ export function RollupStatusPanel({
                   {t("rollup.lastError", { value: formatDateTime(worker.lastErrorAt, locale) })}
                 </p>
               ) : null}
-            </section>
+              </section>
+            </Surface>
           );
         })}
       </div>
@@ -380,7 +387,7 @@ export function RollupStatusPanel({
           })}
         </p>
         {status.storage ? (
-          <div className="overflow-hidden rounded-md border">
+          <Surface className="overflow-hidden" radius="sm">
             <Table className="text-xs">
               <TableHeader className="bg-muted/50">
                 <TableRow>
@@ -399,7 +406,7 @@ export function RollupStatusPanel({
                 ))}
               </TableBody>
             </Table>
-          </div>
+          </Surface>
         ) : (
           <p className="text-muted-foreground text-xs">{t("rollup.storage.unavailable")}</p>
         )}

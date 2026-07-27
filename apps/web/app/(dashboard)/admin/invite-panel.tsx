@@ -8,6 +8,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Surface } from "@/components/ui/surface";
 import {
   Select,
   SelectContent,
@@ -103,7 +104,15 @@ export function InvitePanel({
         >
           <p className="font-medium">{t("invites.linkHeading", { email: state.email ?? "" })}</p>
           <div className="mt-2 flex items-center gap-2">
-            <code className="bg-muted overflow-x-auto rounded px-2 py-1 text-xs">{link}</code>
+            <Surface
+              asChild
+              variant="muted"
+              radius="sm"
+              padding="sm"
+              className="overflow-x-auto border-0 text-xs"
+            >
+              <code>{link}</code>
+            </Surface>
             <CopyButton text={link} message={t("invites.linkCopied")} />
           </div>
           <p className="text-muted-foreground mt-1 text-xs">{t("invites.linkExpiry")}</p>

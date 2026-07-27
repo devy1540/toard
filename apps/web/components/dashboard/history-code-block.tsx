@@ -5,6 +5,7 @@ import { Check, Copy, GitBranch, Rows3 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Surface } from "@/components/ui/surface";
 
 type CodeMode = "diagram" | "read" | "raw";
 
@@ -84,18 +85,18 @@ function HistoryMermaidDiagram({ code }: { code: string }) {
   return (
     <div className="max-h-[38rem] overflow-auto bg-white p-4 text-zinc-950">
       {error ? (
-        <div className="border-destructive/30 bg-destructive/5 text-destructive rounded-md border px-3 py-2 text-sm">
+        <Surface radius="sm" className="border-destructive/30 bg-destructive/5 text-destructive px-3 py-2 text-sm">
           {t("history.codeDiagramFailed")}
-        </div>
+        </Surface>
       ) : svg ? (
         <div
           className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-w-full"
           dangerouslySetInnerHTML={{ __html: svg }}
         />
       ) : (
-        <div className="text-muted-foreground rounded-md border bg-background px-3 py-2 text-sm">
+        <Surface radius="sm" className="text-muted-foreground px-3 py-2 text-sm">
           {t("history.codeDiagramRendering")}
-        </div>
+        </Surface>
       )}
     </div>
   );
@@ -124,18 +125,19 @@ export function HistoryCodeBlock({ code, lang }: { code: string; lang?: string }
       : t("history.codeRawHint");
 
   return (
-    <section className="overflow-hidden rounded-lg border bg-muted/20" aria-labelledby={titleId}>
+    <Surface asChild variant="muted">
+      <section className="overflow-hidden" aria-labelledby={titleId}>
       <div className="flex min-h-11 flex-col gap-2 border-b bg-background/80 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <div className="flex min-w-0 items-center gap-2 font-mono text-xs">
           <span id={titleId} className="text-foreground font-semibold tracking-wide">
             {displayLang(lang)}
           </span>
-          <span className="rounded-full border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-            {modeLabel}
-          </span>
-          <span className="rounded-full border bg-background px-2 py-0.5 text-[11px] text-muted-foreground">
-            {t("history.codeLines", { count: codeLines.length })}
-          </span>
+          <Surface asChild radius="full" className="px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span>{modeLabel}</span>
+          </Surface>
+          <Surface asChild radius="full" className="px-2 py-0.5 text-[11px] text-muted-foreground">
+            <span>{t("history.codeLines", { count: codeLines.length })}</span>
+          </Surface>
           <span className="hidden truncate text-muted-foreground sm:inline">
             {modeHint}
           </span>
@@ -226,6 +228,7 @@ export function HistoryCodeBlock({ code, lang }: { code: string; lang?: string }
           </pre>
         )}
       </div>
-    </section>
+      </section>
+    </Surface>
   );
 }

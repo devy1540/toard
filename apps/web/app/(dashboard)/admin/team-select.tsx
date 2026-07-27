@@ -16,6 +16,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Surface } from "@/components/ui/surface";
 import type { TeamAttributionStatus } from "@/lib/team-attribution";
 import {
   assignTeamAction,
@@ -174,16 +175,18 @@ export function TeamSelect({
             </AlertDialogDescription>
           </AlertDialogHeader>
           {preview ? (
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-md border p-3 text-sm">
-              <dt className="text-muted-foreground">{t("teamAttribution.events")}</dt>
-              <dd className="text-right font-medium tabular-nums">{preview.events.toLocaleString(locale)}</dd>
-              <dt className="text-muted-foreground">{t("teamAttribution.period")}</dt>
-              <dd className="text-right">{period}</dd>
-              <dt className="text-muted-foreground">{t("teamAttribution.tokens")}</dt>
-              <dd className="text-right font-medium tabular-nums">{preview.totalTokens.toLocaleString(locale)}</dd>
-              <dt className="text-muted-foreground">{t("teamAttribution.cost")}</dt>
-              <dd className="text-right font-medium tabular-nums">${preview.costUsd.toFixed(2)}</dd>
-            </dl>
+            <Surface asChild radius="sm" padding="md">
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                <dt className="text-muted-foreground">{t("teamAttribution.events")}</dt>
+                <dd className="text-right font-medium tabular-nums">{preview.events.toLocaleString(locale)}</dd>
+                <dt className="text-muted-foreground">{t("teamAttribution.period")}</dt>
+                <dd className="text-right">{period}</dd>
+                <dt className="text-muted-foreground">{t("teamAttribution.tokens")}</dt>
+                <dd className="text-right font-medium tabular-nums">{preview.totalTokens.toLocaleString(locale)}</dd>
+                <dt className="text-muted-foreground">{t("teamAttribution.cost")}</dt>
+                <dd className="text-right font-medium tabular-nums">${preview.costUsd.toFixed(2)}</dd>
+              </dl>
+            </Surface>
           ) : null}
           <p className="text-muted-foreground text-xs">{t("teamAttribution.noOtherTeamsChanged")}</p>
           <AlertDialogFooter>

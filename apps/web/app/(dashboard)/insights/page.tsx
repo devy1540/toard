@@ -8,6 +8,7 @@ import { PricingNotice } from "@/components/dashboard/pricing-notice";
 import { DeltaBadge, type StatDelta } from "@/components/dashboard/stat-card";
 import { UtilizationIndexCard } from "@/components/dashboard/utilization-index-card";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty";
 import { getCurrentUserId } from "@/lib/current-user";
 import {
@@ -198,7 +199,7 @@ export default async function InsightsPage({
           }
           splitHeader
         />
-        <div className="bg-muted/30 text-muted-foreground grid gap-1 rounded-lg px-3 py-2 text-xs sm:grid-cols-2 sm:gap-4">
+        <Surface variant="muted" className="text-muted-foreground grid gap-1 border-0 px-3 py-2 text-xs sm:grid-cols-2 sm:gap-4">
           <p>
             {t("ranges.current", {
               range: formatInsightPeriodRange(pair.current, locale, timezone),
@@ -209,7 +210,7 @@ export default async function InsightsPage({
               range: formatInsightPeriodRange(pair.previous, locale, timezone),
             })}
           </p>
-        </div>
+        </Surface>
       </header>
 
       <PricingNotice coverage={comparisonCoverage} />

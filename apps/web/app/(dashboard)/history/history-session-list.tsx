@@ -4,6 +4,7 @@ import { ProviderIcon } from "@/components/dashboard/provider-icon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import { fmtCompact } from "@/lib/format";
 import {
   compactHistoryList,
@@ -68,13 +69,15 @@ export function HistorySessionList({
                     className="group grid min-w-0 gap-3 px-4 py-3.5 transition-colors hover:bg-muted/40 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
                   >
                     <div className="flex min-w-0 gap-3">
-                      <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">
+                      <Surface asChild radius="sm" className="mt-0.5 flex size-8 shrink-0 items-center justify-center text-muted-foreground">
+                        <span>
                         <ProviderIcon
                           providerKey={item.providerKey}
                           className="size-4"
                           fallback={<MessageSquareText className="size-4" />}
                         />
-                      </span>
+                        </span>
+                      </Surface>
                       <div className="min-w-0 flex-1">
                         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
                           <Badge variant="secondary" className="text-[11px]">

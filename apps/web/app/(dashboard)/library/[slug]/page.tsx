@@ -4,9 +4,11 @@ import { getLocale, getTranslations } from "next-intl/server";
 import { ArrowLeft, ExternalLink, ShieldAlert } from "lucide-react";
 import { CopyButton } from "@/components/dashboard/copy-button";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import { catalogInstallStateMessageKey } from "@/lib/catalog-install-state";
 import { getToolCatalogItem } from "@/lib/tool-catalog";
 import { getDashboardViewer } from "@/lib/session-user";
@@ -36,7 +38,11 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
             <div className="text-destructive flex items-center gap-2"><ShieldAlert className="size-5" /><CardTitle>{t("detail.blockedTitle")}</CardTitle></div>
             <CardDescription>{t("detail.blockedDescription")}</CardDescription>
           </CardHeader>
-          <CardContent><p className="rounded-md bg-destructive/5 p-3 text-sm">{item.statusReason ?? t("detail.blockedNoReason")}</p></CardContent>
+          <CardContent>
+            <Alert variant="destructive">
+              <AlertDescription>{item.statusReason ?? t("detail.blockedNoReason")}</AlertDescription>
+            </Alert>
+          </CardContent>
         </Card>
       </div>
     );
@@ -79,7 +85,18 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
           <CardHeader><CardTitle>{t("detail.source")}</CardTitle></CardHeader>
           <CardContent className="min-w-0 space-y-4 text-sm">
             <div className="min-w-0"><Button asChild variant="outline" size="sm"><a href={item.sourceUrl} target="_blank" rel="noreferrer"><ExternalLink />{t("detail.sourceOpen")}</a></Button><p className="text-muted-foreground mt-2 break-all text-xs">{item.sourceUrl}</p></div>
-            <div><p className="text-muted-foreground text-xs font-medium">{t("detail.sourceRef")}</p><code className="mt-1 block break-all rounded bg-muted px-2 py-1">{item.sourceRef}</code></div>
+            <div>
+              <p className="text-muted-foreground text-xs font-medium">{t("detail.sourceRef")}</p>
+              <Surface
+                asChild
+                variant="muted"
+                radius="sm"
+                padding="sm"
+                className="mt-1 block break-all border-0"
+              >
+                <code>{item.sourceRef}</code>
+              </Surface>
+            </div>
             <p className="text-muted-foreground text-xs">{t("detail.tagNotice")}</p>
             <p className="border-t pt-3 text-xs">{t("detail.verificationNotice")}</p>
           </CardContent>
@@ -110,9 +127,20 @@ export default async function LibraryDetailPage({ params }: { params: Promise<{ 
 }
 
 function MetadataList({ label, values, empty, code = false }: { label: string; values: string[]; empty: string; code?: boolean }) {
-  return <div><p className="text-muted-foreground text-xs font-medium">{label}</p>{values.length ? <div className="mt-1 flex flex-wrap gap-1.5">{values.map((value) => code ? <code key={value} className="rounded bg-muted px-2 py-1 text-xs">{value}</code> : <Badge key={value} variant="outline">{value}</Badge>)}</div> : <p className="mt-1">{empty}</p>}</div>;
+  return (
+    <div>
+      <p className="text-muted-foreground text-xs font-medium">{label}</p>
+      {values.length ? (
+        <div className="mt-1 flex flex-wrap gap-1.5">
+          {values.map((value) => code
+            ? <Badge key={value} variant="secondary" className="font-mono font-normal">{value}</Badge>
+            : <Badge key={value} variant="outline">{value}</Badge>)}
+        </div>
+      ) : <p className="mt-1">{empty}</p>}
+    </div>
+  );
 }
 
 function InstructionCard({ title, text, copyLabel, copied }: { title: string; text: string; copyLabel: string; copied: string }) {
-  return <Card className="min-w-0"><CardHeader className="flex-row items-center justify-between gap-3"><CardTitle>{title}</CardTitle><CopyButton text={text} label={copyLabel} message={copied} /></CardHeader><CardContent><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs">{text}</pre></CardContent></Card>;
+  return <Card className="min-w-0"><CardHeader className="flex-row items-center justify-between gap-3"><CardTitle>{title}</CardTitle><CopyButton text={text} label={copyLabel} message={copied} /></CardHeader><CardContent><Surface asChild variant="muted" radius="sm" padding="md" className="max-h-64 overflow-auto border-0 whitespace-pre-wrap break-words font-mono text-xs"><pre>{text}</pre></Surface></CardContent></Card>;
 }

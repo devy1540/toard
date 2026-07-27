@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { SettingsRow } from "@/components/dashboard/settings-row";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { contentCollectionEnabled } from "@/lib/content-crypto";
 import { getPool } from "@/lib/db";
@@ -361,9 +362,9 @@ async function SystemTab() {
             ) : (
               <>
                 <p className="text-muted-foreground">{t("system.contentSetupHint")}</p>
-                <pre className="bg-muted overflow-x-auto rounded-md p-3 text-xs">
-                  TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)
-                </pre>
+                <Surface asChild variant="muted" radius="sm" padding="md" className="border-0 text-xs">
+                  <pre className="overflow-x-auto">TOARD_CONTENT_KEK_B64=$(openssl rand -base64 32)</pre>
+                </Surface>
                 <p className="text-muted-foreground text-xs">
                   {t.rich("system.contentSetupNote", { code: (chunks) => <code>{chunks}</code> })}
                 </p>

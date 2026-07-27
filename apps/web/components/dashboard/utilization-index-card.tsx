@@ -3,6 +3,7 @@ import { getFormatter, getTranslations } from "next-intl/server";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import type { PersonalUtilizationHistoryPoint, PersonalUtilizationView } from "@/lib/ai-utilization";
 import { getOrgTimezone } from "@/lib/org-time";
 
@@ -143,7 +144,7 @@ function AccumulatingTrend({
   const offset = Math.max(0, TREND_WEEK_COUNT - history.length);
 
   return (
-    <div className="bg-muted/35 mt-4 rounded-lg px-4 py-4">
+    <Surface variant="muted" className="mt-4 border-0 px-4 py-4">
       <div className="grid grid-cols-12 gap-1.5" aria-hidden="true">
         {Array.from({ length: TREND_WEEK_COUNT }, (_, index) => {
           const point = history[index - offset];
@@ -157,7 +158,7 @@ function AccumulatingTrend({
       </div>
       <p className="mt-3 text-sm font-medium">{title}</p>
       <p className="text-muted-foreground mt-0.5 text-xs">{description}</p>
-    </div>
+    </Surface>
   );
 }
 
@@ -224,12 +225,12 @@ export async function UtilizationIndexCard({ result }: { result: PersonalUtiliza
         </section>
 
         {result.score == null ? (
-          <div className="border-border/70 mx-4 mb-5 rounded-lg border px-4 py-3 sm:mx-6">
-            <p className="font-medium">{t("utilization.unavailable")}</p>
-            <ul className="text-muted-foreground mt-2 space-y-1 text-sm">
-              {result.reasons.map((item) => <li key={item}>{reason(item)}</li>)}
-            </ul>
-          </div>
+          <Surface className="mx-4 mb-5 px-4 py-3 sm:mx-6">
+              <p className="font-medium">{t("utilization.unavailable")}</p>
+              <ul className="text-muted-foreground mt-2 space-y-1 text-sm">
+                {result.reasons.map((item) => <li key={item}>{reason(item)}</li>)}
+              </ul>
+          </Surface>
         ) : null}
 
         <section className="border-t px-4 py-5 sm:px-6 lg:px-7" aria-labelledby="utilization-signals-title">
@@ -419,7 +420,7 @@ function DimensionPanel({
   reason: string | null;
 }) {
   return (
-    <div className="border-border/70 bg-muted/20 rounded-lg border p-4">
+    <Surface variant="muted" padding="lg">
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
         <div>
           <p className="text-sm font-medium">{name}</p>
@@ -436,7 +437,7 @@ function DimensionPanel({
       </div>
       <p className="text-muted-foreground mt-1 text-xs">{samples}</p>
       {dimension.reason ? <p className="text-muted-foreground mt-2 text-xs">{reason}</p> : null}
-    </div>
+    </Surface>
   );
 }
 

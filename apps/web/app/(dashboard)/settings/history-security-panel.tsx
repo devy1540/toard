@@ -4,6 +4,7 @@ import * as React from "react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import {
   getUserHistorySecurityStatus,
   type UserHistorySecurityStatus,
@@ -108,30 +109,34 @@ export function HistorySecurityPanelView({
         {status ? (
           <>
             <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
-              <div className="min-w-0 rounded-lg border p-3">
-                <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                  <ShieldCheck className="size-3.5" />
-                  {translate("protectionMethod")}
-                </dt>
-                <dd className="mt-1 font-medium">
-                  {status.managed.configured
-                    ? translate("managedEncryption")
-                    : translate("notConfigured")}
-                </dd>
-              </div>
-              <div className="min-w-0 rounded-lg border p-3">
-                <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                  <KeyRound className="size-3.5" />
-                  {translate("historyKey")}
-                </dt>
-                <dd className="mt-1 font-medium">
-                  {status.managed.activeKeyVersion !== null
-                    ? `v${status.managed.activeKeyVersion}`
-                    : status.managed.state === "ready"
-                      ? translate("keyAutoCreate")
-                      : "—"}
-                </dd>
-              </div>
+              <Surface asChild padding="md">
+                <div>
+                  <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                    <ShieldCheck className="size-3.5" />
+                    {translate("protectionMethod")}
+                  </dt>
+                  <dd className="mt-1 font-medium">
+                    {status.managed.configured
+                      ? translate("managedEncryption")
+                      : translate("notConfigured")}
+                  </dd>
+                </div>
+              </Surface>
+              <Surface asChild padding="md">
+                <div>
+                  <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                    <KeyRound className="size-3.5" />
+                    {translate("historyKey")}
+                  </dt>
+                  <dd className="mt-1 font-medium">
+                    {status.managed.activeKeyVersion !== null
+                      ? `v${status.managed.activeKeyVersion}`
+                      : status.managed.state === "ready"
+                        ? translate("keyAutoCreate")
+                        : "—"}
+                  </dd>
+                </div>
+              </Surface>
             </dl>
             {status.managed.state === "attention" ? (
               <Alert variant="destructive" className="border-destructive/40 bg-destructive/5">
@@ -154,54 +159,64 @@ export function HistorySecurityPanelView({
                 {translate("legacyDescription")}
               </p>
             </div>
-            <p className="rounded-lg border p-3 text-sm">{legacyMessage(legacy, translate)}</p>
+            <Surface asChild padding="md">
+              <p className="text-sm">{legacyMessage(legacy, translate)}</p>
+            </Surface>
             <dl className="grid min-w-0 gap-3 text-sm sm:grid-cols-2">
               {legacy.hasE2eeContext ? (
-                <div className="min-w-0 rounded-lg border p-3">
-                  <dt className="text-muted-foreground text-xs">{translate("legacyE2eeRecords")}</dt>
-                  <dd className="mt-1 font-medium">{legacy.e2eeRecords}</dd>
-                </div>
+                <Surface asChild padding="md">
+                  <div>
+                    <dt className="text-muted-foreground text-xs">{translate("legacyE2eeRecords")}</dt>
+                    <dd className="mt-1 font-medium">{legacy.e2eeRecords}</dd>
+                  </div>
+                </Surface>
               ) : null}
-              <div className="min-w-0 rounded-lg border p-3">
-                <dt className="text-muted-foreground text-xs">{translate("legacyServerRecords")}</dt>
-                <dd className="mt-1 font-medium">{legacy.serverRecords}</dd>
-              </div>
-              {legacy.hasE2eeContext ? (
-                <div className="min-w-0 rounded-lg border p-3 sm:col-span-2">
-                  <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                    <ShieldCheck className="size-3.5" />
-                    {translate("recoveryConfirmed")}
-                  </dt>
-                  <dd className="mt-1 break-words font-medium">
-                    {legacy.recoveryConfirmedAt
-                      ? formatDate(legacy.recoveryConfirmedAt)
-                      : "—"}
-                  </dd>
+              <Surface asChild padding="md">
+                <div>
+                  <dt className="text-muted-foreground text-xs">{translate("legacyServerRecords")}</dt>
+                  <dd className="mt-1 font-medium">{legacy.serverRecords}</dd>
                 </div>
+              </Surface>
+              {legacy.hasE2eeContext ? (
+                <Surface asChild padding="md">
+                  <div className="sm:col-span-2">
+                    <dt className="text-muted-foreground flex items-center gap-1.5 text-xs">
+                      <ShieldCheck className="size-3.5" />
+                      {translate("recoveryConfirmed")}
+                    </dt>
+                    <dd className="mt-1 break-words font-medium">
+                      {legacy.recoveryConfirmedAt
+                        ? formatDate(legacy.recoveryConfirmedAt)
+                        : "—"}
+                    </dd>
+                  </div>
+                </Surface>
               ) : null}
             </dl>
             {legacy.hasE2eeContext ? (
               <div className="min-w-0">
                 <h3 className="text-sm font-medium">{translate("approvedDevices")}</h3>
                 {legacy.devices.length > 0 ? (
-                  <ul className="mt-2 min-w-0 divide-y rounded-lg border">
-                    {legacy.devices.map((device) => (
-                      <li key={device.id} className="flex min-w-0 items-center gap-3 p-3 text-sm">
-                        <MonitorSmartphone className="text-muted-foreground size-4 shrink-0" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium">{device.label}</span>
-                          <span className="text-muted-foreground block truncate text-xs">
-                            {device.kind} · {device.platform}
+                  <Surface asChild className="mt-2">
+                    <ul className="divide-y">
+                      {legacy.devices.map((device) => (
+                        <li key={device.id} className="flex min-w-0 items-center gap-3 p-3 text-sm">
+                          <MonitorSmartphone className="text-muted-foreground size-4 shrink-0" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">{device.label}</span>
+                            <span className="text-muted-foreground block truncate text-xs">
+                              {device.kind} · {device.platform}
+                            </span>
                           </span>
-                        </span>
-                        <span className="text-muted-foreground shrink-0 text-xs">
-                          {device.lastUsedAt
-                            ? formatDate(device.lastUsedAt)
-                            : translate("neverUsed")}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
+                          <span className="text-muted-foreground shrink-0 text-xs">
+                            {device.lastUsedAt
+                              ? formatDate(device.lastUsedAt)
+                              : translate("neverUsed")}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </Surface>
                 ) : (
                   <p className="text-muted-foreground mt-2 text-sm">{translate("noDevices")}</p>
                 )}

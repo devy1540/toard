@@ -6,6 +6,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { ChevronsUpDown, Languages, LogOut, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Button } from "@/components/ui/button";
+import { Surface } from "@/components/ui/surface";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -68,9 +69,15 @@ export function UserMenuDropdown({
             variant="outline"
             className="h-auto w-full justify-start px-2 py-1.5 group-data-[collapsible=icon]:size-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0"
           >
-            <span className="bg-muted text-muted-foreground flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-medium">
-              {emailInitials(email)}
-            </span>
+            <Surface
+              asChild
+              variant="muted"
+              radius="full"
+              padding="none"
+              className="text-muted-foreground flex size-6 shrink-0 items-center justify-center border-0 text-[10px] font-medium"
+            >
+              <span>{emailInitials(email)}</span>
+            </Surface>
             <span
               className="min-w-0 flex-1 truncate text-left text-xs font-normal group-data-[collapsible=icon]:hidden"
               title={email}

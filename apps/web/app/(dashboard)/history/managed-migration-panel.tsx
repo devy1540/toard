@@ -17,6 +17,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { FieldError } from "@/components/ui/field";
+import { Surface } from "@/components/ui/surface";
 
 export function managedMigrationStateBody(action: "resume"): { action: "resume" };
 export function managedMigrationStateBody(action: "block"): {
@@ -55,11 +56,16 @@ export function ManagedMigrationPanel({
     <Card className="min-w-0">
       <CardContent className="space-y-4 p-4 sm:p-6">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-full bg-muted p-2">
+          <Surface
+            variant="muted"
+            radius="full"
+            padding="sm"
+            className="mt-0.5 border-0"
+          >
             {blocked
               ? <ShieldAlert className="size-5 text-amber-600" />
               : <LoaderCircle className="size-5 animate-spin text-primary" />}
-          </div>
+          </Surface>
           <div className="min-w-0 space-y-1">
             <h2 className="font-medium">{blocked ? t("blockedTitle") : t("title")}</h2>
             <p className="text-sm text-muted-foreground">

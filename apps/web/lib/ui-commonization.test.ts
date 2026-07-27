@@ -662,7 +662,7 @@ test("team overview uses a bounded hero and separated analysis sections", () => 
   const page = source("app/(dashboard)/org/teams/page.tsx");
 
   assert.match(page, /function TeamRankingHero/);
-  assert.match(page, /<section className="border-border\/80 bg-card rounded-xl border px-5 py-5">/);
+  assert.match(page, /<Card asChild>[\s\S]*<section>[\s\S]*<CardContent className="px-5 py-5">/);
   assert.match(
     page,
     /<TeamRankingHero[\s\S]*totalCost=\{rankedCost\}[\s\S]*coverage=\{coverage\}[\s\S]*costLabels=\{costLabels\}[\s\S]*rankCount=\{rows\.length\}[\s\S]*totalSessions=\{rankedSessions\}[\s\S]*topShare=\{/,
@@ -670,6 +670,58 @@ test("team overview uses a bounded hero and separated analysis sections", () => 
   assert.match(page, /data-dashboard-ready="team-overview" className="space-y-6"/);
   assert.match(page, /grid min-w-0 gap-4 2xl:grid-cols-/);
   assert.doesNotMatch(page, /data-dashboard-ready="team-overview" className="contents"/);
+});
+
+test("dashboard surfaces share an explicit card and inset hierarchy", () => {
+  const card = source("components/ui/card.tsx");
+  const surface = source("components/ui/surface.tsx");
+  const overview = source("components/dashboard/overview-view.tsx");
+  const toolActivity = source("components/dashboard/tool-activity-card.tsx");
+  const org = source("app/(dashboard)/org/page.tsx");
+  const team = source("app/(dashboard)/org/team/page.tsx");
+  const teams = source("app/(dashboard)/org/teams/page.tsx");
+
+  assert.match(surface, /variant:\s*\{[\s\S]*default:\s*"bg-card[\s\S]*inset:\s*"bg-background[\s\S]*muted:\s*"bg-muted\/20/);
+  assert.match(surface, /function Surface/);
+  assert.match(surface, /asChild/);
+  assert.match(card, /surfaceVariants/);
+  assert.match(card, /density:\s*\{[\s\S]*default:[\s\S]*compact:/);
+  assert.match(card, /asChild/);
+
+  assert.equal((overview.match(/<Card asChild density="compact">/g) ?? []).length, 4);
+  assert.doesNotMatch(overview, /<(?:section|aside)[^>]*className="[^"]*rounded-lg border p-4/);
+  assert.match(toolActivity, /<Card density="compact"/);
+
+  for (const page of [org, team, teams]) {
+    assert.doesNotMatch(page, /<section className="border-border\/80 bg-card rounded-xl border px-5 py-5">/);
+    assert.match(page, /<Card asChild>/);
+  }
+  assert.ok((teams.match(/<Card\s+variant="inset"\s+density="compact"/g) ?? []).length >= 2);
+});
+
+test("bounded content surfaces use the shared surface hierarchy", () => {
+  const files = [
+    ...tsxFiles("app"),
+    ...tsxFiles("components").filter((path) => !path.includes(`${join("components", "ui")}/`)),
+  ];
+
+  for (const path of files) {
+    const contents = readFileSync(path, "utf8");
+    const label = relative(WEB_ROOT, path);
+    assert.doesNotMatch(contents, /\bbg-card\b/, `${label} defines a card surface outside components/ui`);
+
+    for (const match of contents.matchAll(
+      /<(?:div|section|article|form|ul|dl|p|span|pre|code|Field|Disclosure)\b[^>]*className="([^"]*)"/g,
+    )) {
+      const classes = match[1]!.split(/\s+/);
+      const isBoundedSurface = classes.includes("border") && classes.some((value) => value.startsWith("rounded"));
+      const isTonalSurface = classes.some((value) => /^bg-(?:background|muted|primary\/10)/.test(value))
+        && classes.some((value) => value.startsWith("rounded"))
+        && classes.some((value) => /^p(?:[xytrbl])?-/.test(value));
+      assert.equal(isBoundedSurface, false, `${label} defines a bounded surface outside components/ui: ${match[0]}`);
+      assert.equal(isTonalSurface, false, `${label} defines a tonal surface outside components/ui: ${match[0]}`);
+    }
+  }
 });
 
 test("insight comparison chart renders current and previous without animation", () => {

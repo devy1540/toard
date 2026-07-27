@@ -4,6 +4,7 @@ import React from "react";
 import { useTranslations } from "next-intl";
 import { AlertTriangle, CheckCircle2, KeyRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Surface } from "@/components/ui/surface";
 import type { EncryptionAdminStatus } from "@/lib/encryption-admin-status";
 
 function providerLabel(provider: EncryptionAdminStatus["provider"]): string {
@@ -75,7 +76,7 @@ export function EncryptionPanel({ status }: { status: EncryptionAdminStatus | nu
         </p>
       ) : null}
 
-      <div className="rounded-md border p-3 text-xs">
+      <Surface radius="sm" padding="md" className="text-xs">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <p className="font-medium">{t("providerMigration")}</p>
           <Badge variant={status.providerMigration.removalReady ? "secondary" : "destructive"}>
@@ -115,9 +116,9 @@ export function EncryptionPanel({ status }: { status: EncryptionAdminStatus | nu
             ))}
           </ul>
         )}
-      </div>
+      </Surface>
 
-      <div className="rounded-md border p-3 text-xs">
+      <Surface radius="sm" padding="md" className="text-xs">
         <p className="flex items-center gap-2 font-medium"><KeyRound className="size-4" />{t("estimatedCost")}</p>
         {status.costEstimate ? (
           <>
@@ -144,7 +145,7 @@ export function EncryptionPanel({ status }: { status: EncryptionAdminStatus | nu
         ) : (
           <p className="text-muted-foreground mt-2">{t("costUnavailable")}</p>
         )}
-      </div>
+      </Surface>
     </div>
   );
 }

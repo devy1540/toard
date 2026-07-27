@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { FormField } from "@/components/forms/form-field";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Surface } from "@/components/ui/surface";
 import { Textarea } from "@/components/ui/textarea";
 
 export function LockedHistory({
@@ -40,7 +41,7 @@ export function LockedHistory({
       </CardHeader>
       <CardContent className="space-y-4">
         {approval ? (
-          <div className="min-w-0 rounded-lg border bg-background p-4" role="status" aria-live="polite">
+          <Surface padding="lg" role="status" aria-live="polite">
             <p className="text-muted-foreground text-xs">{t("confirmationCode")}</p>
             <p className="mt-1 font-mono text-2xl font-semibold tracking-[0.25em]" aria-label={t("confirmationCode")}>
               {approval.code}
@@ -49,7 +50,7 @@ export function LockedHistory({
               {t("approvalCountdown", { minutes: Math.floor(secondsLeft / 60), seconds: secondsLeft % 60 })}
             </p>
             <p className="text-muted-foreground mt-1 text-xs">{t("approvalCommand")}</p>
-          </div>
+          </Surface>
         ) : (
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap">
             {canLocalUnlock ? (
@@ -74,31 +75,33 @@ export function LockedHistory({
         )}
 
         {showRecovery && !approval ? (
-          <form
-            className="min-w-0 space-y-3 rounded-lg border bg-background p-4"
-            onSubmit={(event) => {
-              event.preventDefault();
-              onRecover(mnemonic);
-            }}
-          >
-            <FormField
-              htmlFor="history-recovery-words"
-              label={t("recoveryWords")}
-              description={t("recoveryLocalOnly")}
+          <Surface asChild padding="lg">
+            <form
+              className="space-y-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onRecover(mnemonic);
+              }}
             >
-              <Textarea
-                id="history-recovery-words"
-                className="min-h-28 min-w-0 resize-y font-mono"
-                autoComplete="off"
-                spellCheck={false}
-                value={mnemonic}
-                onChange={(event) => setMnemonic(event.target.value)}
-              />
-            </FormField>
-            <Button type="submit" disabled={busy || mnemonic.trim().length === 0}>
-              {t("recover")}
-            </Button>
-          </form>
+              <FormField
+                htmlFor="history-recovery-words"
+                label={t("recoveryWords")}
+                description={t("recoveryLocalOnly")}
+              >
+                <Textarea
+                  id="history-recovery-words"
+                  className="min-h-28 min-w-0 resize-y font-mono"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={mnemonic}
+                  onChange={(event) => setMnemonic(event.target.value)}
+                />
+              </FormField>
+              <Button type="submit" disabled={busy || mnemonic.trim().length === 0}>
+                {t("recover")}
+              </Button>
+            </form>
+          </Surface>
         ) : null}
       </CardContent>
     </Card>

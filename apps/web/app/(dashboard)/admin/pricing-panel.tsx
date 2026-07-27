@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { Badge } from "@/components/ui/badge";
+import { Surface } from "@/components/ui/surface";
 import type { PricingAdminStatus } from "@/lib/pricing-admin-status";
 
 /** 가격 sync와 자동 복구의 읽기 전용 상태. 관리자가 실행하거나 켜고 끌 작업은 없다. */
@@ -14,8 +15,14 @@ export function PricingSyncPanel({
   builtinScheduler: boolean;
 }) {
   const t = useTranslations("admin");
+  const locale = useLocale();
   const [status, setStatus] = useState(initialStatus);
   const [requestFailed, setRequestFailed] = useState(false);
+  const formatCount = (value: number) => new Intl.NumberFormat(locale).format(value);
+  const formatDateTime = (value: string) => new Intl.DateTimeFormat(locale, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 
   useEffect(() => {
     let active = true;
@@ -48,7 +55,7 @@ export function PricingSyncPanel({
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">
           {status.models > 0
-            ? t("system.modelsCount", { count: status.models.toLocaleString() })
+            ? t("system.modelsCount", { count: formatCount(status.models) })
             : t("system.noPricing")}
         </span>
         <span className="text-muted-foreground">
@@ -59,7 +66,7 @@ export function PricingSyncPanel({
         </Badge>
       </div>
 
-      <div className="rounded-md border p-3">
+      <Surface radius="sm" padding="md">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span>{t("system.repairTitle")}</span>
           <Badge variant={status.repair.state === "failed" ? "destructive" : healthy ? "secondary" : "outline"}>
@@ -67,12 +74,12 @@ export function PricingSyncPanel({
           </Badge>
         </div>
         <dl className="mt-2 grid gap-1 text-xs sm:grid-cols-3">
-          <div><dt className="text-muted-foreground inline">{t("system.recoveredEvents")}: </dt><dd className="inline">{status.repair.recoveredEvents.toLocaleString()}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("system.repricedLegacyEvents")}: </dt><dd className="inline">{status.repair.repricedLegacyEvents.toLocaleString()}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("system.reconciledEvents")}: </dt><dd className="inline">{status.repair.reconciledEvents.toLocaleString()}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("system.remainingEvents")}: </dt><dd className="inline">{status.repair.remainingUnpricedEvents.toLocaleString()}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("system.remainingLegacyEvents")}: </dt><dd className="inline">{status.repair.remainingLegacyEvents.toLocaleString()}</dd></div>
-          <div><dt className="text-muted-foreground inline">{t("system.lastRepair")}: </dt><dd className="inline">{status.repair.lastSucceededAt ? new Date(status.repair.lastSucceededAt).toLocaleString() : "—"}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.recoveredEvents")}: </dt><dd className="inline">{formatCount(status.repair.recoveredEvents)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.repricedLegacyEvents")}: </dt><dd className="inline">{formatCount(status.repair.repricedLegacyEvents)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.reconciledEvents")}: </dt><dd className="inline">{formatCount(status.repair.reconciledEvents)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.remainingEvents")}: </dt><dd className="inline">{formatCount(status.repair.remainingUnpricedEvents)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.remainingLegacyEvents")}: </dt><dd className="inline">{formatCount(status.repair.remainingLegacyEvents)}</dd></div>
+          <div><dt className="text-muted-foreground inline">{t("system.lastRepair")}: </dt><dd className="inline">{status.repair.lastSucceededAt ? formatDateTime(status.repair.lastSucceededAt) : "—"}</dd></div>
         </dl>
         {status.unresolvedModels.length > 0 ? (
           <div className="mt-3 space-y-1 text-xs">
@@ -80,17 +87,17 @@ export function PricingSyncPanel({
             {status.unresolvedModels.slice(0, 10).map((item) => (
               <p key={`${item.model ?? "unknown"}:${item.firstAt}`}>
                 <span className="font-mono">{item.model ?? "(unknown)"}</span>
-                {" · "}{t("system.unresolvedEvents", { count: item.events.toLocaleString() })}
+                {" · "}{t("system.unresolvedEvents", { count: formatCount(item.events) })}
                 {" · "}{t("system.unresolvedEventBreakdown", {
-                  unpriced: item.unpricedEvents.toLocaleString(),
-                  legacy: item.legacyEvents.toLocaleString(),
+                  unpriced: formatCount(item.unpricedEvents),
+                  legacy: formatCount(item.legacyEvents),
                 })}
               </p>
             ))}
           </div>
         ) : null}
         {status.history.state !== "idle" && status.history.state !== "completed" ? (
-          <div className="mt-3 rounded-md border p-2 text-xs">
+          <Surface radius="sm" padding="sm" className="mt-3 text-xs">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span>{t("system.historyTitle")}</span>
               <Badge variant={status.history.state === "failed" ? "destructive" : "outline"}>
@@ -99,21 +106,21 @@ export function PricingSyncPanel({
             </div>
             <p className="mt-1 text-muted-foreground">
               {t("system.historyProgress", {
-                processed: status.history.processedSnapshots.toLocaleString(),
-                total: status.history.totalSnapshots.toLocaleString(),
-                models: status.history.models.toLocaleString(),
+                processed: formatCount(status.history.processedSnapshots),
+                total: formatCount(status.history.totalSnapshots),
+                models: formatCount(status.history.models),
               })}
             </p>
             {status.history.nextAttemptAt ? (
               <p className="mt-1 text-muted-foreground">
                 {t("system.historyRetryAt", {
-                  time: new Date(status.history.nextAttemptAt).toLocaleString(),
+                  time: formatDateTime(status.history.nextAttemptAt),
                 })}
               </p>
             ) : null}
-          </div>
+          </Surface>
         ) : null}
-      </div>
+      </Surface>
       {requestFailed ? <p className="text-destructive text-xs">{t("system.pricingStatusFailed")}</p> : null}
     </div>
   );

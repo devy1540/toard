@@ -709,6 +709,11 @@ test("bounded content surfaces use the shared surface hierarchy", () => {
     const contents = readFileSync(path, "utf8");
     const label = relative(WEB_ROOT, path);
     assert.doesNotMatch(contents, /\bbg-card\b/, `${label} defines a card surface outside components/ui`);
+    assert.doesNotMatch(
+      contents,
+      /<Card\b[^>]*className="[^"]*\bbg-(?:background|muted(?:\/\d+)?|primary\/10)\b/,
+      `${label} overrides the shared Card surface variant`,
+    );
 
     for (const match of contents.matchAll(
       /<(?:div|section|article|form|ul|dl|p|span|pre|code|Field|Disclosure)\b[^>]*className="([^"]*)"/g,

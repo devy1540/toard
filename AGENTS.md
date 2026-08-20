@@ -21,7 +21,7 @@ BOOTSTRAP_ADMIN_PASSWORD=<초기 비밀번호> \
 docker compose up -d
 ```
 
-- GHCR 프리빌트 이미지(amd64·arm64)를 pull 한다 — 빌드 없음. 버전 고정은 `TOARD_TAG=v…`.
+- GHCR 프리빌트 이미지(amd64·arm64)를 pull 한다 — 빌드 없음. 버전 고정은 `TOARD_TAG=0.0.1`처럼 `v` 없는 이미지 태그를 사용한다.
 - `AUTH_SECRET` 미설정이면 compose 가 파싱 단계에서 즉시 에러 — 메시지의 안내를 따른다.
 - 관리자 이메일·비밀번호를 사용자가 지정하지 않았다면 **반드시 물어보고 진행한다**(임의 생성 금지).
 

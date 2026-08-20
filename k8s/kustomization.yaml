@@ -14,6 +14,6 @@ resources:
 #   kustomize edit set image toard=REG/toard:TAG toard-migrate=REG/toard-migrate:TAG
 images:
   - name: toard
-    newTag: latest
+    newTag: 0.0.1
   - name: toard-migrate
-    newTag: latest
+    newTag: 0.0.1

@@ -5,14 +5,15 @@ import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { releaseTagFor } from "../release-version.mjs";
 
 const REPO = process.env.TOARD_REPO ?? "devy1540/toard";
 
-// 패키지 버전으로 릴리스를 고정 — `npx @toard/shim@X.Y.Z` 가 정확히 vX.Y.Z 바이너리를 설치한다.
+// 패키지 버전으로 릴리스를 고정 — 새 공개 버전은 무접두, 기존 0.x는 v* 레거시 태그를 찾는다.
 // 0.0.0(개발 트리) 또는 TOARD_SHIM_VERSION=latest 는 latest 로 폴백.
 const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const rawVersion = process.env.TOARD_SHIM_VERSION ?? (pkg.version && pkg.version !== "0.0.0" ? pkg.version : "latest");
-const version = rawVersion === "latest" || rawVersion.startsWith("v") ? rawVersion : `v${rawVersion}`;
+const version = releaseTagFor(rawVersion);
 const releaseBase =
   version === "latest"
     ? `https://github.com/${REPO}/releases/latest/download`

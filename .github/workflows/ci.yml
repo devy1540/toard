@@ -24,6 +24,8 @@ jobs:
         with:
           version: v1.33.9
       - run: pnpm --config.enable-global-virtual-store=false install --frozen-lockfile
+      - run: pnpm verify:release-version
+      - run: pnpm test:release-version
       - run: pnpm typecheck
       - run: pnpm build
       - run: pnpm test

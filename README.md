@@ -18,7 +18,7 @@
 ![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Contributing](CONTRIBUTING.md)
+[Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Release guide](docs/RELEASE.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -68,7 +68,7 @@ The fastest way to try toard is the all-in-one Docker Compose stack with the app
 AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000
 ```
 
-Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=v…` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
+Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
 ### 🤖 Install with an AI agent
 
@@ -180,7 +180,7 @@ On Windows x64, the same page provides a PowerShell command:
 $env:TOARD_INGEST_TOKEN='<my token>'; irm '<toard URL>/install.ps1' | iex
 ```
 
-**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets, and `toard-shim local start|stop|status` manages the loopback-only UI bridge. The bridge accepts only the exact UI origin and target ID recorded by the installer, uses short-lived origin-and-target-bound sessions, and never returns ingest credentials or raw logs. Browser control uses an origin-checked, one-time local helper window first and retains direct CORS/Private Network Access as a pop-up-blocked fallback. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. There is no separate durable outbox, so deleting the original local session logs during an outage makes missing events for that target unrecoverable. A `v*` tag push triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
+**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets, and `toard-shim local start|stop|status` manages the loopback-only UI bridge. The bridge accepts only the exact UI origin and target ID recorded by the installer, uses short-lived origin-and-target-bound sessions, and never returns ingest credentials or raw logs. Browser control uses an origin-checked, one-time local helper window first and retains direct CORS/Private Network Access as a pop-up-blocked fallback. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. There is no separate durable outbox, so deleting the original local session logs during an outage makes missing events for that target unrecoverable. An unprefixed semver tag such as `0.0.1` triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. Existing `v*` tags are legacy releases. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
 
 **Uninstall** — on macOS and Linux, run `curl -fsSL <toard>/uninstall.sh | sh`. On Windows, run `irm '<toard>/uninstall.ps1' | iex`. The uninstall command from each server removes only that server target. If other targets remain, the shim, scheduled collection, and PATH entry remain installed. Shared installation files are removed only when the final target is deleted. An uninstall command from an unregistered server is a no-op, and existing Claude/Codex installations and original session logs are always preserved.
 

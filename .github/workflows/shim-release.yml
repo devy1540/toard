@@ -1,16 +1,35 @@
 name: shim-release
 
-# v* 태그 push 시 5-플랫폼을 각 OS 네이티브 러너에서 빌드해 GitHub Release 에 업로드.
+# 접두사 없는 semver 태그 push 시 5-플랫폼을 각 OS 네이티브 러너에서 빌드해 GitHub Release 에 업로드.
+# 기존 v* 태그는 레거시 이력이며 이 workflow를 실행하지 않는다.
 on:
   push:
     tags:
-      - "v*"
+      - "*.*.*"
+      - "!v*"
 
 permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 릴리스 버전 정합성 검사
+        run: node scripts/verify-release-version.mjs "$GITHUB_REF_NAME"
+      - name: npm 게시 자격 증명 검사
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN" || { echo "::error::NPM_TOKEN is required for a complete release"; exit 1; }
+          npm whoami >/dev/null
+
   build:
+    needs: validate
     strategy:
       matrix:
         include:
@@ -35,7 +54,7 @@ jobs:
           set -eux
           mkdir -p ../../dist
           # 태그 버전을 바이너리에 임베드 — `toard-shim version` 이 배포 버전을 보고한다
-          export TOARD_SHIM_BUILD_VERSION="${GITHUB_REF_NAME#v}"
+          export TOARD_SHIM_BUILD_VERSION="$GITHUB_REF_NAME"
           for t in ${{ matrix.targets }}; do
             rustup target add "$t"
             cargo build --release --target "$t"
@@ -80,7 +99,7 @@ jobs:
             --latest \
             --title "$GITHUB_REF_NAME"
 
-  # npm 패키지(@toard/shim) 배포 — NPM_TOKEN 시크릿이 있을 때만.
+  # npm 패키지(@toard/shim) 배포 — 공개 릴리스는 npm 게시까지 성공해야 완료다.
   npm:
     needs: release
     runs-on: ubuntu-latest
@@ -94,10 +113,10 @@ jobs:
         working-directory: npm
         run: |
           if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "NPM_TOKEN 미설정 — npm publish 를 건너뜁니다."
-            exit 0
+            echo "::error::NPM_TOKEN is required for a complete release"
+            exit 1
           fi
-          npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+          npm version "$GITHUB_REF_NAME" --no-git-tag-version --allow-same-version
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

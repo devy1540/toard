@@ -286,7 +286,8 @@ test("기존 ClickHouse ping, rollup fallback, historical pricing payload 계약
   });
   assert.deepEqual(body.historicalPricingReader, {
     currentVersion: "0.15.16",
-    minimumVersion: "0.15.16",
+    minimumVersion: "0.0.1",
+    legacyMinimumVersion: "0.15.16",
     compatible: true,
   });
 });

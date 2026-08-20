@@ -19,7 +19,7 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 | `content-admin` | 암호화 상태·전환 one-shot 도구 | `encryption status` 등 |
 | `updater` | Compose 자가 업데이트 agent | `node packages/updater/src/server.mjs` |
 
-CI(`docker-publish.yml`)가 main push·`v*` 태그마다 `ghcr.io/devy1540/toard`,
+CI(`docker-publish.yml`)가 main push와 접두사 없는 semver 태그(예: `0.0.1`)마다 `ghcr.io/devy1540/toard`,
 `ghcr.io/devy1540/toard-migrate`, `ghcr.io/devy1540/toard-content-admin`,
 `ghcr.io/devy1540/toard-updater`를 자동 게시한다
 (amd64·arm64 멀티아치 — arch 별 네이티브 러너 분리 빌드 후 manifest 병합) — 직접 빌드 없이 pull 로 사용 가능. 자체 레지스트리가 필요하면:
@@ -44,7 +44,7 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 # → http://localhost:3000  (PORT 로 변경 가능)
 ```
 
-- **이미지**: 기본은 GHCR 프리빌트(`ghcr.io/devy1540/toard{,-migrate}`, amd64·arm64 멀티아치)를 pull. `TOARD_TAG` 로 버전 고정(기본 `latest` = main 최신). 소스에서 직접 빌드(미게시 변경 확인 등)는 `--build` 추가.
+- **이미지**: 기본은 GHCR 프리빌트(`ghcr.io/devy1540/toard{,-migrate}`, amd64·arm64 멀티아치)를 pull. `TOARD_TAG` 로 버전 고정(기본 `latest` = 최신 공개 릴리스). 소스에서 직접 빌드(미게시 변경 확인 등)는 `--build` 추가.
 - **`AUTH_SECRET` 필수**: 미설정 시 compose 가 파싱 단계에서 즉시 에러(안전하지 않은 기본값 없음). `down`/`logs` 등 다른 compose 명령에도 값이 필요하니 `.env` 에 넣어두면 편하다.
 - `migrate` 서비스가 Postgres 준비 후 스키마 + baseline(providers·pricing) 을 맞추고(멱등) 종료 → `app` 기동.
 - **최초 관리자**: 배포 후 브라우저로 열면 사용자가 0명이라 **`/setup`** 으로 유도된다 → 이메일·비번 직접 입력해 admin 생성(첫 사용자만 admin, 이후 잠김). **노출 전 즉시 설정**할 것.
@@ -76,7 +76,7 @@ docker compose --profile updater up -d
 - **배포 디렉터리**: updater 컨테이너에는 배포 디렉터리가 호스트와 같은 절대경로로 마운트된다. 반드시 `docker-compose.yml` 이 있는 디렉터리에서 `docker compose --profile updater up -d` 를 실행한다. 다른 디렉터리에서 `-f` 로 실행해야 한다면 `TOARD_COMPOSE_PROJECT_DIR` 에 호스트 배포 디렉터리의 절대경로를 지정한다.
 - **`.env` 필수**: updater 가 같은 배포 디렉터리에서 compose 를 실행하므로 `AUTH_SECRET` 같은 운영 설정은 `.env` 에 고정해 둔다. 업데이트 시 기존 값은 유지하고 `TOARD_TAG` 만 바꾼다.
 - **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패하면 updater 가 변경한 `.env` 는 되돌리지만, 이미 재시작된 컨테이너까지 자동으로 롤백하지는 않는다. 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
-- **과거 가격 revision 호환성**: `v0.15.16`부터 `[effective_at, valid_until)` 가격 구간을 읽는다. 과거 가격 자동 복구가 한 번이라도 revision을 승격한 서버는 `v0.15.15` 이하로 앱만 되돌리지 않는다. `/api/ready`의 `historicalPricingReader.minimumVersion`과 `compatible`을 먼저 확인한다. 로컬 개발 버전 `0.0.0`은 허용된다.
+- **과거 가격 revision 호환성**: 새 공개 계열은 `0.0.1`부터 `[effective_at, valid_until)` 가격 구간을 읽는다. 보존된 `v*` 레거시 계열에서는 `v0.15.16` 이상만 호환된다. 과거 가격 자동 복구가 한 번이라도 revision을 승격한 서버는 레거시 `v0.15.15` 이하로 앱만 되돌리지 않는다. `/api/ready`의 `historicalPricingReader.minimumVersion`, `legacyMinimumVersion`, `compatible`을 먼저 확인한다. 로컬 개발 버전 `0.0.0`은 허용된다.
 
 ## 2) Kubernetes (kustomize · raw 매니페스트)
 

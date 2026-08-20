@@ -9,6 +9,7 @@ import {
 import {
   getServerVersion,
   HISTORICAL_PRICING_MIN_READER_VERSION,
+  LEGACY_HISTORICAL_PRICING_MIN_READER_VERSION,
   supportsHistoricalPricingReader,
 } from "../../../lib/version";
 import { assertLegacyContentKeyReady } from "../../../lib/legacy-content-readiness";
@@ -121,6 +122,7 @@ function createGet(overrides: Partial<ReadyDependencies> = {}) {
         historicalPricingReader: {
           currentVersion: serverVersion,
           minimumVersion: HISTORICAL_PRICING_MIN_READER_VERSION,
+          legacyMinimumVersion: LEGACY_HISTORICAL_PRICING_MIN_READER_VERSION,
           compatible: supportsHistoricalPricingReader(serverVersion),
         },
       });

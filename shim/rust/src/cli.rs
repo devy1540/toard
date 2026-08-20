@@ -16,8 +16,9 @@ const LEGACY_E2EE_WARNING: &str =
     "toard-shim: legacy E2EE 호환 명령입니다. 신규 연결에는 필요하지 않습니다.";
 
 /// 릴리스 빌드는 CI 가 태그를 주입(TOARD_SHIM_BUILD_VERSION), 개발 빌드는 0.0.0.
+/// Cargo package 버전은 배포 산출물 정합성 검사용이며 개발 바이너리 버전으로 쓰지 않는다.
 pub fn version() -> &'static str {
-    option_env!("TOARD_SHIM_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+    option_env!("TOARD_SHIM_BUILD_VERSION").unwrap_or("0.0.0")
 }
 
 pub fn run(args: &[String]) -> ! {

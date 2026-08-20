@@ -17,6 +17,10 @@ test("parseLatestVersionFromLocation accepts GitHub release redirects", () => {
     "1.2.3",
   );
   assert.equal(
+    parseLatestVersionFromLocation("https://github.com/devy1540/toard/releases/tag/0.0.1"),
+    "0.0.1",
+  );
+  assert.equal(
     parseLatestVersionFromLocation("https://github.com/devy1540/toard/releases/tag/1.2.3"),
     "1.2.3",
   );

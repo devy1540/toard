@@ -292,7 +292,7 @@ async function runUpdate(targetVersion) {
     let effectiveTargetVersion = targetVersion;
     try {
       status.latestVersion = await fetchLatestVersion();
-      addLog(`latest release: v${status.latestVersion}`);
+      addLog(`latest release: ${status.latestVersion}`);
       effectiveTargetVersion = effectiveTargetVersion ?? status.latestVersion;
     } catch (e) {
       if (!effectiveTargetVersion) throw e;

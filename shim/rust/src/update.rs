@@ -77,8 +77,8 @@ pub fn run_self_update(quiet: bool) -> i32 {
         ($($t:tt)*) => { if !quiet { println!($($t)*); } };
     }
     let current = version();
-    let latest = match fetch_latest_version() {
-        Ok(v) => v,
+    let latest = match fetch_latest_release() {
+        Ok(release) => release,
         Err(e) => {
             if !quiet {
                 eprintln!("toard-shim: 최신 버전 확인 실패 — {e}");
@@ -86,16 +86,17 @@ pub fn run_self_update(quiet: bool) -> i32 {
             return if quiet { 0 } else { 1 };
         }
     };
-    if latest == current {
-        say!("이미 최신 버전입니다 (v{current})");
+    if latest.version == current {
+        say!("이미 최신 버전입니다 ({current})");
         return finish_with_local_bridge(current_executable(), quiet);
     }
-    say!("업데이트: v{current} → v{latest}");
-    match download_and_replace(&latest) {
+    say!("업데이트: {current} → {}", latest.version);
+    match download_and_replace(&latest.tag) {
         Ok(path) => {
             say!(
-                "교체 완료: {} — 다음 실행부터 v{latest} 가 적용됩니다",
-                path.display()
+                "교체 완료: {} — 다음 실행부터 {}가 적용됩니다",
+                path.display(),
+                latest.version,
             );
             finish_with_local_bridge(Ok(path), quiet)
         }
@@ -175,8 +176,14 @@ fn finish_with_local_bridge(exe: Result<PathBuf, String>, quiet: bool) -> i32 {
     }
 }
 
-/// GitHub releases/latest 의 302 Location 헤더에서 태그를 읽는다 (API rate limit 밖).
-fn fetch_latest_version() -> Result<String, String> {
+#[derive(Debug, PartialEq, Eq)]
+struct LatestRelease {
+    tag: String,
+    version: String,
+}
+
+/// GitHub releases/latest 의 302 Location 헤더에서 정확한 태그와 비교용 버전을 읽는다.
+fn fetch_latest_release() -> Result<LatestRelease, String> {
     let url = format!("{}/{}/releases/latest", release_host(), repo());
     let out = Command::new("curl")
         .args(["-sI", "--max-time", "10", &url])
@@ -186,7 +193,7 @@ fn fetch_latest_version() -> Result<String, String> {
         .ok_or_else(|| "릴리스 태그를 찾지 못했습니다".into())
 }
 
-fn parse_latest_from_headers(headers: &str) -> Option<String> {
+fn parse_latest_from_headers(headers: &str) -> Option<LatestRelease> {
     for line in headers.lines() {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -197,7 +204,10 @@ fn parse_latest_from_headers(headers: &str) -> Option<String> {
         if let Some(tag) = value.split("/tag/").nth(1) {
             let tag = tag.trim().trim_end_matches('\r');
             if !tag.is_empty() {
-                return Some(tag.trim_start_matches('v').to_string());
+                return Some(LatestRelease {
+                    tag: tag.to_string(),
+                    version: tag.strip_prefix('v').unwrap_or(tag).to_string(),
+                });
             }
         }
     }
@@ -370,12 +380,16 @@ where
 }
 
 /// 다운로드 → SHA256 검증 → chmod 755 → rename 으로 자기 자신 교체(원자적).
-fn download_and_replace(latest: &str) -> Result<PathBuf, String> {
+fn download_and_replace(release_tag: &str) -> Result<PathBuf, String> {
     let exe = env::current_exe()
         .and_then(|p| p.canonicalize())
         .map_err(|e| format!("설치 경로 확인 실패: {e}"))?;
     let dir = exe.parent().ok_or("설치 디렉토리를 알 수 없습니다")?;
-    let base = format!("{}/{}/releases/download/v{latest}", release_host(), repo());
+    let base = format!(
+        "{}/{}/releases/download/{release_tag}",
+        release_host(),
+        repo()
+    );
     let assets = release_asset_names(TARGET, cfg!(windows));
     let sums = fetch_sums(&base)?;
     let mut downloads = Vec::with_capacity(assets.len());
@@ -524,8 +538,23 @@ mod tests {
 
     #[test]
     fn parses_location_header() {
-        let headers = "HTTP/2 302\r\nserver: GitHub.com\r\nLocation: https://github.com/devy1540/toard/releases/tag/v0.3.1\r\n\r\n";
-        assert_eq!(parse_latest_from_headers(headers).as_deref(), Some("0.3.1"));
+        let legacy = "HTTP/2 302\r\nserver: GitHub.com\r\nLocation: https://github.com/devy1540/toard/releases/tag/v0.3.1\r\n\r\n";
+        let current =
+            "HTTP/2 302\r\nLocation: https://github.com/devy1540/toard/releases/tag/0.0.1\r\n\r\n";
+        assert_eq!(
+            parse_latest_from_headers(legacy),
+            Some(LatestRelease {
+                tag: "v0.3.1".into(),
+                version: "0.3.1".into(),
+            })
+        );
+        assert_eq!(
+            parse_latest_from_headers(current),
+            Some(LatestRelease {
+                tag: "0.0.1".into(),
+                version: "0.0.1".into(),
+            })
+        );
         assert_eq!(parse_latest_from_headers("HTTP/2 200\r\n"), None);
     }
 

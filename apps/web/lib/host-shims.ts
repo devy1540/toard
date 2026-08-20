@@ -1,4 +1,4 @@
-import { compareSemver } from "@toard/core";
+import { compareToardVersions } from "@toard/core";
 import { getPool } from "./db";
 
 // 기기별 shim 버전 기록/조회 (host_shims — 마이그레이션 1700000013).
@@ -60,12 +60,12 @@ export async function listAllHostShims(): Promise<HostShimRow[]> {
   }));
 }
 
-/** 멤버별 최저(가장 뒤처진) 버전 — semver 순서는 사전순이 아니라 JS 에서 비교 */
+/** 멤버별 최저(가장 뒤처진) 버전 — 공개 버전 재시작 계열까지 반영해 비교 */
 export function worstShimByUser(rows: HostShimRow[]): Map<string, string> {
   const m = new Map<string, string>();
   for (const r of rows) {
     const cur = m.get(r.userId);
-    if (!cur || compareSemver(r.shimVersion, cur) < 0) m.set(r.userId, r.shimVersion);
+    if (!cur || compareToardVersions(r.shimVersion, cur) < 0) m.set(r.userId, r.shimVersion);
   }
   return m;
 }

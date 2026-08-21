@@ -25,7 +25,9 @@
 
 ```bash
 pnpm verify:release-version
+pnpm test:release-version
 pnpm typecheck
+pnpm build
 pnpm test
 ```
 
@@ -51,5 +53,5 @@ docker buildx imagetools inspect ghcr.io/devy1540/toard-updater:0.0.1
 docker buildx imagetools inspect ghcr.io/devy1540/toard-content-admin:0.0.1
 ```
 
-마지막으로 새 설치와 레거시 `v0.15.55` 설치에서 각각 서버·shim 업데이트를 실행해 보고,
+마지막으로 새 설치와 이미 설치된 레거시 `0.15.55` 환경에서 각각 서버·shim 업데이트를 실행해 보고,
 `/api/health`, `/api/ready`, `/api/v1/version`, `toard-shim version`을 확인한다.

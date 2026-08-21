@@ -19,7 +19,7 @@
 ![pnpm](https://img.shields.io/badge/pnpm-11.15.1-F69220?logo=pnpm&logoColor=white)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Website](https://dev.devy.dev/toard/) · [Live demo](https://dev.devy.dev/toard/demo/) · [Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Release guide](docs/RELEASE.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://dev.devy.dev/toard/) · [Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Release guide](docs/RELEASE.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 

@@ -1,5 +1,5 @@
-// 대시보드 레이아웃 검증용 데모 시드.
-// 기존 seed:demo 는 GitHub Pages 정적 데모와 숫자가 맞물려 있으므로 건드리지 않는다.
+// 실제 앱 대시보드 검증·공개 데모 인스턴스용 합성 데이터 시드.
+// 프로덕션 데이터와 섞이지 않도록 전용 DB에서만 실행한다.
 import "dotenv/config";
 import { createHash } from "node:crypto";
 import bcrypt from "bcryptjs";

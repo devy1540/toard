@@ -31,7 +31,7 @@ spec:
             - name: POSTGRES_USER
               valueFrom: { configMapKeyRef: { name: toard-config, key: POSTGRES_USER } }
         - name: migrate
-          image: toard-migrate:0.0.2
+          image: toard-migrate:0.0.1
           command: ["sh", "-c", "pnpm migrate && pnpm seed"] # 마이그레이션 + baseline(providers·pricing). admin 은 /setup.
           envFrom:
             - secretRef:
@@ -40,7 +40,7 @@ spec:
                 name: toard-config
       containers:
         - name: app
-          image: toard:0.0.2
+          image: toard:0.0.1
           ports:
             - containerPort: 3000
           envFrom:

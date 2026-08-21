@@ -6,15 +6,15 @@
 image:
   app:
     repository: ghcr.io/devy1540/toard
-    tag: 0.0.2
+    tag: 0.0.1
     pullPolicy: IfNotPresent
   migrate:
     repository: ghcr.io/devy1540/toard-migrate
-    tag: 0.0.2
+    tag: 0.0.1
     pullPolicy: IfNotPresent
   contentAdmin:
     repository: ghcr.io/devy1540/toard-content-admin
-    tag: 0.0.2
+    tag: 0.0.1
     pullPolicy: IfNotPresent
 imagePullSecrets: []
 

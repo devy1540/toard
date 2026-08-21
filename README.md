@@ -69,7 +69,7 @@ The fastest way to try toard is the all-in-one Docker Compose stack with the app
 AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000
 ```
 
-Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.2` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
+Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
 ### 🤖 Install with an AI agent
 

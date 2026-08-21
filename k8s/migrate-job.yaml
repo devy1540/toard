@@ -24,7 +24,7 @@ spec:
               valueFrom: { configMapKeyRef: { name: toard-config, key: POSTGRES_USER } }
       containers:
         - name: migrate
-          image: toard-migrate:0.0.2 # 기본 CMD = pnpm migrate
+          image: toard-migrate:0.0.1 # 기본 CMD = pnpm migrate
           envFrom:
             - secretRef:
                 name: toard-secrets

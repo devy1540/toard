@@ -295,9 +295,10 @@ fn windows_output_text(bytes: &[u8]) -> String {
         return String::from_utf8_lossy(bytes).into_owned();
     }
     let start = usize::from(bytes.starts_with(&[0xff, 0xfe])) * 2;
-    let words = bytes[start..]
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+    let (pairs, _) = bytes[start..].as_chunks::<2>();
+    let words = pairs
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
         .collect::<Vec<_>>();
     String::from_utf16_lossy(&words)
 }
@@ -1068,6 +1069,8 @@ mod tests {
         let mut bytes = vec![0xff, 0xfe];
         bytes.extend(expected.encode_utf16().flat_map(u16::to_le_bytes));
 
+        assert_eq!(windows_output_text(&bytes), expected);
+        bytes.push(0xff);
         assert_eq!(windows_output_text(&bytes), expected);
     }
 

@@ -14,7 +14,6 @@ const jsonArtifacts = [
   "packages/storage-clickhouse/package.json",
   "packages/storage-postgres/package.json",
   "packages/updater/package.json",
-  "npm/package.json",
 ];
 
 const read = (relativePath) => readFileSync(resolve(root, relativePath), "utf8");

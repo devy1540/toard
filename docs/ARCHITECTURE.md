@@ -78,9 +78,9 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 - **결정:** shim을 1차부터 포함(투명 wrapping + 자동 업데이트). **언어 = Rust**(2026-06-30 확정 — PoC 측정 + 팀 선택). `claude`/`codex` 이름으로 설치돼 PATH resolver 로 진짜 바이너리를 exec(자기 자신 제외)하며, `~/.toard/credentials`(또는 env)에서 token·endpoint 를 로딩한다.
 - **범용 수집 에이전트로 격상(v3, ADR-002):** shim은 단순 env 주입기가 아니라 **두 역할을 겸한다** — ① OTEL 도구: 텔레메트리 env 주입 → 앱이 OTLP push 수신, ② 비-OTEL 도구: **로컬 로그 tail·읽기 → `UsageEvent[]` 정규화 → `/api/v1/events` POST**. 1차는 ①만, 로컬 로그 pull(②)은 2차.
 - **fat shim + ccusage 벤더링:** pull 경로 정규화를 shim이 수행하고 **ccusage(MIT)의 Rust 어댑터 15종을 벤더링**(`ccusage rust/crates/ccusage/src/adapter/`: gemini·qwen·opencode·goose·hermes·openclaw·kimi·amp·… )해 파서를 사실상 공짜로 얻는다. shim이 ingest_token 을 쥔 채 POST 하므로 **pull 경로도 사용자 귀속(§10.1)이 성립**. 트레이드오프 — 어댑터/포맷 변경 시 shim 재배포(자동 업데이트 + ccusage 업스트림 rebase 로 완화). thin shim(앱이 파싱)은 15개 파서 TS 재작성 부담으로 기각. 라이선스 MIT — attribution 유지(shim NOTICE).
-- **근거:** shim은 OTEL SDK 없는 얇은 래퍼. Go=크로스컴파일 간편, Rust=바이너리 작음. (배포는 Rust/Go 바이너리를 npm `optionalDependencies`로 푸는 일반 패턴 활용 — 이는 ccusage 고유가 아닌 esbuild/swc류 표준 기법.)
+- **근거:** shim은 OTEL SDK 없는 얇은 래퍼. Go=크로스컴파일 간편, Rust=바이너리 작음. 바이너리는 GitHub Release에서 플랫폼별 자산과 체크섬으로 직접 배포한다.
 - **기각:** "1차엔 설치 스크립트만" — 매 실행 동기화·자동 업데이트 부재로 기각.
-- **PoC 결과(2026-06-30, `shim/`):** Go·Rust 동일 기능 구현·측정 — 바이너리 **Go 1.4MB vs Rust 312KB(4.4배 작음)**, cold start **Rust 우위**(20회 exec 0.17s vs Go 0.27s). 둘 다 env 주입 + exec end-to-end 동작(shim → 대역 도구 → toard 수신, 멱등 dedup까지 검증). → 크기·cold start 우위로 **Rust 채택**(L70 확정). 배포 파이프라인(GitHub Actions OS 네이티브 매트릭스 4-플랫폼 + `install.sh`/`npx @toard/shim`)까지 구축 완료.
+- **PoC 결과(2026-06-30, `shim/`):** Go·Rust 동일 기능 구현·측정 — 바이너리 **Go 1.4MB vs Rust 312KB(4.4배 작음)**, cold start **Rust 우위**(20회 exec 0.17s vs Go 0.27s). 둘 다 env 주입 + exec end-to-end 동작(shim → 대역 도구 → toard 수신, 멱등 dedup까지 검증). → 크기·cold start 우위로 **Rust 채택**(L70 확정). 배포 파이프라인(GitHub Actions OS 네이티브 매트릭스 + macOS·Linux `install.sh`와 Windows PowerShell 설치기)까지 구축 완료.
 
 ### ADR-007 — 인증: Auth.js (NextAuth), AUTH_MODE + JWT 세션
 - **결정:** 인증은 **Auth.js**. 계정·user 는 **Postgres**(adapter), 세션은 **JWT**(Credentials 는 database 세션 미지원). `AUTH_MODE` 로 배포 시 선택: `oauth`(GitHub/Google **+ id/pw credentials**)·`open`(인증 없음·내부망 전제). credentials 는 `AUTH_CREDENTIALS_ENABLED`(기본 on)로 토글 — 로그인 `/login`·가입 `/signup`(도메인 게이팅)·비번 변경/설정 `/settings`. 비번은 **bcrypt(cost 12)** 해시로만 저장. magic-link 는 확장 예정. 이메일 도메인 제한 + 검증된 identity.
@@ -567,7 +567,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 - shim: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/api`로 로컬 수신 테스트.
 
 ### 8.4 shim 배포
-- Rust 바이너리(ADR-006), 4-플랫폼(OS 네이티브 매트릭스). 설치 스크립트(`install.sh`) 또는 `npx @toard/shim`. 온보딩은 §7.6.
+- Rust 바이너리(ADR-006), OS 네이티브 매트릭스. macOS·Linux는 `install.sh`, Windows는 toard 서버의 `/install.ps1`을 사용한다. 온보딩은 §7.6.
 
 ---
 
@@ -627,7 +627,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 - 조직 고유 값 하드코딩 금지(§1.3-6): 타임존(ADR-008)·이메일 도메인·데모 데이터는 env/예시값(example.com)으로 완료.
 
 ### 12.4 배포 채널
-- GitHub Releases(shim 4-플랫폼 + install.sh) · npm `@toard/shim`(게시 예정) · 컨테이너 이미지. 리포 경로는 shim `install.sh`·`npm/bin`에 상수로 존재 — org 이전 시 일괄 변경 지점.
+- GitHub Releases(플랫폼별 shim + install.sh) · 컨테이너 이미지. 리포 경로는 shim `install.sh`와 Rust updater에 상수로 존재 — org 이전 시 일괄 변경 지점.
 
 ---
 

@@ -159,5 +159,3 @@ jobs:
           sh -n shim/install.sh
           sh -n shim/fake-claude.sh
           sh -n .github/scripts/test-shim-installer-unix.sh
-      - name: node syntax check
-        run: node --check npm/bin/toard.mjs

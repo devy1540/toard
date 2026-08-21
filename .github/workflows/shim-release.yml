@@ -21,12 +21,6 @@ jobs:
           node-version: 22
       - name: 릴리스 버전 정합성 검사
         run: node scripts/verify-release-version.mjs "$GITHUB_REF_NAME"
-      - name: npm 게시 자격 증명 검사
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          test -n "$NODE_AUTH_TOKEN" || { echo "::error::NPM_TOKEN is required for a complete release"; exit 1; }
-          npm whoami >/dev/null
 
   build:
     needs: validate
@@ -98,25 +92,3 @@ jobs:
             --generate-notes \
             --latest \
             --title "$GITHUB_REF_NAME"
-
-  # npm 패키지(@toard/shim) 배포 — 공개 릴리스는 npm 게시까지 성공해야 완료다.
-  npm:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: https://registry.npmjs.org
-      - name: publish
-        working-directory: npm
-        run: |
-          if [ -z "$NODE_AUTH_TOKEN" ]; then
-            echo "::error::NPM_TOKEN is required for a complete release"
-            exit 1
-          fi
-          npm version "$GITHUB_REF_NAME" --no-git-tag-version --allow-same-version
-          npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

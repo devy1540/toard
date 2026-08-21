@@ -13,5 +13,6 @@ for (const workflow of workflows) {
     assert.match(source, /- "\*\.\*\.\*"/);
     assert.match(source, /- "!v\*"/);
     assert.doesNotMatch(source, /GITHUB_REF_NAME#v|refs\/tags\/v/);
+    assert.doesNotMatch(source, /NPM_TOKEN|npm publish|@toard\/shim/);
   });
 }

@@ -3,7 +3,7 @@
 ## 버전 정책
 
 `0.0.1`은 toard의 첫 새 공개 기준선이다. `v`로 시작하는 기존 Git tag와 GitHub Release는 모두
-내부 개발 이력과 기존 설치의 복구 경로로 보존하는 레거시 계열이다. 새 공개 태그에는 `v`를 붙이지 않는다.
+지원이 종료된 레거시 계열이다. 새 공개 태그에는 `v`를 붙이지 않으며 레거시 릴리스는 공개 채널에 보존하지 않는다.
 
 `1.0.0` 전까지 후속 공개 릴리스는 `0.0.2`, `0.0.3`처럼 `0.0.x` patch를 올린다.
 기존 레거시 태그와 런타임 버전이 충돌하는 `0.1.0`~`0.15.55` 번호는 재사용하지 않는다. 런타임의 `0.0.0`은
@@ -13,17 +13,15 @@
 
 - Git tag와 GitHub Release: `0.0.1`
 - GHCR app, migrator, updater, content-admin 이미지: `0.0.1`
-- npm `@toard/shim`: `0.0.1`
 - Rust shim 바이너리 출력: `toard-shim 0.0.1`
-- npm/workspace/Cargo/Helm/Kustomize의 저장소 버전 표기: `0.0.1`
+- workspace/Cargo/Helm/Kustomize의 저장소 버전 표기: `0.0.1`
 
 `latest` GHCR 태그와 GitHub의 latest release는 공개 태그 릴리스만 가리킨다. `main` push는
 `main`과 commit SHA 이미지 태그만 갱신한다.
 
 ## 발행 전 조건
 
-1. 저장소 Actions secret `NPM_TOKEN`이 설정되어 있고 `@toard/shim`을 공개 게시할 권한이 있어야 한다.
-2. 버전 정합성과 테스트를 통과해야 한다.
+1. 버전 정합성과 테스트를 통과해야 한다.
 
 ```bash
 pnpm verify:release-version
@@ -31,7 +29,7 @@ pnpm typecheck
 pnpm test
 ```
 
-3. 변경을 `main`에 병합하고, 병합된 정확한 commit의 CI 성공을 확인한다.
+2. 변경을 `main`에 병합하고, 병합된 정확한 commit의 CI 성공을 확인한다.
 
 ## 발행과 검증
 
@@ -51,7 +49,6 @@ docker buildx imagetools inspect ghcr.io/devy1540/toard:0.0.1
 docker buildx imagetools inspect ghcr.io/devy1540/toard-migrate:0.0.1
 docker buildx imagetools inspect ghcr.io/devy1540/toard-updater:0.0.1
 docker buildx imagetools inspect ghcr.io/devy1540/toard-content-admin:0.0.1
-npm view @toard/shim@0.0.1 version
 ```
 
 마지막으로 새 설치와 레거시 `v0.15.55` 설치에서 각각 서버·shim 업데이트를 실행해 보고,

@@ -30,13 +30,6 @@ jobs:
       - name: 릴리스 버전 정합성 검사
         run: node scripts/verify-release-version.mjs "$GITHUB_REF_NAME"
         if: startsWith(github.ref, 'refs/tags/')
-      - name: npm 게시 자격 증명 검사
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          test -n "$NODE_AUTH_TOKEN" || { echo "::error::NPM_TOKEN is required for a complete release"; exit 1; }
-          npm whoami >/dev/null
 
   build:
     needs: validate

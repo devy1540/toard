@@ -11,10 +11,10 @@
 
 하나의 공개 릴리스는 다음 산출물이 같은 버전이어야 완료다.
 
-- Git tag와 GitHub Release: `0.0.1`
-- GHCR app, migrator, updater, content-admin 이미지: `0.0.1`
-- Rust shim 바이너리 출력: `toard-shim 0.0.1`
-- workspace/Cargo/Helm/Kustomize의 저장소 버전 표기: `0.0.1`
+- Git tag와 GitHub Release: 동일한 무접두 semver
+- GHCR app, migrator, updater, content-admin 이미지: 동일한 semver
+- Rust shim 바이너리 출력: `toard-shim <version>`
+- workspace/Cargo/Helm/Kustomize의 저장소 버전 표기: 동일한 semver
 
 `latest` GHCR 태그와 GitHub의 latest release는 공개 태그 릴리스만 가리킨다. `main` push는
 `main`과 commit SHA 이미지 태그만 갱신한다.
@@ -39,18 +39,19 @@ pnpm test
 태그 push는 외부 배포이므로 실행 전에 별도 승인을 받는다.
 
 ```bash
-git tag -a 0.0.1 <verified-main-commit> -m "0.0.1"
-git push origin 0.0.1
+VERSION=0.0.2
+git tag -a "$VERSION" <verified-main-commit> -m "$VERSION"
+git push origin "$VERSION"
 ```
 
 두 workflow가 성공한 뒤 다음을 확인한다.
 
 ```bash
-gh release view 0.0.1 --json tagName,isDraft,isPrerelease,url,assets
-docker buildx imagetools inspect ghcr.io/devy1540/toard:0.0.1
-docker buildx imagetools inspect ghcr.io/devy1540/toard-migrate:0.0.1
-docker buildx imagetools inspect ghcr.io/devy1540/toard-updater:0.0.1
-docker buildx imagetools inspect ghcr.io/devy1540/toard-content-admin:0.0.1
+gh release view "$VERSION" --json tagName,isDraft,isPrerelease,url,assets
+docker buildx imagetools inspect "ghcr.io/devy1540/toard:$VERSION"
+docker buildx imagetools inspect "ghcr.io/devy1540/toard-migrate:$VERSION"
+docker buildx imagetools inspect "ghcr.io/devy1540/toard-updater:$VERSION"
+docker buildx imagetools inspect "ghcr.io/devy1540/toard-content-admin:$VERSION"
 ```
 
 마지막으로 새 설치와 이미 설치된 레거시 `0.15.55` 환경에서 각각 서버·shim 업데이트를 실행해 보고,

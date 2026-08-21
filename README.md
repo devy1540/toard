@@ -13,12 +13,13 @@
 
 [![ci](https://github.com/devy1540/toard/actions/workflows/ci.yml/badge.svg)](https://github.com/devy1540/toard/actions/workflows/ci.yml)
 [![shim-ci](https://github.com/devy1540/toard/actions/workflows/shim-ci.yml/badge.svg)](https://github.com/devy1540/toard/actions/workflows/shim-ci.yml)
+[![release](https://img.shields.io/github/v/release/devy1540/toard?display_name=tag&sort=semver)](https://github.com/devy1540/toard/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Node](https://img.shields.io/badge/node-%E2%89%A520-339933?logo=node.js&logoColor=white)
-![pnpm](https://img.shields.io/badge/pnpm-9-F69220?logo=pnpm&logoColor=white)
+![Node](https://img.shields.io/badge/node-%E2%89%A522.13-339933?logo=node.js&logoColor=white)
+![pnpm](https://img.shields.io/badge/pnpm-11.15.1-F69220?logo=pnpm&logoColor=white)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-[Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Release guide](docs/RELEASE.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://dev.devy.dev/toard/) · [Live demo](https://dev.devy.dev/toard/demo/) · [Quick start](#-quick-start) · [Deploying to a team](#-deploying-to-a-team) · [How it works](#-how-it-works) · [Utilization policy](docs/ai-utilization-policy.md) · [Architecture](docs/ARCHITECTURE.md) · [Deployment guide](docs/DEPLOY.md) · [Release guide](docs/RELEASE.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -39,7 +40,7 @@
 
 ## 🧭 How it works
 
-The shim transparently wraps `claude` and `codex` on each developer machine. It collects usage, opt-in conversation content, and AI-tool activity metadata from local session files under `~/.claude`, `~/.codex`, and `~/.cursor`, plus exact token counts from Cursor's minimal stop hook. Toad presents the resulting cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
+The shim transparently wraps `claude` and `codex` on each developer machine. It collects usage, opt-in conversation content, and AI-tool activity metadata from local session files under `~/.claude`, `~/.codex`, and `~/.cursor`, plus exact token counts from Cursor's minimal stop hook. toard presents the resulting cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
 
 ```mermaid
 flowchart LR
@@ -81,12 +82,15 @@ Ask an AI agent such as Claude Code to install and verify toard. The agent follo
 
 ```bash
 pnpm install
-cp .env.example .env          # Fill in AUTH_SECRET and BOOTSTRAP_ADMIN_EMAIL
-pnpm db:up                    # Local PostgreSQL in Docker
+cp .env.example .env          # Replace AUTH_SECRET; leave BOOTSTRAP_ADMIN_* empty for browser setup
+pnpm db:up                    # Local PostgreSQL and ClickHouse containers
 pnpm migrate                  # Apply the schema
-pnpm seed                     # Providers, admin, and a dev ingest token printed once
+pnpm seed                     # Seed provider and pricing baselines
 pnpm dev                      # http://localhost:3000
+# Open http://localhost:3000/setup and create the first administrator
 ```
+
+For headless provisioning, set both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` before running `pnpm seed`. Setting only the email creates an administrator without a credentials login method and locks `/setup`.
 
 To inspect the dashboard layout with realistic data, seed synthetic usage into the local database. The command runs by default only against `localhost` or `127.0.0.1` databases. New content history uses server-managed `managed_v1` encryption: the server wraps user keys with the KMS, Transit provider, or local KEK selected for the installation. New E2EE setup and activation have been retired; only recovery and migration paths for existing `e2ee_v1` users remain while legacy ciphertext exists. Follow the [server-managed content encryption runbook](docs/content-encryption-runbook.md) for provider setup, cost, rotation, and recovery. `TOARD_CONTENT_KEK_B64` is required only for legacy `server_v1` content and cannot decrypt managed or E2EE content.
 
@@ -102,8 +106,11 @@ AUTH_OPEN_USER_EMAIL=demo.viewer@toard.local pnpm dev
 ### Verification
 
 ```bash
-pnpm typecheck     # All packages
-pnpm test          # Pricing unit tests, including resolveCost
+pnpm verify:release-version  # Repository-owned version fields agree
+pnpm test:release-version    # Release workflow contract
+pnpm typecheck               # All TypeScript packages
+pnpm build                   # Production Next.js build
+pnpm test                    # Full suite, including Docker-backed migration and security tests
 ```
 
 ## 🏢 Deploying to a team
@@ -112,9 +119,9 @@ toard consists of **one server plus a shim on each developer machine**. Collecti
 
 1. **Deploy the server** — run the Compose stack from [Quick start](#-quick-start) at an address reachable by developers, such as an internal DNS name or IP. Create the administrator at `/setup` on first access. See the [deployment guide](docs/DEPLOY.md) for Kubernetes, Helm, and other options.
 2. **Share the link** — the administrator only needs to share the toard URL with the team.
-3. **Self-onboard** — each developer signs in, opens **Settings → Install & Token**, issues a token, runs the one-line installer, and selects **Check connection** to verify ingestion immediately. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
+3. **Self-onboard** — each developer signs in, opens **Settings → Connect computer**, follows the guided installer, and waits for the connection check to complete. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
 
-The token is sent as a bearer token, so TLS is recommended on public networks. Set `TOARD_PUBLIC_URL` only when the browser URL and ingestion URL differ behind a proxy; otherwise toard infers the public URL from the request host.
+The token is sent as a bearer token, so HTTPS is required for every non-loopback deployment. Set `TOARD_PUBLIC_URL` only when the browser URL and ingestion URL differ behind a proxy; otherwise toard infers the public URL from the request host.
 
 ## 📁 Repository structure (pnpm monorepo)
 
@@ -135,7 +142,7 @@ docs/                       # Architecture and deployment documentation
 ## 📡 Test ingestion without the shim
 
 ```bash
-TOARD_INGEST_TOKEN=<token from seed or Settings → Install & Token> pnpm exec tsx scripts/send-sample-event.ts
+TOARD_INGEST_TOKEN=<token from seed or Settings → Connect computer> pnpm exec tsx scripts/send-sample-event.ts
 # → 200 {"inserted":1,"deduped":0}; the event uses the current time and appears under “today”
 ```
 
@@ -180,7 +187,7 @@ On Windows x64, the same page provides a PowerShell command:
 $env:TOARD_INGEST_TOKEN='<my token>'; irm '<toard URL>/install.ps1' | iex
 ```
 
-**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets, and `toard-shim local start|stop|status` manages the loopback-only UI bridge. The bridge accepts only the exact UI origin and target ID recorded by the installer, uses short-lived origin-and-target-bound sessions, and never returns ingest credentials or raw logs. Browser control uses an origin-checked, one-time local helper window first and retains direct CORS/Private Network Access as a pop-up-blocked fallback. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. There is no separate durable outbox, so deleting the original local session logs during an outage makes missing events for that target unrecoverable. An unprefixed semver tag such as `0.0.1` triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. Existing `v*` tags are legacy releases. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
+**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets, and `toard-shim local start|stop|status` manages the loopback-only UI bridge. The bridge accepts only the exact UI origin and target ID recorded by the installer, uses short-lived origin-and-target-bound sessions, and never returns ingest credentials or raw logs. Browser control uses an origin-checked, one-time local helper window first and retains direct CORS/Private Network Access as a pop-up-blocked fallback. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. There is no separate durable outbox, so deleting the original local session logs during an outage makes missing events for that target unrecoverable. An unprefixed semver tag such as `0.0.1` triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. The former `v*` release line is retired and no longer published. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
 
 **Uninstall** — on macOS and Linux, run `curl -fsSL <toard>/uninstall.sh | sh`. On Windows, run `irm '<toard>/uninstall.ps1' | iex`. The uninstall command from each server removes only that server target. If other targets remain, the shim, scheduled collection, and PATH entry remain installed. Shared installation files are removed only when the final target is deleted. An uninstall command from an unregistered server is a no-op, and existing Claude/Codex installations and original session logs are always preserved.
 
@@ -325,7 +332,7 @@ See section 2, ADRs, in the [architecture documentation](docs/ARCHITECTURE.md) f
 
 ## 🤝 Contributing and security
 
-Contributions are always welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution guide and [SECURITY.md](SECURITY.md) to report vulnerabilities through a private advisory.
+Contributions are always welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution guide, [SUPPORT.md](SUPPORT.md) for help channels, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community standards, and [SECURITY.md](SECURITY.md) to report vulnerabilities through a private advisory.
 
 ## 📄 License
 

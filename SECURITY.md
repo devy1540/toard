@@ -37,16 +37,15 @@ toard 는 인증 토큰·사용자 계정·사용량 데이터를 다루는 셀�
 
 ## 프롬프트 히스토리 보호 모델
 
-- 신규 `e2ee_v1` 본문은 shim에서 AES-256-GCM으로 암호화한 뒤 전송한다. 서버는 UCK 평문과 Recovery Kit를 저장하지 않는다.
-- 브라우저 기기 private key는 non-extractable `CryptoKey`로 IndexedDB에 저장하고, 잠금 해제된 UCK는 메모리에만 둔다.
-- 6자리 기기 승인 코드는 5분 유효하며 DB에는 request ID에 결합한 SHA-256 hash만 저장한다. envelope는 일회 소비다.
-- `AUTH_MODE=open`에서는 사용자별 경계가 없으므로 E2EE 콘텐츠 API를 차단한다.
-- `server_v1`은 서버 KEK를 가진 운영자가 복호화할 수 있는 레거시 경로다. UI와 API에서 `e2ee_v1`과 혼합하지 않는다.
-- E2EE 활성 사용자의 기존 `server_v1` 기록은 승인된 브라우저에서 자동 재암호화되며, 활성화 이후 신규 `server_v1` 쓰기는 거부한다. 레거시 0건과 백업 보존 기간 종료를 모두 확인하기 전에는 서버 KEK를 폐기하지 않는다.
-- 전체 레거시 0건, `TOARD_LEGACY_BACKUP_RETENTION_DAYS` 경과, 관리자의 백업·WAL·스냅샷 폐기 확인이 모두 끝난 뒤에만 외부 Secret Store에서 서버 KEK를 제거한다. legacy가 남았는데 KEK가 없으면 readiness가 실패한다.
-- E2EE는 침해된 웹 서버가 잠금 해제 이후 악성 JavaScript를 제공하는 상황이나 사용자의 로컬 기기 침해까지 보호하지 않는다.
+- 본문 수집은 사용자 opt-in이며 신규 본문은 서버가 DB에 쓰기 전에 `managed_v1`으로 암호화한다. 레코드별 DEK를 사용자별 UCK가 감싸고, UCK는 설치에 설정한 KMS·Transit·local KEK로 감싼다.
+- 일반 관리자와 다른 사용자는 RLS 때문에 타 사용자의 본문 행과 평문을 읽지 못한다. DB superuser는 ciphertext와 wrapper를 볼 수 있지만 DB dump만으로는 평문을 복구할 수 없다.
+- DB와 KMS·Transit·local KEK 권한을 함께 가진 서버 운영자는 앱 복호화 경로를 실행할 수 있다. 따라서 신규 `managed_v1`은 DB 단독 유출을 방어하는 서버 관리형 암호화이며 E2EE가 아니다.
+- provider canary, UCK unwrap, 레코드 암호화 또는 저장이 실패하면 본문을 쓰지 않고 content cursor도 갱신하지 않는다.
+- 신규 E2EE setup/activation endpoint는 `410 E2EE_SETUP_RETIRED`로 닫혀 있다. 기존 `e2ee_v1` ciphertext나 blocked migration이 있는 계정에만 recovery/migration 호환 API를 유지하며 자동 삭제하지 않는다.
+- `server_v1`은 `managed_v1` 전환을 위한 레거시 경로다. 전체 레거시 0건, `TOARD_LEGACY_BACKUP_RETENTION_DAYS` 경과, 관리자의 백업·WAL·스냅샷 폐기 확인이 모두 끝나기 전에는 기존 KEK를 제거하지 않는다. legacy가 남았는데 KEK가 없으면 readiness가 실패한다.
+- 기존 E2EE 기록은 서버가 제공하는 악성 JavaScript나 로컬 기기 침해까지 보호하지 않는다. 복구·이전 전에는 Recovery Kit와 기존 기기 키를 잃으면 복호화할 수 없다.
 
-운영 절차와 복구 불가능 조건은 [E2EE 프롬프트 히스토리 운영 런북](docs/e2ee-prompt-history-runbook.md)을 참고한다.
+신규 서버 관리형 암호화와 레거시 전환 절차는 [본문 암호화 운영 런북](docs/content-encryption-runbook.md)을, 기존 E2EE 복구 조건은 [레거시 E2EE 운영 런북](docs/e2ee-prompt-history-runbook.md)을 참고한다.
 
 ## MFA 보호 모델
 
@@ -59,4 +58,8 @@ toard 는 인증 토큰·사용자 계정·사용량 데이터를 다루는 셀�
 
 ## 지원 버전
 
-1.0 이전이므로 **main 브랜치 최신 상태**만 지원합니다.
+| 버전 | 지원 여부 |
+|---|---|
+| 최신 공개 `0.0.x` 릴리스 | 지원 |
+| `main` 브랜치 개발 상태 | 지원 버전 아님 |
+| 과거 `v*` 릴리스 계열 | 지원 종료 |

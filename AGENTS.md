@@ -37,7 +37,7 @@ docker compose ps -a                         # app·postgres = running, migrate 
 
 ## 3) 수집 연결 (선택)
 
-사용량 수집은 각 개발자 머신에서 셀프 온보딩한다(로그인 → 설정 → 설치 · 토큰 탭 → 한 줄 설치).
+사용량 수집은 각 개발자 머신에서 셀프 온보딩한다(로그인 → 설정 → 컴퓨터 연결 → 안내된 설치 명령 실행).
 서버만 세우는 작업이라면 이 단계는 사람에게 안내만 하고 종료한다. 상세: README [Deploying to a team](README.md#-deploying-to-a-team).
 
 ## 4) 실패 모드

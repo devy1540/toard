@@ -76,7 +76,7 @@ docker compose --profile updater up -d
 - **배포 디렉터리**: updater 컨테이너에는 배포 디렉터리가 호스트와 같은 절대경로로 마운트된다. 반드시 `docker-compose.yml` 이 있는 디렉터리에서 `docker compose --profile updater up -d` 를 실행한다. 다른 디렉터리에서 `-f` 로 실행해야 한다면 `TOARD_COMPOSE_PROJECT_DIR` 에 호스트 배포 디렉터리의 절대경로를 지정한다.
 - **`.env` 필수**: updater 가 같은 배포 디렉터리에서 compose 를 실행하므로 `AUTH_SECRET` 같은 운영 설정은 `.env` 에 고정해 둔다. 업데이트 시 기존 값은 유지하고 `TOARD_TAG` 만 바꾼다.
 - **롤백**: 첫 버전은 자동 롤백을 하지 않는다. 실패하면 updater 가 변경한 `.env` 는 되돌리지만, 이미 재시작된 컨테이너까지 자동으로 롤백하지는 않는다. 운영자는 이전 `TOARD_TAG` 로 되돌린 뒤 `docker compose pull && docker compose up -d` 를 실행한다.
-- **과거 가격 revision 호환성**: 새 공개 계열은 `0.0.1`부터 `[effective_at, valid_until)` 가격 구간을 읽는다. 보존된 `v*` 레거시 계열에서는 `v0.15.16` 이상만 호환된다. 과거 가격 자동 복구가 한 번이라도 revision을 승격한 서버는 레거시 `v0.15.15` 이하로 앱만 되돌리지 않는다. `/api/ready`의 `historicalPricingReader.minimumVersion`, `legacyMinimumVersion`, `compatible`을 먼저 확인한다. 로컬 개발 버전 `0.0.0`은 허용된다.
+- **과거 가격 revision 호환성**: 새 공개 계열은 `0.0.1`부터 `[effective_at, valid_until)` 가격 구간을 읽는다. 과거에 배포된 `v*` 레거시 계열에서는 `v0.15.16` 이상만 호환된다. 과거 가격 자동 복구가 한 번이라도 revision을 승격한 서버는 레거시 `v0.15.15` 이하로 앱만 되돌리지 않는다. `/api/ready`의 `historicalPricingReader.minimumVersion`, `legacyMinimumVersion`, `compatible`을 먼저 확인한다. 로컬 개발 버전 `0.0.0`은 허용된다.
 
 ## 2) Kubernetes (kustomize · raw 매니페스트)
 

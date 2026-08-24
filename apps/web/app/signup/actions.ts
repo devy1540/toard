@@ -1,9 +1,16 @@
 "use server";
 
 import { AuthError } from "next-auth";
+import { headers } from "next/headers";
 import { getTranslations } from "next-intl/server";
 import { credentialsEnabled, signIn } from "@/auth";
 import { isEmailDomainAllowed, isValidEmail } from "@/lib/auth-policy";
+import {
+  clearCredentialAccountLimit,
+  consumeCredentialAttempt,
+  credentialClientIdentity,
+  CredentialRateLimitError,
+} from "@/lib/credential-rate-limit";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword } from "@/lib/password";
 import { hasAdminUser } from "@/lib/setup";
@@ -32,6 +39,19 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
   if (pwErr) return { error: pwErr };
   if (password !== confirm) return { error: t("errors.passwordMismatch") };
 
+  try {
+    await consumeCredentialAttempt({
+      channel: "signup",
+      email,
+      clientIdentity: credentialClientIdentity(await headers()),
+    });
+  } catch (error) {
+    if (error instanceof CredentialRateLimitError) {
+      return { error: t("errors.tooManyAttempts", { seconds: error.retryAfterSeconds }) };
+    }
+    throw error;
+  }
+
   const pool = getPool();
   const existing = await pool.query("SELECT 1 FROM users WHERE email = $1", [email]);
   if ((existing.rowCount ?? 0) > 0) return { error: t("errors.emailAlreadyExists") };
@@ -48,6 +68,7 @@ export async function signupAction(_prev: SignupState, formData: FormData): Prom
     if ((e as { code?: string }).code === "23505") return { error: t("errors.emailAlreadyExists") };
     throw e;
   }
+  await clearCredentialAccountLimit({ channel: "signup", email });
 
   try {
     // 가입 직후 설치(설정의 설치 탭)로 안착

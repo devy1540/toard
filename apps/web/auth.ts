@@ -7,6 +7,7 @@ import Google from "next-auth/providers/google";
 import { isEmailDomainAllowed } from "@/lib/auth-policy";
 import { resolveMfaSessionId } from "@/lib/auth-session";
 import { getCredentialUserById, verifyCredentialUser } from "@/lib/credential-auth";
+import { credentialClientIdentity, CredentialRateLimitError } from "@/lib/credential-rate-limit";
 import { getPool } from "@/lib/db";
 import { guardAdapterUserCreation } from "@/lib/initialized-auth-adapter";
 import { verifySignedMfaToken } from "@/lib/mfa";
@@ -47,14 +48,24 @@ if (credentialsEnabled) {
   providers.push(
     Credentials({
       credentials: { email: {}, password: {}, loginTicket: {} },
-      authorize: async (creds) => {
+      authorize: async (creds, request) => {
         const loginTicket = String(creds?.loginTicket ?? "");
         if (loginTicket) {
           const ticket = verifySignedMfaToken(loginTicket, "credential-ticket");
           const user = ticket ? await getCredentialUserById(ticket.userId) : null;
           return user ? { ...user, mfaSessionId: ticket!.nonce } : null;
         }
-        const user = await verifyCredentialUser(String(creds?.email ?? ""), String(creds?.password ?? ""));
+        let user;
+        try {
+          user = await verifyCredentialUser(
+            String(creds?.email ?? ""),
+            String(creds?.password ?? ""),
+            { clientIdentity: credentialClientIdentity(request.headers) },
+          );
+        } catch (error) {
+          if (error instanceof CredentialRateLimitError) return null;
+          throw error;
+        }
         if (!user || (await isCredentialMfaRequired(user.id))) return null;
         return user;
       },

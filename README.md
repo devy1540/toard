@@ -271,7 +271,7 @@ BOOTSTRAP_SETUP_TOKEN=...                   # Browser setup only; openssl rand -
 BOOTSTRAP_ADMIN_PASSWORD=...                # Credentials admin only; OAuth-only may omit
 ```
 
-Passwords are stored only as bcrypt hashes with cost 12. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.
+Passwords are stored only as bcrypt hashes with cost 12. Login and sign-up consume shared PostgreSQL global, client-IP, and channel-specific account budgets before bcrypt work; the account budget backs off after 5 attempts, IP after 60, and global after 300 in a 15-minute window, starting at 30 seconds and capping at 15 minutes. Successful authentication clears only that account budget. Keys are HMAC-SHA256 digests using `AUTH_SECRET`, so raw email and IP values are not stored. Deployments must ensure their trusted reverse proxy overwrites `CF-Connecting-IP`, `X-Real-IP`, or `X-Forwarded-For`; account and global limits still apply when no client header is available. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.
 
 **Passkey multi-factor authentication** — users can register one or more WebAuthn passkeys under `/settings` and enable either or both policies independently:
 

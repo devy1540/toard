@@ -3,9 +3,11 @@
 import type { AuthenticationResponseJSON, PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/server";
 import { AuthError } from "next-auth";
 import { randomUUID } from "node:crypto";
+import { headers } from "next/headers";
 import { getTranslations } from "next-intl/server";
 import { signIn } from "@/auth";
 import { verifyCredentialUser } from "@/lib/credential-auth";
+import { credentialClientIdentity, CredentialRateLimitError } from "@/lib/credential-rate-limit";
 import { grantHistoryMfaAccess } from "@/lib/history-mfa";
 import { createSignedMfaToken, verifySignedMfaToken } from "@/lib/mfa";
 import { beginPasskeyAuthentication, finishPasskeyAuthentication, getMfaStatus, isCredentialMfaRequired } from "@/lib/mfa-store";
@@ -58,7 +60,17 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
   const email = String(formData.get("email") ?? "");
   const password = String(formData.get("password") ?? "");
   if (!email || !password) return { error: t("errors.emailPasswordRequired") };
-  const user = await verifyCredentialUser(email, password);
+  let user;
+  try {
+    user = await verifyCredentialUser(email, password, {
+      clientIdentity: credentialClientIdentity(await headers()),
+    });
+  } catch (error) {
+    if (error instanceof CredentialRateLimitError) {
+      return { error: t("errors.tooManyAttempts", { seconds: error.retryAfterSeconds }) };
+    }
+    throw error;
+  }
   if (!user) return { error: t("errors.invalidCredentials") };
   if (await isCredentialMfaRequired(user.id)) {
     try {

@@ -310,7 +310,7 @@ No administrator action is required. Use `PRICING_AUTO_SYNC=off` only as an infr
 - **Vercel** — the crons in `vercel.json` run automatically, and the internal scheduler disables itself on Vercel. When `CRON_SECRET` is configured, Vercel automatically sends it as an `Authorization: Bearer` header.
 - **GitHub Actions** — `.github/workflows/cron.yml` calls the endpoint with `secrets.APP_URL` and `secrets.CRON_SECRET`. Use this option when an exact schedule such as 18:00 UTC is required, and set `PRICING_AUTO_SYNC=off` to prevent duplicate runs.
 
-Without `CRON_SECRET`, `/api/cron/*` endpoints are publicly accessible, so **always configure it in production**. Register `recompute` only when serving from the mart; it is unnecessary for the current event-direct path described in section 4.4.
+Without `CRON_SECRET`, `/api/cron/*` mutation endpoints fail closed with HTTP 503. A missing or incorrect Bearer value never starts the job. Configure a strong secret before enabling any scheduler. Register `recompute` only when serving from the mart; it is unnecessary for the current event-direct path described in section 4.4.
 
 The Admin → System tab shows the model count, last synchronization, and automatic recovery progress as read-only status. Models not yet present in the price table are checked automatically during the next daily synchronization, and dashboards label pre-resolution cost as a partial total.
 

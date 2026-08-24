@@ -24,6 +24,7 @@ docker compose up -d
 - GHCR 프리빌트 이미지(amd64·arm64)를 pull 한다 — 빌드 없음. 버전 고정은 `TOARD_TAG=0.0.1`처럼 `v` 없는 이미지 태그를 사용한다.
 - `AUTH_SECRET` 미설정이면 compose 가 파싱 단계에서 즉시 에러 — 메시지의 안내를 따른다.
 - 관리자 이메일·비밀번호를 사용자가 지정하지 않았다면 **반드시 물어보고 진행한다**(임의 생성 금지).
+- 이 headless 경로는 `BOOTSTRAP_SETUP_TOKEN`이 필요 없다. browser `/setup`을 대신 사용할 때만 별도 32자 이상 token을 설정하고, admin 생성 뒤 제거한다.
 
 ## 2) 검증 — 성공 기준
 

@@ -9,8 +9,10 @@ import { isEmailDomainAllowed } from "@/lib/auth-policy";
 import { resolveMfaSessionId } from "@/lib/auth-session";
 import { getCredentialUserById, verifyCredentialUser } from "@/lib/credential-auth";
 import { getPool } from "@/lib/db";
+import { guardAdapterUserCreation } from "@/lib/initialized-auth-adapter";
 import { verifySignedMfaToken } from "@/lib/mfa";
 import { isCredentialMfaRequired } from "@/lib/mfa-store";
+import { hasAdminUser } from "@/lib/setup";
 
 // OAuth: 자격(AUTH_*_ID/SECRET)이 설정된 provider 만 활성화 — 환경별 구성(ADR-007).
 const providers: Provider[] = [];
@@ -52,7 +54,7 @@ if (credentialsEnabled) {
 
 // Auth.js (ADR-007) — 메타·인증은 항상 PG(ADR-003). credentials 대비 JWT 세션.
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: PostgresAdapter(getPool()),
+  adapter: guardAdapterUserCreation(PostgresAdapter(getPool()), hasAdminUser),
   // credentials(id/pw)는 database 세션 미지원 → JWT 세션.
   // 트레이드오프: 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(백로그).
   session: { strategy: "jwt" },

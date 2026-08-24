@@ -4,11 +4,13 @@ import { getTranslations } from "next-intl/server";
 import { auth, credentialsEnabled } from "@/auth";
 import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { allowedDomains } from "@/lib/auth-policy";
+import { hasAdminUser } from "@/lib/setup";
 import { SignupForm } from "./signup-form";
 
 export default async function SignupPage() {
   const session = await auth();
   if (session?.user) redirect("/");
+  if (!(await hasAdminUser())) redirect("/setup");
   // 비번 가입이 꺼져 있으면 로그인 페이지로.
   if (!credentialsEnabled) redirect("/login");
 

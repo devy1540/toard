@@ -4,7 +4,7 @@ import { getTranslations } from "next-intl/server";
 import { auth, credentialsEnabled, oauthProviders, signIn } from "@/auth";
 import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { Button } from "@/components/ui/button";
-import { hasAnyUser } from "@/lib/setup";
+import { hasAdminUser } from "@/lib/setup";
 import { LoginForm } from "./login-form";
 
 const PROVIDER_LABELS: Record<string, string> = { github: "GitHub", google: "Google" };
@@ -12,8 +12,8 @@ const PROVIDER_LABELS: Record<string, string> = { github: "GitHub", google: "Goo
 export default async function LoginPage() {
   const session = await auth();
   if (session?.user) redirect("/");
-  // 첫 실행(사용자 0명): 초기 설정으로 유도
-  if (!(await hasAnyUser())) redirect("/setup");
+  // 첫 admin 생성 전에는 로그인/가입보다 token 보호 setup을 우선한다.
+  if (!(await hasAdminUser())) redirect("/setup");
 
   const t = await getTranslations("auth");
   const hasOAuth = oauthProviders.length > 0;

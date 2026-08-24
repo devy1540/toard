@@ -16,6 +16,17 @@ export function SetupForm() {
   return (
     <form action={action} className="flex flex-col gap-4">
       <FieldGroup className="gap-4">
+        <FormField htmlFor="setup-token" label={t("setup.tokenLabel")}>
+          <Input
+            id="setup-token"
+            name="setupToken"
+            type="password"
+            autoComplete="one-time-code"
+            required
+            minLength={32}
+            placeholder={t("setup.tokenPlaceholder")}
+          />
+        </FormField>
         <FormField htmlFor="email" label={t("setup.emailLabel")}>
           <Input
             id="email"

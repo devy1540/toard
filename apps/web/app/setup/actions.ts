@@ -6,6 +6,7 @@ import { signIn } from "@/auth";
 import { isValidEmail } from "@/lib/auth-policy";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword } from "@/lib/password";
+import { createFirstAdmin, verifyBootstrapSetupToken } from "@/lib/setup";
 
 export type SetupState = { error?: string };
 
@@ -18,10 +19,12 @@ export async function setupAdminAction(_prev: SetupState, formData: FormData): P
   const email = String(formData.get("email") ?? "")
     .toLowerCase()
     .trim();
+  const setupToken = String(formData.get("setupToken") ?? "");
   const name = String(formData.get("name") ?? "").trim();
   const password = String(formData.get("password") ?? "");
   const confirm = String(formData.get("confirm") ?? "");
 
+  if (!verifyBootstrapSetupToken(setupToken)) return { error: t("errors.setupTokenInvalid") };
   if (!isValidEmail(email)) return { error: t("errors.invalidEmail") };
   const pwErr = validatePassword(password);
   if (pwErr) return { error: pwErr };
@@ -29,15 +32,16 @@ export async function setupAdminAction(_prev: SetupState, formData: FormData): P
 
   const hash = await hashPassword(password);
   try {
-    // 사용자가 0명일 때만 INSERT — 동시 setup·재요청 방지(첫 실행 원자적 가드)
-    const r = await getPool().query(
-      `INSERT INTO users (email, name, password_hash, role)
-       SELECT $1, $2, $3, 'admin'
-       WHERE NOT EXISTS (SELECT 1 FROM users)
-       RETURNING id`,
-      [email, name || "Admin", hash],
-    );
-    if ((r.rowCount ?? 0) === 0) return { error: t("errors.adminAlreadyExists") };
+    const result = await createFirstAdmin(getPool(), {
+      email,
+      name: name || "Admin",
+      passwordHash: hash,
+    });
+    if (!result.ok) {
+      return {
+        error: t(result.reason === "admin-exists" ? "errors.adminAlreadyExists" : "errors.emailAlreadyExists"),
+      };
+    }
   } catch {
     return { error: t("errors.adminCreateFailed") };
   }

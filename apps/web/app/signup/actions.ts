@@ -6,6 +6,7 @@ import { credentialsEnabled, signIn } from "@/auth";
 import { isEmailDomainAllowed, isValidEmail } from "@/lib/auth-policy";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword } from "@/lib/password";
+import { hasAdminUser } from "@/lib/setup";
 
 export type SignupState = { error?: string };
 
@@ -16,6 +17,7 @@ export type SignupState = { error?: string };
 export async function signupAction(_prev: SignupState, formData: FormData): Promise<SignupState> {
   const t = await getTranslations("auth");
   if (!credentialsEnabled) return { error: t("errors.signupDisabled") };
+  if (!(await hasAdminUser())) return { error: t("errors.setupRequired") };
 
   const email = String(formData.get("email") ?? "")
     .toLowerCase()

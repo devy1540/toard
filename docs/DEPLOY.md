@@ -40,19 +40,20 @@ docker push REG/toard:TAG && docker push REG/toard-migrate:TAG \
 앱 + Postgres + 마이그레이션을 한 번에. `.env` 없이 환경변수만으로도 기동:
 
 ```bash
+export BOOTSTRAP_SETUP_TOKEN="$(openssl rand -hex 32)"
 AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
-# → http://localhost:3000  (PORT 로 변경 가능)
+# → http://localhost:3000/setup  (PORT 로 변경 가능)
 ```
 
 - **이미지**: 기본은 GHCR 프리빌트(`ghcr.io/devy1540/toard{,-migrate}`, amd64·arm64 멀티아치)를 pull. `TOARD_TAG` 로 버전 고정(기본 `latest` = 최신 공개 릴리스). 소스에서 직접 빌드(미게시 변경 확인 등)는 `--build` 추가.
 - **`AUTH_SECRET` 필수**: 미설정 시 compose 가 파싱 단계에서 즉시 에러(안전하지 않은 기본값 없음). `down`/`logs` 등 다른 compose 명령에도 값이 필요하니 `.env` 에 넣어두면 편하다.
 - `migrate` 서비스가 Postgres 준비 후 스키마 + baseline(providers·pricing) 을 맞추고(멱등) 종료 → `app` 기동.
-- **최초 관리자**: 배포 후 브라우저로 열면 사용자가 0명이라 **`/setup`** 으로 유도된다 → 이메일·비번 직접 입력해 admin 생성(첫 사용자만 admin, 이후 잠김). **노출 전 즉시 설정**할 것.
+- **최초 관리자**: admin이 없으면 **`/setup`** 으로 유도된다. 위에서 생성한 `BOOTSTRAP_SETUP_TOKEN`과 이메일·비번을 입력해 admin을 만든다. token은 상수시간 비교되고 admin 생성은 DB advisory lock으로 직렬화된다. 완료 뒤 배포 환경에서 token을 제거하고 app을 재시작한다. admin 생성 전에는 일반 가입과 OAuth 신규 user 생성이 차단된다.
   - headless(사전 프로비저닝) 대안: `BOOTSTRAP_ADMIN_EMAIL`·`BOOTSTRAP_ADMIN_PASSWORD` env 설정 시 `migrate` 가 admin 도 선생성 → `/setup` 창이 열리지 않음.
 - **ClickHouse 모드**(선택): `STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 docker compose --profile clickhouse up -d`
 - **외부 DB**: `postgres` 서비스를 빼고 `DATABASE_URL` 을 외부 DB 로 지정.
 
-주요 변수: `AUTH_SECRET`(필수) · `POSTGRES_PASSWORD` · `AUTH_MODE`(oauth|open) · `ALLOWED_EMAIL_DOMAINS` · `AUTH_GITHUB_ID/SECRET` · `CRON_SECRET` · `PRICING_AUTO_SYNC`(기본 on) · `PORT`.
+주요 변수: `AUTH_SECRET`(필수) · `BOOTSTRAP_SETUP_TOKEN`(browser setup 동안만) · `POSTGRES_PASSWORD` · `AUTH_MODE`(oauth|open) · `ALLOWED_EMAIL_DOMAINS` · `AUTH_GITHUB_ID/SECRET` · `CRON_SECRET` · `PRICING_AUTO_SYNC`(기본 on) · `PORT`.
 
 ### Compose 서버 업데이트 버튼(선택)
 

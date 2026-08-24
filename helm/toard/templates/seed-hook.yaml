@@ -46,13 +46,14 @@ spec:
             - name: BOOTSTRAP_ADMIN_EMAIL
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "toard.secretName" . }}
+                  name: {{ .Values.migrate.bootstrapAdminSecret }}
                   key: BOOTSTRAP_ADMIN_EMAIL
             - name: BOOTSTRAP_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "toard.secretName" . }}
+                  name: {{ .Values.migrate.bootstrapAdminSecret }}
                   key: BOOTSTRAP_ADMIN_PASSWORD
+                  optional: {{ not .Values.config.authCredentialsEnabled }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
       {{- with .Values.nodeSelector }}

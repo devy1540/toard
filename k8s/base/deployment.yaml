@@ -33,9 +33,15 @@ spec:
         - name: migrate
           image: toard-migrate:0.0.1
           command: ["sh", "-c", "pnpm migrate && pnpm seed"] # 마이그레이션 + baseline(providers·pricing). admin 은 /setup.
+          # browser setup token을 포함한 runtime Secret은 app에만 준다.
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: DATABASE_URL } }
+            - name: BOOTSTRAP_ADMIN_EMAIL
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: BOOTSTRAP_ADMIN_EMAIL, optional: true } }
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: BOOTSTRAP_ADMIN_PASSWORD, optional: true } }
           envFrom:
-            - secretRef:
-                name: toard-secrets
             - configMapRef:
                 name: toard-config
       containers:
@@ -43,9 +49,27 @@ spec:
           image: toard:0.0.1
           ports:
             - containerPort: 3000
+          # runtime에 필요한 key만 명시적으로 주입한다. bootstrap admin/PG 비밀번호는 app에 주지 않는다.
+          env:
+            - name: AUTH_SECRET
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: AUTH_SECRET } }
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: DATABASE_URL } }
+            - name: CRON_SECRET
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: CRON_SECRET } }
+            - name: AUTH_GITHUB_ID
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: AUTH_GITHUB_ID, optional: true } }
+            - name: AUTH_GITHUB_SECRET
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: AUTH_GITHUB_SECRET, optional: true } }
+            - name: AUTH_GOOGLE_ID
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: AUTH_GOOGLE_ID, optional: true } }
+            - name: AUTH_GOOGLE_SECRET
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: AUTH_GOOGLE_SECRET, optional: true } }
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: CLICKHOUSE_PASSWORD, optional: true } }
+            - name: BOOTSTRAP_SETUP_TOKEN
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: BOOTSTRAP_SETUP_TOKEN, optional: true } }
           envFrom:
-            - secretRef:
-                name: toard-secrets
             - configMapRef:
                 name: toard-config
           startupProbe: # 초기 기동 대기 (최대 60s)

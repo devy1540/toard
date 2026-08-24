@@ -1,5 +1,4 @@
 import "dotenv/config"; // 루트 .env 로드 (셸 env 우선)
-import { createHash, randomBytes } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { Pool } from "pg";
 
@@ -37,7 +36,7 @@ async function main(): Promise<void> {
   // admin 부트스트랩 (§10.4)
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL;
   if (!adminEmail) {
-    console.log("⚠ BOOTSTRAP_ADMIN_EMAIL 미설정 — admin/토큰 시드 생략");
+    console.log("⚠ BOOTSTRAP_ADMIN_EMAIL 미설정 — admin 시드 생략");
     await pool.end();
     return;
   }
@@ -58,26 +57,9 @@ async function main(): Promise<void> {
     console.log("✓ admin password 설정 (id/pw 로그인 가능)");
   }
 
-  // dev ingest token (해시만 저장, 평문은 지금만 표시)
-  // 재실행 멱등 — 활성 토큰이 이미 있으면 중복 발급하지 않는다(user 당 1개 정책).
-  // 중복 발급하면 수신 중인 토큰과 별개의 미사용 토큰이 남아 연결 상태 표시가 흐려진다.
-  const existing = await pool.query(
-    "SELECT 1 FROM ingest_tokens WHERE user_id = $1 AND revoked_at IS NULL LIMIT 1",
-    [adminId],
-  );
-  if (existing.rowCount) {
-    console.log("✓ ingest token: 기존 활성 토큰 유지 (재발급은 설정 화면에서)");
-  } else {
-    const token = `tk_${randomBytes(24).toString("hex")}`;
-    const hash = createHash("sha256").update(token).digest("hex");
-    await pool.query("INSERT INTO ingest_tokens (user_id, token_hash) VALUES ($1, $2)", [adminId, hash]);
-
-    console.log("\n──────────────────────────────────────────────");
-    console.log("  DEV INGEST TOKEN (평문은 지금만 노출):");
-    console.log(`  ${token}`);
-    console.log(`\n  shim/curl: Authorization: Bearer ${token}`);
-    console.log("──────────────────────────────────────────────\n");
-  }
+  // ingest token은 배포/CI 로그에 평문이 남지 않도록 seed에서 만들지 않는다.
+  // 관리자가 로그인한 뒤 Settings > Computers 온보딩에서 직접 1회 발급한다.
+  console.log("✓ ingest token: 로그인 후 Settings > Computers에서 발급");
 
   await pool.end();
 }

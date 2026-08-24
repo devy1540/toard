@@ -6,6 +6,7 @@ readonly test_root="$(mktemp -d "${TMPDIR:-/tmp}/toard-secret-helper-test.XXXXXX
 readonly mock_bin="$test_root/bin"
 readonly mock_log="$test_root/mock.log"
 readonly command_output="$test_root/command-output.log"
+readonly setup_token_file="$test_root/setup-token"
 
 cleanup() {
   rm -r -- "$test_root"
@@ -13,6 +14,8 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$mock_bin"
+printf '%s\n' 'mock-generated-value-0123456789abcdef' >"$setup_token_file"
+chmod 600 "$setup_token_file"
 
 cat >"$mock_bin/kubectl" <<'MOCK'
 #!/usr/bin/env bash
@@ -72,13 +75,27 @@ if [[ "$joined" == *" get secret tunnel-token "* ]]; then
   exit 0
 fi
 
+if [[ "$joined" == *" create secret generic toard-secrets "* ]]; then
+  for argument in "$@"; do
+    case "$argument" in
+      --from-env-file=*)
+        env_file="${argument#--from-env-file=}"
+        if grep -q '^BOOTSTRAP_SETUP_TOKEN=' "$env_file"; then
+          printf '%s\n' 'toard setup token supplied through private env file' >>"$MOCK_LOG"
+        fi
+        ;;
+    esac
+  done
+  exit 0
+fi
+
 exit 0
 MOCK
 
 cat >"$mock_bin/openssl" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' 'mock-generated-value'
+printf '%s\n' 'mock-generated-value-0123456789abcdef'
 MOCK
 
 cat >"$mock_bin/cloudflared" <<'MOCK'
@@ -132,6 +149,16 @@ assert_text_matches() {
   fi
 }
 
+assert_output_not_contains() {
+  local description="$1"
+  local unexpected="$2"
+
+  if grep -Fq -- "$unexpected" "$command_output"; then
+    fail "$description"
+    return 1
+  fi
+}
+
 first_matching_line() {
   local text="$1"
   local pattern="$2"
@@ -166,7 +193,18 @@ run_helper() {
     PATH="$mock_bin:$PATH" \
     MOCK_LOG="$mock_log" \
     MOCK_SCENARIO="$scenario" \
+    TOARD_BOOTSTRAP_SETUP_TOKEN_FILE="$setup_token_file" \
     "$repo_root/$helper" >"$command_output" 2>&1
+}
+
+run_toard_helper_without_setup_token() {
+  : >"$mock_log"
+  : >"$command_output"
+  env \
+    PATH="$mock_bin:$PATH" \
+    MOCK_LOG="$mock_log" \
+    MOCK_SCENARIO=clean \
+    "$repo_root/scripts/k8s-create-toard-secret.sh" >"$command_output" 2>&1
 }
 
 expect_failure() {
@@ -188,6 +226,7 @@ expect_success() {
 
   if ! run_helper "$scenario" "$helper"; then
     fail "$description"
+    sed 's/mock-generated-value-0123456789abcdef/[redacted]/g' "$command_output" >&2
     return 1
   fi
   pass "$description"
@@ -212,12 +251,22 @@ test_toard_helper() {
   expect_failure "toard helper requires recovery for an existing PVC" toard_pvc scripts/k8s-create-toard-secret.sh || true
   assert_log_not_contains "existing PostgreSQL PVC must not create a new Secret" "create secret generic toard-secrets" || true
 
+  if run_toard_helper_without_setup_token; then
+    fail "toard helper must require an owner-readable browser setup token file"
+  else
+    pass "toard helper requires an owner-readable browser setup token file"
+  fi
+  assert_log_not_contains "missing setup token file must not create a Secret" "create secret generic toard-secrets" || true
+
   expect_success "toard helper creates a Secret on a clean first install" clean scripts/k8s-create-toard-secret.sh || true
   assert_log_contains "toard helper must use ignore-not-found lookups" "--ignore-not-found" || true
   assert_log_contains "toard helper must request resource names" "-o name" || true
   assert_log_contains "toard helper must use direct create" "create secret generic toard-secrets" || true
+  assert_log_contains "toard helper must place browser setup token only in its private env file" "toard setup token supplied through private env file" || true
   assert_log_not_contains "toard helper must not use dry-run" "--dry-run" || true
   assert_log_not_contains "toard helper must not call apply" " apply " || true
+  assert_log_not_contains "toard helper must not expose generated values in kubectl arguments" "mock-generated-value-0123456789abcdef" || true
+  assert_output_not_contains "toard helper must not print generated values" "mock-generated-value-0123456789abcdef" || true
 }
 
 test_tunnel_helper() {

@@ -48,6 +48,48 @@ assert_not_contains() {
   fi
 }
 
+assert_file_contains() {
+  local file="$1"
+  local expected="$2"
+
+  if ! grep -Fq -- "$expected" "$file"; then
+    echo "$file is missing: $expected" >&2
+    exit 1
+  fi
+}
+
+assert_file_not_contains() {
+  local file="$1"
+  local unexpected="$2"
+
+  if grep -Fq -- "$unexpected" "$file"; then
+    echo "$file must not include: $unexpected" >&2
+    exit 1
+  fi
+}
+
+assert_text_not_contains() {
+  local description="$1"
+  local text="$2"
+  local unexpected="$3"
+
+  if grep -Fq -- "$unexpected" <<<"$text"; then
+    echo "$description must not include: $unexpected" >&2
+    exit 1
+  fi
+}
+
+container_block() {
+  local file="$1"
+  local name="$2"
+
+  awk -v name="$name" '
+    $0 == "        - name: " name { in_container = 1 }
+    in_container && $0 ~ /^        - name: / && $0 != "        - name: " name { exit }
+    in_container { print }
+  ' "$file"
+}
+
 prepare_raw_secret() {
   if [[ ! -e "$secret_file" && ! -L "$secret_file" ]]; then
     cp k8s/secret.example.yaml "$secret_file"
@@ -98,6 +140,29 @@ test_app() {
   assert_contains "$overlay" "storage: 10Gi"
   assert_contains "$overlay" "image: ghcr.io/devy1540/toard:$app_image_tag"
   assert_contains "$overlay" "image: ghcr.io/devy1540/toard-migrate:$app_image_tag"
+
+  assert_file_contains k8s/secret.example.yaml "BOOTSTRAP_SETUP_TOKEN:"
+  assert_file_contains k8s/base/deployment.yaml "name: DATABASE_URL"
+  assert_file_contains k8s/base/deployment.yaml "key: DATABASE_URL"
+  assert_file_contains k8s/base/deployment.yaml "name: BOOTSTRAP_ADMIN_EMAIL"
+  assert_file_contains k8s/base/deployment.yaml "name: BOOTSTRAP_ADMIN_PASSWORD"
+  assert_file_contains k8s/base/deployment.yaml "key: AUTH_GITHUB_ID, optional: true"
+  assert_file_contains k8s/base/deployment.yaml "key: AUTH_GOOGLE_ID, optional: true"
+  assert_file_contains k8s/base/deployment.yaml "key: CLICKHOUSE_PASSWORD, optional: true"
+  assert_file_contains k8s/base/deployment.yaml "key: BOOTSTRAP_SETUP_TOKEN, optional: true"
+  assert_file_not_contains k8s/migrate-job.yaml "BOOTSTRAP_SETUP_TOKEN"
+  assert_file_contains k8s/migrate-job.yaml "name: DATABASE_URL"
+  assert_file_contains k8s/migrate-job.yaml "key: DATABASE_URL"
+  assert_file_contains k8s/migrate-job.yaml "name: BOOTSTRAP_ADMIN_EMAIL"
+  assert_file_contains k8s/migrate-job.yaml "name: BOOTSTRAP_ADMIN_PASSWORD"
+
+  local app_container
+  app_container="$(container_block k8s/base/deployment.yaml app)"
+  assert_contains "$app_container" "name: BOOTSTRAP_SETUP_TOKEN"
+  assert_text_not_contains "raw app container" "$app_container" "- secretRef:"
+  assert_text_not_contains "raw app container" "$app_container" "BOOTSTRAP_ADMIN_EMAIL"
+  assert_text_not_contains "raw app container" "$app_container" "BOOTSTRAP_ADMIN_PASSWORD"
+  assert_text_not_contains "raw app container" "$app_container" "POSTGRES_PASSWORD"
 
   kubectl kustomize k8s >/dev/null
 }

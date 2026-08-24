@@ -8,6 +8,31 @@
         "contentAdmin": { "$ref": "#/definitions/image" }
       }
     },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["existingSecret", "authSecret", "cronSecret", "databaseUrl", "github", "google", "clickhousePassword", "bootstrapSetupSecret"],
+      "properties": {
+        "existingSecret": { "type": "string", "maxLength": 253 },
+        "authSecret": { "type": "string" },
+        "cronSecret": { "type": "string" },
+        "databaseUrl": { "type": "string" },
+        "github": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "secret"],
+          "properties": { "id": { "type": "string" }, "secret": { "type": "string" } }
+        },
+        "google": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "secret"],
+          "properties": { "id": { "type": "string" }, "secret": { "type": "string" } }
+        },
+        "clickhousePassword": { "type": "string" },
+        "bootstrapSetupSecret": { "type": "string", "pattern": "^$|^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$", "maxLength": 253 }
+      }
+    },
     "serviceAccount": {
       "type": "object",
       "additionalProperties": false,
@@ -22,7 +47,7 @@
     "migrate": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled", "releaseId", "seedOnInstall", "backoffLimit", "ttlSecondsAfterFinished", "databaseSecret", "serviceAccount"],
+      "required": ["enabled", "releaseId", "seedOnInstall", "bootstrapAdminSecret", "backoffLimit", "ttlSecondsAfterFinished", "databaseSecret", "serviceAccount"],
       "properties": {
         "enabled": { "type": "boolean" },
         "releaseId": {
@@ -31,6 +56,7 @@
           "maxLength": 128
         },
         "seedOnInstall": { "type": "boolean" },
+        "bootstrapAdminSecret": { "type": "string", "pattern": "^$|^[a-z0-9](?:[-a-z0-9.]*[a-z0-9])?$", "maxLength": 253 },
         "backoffLimit": { "type": "integer", "minimum": 0, "maximum": 10 },
         "ttlSecondsAfterFinished": { "type": "integer", "minimum": 0, "maximum": 604800 },
         "databaseSecret": {

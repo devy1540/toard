@@ -84,7 +84,8 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 
 ### ADR-007 — 인증: Auth.js (NextAuth), AUTH_MODE + JWT 세션
 - **결정:** 인증은 **Auth.js**. 계정·user 는 **Postgres**(adapter), 세션은 **JWT**(Credentials 는 database 세션 미지원). `AUTH_MODE` 로 배포 시 선택: `oauth`(GitHub/Google **+ id/pw credentials**)·`open`(인증 없음·내부망 전제). credentials 는 `AUTH_CREDENTIALS_ENABLED`(기본 on)로 토글 — 로그인 `/login`·가입 `/signup`(도메인 게이팅)·비번 변경/설정 `/settings`. 비번은 **bcrypt(cost 12)** 해시로만 저장. magic-link 는 확장 예정. 이메일 도메인 제한 + 검증된 identity.
-- **근거:** ADR-003(메타·계정은 항상 PG)과 일치. 조직마다 인증 요구가 달라(OAuth 불필요한 내부망 조직도 존재) 모드 선택이 필요. Supabase Auth(zeude·day1co) 대비 외부 종속 없음. **JWT 트레이드오프:** 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(database 세션의 즉시 무효화는 포기). **credentials 보안:** 기존 OAuth 이메일로는 가입 불가(계정 탈취 방지), 미존재/OAuth 전용 계정도 더미 해시 비교로 사용자 열거(timing) 완화.
+- **초기화 경계:** browser `/setup`은 32자 이상의 별도 `BOOTSTRAP_SETUP_TOKEN`을 요구하고, 첫 admin 생성은 PostgreSQL transaction advisory lock 안에서 admin 존재 여부를 재검사한다. admin 전에는 credentials 가입과 OAuth adapter `createUser`를 차단한다. 일반 member 행은 초기화 완료로 보지 않는다. credentials 모드는 admin 생성 뒤 setup token을 제거한다. OAuth-only 모드는 passwordless admin의 이메일과 GitHub verified primary/Google `email_verified=true` 이메일이 일치할 때만 admin row를 자동 연결하며 member same-email 자동 연결은 차단한다. browser setup token은 admin row 생성 뒤 제거하고, headless OAuth-only admin은 browser token 없이 verified same-email provider를 직접 연결할 수 있다.
+- **근거:** ADR-003(메타·계정은 항상 PG)과 일치. 조직마다 인증 요구가 달라(OAuth 불필요한 내부망 조직도 존재) 모드 선택이 필요. Supabase Auth(zeude·day1co) 대비 외부 종속 없음. **JWT 트레이드오프:** 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(database 세션의 즉시 무효화는 포기). **credentials 보안:** 기존 OAuth 이메일로는 가입 불가(계정 탈취 방지), 미존재/OAuth 전용 계정도 더미 해시 비교로 사용자 열거(timing) 완화. login/signup은 bcrypt 전에 PostgreSQL 공유 global·IP·channel-account budget을 원자 소비하고 15분 window에서 5/60/300회 뒤 30초~15분 backoff한다. raw email/IP는 저장하지 않고 `AUTH_SECRET` HMAC-SHA256 digest만 저장하며, 성공 시 해당 account budget만 해제한다. reverse proxy는 client IP header를 덮어써야 하고 header가 없어도 account/global limit은 유지된다.
 - **MFA 확장:** 자체 credentials 로그인은 비밀번호 확인 뒤 WebAuthn 패스키 사용자 검증을 선택적으로 요구한다. OAuth 로그인은 IdP 인증을 중복하지 않되, OAuth 사용자도 `내 히스토리` 전용 패스키 잠금을 켤 수 있다. 로그인과 히스토리는 같은 패스키 목록을 사용하지만 정책은 독립적이다. RP ID·origin·5분 일회용 challenge와 사용자 검증을 필수로 확인하며 서버에는 public key와 counter만 저장한다. 히스토리 잠금 해제는 현재 로그인 세션 ID·사용자·MFA 설정 버전·30분 만료에 결합한 서명 HttpOnly 쿠키이며 서버 렌더링과 `/api/content/history/*`가 같은 검사를 수행한다. 새 로그인 세션은 이전 잠금 해제 쿠키를 승계하지 않는다. 이 인증용 패스키는 기존 E2EE 콘텐츠 키 PRF wrapper와 분리한다.
 
 ### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4) · **표출은 뷰어 타임존 (v4 개정)**
@@ -551,6 +552,7 @@ CLICKHOUSE_URL=                          # CH 모드만
 AUTH_SECRET=…                            # Auth.js
 AUTH_TRUST_HOST=true
 ALLOWED_EMAIL_DOMAINS=example.com        # (선택) 가입 허용 도메인
+BOOTSTRAP_SETUP_TOKEN=…                  # browser 최초 admin용 1회 token(32자 이상, 완료 후 제거)
 INGEST_BASE_URL=https://toard.example.com/api   # shim OTEL_EXPORTER_OTLP_ENDPOINT (base)
 LITELLM_PRICING_URL=…
 BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
@@ -563,7 +565,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 ### 8.3 로컬 개발 (스캐폴딩 대상)
 - `docker-compose.dev.yml`(Postgres 16) + `.env.example`.
 - 마이그레이션: `migrations/*.sql` + node-pg-migrate.
-- seed: `providers`(`claude_code`/otel/`['claude-code']`, `codex`/otel/`['codex','codex_cli_rs']`; 2차에 logfile 도구들 `enabled=false`+`log_adapter` 세팅으로 추가) + `BOOTSTRAP_ADMIN_EMAIL` admin 1명 + dev ingest_token 1개.
+- seed: provider/pricing baseline + 선택한 `BOOTSTRAP_ADMIN_EMAIL` admin 1명. ingest token은 seed·배포 로그에서 생성하거나 출력하지 않고, 로그인한 관리자가 Settings → Computers에서 1회 발급한다.
 - shim: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/api`로 로컬 수신 테스트.
 
 ### 8.4 shim 배포
@@ -590,7 +592,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 
 ### 10.2 토큰 수명주기 & Rate limit
 - `ingest_tokens.expires_at`(만료)·`revoked_at`(폐기/회전). 새 토큰 발급은 additive 이며, 폐기는 특정 토큰 단위로 수행한다. 주기적 재발급 권장. admin의 타인 토큰 폐기는 별도 관리 기능으로 확장 가능(§7.5).
-- **Rate limit(수치):** 토큰당 ≤ N req/min(예 120), 일일 이벤트 상한, 수집 배치 페이로드(logs·events) ≤ 4MB(초과 413). 초과 시 429 + Retry-After. 카운터는 단일 인스턴스 인메모리(다중 시 Redis). 이상 탐지: 토큰별 IP 수·이벤트율 급증 경보.
+- **Rate limit(수치):** 토큰당 ≤ N req/min(예 120), 일일 이벤트 상한. 수집 배치 페이로드(logs·events)는 Content-Length를 먼저 거부하고 chunked stream도 읽는 도중 ≤4MB를 강제한다(초과 413). rate 초과 시 429 + Retry-After. 카운터는 단일 인스턴스 인메모리(다중 시 Redis). 이상 탐지: 토큰별 IP 수·이벤트율 급증 경보.
 
 ### 10.3 PII / 프롬프트 미수집
 - shim은 `OTEL_LOG_USER_PROMPTS`를 켜지 않음. **수신 최초 단계(raw_events INSERT 이전)에서** 프롬프트를 제거한다 — 권장은 **화이트리스트**(토큰/비용/식별 attribute만 보존, 나머지 자유텍스트 전부 폐기)로 신규 필드 누락 위험을 없앤다. 차선은 denylist(`prompt`, `prompt_text`, `Body`, `latest_user_message` 등). 결과적으로 프롬프트가 raw에도 남지 않음. (shim 우회 + 자기 토큰으로 직접 켜는 경우만 자기 프롬프트 유입, 위협 낮음.)

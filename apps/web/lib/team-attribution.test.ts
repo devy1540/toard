@@ -171,7 +171,7 @@ test("team attribution worker는 원문 오류를 저장하지 않고 고정 코
   assert.equal(sanitizeTeamAttributionError(new Error("rollup verification failed")), "ROLLUP_VERIFICATION_FAILED");
 });
 
-test("team attribution scheduler와 cron route는 self-host 및 CRON_SECRET 정책을 따른다", () => {
+test("team attribution scheduler와 cron route는 self-host 및 공통 cron auth 정책을 따른다", () => {
   assert.equal(teamAttributionSchedulerEligible({ NODE_ENV: "production" }), true);
   assert.equal(teamAttributionSchedulerEligible({ NODE_ENV: "development" }), false);
   assert.equal(teamAttributionSchedulerEligible({ NODE_ENV: "production", VERCEL: "1" }), false);
@@ -182,7 +182,6 @@ test("team attribution scheduler와 cron route는 self-host 및 CRON_SECRET 정�
     "utf8",
   );
   assert.match(instrumentation, /teamAttributionSchedulerEligible[\s\S]*startTeamAttributionWorker/);
-  assert.match(route, /CRON_SECRET/);
-  assert.match(route, /Bearer/);
+  assert.match(route, /requireCronAuthorization/);
   assert.match(route, /runTeamAttributionBatch/);
 });

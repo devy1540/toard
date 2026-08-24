@@ -198,6 +198,95 @@ test("default chart에는 content-admin과 encryption ConfigMap이 없다", () =
   assert.doesNotMatch(rendered, /name: toard-encryption-config/);
 });
 
+test("browser setup token은 operator-managed Secret의 app runtime에만 연결된다", () => {
+  const managed = render("secrets:\n  bootstrapSetupSecret: browser-bootstrap\n");
+  const permanentSecret = resource(managed, "Secret", "toard-secrets");
+  const managedApp = containerBlock(resource(managed, "Deployment", "toard"), "app");
+  const managedMigration = containerBlock(migrationJob(managed), "migrate");
+  const managedSeed = containerBlock(resource(render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\n  bootstrapAdminSecret: bootstrap-admin\nsecrets:\n  bootstrapSetupSecret: browser-bootstrap\n`), "Job", "toard-seed"), "seed");
+  const managedAdmin = containerBlock(resource(render(`${AWS_VALUES}\nsecrets:\n  bootstrapSetupSecret: browser-bootstrap\n`), "Job", "toard-content-admin"), "content-admin");
+  const external = render(`secrets:\n  existingSecret: externally-managed\n`);
+
+  assert.doesNotMatch(permanentSecret, /BOOTSTRAP_SETUP_TOKEN|BOOTSTRAP_ADMIN/);
+  assert.match(managedApp, /name: BOOTSTRAP_SETUP_TOKEN[\s\S]*name: browser-bootstrap[\s\S]*optional: false/);
+  assert.doesNotMatch(managedApp, /envFrom:[\s\S]*secretRef:|BOOTSTRAP_ADMIN|POSTGRES_PASSWORD/);
+  for (const workload of [managedMigration, managedSeed, managedAdmin]) {
+    assert.doesNotMatch(workload, /BOOTSTRAP_SETUP_TOKEN|bootstrapSetupSecret/);
+  }
+  const externalApp = containerBlock(resource(external, "Deployment", "toard"), "app");
+  assert.match(externalApp, /name: AUTH_SECRET[\s\S]*name: externally-managed[\s\S]*key: AUTH_SECRET/);
+  assert.match(externalApp, /name: CRON_SECRET[\s\S]*key: CRON_SECRET[\s\S]*optional: true/);
+  assert.match(externalApp, /name: BOOTSTRAP_SETUP_TOKEN[\s\S]*name: externally-managed[\s\S]*key: BOOTSTRAP_SETUP_TOKEN[\s\S]*optional: true/);
+  assert.doesNotMatch(external, /kind: Secret[\s\S]*BOOTSTRAP_SETUP_TOKEN/);
+});
+
+test("headless Helm 기본값은 optional runtime Secret key만 참조한다", () => {
+  const rendered = render();
+  assert.match(containerBlock(resource(rendered, "Deployment", "toard"), "app"), /name: BOOTSTRAP_SETUP_TOKEN[\s\S]*name: toard-secrets[\s\S]*optional: true/);
+  assert.doesNotMatch(containerBlock(migrationJob(rendered), "migrate"), /BOOTSTRAP_SETUP_TOKEN/);
+});
+
+test("browser setup 완료 upgrade는 외부 mandatory Secret 참조를 optional runtime key로 전환한다", () => {
+  const duringSetup = containerBlock(
+    resource(render("secrets:\n  bootstrapSetupSecret: browser-bootstrap\n"), "Deployment", "toard"),
+    "app",
+  );
+  const afterSetup = containerBlock(resource(render(), "Deployment", "toard"), "app");
+
+  assert.match(duringSetup, /name: BOOTSTRAP_SETUP_TOKEN[\s\S]*name: browser-bootstrap[\s\S]*optional: false/);
+  assert.match(afterSetup, /name: BOOTSTRAP_SETUP_TOKEN[\s\S]*name: toard-secrets[\s\S]*optional: true/);
+  assert.doesNotMatch(afterSetup, /name: browser-bootstrap/);
+});
+
+test("Helm bootstrap Secret 이름은 Kubernetes DNS 이름만 허용한다", () => {
+  assert.throws(
+    () => render("secrets:\n  bootstrapSetupSecret: INVALID_NAME\n"),
+    /bootstrapSetupSecret.*pattern|values don't meet the specifications/i,
+  );
+  assert.throws(
+    () => render("secrets:\n  bootstrapSetupToken: should-not-enter-helm-values\n"),
+    /bootstrapSetupToken|additional propert|values don't meet the specifications/i,
+  );
+});
+
+test("seedOnInstall은 외부 bootstrap admin Secret과 인증 조합을 template 단계에서 검증한다", () => {
+  const values = (suffix: string) => `migrate:\n  seedOnInstall: true\n${suffix}`;
+
+  for (const [name, suffix, error] of [
+    ["bootstrap Secret 없음", "", /bootstrapAdminSecret/],
+    ["OAuth provider 없음", "  bootstrapAdminSecret: bootstrap-admin\nconfig:\n  authCredentialsEnabled: false\n", /OAuth provider/],
+  ] as const) {
+    const result = renderFailure(values(suffix));
+    assert.notEqual(result.status, 0, name);
+    assert.match(`${result.stdout}\n${result.stderr}`, error, name);
+  }
+
+  const oauthOnly = render(values(`  bootstrapAdminSecret: bootstrap-admin\nconfig:\n  authCredentialsEnabled: false\nsecrets:\n  github:\n    id: github-client\n    secret: github-secret\n`));
+  const oauthSeed = resource(oauthOnly, "Job", "toard-seed");
+  assert.match(oauthSeed, /name: BOOTSTRAP_ADMIN_EMAIL[\s\S]*name: bootstrap-admin/);
+  assert.match(oauthSeed, /name: BOOTSTRAP_ADMIN_PASSWORD[\s\S]*optional: true/);
+  for (const secret of documents(oauthOnly).filter((document) => /^kind: Secret$/m.test(document))) {
+    assert.doesNotMatch(secret, /BOOTSTRAP_ADMIN_EMAIL|BOOTSTRAP_ADMIN_PASSWORD/);
+  }
+
+  const externalOauthOnly = render(values(`  bootstrapAdminSecret: external-bootstrap\nconfig:\n  authCredentialsEnabled: false\nsecrets:\n  existingSecret: external-runtime\n`));
+  assert.match(resource(externalOauthOnly, "Job", "toard-seed"), /name: BOOTSTRAP_ADMIN_PASSWORD[\s\S]*name: external-bootstrap[\s\S]*optional: true/);
+});
+
+test("seedOnInstall은 migration이 꺼진 무실행 조합을 거부한다", () => {
+  const result = renderFailure("migrate:\n  enabled: false\n  seedOnInstall: true\n  bootstrapAdminSecret: bootstrap-admin\n");
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /seedOnInstall requires migrate\.enabled=true/);
+});
+
+test("bootstrap admin 자격은 Helm release manifest와 values에 포함되지 않는다", () => {
+  const rendered = render("migrate:\n  seedOnInstall: true\n  bootstrapAdminSecret: external-bootstrap\n");
+  const seed = resource(rendered, "Job", "toard-seed");
+  assert.match(seed, /name: external-bootstrap/);
+  assert.match(seed, /"helm\.sh\/hook-weight": "5"/);
+  assert.doesNotMatch(rendered, /BOOTSTRAP_ADMIN_EMAIL:|BOOTSTRAP_ADMIN_PASSWORD:|bootstrap-admin-cleanup/);
+});
+
 test("workload identity와 KMS 설정은 app/content-admin에만 연결된다", () => {
   const rendered = render(AWS_VALUES);
   const deployment = resource(rendered, "Deployment", "toard");
@@ -205,7 +294,7 @@ test("workload identity와 KMS 설정은 app/content-admin에만 연결된다", 
   const admin = resource(rendered, "Job", "toard-content-admin");
   const migration = migrationJob(rendered);
   const encryptionConfig = resource(rendered, "ConfigMap", "toard-encryption-config");
-  const seedRendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\nsecrets:\n  bootstrapAdmin:\n    email: admin@example.com\n    password: test-password\n`);
+  const seedRendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\n  bootstrapAdminSecret: bootstrap-admin\n`);
   const seed = resource(seedRendered, "Job", "toard-seed");
 
   assert.match(serviceAccount, /eks\.amazonaws\.com\/role-arn:/);
@@ -224,7 +313,7 @@ test("workload identity와 KMS 설정은 app/content-admin에만 연결된다", 
 });
 
 test("KMS Pod에는 app/content-admin만 있고 migration/seed는 별도 non-KMS SA를 사용한다", () => {
-  const rendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\nsecrets:\n  bootstrapAdmin:\n    email: admin@example.com\n    password: test-password\n`);
+  const rendered = render(`${AWS_VALUES}\nmigrate:\n  seedOnInstall: true\n  bootstrapAdminSecret: bootstrap-admin\n`);
   const workloads = documents(rendered).filter((document) => /^(?:kind: Deployment|kind: Job)$/m.test(document));
   const app = resource(rendered, "Deployment", "toard");
   const migration = migrationJob(rendered);
@@ -515,6 +604,8 @@ test("malformed GitOps releaseId를 fail-fast 한다", () => {
 test("Helm notes는 install/upgrade migration 대기와 readiness 의미를 문서화한다", () => {
   const notes = readFileSync(join(CHART, "templates/NOTES.txt"), "utf8");
   const deployGuide = readFileSync(join(ROOT, "docs/DEPLOY.md"), "utf8");
+  assert.match(notes, /BOOTSTRAP_SETUP_TOKEN/);
+  assert.match(notes, /bootstrapSetupSecret="".*upgrade.*rollout.*Secret\/key.*삭제/s);
   assert.match(notes, /--wait-for-jobs/);
   assert.match(notes, /migrate\.releaseId/);
   assert.match(notes, /Argo|Flux|GitOps/);
@@ -527,6 +618,10 @@ test("Helm notes는 install/upgrade migration 대기와 readiness 의미를 문�
   assert.match(deployGuide, /\/api\/ready.*503/s);
   assert.match(deployGuide, /migrate.*seed.*marker/is);
   assert.match(deployGuide, /mutable tag|가변 태그/i);
+  assert.ok(
+    deployGuide.indexOf("helm upgrade toard") < deployGuide.indexOf("delete secret toard-bootstrap-setup"),
+    "setup Secret은 mandatory 참조를 비운 upgrade와 rollout이 끝난 뒤 삭제해야 합니다",
+  );
   assert.match(deployGuide, /force.*rerun|강제 재실행/i);
   assert.match(deployGuide, /rollback|롤백/i);
   assert.match(deployGuide, /forward-only/i);
@@ -740,11 +835,9 @@ postgres:
   enabled: false
 secrets:
   existingSecret: app-runtime-db
-  bootstrapAdmin:
-    email: admin@example.com
-    password: test-password
 migrate:
   seedOnInstall: true
+  bootstrapAdminSecret: bootstrap-admin
   databaseSecret:
     name: migration-owner-db
     key: OWNER_DATABASE_URL
@@ -753,7 +846,7 @@ migrate:
   const migration = migrationJob(rendered);
   const seed = resource(rendered, "Job", "toard-seed");
 
-  assert.match(deployment, /secretRef:\s*\n\s*name: app-runtime-db/);
+  assert.match(containerBlock(deployment, "app"), /name: AUTH_SECRET[\s\S]*name: app-runtime-db[\s\S]*key: AUTH_SECRET/);
   for (const workload of [migration, seed]) {
     assert.match(workload, /name: DATABASE_URL[\s\S]*name: migration-owner-db[\s\S]*key: OWNER_DATABASE_URL/);
   }

@@ -66,10 +66,11 @@ flowchart LR
 The fastest way to try toard is the all-in-one Docker Compose stack with the app, PostgreSQL, and migrations. It pulls prebuilt images from GHCR and starts immediately:
 
 ```bash
-AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000
+export BOOTSTRAP_SETUP_TOKEN="$(openssl rand -hex 32)"
+AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000/setup
 ```
 
-Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
+Paste `BOOTSTRAP_SETUP_TOKEN` into the one-time setup form, create the first administrator, then remove the token from the deployment environment and restart the app. The setup transaction is serialized and sign-up/OAuth user creation stays closed until an administrator exists. Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
 ### 🤖 Install with an AI agent
 
@@ -82,15 +83,16 @@ Ask an AI agent such as Claude Code to install and verify toard. The agent follo
 
 ```bash
 pnpm install
-cp .env.example .env          # Replace AUTH_SECRET; leave BOOTSTRAP_ADMIN_* empty for browser setup
+cp .env.example .env          # Replace AUTH_SECRET and BOOTSTRAP_SETUP_TOKEN for browser setup
 pnpm db:up                    # Local PostgreSQL and ClickHouse containers
 pnpm migrate                  # Apply the schema
 pnpm seed                     # Seed provider and pricing baselines
 pnpm dev                      # http://localhost:3000
-# Open http://localhost:3000/setup and create the first administrator
+# Open /setup, enter BOOTSTRAP_SETUP_TOKEN, and create the first administrator
 ```
 
-For headless provisioning, set both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` before running `pnpm seed`. Setting only the email creates an administrator without a credentials login method and locks `/setup`.
+Remove `BOOTSTRAP_SETUP_TOKEN` after setup and restart the app. For headless provisioning, leave it unset and set both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` before running `pnpm seed`. Setting only the email creates an administrator without a credentials login method and locks `/setup`.
+Headless seed never creates or prints an ingest bearer token. After the administrator signs in, issue the token once from Settings → Computers and complete device onboarding there.
 
 To inspect the dashboard layout with realistic data, seed synthetic usage into the local database. The command runs by default only against `localhost` or `127.0.0.1` databases. New content history uses server-managed `managed_v1` encryption: the server wraps user keys with the KMS, Transit provider, or local KEK selected for the installation. New E2EE setup and activation have been retired; only recovery and migration paths for existing `e2ee_v1` users remain while legacy ciphertext exists. Follow the [server-managed content encryption runbook](docs/content-encryption-runbook.md) for provider setup, cost, rotation, and recovery. `TOARD_CONTENT_KEK_B64` is required only for legacy `server_v1` content and cannot decrypt managed or E2EE content.
 
@@ -256,15 +258,20 @@ Select the mode appropriate for the organization with `AUTH_MODE`. Authenticatio
 
 OAuth and credentials can be enabled together, and both appear on `/login`. Email magic links are planned.
 
+**Initial administrator** — browser setup requires a separate high-entropy `BOOTSTRAP_SETUP_TOKEN`. Until an administrator exists, regular credentials sign-up and OAuth adapter user creation are blocked. The token is compared in constant time and the first-admin transaction uses a PostgreSQL advisory lock so concurrent setup requests cannot create multiple administrators. Remove the token from the runtime environment after setup. Headless credentials provisioning with both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` does not require a browser setup token.
+
+For OAuth-only deployments (`AUTH_CREDENTIALS_ENABLED=false`), configure GitHub or Google before opening `/setup`. The form creates a passwordless administrator whose email must exactly match the provider's verified email. Remove `BOOTSTRAP_SETUP_TOKEN` after the administrator row is created; the first OAuth sign-in links only a verified same-email administrator. GitHub accepts only the verified primary email returned by the `user:email` API and Google requires `email_verified=true`. Same-email automatic linking is disabled for member rows. A headless OAuth-only admin may omit both `BOOTSTRAP_ADMIN_PASSWORD` and the browser setup token, then link the verified same-email provider directly.
+
 **Credentials** — enabled by default. Registration is available at `/signup` with optional domain gating, and passwords can be set or changed at `/settings`:
 
 ```bash
 AUTH_CREDENTIALS_ENABLED=true               # Set false for OAuth only
 ALLOWED_EMAIL_DOMAINS=example.com           # Optional registration allowlist
-BOOTSTRAP_ADMIN_PASSWORD=...                # Optional: seed stores an admin password hash
+BOOTSTRAP_SETUP_TOKEN=...                   # Browser setup only; openssl rand -hex 32
+BOOTSTRAP_ADMIN_PASSWORD=...                # Credentials admin only; OAuth-only may omit
 ```
 
-Passwords are stored only as bcrypt hashes with cost 12. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.
+Passwords are stored only as bcrypt hashes with cost 12. Login and sign-up consume shared PostgreSQL global, client-IP, and channel-specific account budgets before bcrypt work; the account budget backs off after 5 attempts, IP after 60, and global after 300 in a 15-minute window, starting at 30 seconds and capping at 15 minutes. Successful authentication clears only that account budget. Keys are HMAC-SHA256 digests using `AUTH_SECRET`, so raw email and IP values are not stored. Deployments must ensure their trusted reverse proxy overwrites `CF-Connecting-IP`, `X-Real-IP`, or `X-Forwarded-For`; account and global limits still apply when no client header is available. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.
 
 **Passkey multi-factor authentication** — users can register one or more WebAuthn passkeys under `/settings` and enable either or both policies independently:
 
@@ -303,7 +310,7 @@ No administrator action is required. Use `PRICING_AUTO_SYNC=off` only as an infr
 - **Vercel** — the crons in `vercel.json` run automatically, and the internal scheduler disables itself on Vercel. When `CRON_SECRET` is configured, Vercel automatically sends it as an `Authorization: Bearer` header.
 - **GitHub Actions** — `.github/workflows/cron.yml` calls the endpoint with `secrets.APP_URL` and `secrets.CRON_SECRET`. Use this option when an exact schedule such as 18:00 UTC is required, and set `PRICING_AUTO_SYNC=off` to prevent duplicate runs.
 
-Without `CRON_SECRET`, `/api/cron/*` endpoints are publicly accessible, so **always configure it in production**. Register `recompute` only when serving from the mart; it is unnecessary for the current event-direct path described in section 4.4.
+Without `CRON_SECRET`, `/api/cron/*` mutation endpoints fail closed with HTTP 503. A missing or incorrect Bearer value never starts the job. Configure a strong secret before enabling any scheduler. Register `recompute` only when serving from the mart; it is unnecessary for the current event-direct path described in section 4.4.
 
 The Admin → System tab shows the model count, last synchronization, and automatic recovery progress as read-only status. Models not yet present in the price table are checked automatically during the next daily synchronization, and dashboards label pre-resolution cost as a partial total.
 

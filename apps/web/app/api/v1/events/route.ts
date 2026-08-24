@@ -5,14 +5,13 @@ import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingSchedule } from "@/lib/pricing";
 import { sanitizeHost } from "@/lib/sanitize";
 import { getStorage } from "@/lib/storage";
+import { readBoundedJson, USAGE_INGEST_MAX_BODY_BYTES } from "@/lib/tool-ingest";
 import { recordTokenHost } from "@/lib/tokens";
 import { finalizeUsageEvents } from "@/lib/usage-finalization";
 
 // 정규화 UsageEvent[] 수신 — shim 로컬 로그 pull 경로 (설계 §5.6, ADR-002).
 // OTLP(/v1/logs)와 달리 shim 이 이미 정규화했으므로 raw 저장이 없고,
 // 이후 비용·저장 경로는 otel 경로와 완전히 공유한다.
-const MAX_BODY_BYTES = 4 * 1024 * 1024; // 배치 상한 4MB (§5.6)
-
 type EventsPostDeps = {
   authenticateIngestToken: typeof authenticateIngestToken;
   loadProviders: typeof loadProviders;
@@ -44,18 +43,15 @@ async function postEvents(req: Request, deps: EventsPostDeps): Promise<Response>
   const auth = await deps.authenticateIngestToken(req.headers.get("authorization"));
   if (!auth) return new Response("unauthorized", { status: 401 });
 
-  const text = await req.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
-    return new Response("payload too large (max 4MB)", { status: 413 });
-  }
-
   // 2. 와이어 계약 검증 (core/wire — 골든 fixture 로 shim 미러와 동기화)
   let events: UsageEvent[];
   try {
-    events = parseUsageEventsBody(JSON.parse(text));
+    events = parseUsageEventsBody(await readBoundedJson(req, USAGE_INGEST_MAX_BODY_BYTES));
   } catch (e) {
-    const msg = e instanceof WireParseError ? e.message : "본문이 유효한 JSON 이 아닙니다";
-    return new Response(msg, { status: 400 });
+    if (e instanceof RangeError) return new Response("payload too large (max 4MB)", { status: 413 });
+    if (e instanceof WireParseError) return new Response(e.message, { status: 400 });
+    if (e instanceof SyntaxError) return new Response("본문이 유효한 JSON 이 아닙니다", { status: 400 });
+    throw e;
   }
   if (events.length === 0) {
     return Response.json({ inserted: 0, deduped: 0, expired: 0 });

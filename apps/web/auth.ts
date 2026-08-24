@@ -3,24 +3,39 @@ import { randomUUID } from "node:crypto";
 import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
-import GitHub from "next-auth/providers/github";
 import Google from "next-auth/providers/google";
 import { isEmailDomainAllowed } from "@/lib/auth-policy";
 import { resolveMfaSessionId } from "@/lib/auth-session";
 import { getCredentialUserById, verifyCredentialUser } from "@/lib/credential-auth";
+import { credentialClientIdentity, CredentialRateLimitError } from "@/lib/credential-rate-limit";
 import { getPool } from "@/lib/db";
+import { guardAdapterUserCreation } from "@/lib/initialized-auth-adapter";
 import { verifySignedMfaToken } from "@/lib/mfa";
 import { isCredentialMfaRequired } from "@/lib/mfa-store";
+import { createVerifiedGitHubProvider } from "@/lib/oauth-provider-security";
+import { hasAdminUser } from "@/lib/setup";
+
+// credentials(id/pw): 기본 활성. AUTH_CREDENTIALS_ENABLED=false 로 OAuth 전용 구성 가능(ADR-007).
+export const credentialsEnabled = (process.env.AUTH_CREDENTIALS_ENABLED ?? "true") !== "false";
+const adminOAuthLinkingEnabled = !credentialsEnabled;
 
 // OAuth: 자격(AUTH_*_ID/SECRET)이 설정된 provider 만 활성화 — 환경별 구성(ADR-007).
 const providers: Provider[] = [];
 const oauthProviderIds: string[] = [];
 if (process.env.AUTH_GITHUB_ID && process.env.AUTH_GITHUB_SECRET) {
-  providers.push(GitHub);
+  providers.push(createVerifiedGitHubProvider({
+    clientId: process.env.AUTH_GITHUB_ID,
+    clientSecret: process.env.AUTH_GITHUB_SECRET,
+    allowDangerousEmailAccountLinking: adminOAuthLinkingEnabled,
+  }));
   oauthProviderIds.push("github");
 }
 if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
-  providers.push(Google);
+  providers.push(Google({
+    clientId: process.env.AUTH_GOOGLE_ID,
+    clientSecret: process.env.AUTH_GOOGLE_SECRET,
+    allowDangerousEmailAccountLinking: adminOAuthLinkingEnabled,
+  }));
   oauthProviderIds.push("google");
 }
 
@@ -29,20 +44,28 @@ export const oauthConfigured = oauthProviderIds.length > 0;
 /** 활성 OAuth provider id 목록 (로그인 페이지 버튼 렌더용). */
 export const oauthProviders = oauthProviderIds;
 
-// credentials(id/pw): 기본 활성. AUTH_CREDENTIALS_ENABLED=false 로 OAuth 전용 구성 가능(ADR-007).
-export const credentialsEnabled = (process.env.AUTH_CREDENTIALS_ENABLED ?? "true") !== "false";
 if (credentialsEnabled) {
   providers.push(
     Credentials({
       credentials: { email: {}, password: {}, loginTicket: {} },
-      authorize: async (creds) => {
+      authorize: async (creds, request) => {
         const loginTicket = String(creds?.loginTicket ?? "");
         if (loginTicket) {
           const ticket = verifySignedMfaToken(loginTicket, "credential-ticket");
           const user = ticket ? await getCredentialUserById(ticket.userId) : null;
           return user ? { ...user, mfaSessionId: ticket!.nonce } : null;
         }
-        const user = await verifyCredentialUser(String(creds?.email ?? ""), String(creds?.password ?? ""));
+        let user;
+        try {
+          user = await verifyCredentialUser(
+            String(creds?.email ?? ""),
+            String(creds?.password ?? ""),
+            { clientIdentity: credentialClientIdentity(request.headers) },
+          );
+        } catch (error) {
+          if (error instanceof CredentialRateLimitError) return null;
+          throw error;
+        }
         if (!user || (await isCredentialMfaRequired(user.id))) return null;
         return user;
       },
@@ -52,7 +75,11 @@ if (credentialsEnabled) {
 
 // Auth.js (ADR-007) — 메타·인증은 항상 PG(ADR-003). credentials 대비 JWT 세션.
 export const { handlers, auth, signIn, signOut } = NextAuth({
-  adapter: PostgresAdapter(getPool()),
+  adapter: guardAdapterUserCreation(
+    PostgresAdapter(getPool()),
+    hasAdminUser,
+    () => adminOAuthLinkingEnabled,
+  ),
   // credentials(id/pw)는 database 세션 미지원 → JWT 세션.
   // 트레이드오프: 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(백로그).
   session: { strategy: "jwt" },
@@ -68,7 +95,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       // 도메인 정책 변경 시 기존 계정(부트스트랩 admin 포함)이 잠기므로 스킵.
       if (account?.provider === "credentials") return true;
       // OAuth(새 identity 연합): 미검증 이메일 거부(도메인 사칭 방지) + 도메인 게이팅.
-      if ((profile as { email_verified?: boolean } | undefined)?.email_verified === false) {
+      if ((profile as { email_verified?: boolean } | undefined)?.email_verified !== true) {
         return false;
       }
       return isEmailDomainAllowed(email);

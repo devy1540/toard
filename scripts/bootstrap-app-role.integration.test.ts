@@ -402,6 +402,21 @@ for (const topology of ["role-before", "role-after"] as const) {
       assert.equal((await admin.query(
         "SELECT has_function_privilege('toard_app','latest_managed_content_write_fence()','EXECUTE') AS ok",
       )).rows[0].ok, true);
+      assert.equal((await admin.query(
+        "SELECT has_function_privilege('toard_app','consume_credential_rate_limit(text,bytea)','EXECUTE') AS ok",
+      )).rows[0].ok, false);
+      assert.equal((await admin.query(
+        "SELECT has_function_privilege('toard_app','consume_credential_rate_limits(bytea,bytea,bytea)','EXECUTE') AS ok",
+      )).rows[0].ok, true);
+      assert.equal((await admin.query(
+        "SELECT has_function_privilege('toard_app','clear_credential_account_rate_limit(bytea)','EXECUTE') AS ok",
+      )).rows[0].ok, true);
+      for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"]) {
+        assert.equal((await admin.query(
+          "SELECT has_table_privilege('toard_app','credential_rate_limits',$1) AS ok",
+          [privilege],
+        )).rows[0].ok, false, `${topology}:credential_rate_limits:${privilege}`);
+      }
       const publicExecute = await admin.query<{ name: string; public_execute: boolean }>(`
         SELECT p.proname AS name,
                COALESCE(bool_or(acl.grantee=0 AND acl.privilege_type='EXECUTE'),false) AS public_execute
@@ -409,11 +424,16 @@ for (const topology of ["role-before", "role-after"] as const) {
         CROSS JOIN LATERAL aclexplode(COALESCE(p.proacl,acldefault('f',p.proowner))) acl
         WHERE p.proname IN (
           'capture_content_e2ee_migration_source','get_content_e2ee_migration_progress',
-          'lock_managed_content_key_distribution','latest_managed_content_write_fence'
+          'lock_managed_content_key_distribution','latest_managed_content_write_fence',
+          'consume_credential_rate_limit','consume_credential_rate_limits',
+          'clear_credential_account_rate_limit'
         )
         GROUP BY p.proname ORDER BY p.proname`);
       assert.deepEqual(publicExecute.rows, [
         { name: "capture_content_e2ee_migration_source", public_execute: false },
+        { name: "clear_credential_account_rate_limit", public_execute: false },
+        { name: "consume_credential_rate_limit", public_execute: false },
+        { name: "consume_credential_rate_limits", public_execute: false },
         { name: "get_content_e2ee_migration_progress", public_execute: false },
         { name: "latest_managed_content_write_fence", public_execute: false },
         { name: "lock_managed_content_key_distribution", public_execute: false },

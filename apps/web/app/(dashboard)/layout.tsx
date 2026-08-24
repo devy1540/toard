@@ -7,15 +7,18 @@ import { LogoMark } from "@/components/logo-mark";
 import { TimezoneSync } from "@/components/timezone-sync";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { getSessionUser } from "@/lib/session-user";
-import { hasAnyUser } from "@/lib/setup";
+import { hasAdminUser } from "@/lib/setup";
 import { hasTeams, isTeamOnboardingPending } from "@/lib/team-onboarding";
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
+  const initialized = await hasAdminUser();
+  if (!initialized) redirect("/setup");
+
   // open 모드(내부망 공개)가 아니면 로그인 필수 — 미로그인은 로그인 화면으로.
   if ((process.env.AUTH_MODE ?? "oauth") !== "open") {
     const session = await auth();
     if (!session?.user) {
-      redirect((await hasAnyUser()) ? "/login" : "/setup");
+      redirect("/login");
     }
   }
 

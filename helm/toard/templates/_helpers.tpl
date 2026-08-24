@@ -83,7 +83,7 @@
 {{- end -}}
 
 {{/* packages/core/src/deployment-release.ts와 Helm render test가 drift를 차단한다. */}}
-{{- define "toard.expectedSchemaVersion" -}}1700000050{{- end -}}
+{{- define "toard.expectedSchemaVersion" -}}1700000052{{- end -}}
 
 {{- define "toard.deploymentId" -}}
 {{- printf "%s/%s" .Release.Namespace .Release.Name -}}
@@ -100,6 +100,21 @@
 
 {{/* 배포/암호화 values의 보안 경계를 fail-fast */}}
 {{- define "toard.validateDeploymentValues" -}}
+{{- if and .Values.migrate.seedOnInstall (not .Values.migrate.enabled) -}}
+  {{- fail "migrate.seedOnInstall requires migrate.enabled=true" -}}
+{{- end -}}
+{{- if and .Values.migrate.enabled .Values.migrate.seedOnInstall -}}
+  {{- if empty .Values.migrate.bootstrapAdminSecret -}}
+    {{- fail "migrate.seedOnInstall requires migrate.bootstrapAdminSecret" -}}
+  {{- end -}}
+  {{- if and (not .Values.config.authCredentialsEnabled) (not .Values.secrets.existingSecret) -}}
+    {{- $githubConfigured := and (not (empty .Values.secrets.github.id)) (not (empty .Values.secrets.github.secret)) -}}
+    {{- $googleConfigured := and (not (empty .Values.secrets.google.id)) (not (empty .Values.secrets.google.secret)) -}}
+    {{- if not (or $githubConfigured $googleConfigured) -}}
+      {{- fail "migrate.seedOnInstall with credentials disabled requires a configured GitHub or Google OAuth provider" -}}
+    {{- end -}}
+  {{- end -}}
+{{- end -}}
 {{- if and .Values.migrate.enabled (eq (include "toard.serviceAccountName" .) (include "toard.migrationServiceAccountName" .)) -}}
   {{- fail "app/content-admin and migration/seed ServiceAccount names must be different" -}}
 {{- end -}}
@@ -228,6 +243,15 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- .Values.secrets.existingSecret -}}
 {{- else -}}
 {{- printf "%s-secrets" (include "toard.fullname" .) -}}
+{{- end -}}
+{{- end -}}
+
+{{/* browser setup token은 Helm values가 아닌 operator-managed Secret에서만 읽는다. */}}
+{{- define "toard.bootstrapSetupSecretName" -}}
+{{- if .Values.secrets.bootstrapSetupSecret -}}
+{{- .Values.secrets.bootstrapSetupSecret -}}
+{{- else -}}
+{{- include "toard.secretName" . -}}
 {{- end -}}
 {{- end -}}
 

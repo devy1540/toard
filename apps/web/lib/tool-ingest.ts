@@ -5,6 +5,7 @@ import { insertToolActivity, replaceDeviceInventory } from "./tool-metadata";
 
 export type OwnedToolActivity = ToolActivityEvent & { userId: string; ingestTokenId: string };
 export type OwnedToolInventory = ToolInventorySnapshot & { userId: string; ingestTokenId: string };
+export const USAGE_INGEST_MAX_BODY_BYTES = 4 * 1024 * 1024;
 
 export function finalizeToolActivity(auth: IngestAuthResult, events: ToolActivityEvent[]): OwnedToolActivity[] {
   return events.map((event) => ({

@@ -92,6 +92,7 @@ pnpm dev                      # http://localhost:3000
 ```
 
 Remove `BOOTSTRAP_SETUP_TOKEN` after setup and restart the app. For headless provisioning, leave it unset and set both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` before running `pnpm seed`. Setting only the email creates an administrator without a credentials login method and locks `/setup`.
+Headless seed never creates or prints an ingest bearer token. After the administrator signs in, issue the token once from Settings → Computers and complete device onboarding there.
 
 To inspect the dashboard layout with realistic data, seed synthetic usage into the local database. The command runs by default only against `localhost` or `127.0.0.1` databases. New content history uses server-managed `managed_v1` encryption: the server wraps user keys with the KMS, Transit provider, or local KEK selected for the installation. New E2EE setup and activation have been retired; only recovery and migration paths for existing `e2ee_v1` users remain while legacy ciphertext exists. Follow the [server-managed content encryption runbook](docs/content-encryption-runbook.md) for provider setup, cost, rotation, and recovery. `TOARD_CONTENT_KEK_B64` is required only for legacy `server_v1` content and cannot decrypt managed or E2EE content.
 

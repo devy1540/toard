@@ -50,6 +50,7 @@ AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 - `migrate` 서비스가 Postgres 준비 후 스키마 + baseline(providers·pricing) 을 맞추고(멱등) 종료 → `app` 기동.
 - **최초 관리자**: admin이 없으면 **`/setup`** 으로 유도된다. 위에서 생성한 `BOOTSTRAP_SETUP_TOKEN`과 이메일·비번을 입력해 admin을 만든다. token은 상수시간 비교되고 admin 생성은 DB advisory lock으로 직렬화된다. 완료 뒤 배포 환경에서 token을 제거하고 app을 재시작한다. admin 생성 전에는 일반 가입과 OAuth 신규 user 생성이 차단된다.
   - headless(사전 프로비저닝) 대안: `BOOTSTRAP_ADMIN_EMAIL`·`BOOTSTRAP_ADMIN_PASSWORD` env 설정 시 `migrate` 가 admin 도 선생성 → `/setup` 창이 열리지 않음.
+  - headless seed는 ingest bearer token을 생성하거나 stdout에 출력하지 않는다. admin 로그인 후 Settings → Computers에서 1회 발급한다.
 - **ClickHouse 모드**(선택): `STORAGE_BACKEND=clickhouse CLICKHOUSE_URL=http://clickhouse:8123 docker compose --profile clickhouse up -d`
 - **외부 DB**: `postgres` 서비스를 빼고 `DATABASE_URL` 을 외부 DB 로 지정.
 

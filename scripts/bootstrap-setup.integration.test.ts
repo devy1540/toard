@@ -85,3 +85,44 @@ test("member 선점은 setup을 잠그지 않고 동시 setup은 admin 한 명�
     await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
   }
 });
+
+test("headless seed는 admin만 만들고 ingest bearer 평문이나 token row를 남기지 않는다", { timeout: 120_000 }, async () => {
+  const container = `toard-seed-security-${randomUUID().slice(0, 8)}`;
+  let admin: Client | null = null;
+  try {
+    await execFileAsync("docker", [
+      "run", "-d", "--rm", "--name", container,
+      "-e", "POSTGRES_PASSWORD=postgres", "-e", "POSTGRES_DB=toard",
+      "-p", "127.0.0.1::5432", "postgres:16-alpine",
+    ]);
+    const { stdout: portOutput } = await execFileAsync("docker", ["port", container, "5432/tcp"]);
+    const port = portOutput.trim().match(/:(\d+)$/)?.[1];
+    assert.ok(port);
+    const connectionString = `postgresql://postgres:postgres@127.0.0.1:${port}/toard`;
+    await waitForPostgres(connectionString);
+
+    const env = {
+      ...process.env,
+      DATABASE_URL: connectionString,
+      BOOTSTRAP_ADMIN_EMAIL: "headless-admin@example.com",
+      BOOTSTRAP_ADMIN_PASSWORD: "",
+    };
+    await execFileAsync("pnpm", ["migrate"], { env });
+    const seeded = await execFileAsync("pnpm", ["seed"], { env });
+    const output = `${seeded.stdout}\n${seeded.stderr}`;
+
+    assert.doesNotMatch(output, /DEV INGEST TOKEN|Authorization:\s*Bearer|tk_[0-9a-f]{48}/i);
+    admin = new Client({ connectionString });
+    await admin.connect();
+    const users = await admin.query<{ email: string; role: string }>(
+      "SELECT email, role FROM users WHERE email = $1",
+      ["headless-admin@example.com"],
+    );
+    assert.deepEqual(users.rows, [{ email: "headless-admin@example.com", role: "admin" }]);
+    const tokens = await admin.query<{ count: number }>("SELECT COUNT(*)::int AS count FROM ingest_tokens");
+    assert.equal(tokens.rows[0]?.count, 0);
+  } finally {
+    await admin?.end().catch(() => undefined);
+    await execFileAsync("docker", ["rm", "-f", container]).catch(() => undefined);
+  }
+});

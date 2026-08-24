@@ -565,7 +565,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 ### 8.3 로컬 개발 (스캐폴딩 대상)
 - `docker-compose.dev.yml`(Postgres 16) + `.env.example`.
 - 마이그레이션: `migrations/*.sql` + node-pg-migrate.
-- seed: `providers`(`claude_code`/otel/`['claude-code']`, `codex`/otel/`['codex','codex_cli_rs']`; 2차에 logfile 도구들 `enabled=false`+`log_adapter` 세팅으로 추가) + `BOOTSTRAP_ADMIN_EMAIL` admin 1명 + dev ingest_token 1개.
+- seed: provider/pricing baseline + 선택한 `BOOTSTRAP_ADMIN_EMAIL` admin 1명. ingest token은 seed·배포 로그에서 생성하거나 출력하지 않고, 로그인한 관리자가 Settings → Computers에서 1회 발급한다.
 - shim: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/api`로 로컬 수신 테스트.
 
 ### 8.4 shim 배포

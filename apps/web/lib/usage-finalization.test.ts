@@ -10,6 +10,7 @@ import {
   finalizeUsageEvents,
   MAX_USAGE_EVENT_AGE_MS,
 } from "./usage-finalization";
+import { USAGE_INGEST_MAX_BODY_BYTES } from "./tool-ingest";
 
 const schedule: PricingSchedule = new Map([
   [
@@ -50,6 +51,35 @@ function eventAt(ts: string, overrides: Partial<UsageEvent> = {}): UsageEvent {
 
 function source(path: string): string {
   return readFileSync(new URL(`../${path}`, import.meta.url), "utf8");
+}
+
+function streamingRequest(
+  path: "events" | "logs",
+  chunks: readonly string[],
+  options: { contentLength?: string; authorization?: string } = {},
+): { request: Request; cancelled: () => boolean } {
+  let index = 0;
+  let wasCancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (index >= chunks.length) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(Buffer.from(chunks[index++]!));
+    },
+    cancel() { wasCancelled = true; },
+  });
+  const request = new Request(`http://toard.test/api/v1/${path}`, {
+    method: "POST",
+    headers: {
+      authorization: options.authorization ?? "Bearer token",
+      ...(options.contentLength ? { "content-length": options.contentLength } : {}),
+    },
+    body: stream,
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+  return { request, cancelled: () => wasCancelled };
 }
 
 test("90일을 넘긴 이벤트는 expired이고 저장 대상이 아니다", () => {
@@ -290,6 +320,55 @@ test("logs 경로는 provider별 expired를 합산하고 gate와 dedup 결과를
   assert.deepEqual(saved.map((events) => events.length), [1, 0]);
   assert.equal(saved[0]?.[0]?.userId, "server-user");
   assert.equal(saved[0]?.[0]?.pricingRevisionId, "old");
+});
+
+test("events와 logs는 oversized Content-Length를 body read와 downstream 전에 거부한다", async () => {
+  for (const [path, handler] of [
+    ["events", eventsPost.withDependencies({ authenticateIngestToken: async () => ({ userId: "u", tokenId: "t" }) })],
+    ["logs", logsPost.withDependencies({ authenticateIngestToken: async () => ({ userId: "u", tokenId: "t" }) })],
+  ] as const) {
+    const input = streamingRequest(path, ["{}"], {
+      contentLength: String(USAGE_INGEST_MAX_BODY_BYTES + 1),
+    });
+    const response = await handler(input.request);
+    assert.equal(response.status, 413, path);
+    assert.equal(input.request.bodyUsed, false, path);
+  }
+});
+
+test("events와 logs는 chunked 4MiB overflow를 취소하고 exact boundary를 허용한다", async () => {
+  for (const [path, handler, exactJson] of [
+    ["events", eventsPost.withDependencies({ authenticateIngestToken: async () => ({ userId: "u", tokenId: "t" }) }), "[]"],
+    ["logs", logsPost.withDependencies({ authenticateIngestToken: async () => ({ userId: "u", tokenId: "t" }) }), "{}"],
+  ] as const) {
+    const oversized = streamingRequest(path, ["[\"", "x".repeat(USAGE_INGEST_MAX_BODY_BYTES), "\"]"]);
+    const oversizedResponse = await handler(oversized.request);
+    assert.equal(oversizedResponse.status, 413, path);
+    assert.equal(oversized.cancelled(), true, path);
+
+    const exactBody = " ".repeat(USAGE_INGEST_MAX_BODY_BYTES - exactJson.length) + exactJson;
+    const exact = streamingRequest(path, [exactBody]);
+    const exactResponse = await handler(exact.request);
+    assert.equal(exactResponse.status, 200, path);
+    assert.deepEqual(await exactResponse.json(), { inserted: 0, deduped: 0, expired: 0 }, path);
+  }
+});
+
+test("events와 logs는 인증 전 body를 읽지 않고 malformed JSON을 400으로 거부한다", async () => {
+  for (const [path, post] of [["events", eventsPost], ["logs", logsPost]] as const) {
+    const unauthorized = streamingRequest(path, ["{"], { authorization: "Bearer invalid" });
+    const unauthorizedResponse = await post.withDependencies({
+      authenticateIngestToken: async () => null,
+    })(unauthorized.request);
+    assert.equal(unauthorizedResponse.status, 401, path);
+    assert.equal(unauthorized.request.bodyUsed, false, path);
+
+    const malformed = streamingRequest(path, ["{"]);
+    const malformedResponse = await post.withDependencies({
+      authenticateIngestToken: async () => ({ userId: "u", tokenId: "t" }),
+    })(malformed.request);
+    assert.equal(malformedResponse.status, 400, path);
+  }
 });
 
 test("전체 보존 재가격 action과 UI와 번역은 제거한다", () => {

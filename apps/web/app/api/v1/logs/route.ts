@@ -10,6 +10,7 @@ import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
 import { getPricingSchedule } from "@/lib/pricing";
 import { getStorage } from "@/lib/storage";
 import { hostFromResourceAttrs, sanitizeAttrs } from "@/lib/sanitize";
+import { readBoundedJson, USAGE_INGEST_MAX_BODY_BYTES } from "@/lib/tool-ingest";
 import { recordTokenHost } from "@/lib/tokens";
 import { finalizeUsageEvents } from "@/lib/usage-finalization";
 
@@ -51,8 +52,16 @@ async function postLogs(req: Request, deps: LogsPostDeps): Promise<Response> {
   const auth = await deps.authenticateIngestToken(req.headers.get("authorization"));
   if (!auth) return new Response("unauthorized", { status: 401 });
 
-  // 2. 파싱 후 프롬프트 제거 (raw 저장 전 — §10.3). attrs·resourceAttrs 양쪽을 평탄화 후 정제.
-  const records = deps.parseOtlpLogs(await req.json());
+  // 2. bounded 파싱 후 프롬프트 제거 (raw 저장 전 — §10.3). attrs·resourceAttrs 양쪽을 평탄화 후 정제.
+  let body: unknown;
+  try {
+    body = await readBoundedJson(req, USAGE_INGEST_MAX_BODY_BYTES);
+  } catch (e) {
+    if (e instanceof RangeError) return new Response("payload too large (max 4MB)", { status: 413 });
+    if (e instanceof SyntaxError) return new Response("본문이 유효한 JSON 이 아닙니다", { status: 400 });
+    throw e;
+  }
+  const records = deps.parseOtlpLogs(body);
   for (const r of records) {
     r.attrs = sanitizeAttrs(r.attrs);
     r.resourceAttrs = sanitizeAttrs(r.resourceAttrs);

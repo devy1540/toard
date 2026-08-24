@@ -592,7 +592,7 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 
 ### 10.2 토큰 수명주기 & Rate limit
 - `ingest_tokens.expires_at`(만료)·`revoked_at`(폐기/회전). 새 토큰 발급은 additive 이며, 폐기는 특정 토큰 단위로 수행한다. 주기적 재발급 권장. admin의 타인 토큰 폐기는 별도 관리 기능으로 확장 가능(§7.5).
-- **Rate limit(수치):** 토큰당 ≤ N req/min(예 120), 일일 이벤트 상한, 수집 배치 페이로드(logs·events) ≤ 4MB(초과 413). 초과 시 429 + Retry-After. 카운터는 단일 인스턴스 인메모리(다중 시 Redis). 이상 탐지: 토큰별 IP 수·이벤트율 급증 경보.
+- **Rate limit(수치):** 토큰당 ≤ N req/min(예 120), 일일 이벤트 상한. 수집 배치 페이로드(logs·events)는 Content-Length를 먼저 거부하고 chunked stream도 읽는 도중 ≤4MB를 강제한다(초과 413). rate 초과 시 429 + Retry-After. 카운터는 단일 인스턴스 인메모리(다중 시 Redis). 이상 탐지: 토큰별 IP 수·이벤트율 급증 경보.
 
 ### 10.3 PII / 프롬프트 미수집
 - shim은 `OTEL_LOG_USER_PROMPTS`를 켜지 않음. **수신 최초 단계(raw_events INSERT 이전)에서** 프롬프트를 제거한다 — 권장은 **화이트리스트**(토큰/비용/식별 attribute만 보존, 나머지 자유텍스트 전부 폐기)로 신규 필드 누락 위험을 없앤다. 차선은 denylist(`prompt`, `prompt_text`, `Body`, `latest_user_message` 등). 결과적으로 프롬프트가 raw에도 남지 않음. (shim 우회 + 자기 토큰으로 직접 켜는 경우만 자기 프롬프트 유입, 위협 낮음.)

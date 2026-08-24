@@ -70,7 +70,7 @@ export BOOTSTRAP_SETUP_TOKEN="$(openssl rand -hex 32)"
 AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000/setup
 ```
 
-Paste `BOOTSTRAP_SETUP_TOKEN` into the one-time setup form, create the first administrator, then remove the token from the deployment environment and restart the app. The setup transaction is serialized and sign-up/OAuth user creation stays closed until an administrator exists. Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.2` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
+Paste `BOOTSTRAP_SETUP_TOKEN` into the one-time setup form, create the first administrator, then remove the token from the deployment environment and restart the app. The setup transaction is serialized and sign-up/OAuth user creation stays closed until an administrator exists. Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
 ### 🤖 Install with an AI agent
 

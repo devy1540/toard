@@ -39,7 +39,7 @@ pnpm test
 태그 push는 외부 배포이므로 실행 전에 별도 승인을 받는다.
 
 ```bash
-VERSION=0.0.2
+VERSION=0.0.1
 git tag -a "$VERSION" <verified-main-commit> -m "$VERSION"
 git push origin "$VERSION"
 ```

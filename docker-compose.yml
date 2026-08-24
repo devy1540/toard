@@ -3,7 +3,7 @@
 #   AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d
 #   # /setup 에서 위 token을 1회 입력하고, 완료 뒤 env에서 제거
 # 소스에서 직접 빌드(미게시 변경 확인 등): 위 명령에 --build 추가
-# 이미지 태그 고정(선택): TOARD_TAG=0.0.1 (기본 latest = 최신 공개 릴리스)
+# 이미지 태그 고정(선택): TOARD_TAG=0.0.2 (기본 latest = 최신 공개 릴리스)
 # AUTH_SECRET 는 compose 파싱 시 필수(기본값 없음) — down/logs 등에도 필요하니 .env 에 넣어두면 편함.
 # 최초 admin id/pw 부트스트랩(선택):
 #   BOOTSTRAP_ADMIN_EMAIL=you@corp.com BOOTSTRAP_ADMIN_PASSWORD=... \

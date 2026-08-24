@@ -226,6 +226,7 @@ expect_success() {
 
   if ! run_helper "$scenario" "$helper"; then
     fail "$description"
+    sed 's/mock-generated-value-0123456789abcdef/[redacted]/g' "$command_output" >&2
     return 1
   fi
   pass "$description"

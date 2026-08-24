@@ -58,7 +58,14 @@ if [[ ! -f "$TOARD_BOOTSTRAP_SETUP_TOKEN_FILE" || -L "$TOARD_BOOTSTRAP_SETUP_TOK
   echo "TOARD_BOOTSTRAP_SETUP_TOKEN_FILE must name a readable private regular file" >&2
   exit 1
 fi
-token_file_mode="$(stat -f '%Lp' "$TOARD_BOOTSTRAP_SETUP_TOKEN_FILE" 2>/dev/null || stat -c '%a' "$TOARD_BOOTSTRAP_SETUP_TOKEN_FILE")"
+if token_file_mode="$(stat -c '%a' "$TOARD_BOOTSTRAP_SETUP_TOKEN_FILE" 2>/dev/null)"; then
+  : # GNU/Linux
+elif token_file_mode="$(stat -f '%Lp' "$TOARD_BOOTSTRAP_SETUP_TOKEN_FILE" 2>/dev/null)"; then
+  : # macOS/BSD
+else
+  echo "failed to inspect TOARD_BOOTSTRAP_SETUP_TOKEN_FILE permissions" >&2
+  exit 1
+fi
 if [[ "$token_file_mode" != "600" && "$token_file_mode" != "400" ]]; then
   echo "TOARD_BOOTSTRAP_SETUP_TOKEN_FILE must have mode 0600 or 0400" >&2
   exit 1

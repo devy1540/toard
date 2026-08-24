@@ -42,9 +42,7 @@ secrets:
     id: ""
     secret: ""
   clickhousePassword: "toard"
-  bootstrapAdmin: # 최초 admin id/pw (migrate.seedOnInstall=true 일 때 사용)
-    email: ""
-    password: ""
+  bootstrapSetupSecret: "" # browser setup token을 가진 별도 operator-managed Secret 이름
 
 # 번들 Postgres. 프로덕션은 관리형 DB 권장(enabled=false + secrets.databaseUrl).
 postgres:
@@ -69,7 +67,8 @@ postgres:
 migrate:
   enabled: true
   releaseId: "" # GitOps는 release마다 바뀌는 stable Git SHA/semver를 반드시 지정. 빈 값은 Helm revision fallback.
-  seedOnInstall: false # true → 최초 설치 시 providers·admin 시드(BOOTSTRAP_ADMIN_* 필요)
+  seedOnInstall: false # true → bootstrapAdminSecret과 사전 구성한 인증 수단 필요
+  bootstrapAdminSecret: "" # BOOTSTRAP_ADMIN_EMAIL/(credentials면 PASSWORD)을 가진 별도 Secret 이름
   backoffLimit: 4
   ttlSecondsAfterFinished: 86400
   # 앱이 toard_app(SELECT-only marker)일 때 migration owner DATABASE_URL을 별도 Secret key로 지정한다.

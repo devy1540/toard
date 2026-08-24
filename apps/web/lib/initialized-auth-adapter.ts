@@ -4,14 +4,28 @@ import type { Adapter } from "next-auth/adapters";
 export function guardAdapterUserCreation(
   adapter: Adapter,
   initialized: () => Promise<boolean>,
+  bootstrapOAuthLinkingEnabled: () => boolean = () => false,
 ): Adapter {
   const createUser = adapter.createUser;
-  if (!createUser) return adapter;
+  const getUserByEmail = adapter.getUserByEmail;
   return {
     ...adapter,
-    async createUser(user) {
-      if (!(await initialized())) throw new Error("INITIAL_SETUP_REQUIRED");
-      return createUser.call(adapter, user);
-    },
+    ...(createUser
+      ? {
+          async createUser(user) {
+            if (!(await initialized())) throw new Error("INITIAL_SETUP_REQUIRED");
+            return createUser.call(adapter, user);
+          },
+        }
+      : {}),
+    ...(getUserByEmail
+      ? {
+          async getUserByEmail(email) {
+            const user = await getUserByEmail.call(adapter, email);
+            if (!user || !bootstrapOAuthLinkingEnabled()) return user;
+            return (user as typeof user & { role?: unknown }).role === "admin" ? user : null;
+          },
+        }
+      : {}),
   };
 }

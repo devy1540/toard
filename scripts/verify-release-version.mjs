@@ -30,6 +30,16 @@ for (const relativePath of jsonArtifacts) {
   if (actual !== expected) failures.push(`${relativePath}: expected ${expected}, got ${actual}`);
 }
 
+const coreSchemaVersion = read("packages/core/src/deployment-release.ts")
+  .match(/LATEST_SCHEMA_VERSION\s*=\s*(\d+)/)?.[1];
+const helmSchemaVersion = read("helm/toard/templates/_helpers.tpl")
+  .match(/define "toard\.expectedSchemaVersion"[^}]*}}(\d+)/)?.[1];
+if (!coreSchemaVersion || !helmSchemaVersion || coreSchemaVersion !== helmSchemaVersion) {
+  failures.push(
+    `deployment schema version mismatch: core=${coreSchemaVersion ?? "missing"}, helm=${helmSchemaVersion ?? "missing"}`,
+  );
+}
+
 function checkCaptures(relativePath, expression, expectedCount) {
   const actual = [...read(relativePath).matchAll(expression)].map((match) => match[1]);
   if (actual.length !== expectedCount || actual.some((version) => version !== expected)) {

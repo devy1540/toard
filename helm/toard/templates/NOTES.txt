@@ -17,8 +17,12 @@ toard 가 배포되었습니다. (release: {{ .Release.Name }}, ns: {{ .Release.
 {{- else }}
    /login (id/pw) · /signup (가입){{ if .Values.config.allowedEmailDomains }} · 허용 도메인: {{ .Values.config.allowedEmailDomains }}{{ end }}
 {{- if not .Values.migrate.seedOnInstall }}
-   최초 admin: migrate.seedOnInstall=true + secrets.bootstrapAdmin.* 로 재설치하거나,
-   seed Job 을 수동 실행하세요.
+   최초 admin(browser): secrets.bootstrapSetupSecret 또는 runtime external Secret의 BOOTSTRAP_SETUP_TOKEN으로 /setup을 완료하세요.
+   token 값은 Helm values에 넣지 마세요. 완료 뒤 먼저 secrets.bootstrapSetupSecret=""으로 upgrade하고 rollout 완료를 확인한 다음 operator-managed Secret/key를 삭제하세요.
+   OAuth-only는 verified provider email과 admin email을 일치시키고 첫 OAuth 로그인 뒤 token을 제거하세요.
+   headless 대안: migrate.seedOnInstall=true + migrate.bootstrapAdminSecret 또는 수동 seed Job.
+{{- else }}
+   migrate.bootstrapAdminSecret의 BOOTSTRAP_ADMIN_* key는 app이나 Helm release에 저장되지 않습니다. seed 완료 뒤 operator가 해당 Secret을 삭제하세요.
 {{- end }}
 {{- end }}
 

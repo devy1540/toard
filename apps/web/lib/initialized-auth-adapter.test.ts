@@ -38,3 +38,26 @@ test("초기 admin 뒤에는 기존 OAuth adapter 동작을 보존한다", async
   assert.deepEqual(await guarded.createUser!(user), user);
   assert.equal(createCalls, 1);
 });
+
+test("bootstrap OAuth linking 창에서는 admin email만 adapter에 노출한다", async () => {
+  const adapter: Adapter = {
+    async getUserByEmail(email) {
+      return { ...user, email, role: email.startsWith("admin") ? "admin" : "member" } as AdapterUser;
+    },
+  };
+  const guarded = guardAdapterUserCreation(adapter, async () => true, () => true);
+
+  assert.equal((await guarded.getUserByEmail!("admin@example.com"))?.email, "admin@example.com");
+  assert.equal(await guarded.getUserByEmail!("member@example.com"), null);
+});
+
+test("bootstrap OAuth linking 창 밖에서는 기존 same-email 충돌 검사를 보존한다", async () => {
+  const adapter: Adapter = {
+    async getUserByEmail(email) {
+      return { ...user, email };
+    },
+  };
+  const guarded = guardAdapterUserCreation(adapter, async () => true, () => false);
+
+  assert.equal((await guarded.getUserByEmail!("member@example.com"))?.email, "member@example.com");
+});

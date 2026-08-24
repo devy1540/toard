@@ -25,9 +25,15 @@ spec:
       containers:
         - name: migrate
           image: toard-migrate:0.0.1 # 기본 CMD = pnpm migrate
+          # browser setup token을 포함한 runtime Secret은 app에만 준다.
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: DATABASE_URL } }
+            - name: BOOTSTRAP_ADMIN_EMAIL
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: BOOTSTRAP_ADMIN_EMAIL, optional: true } }
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom: { secretKeyRef: { name: toard-secrets, key: BOOTSTRAP_ADMIN_PASSWORD, optional: true } }
           envFrom:
-            - secretRef:
-                name: toard-secrets
             - configMapRef:
                 name: toard-config
           resources:

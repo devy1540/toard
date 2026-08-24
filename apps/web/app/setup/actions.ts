@@ -1,8 +1,9 @@
 "use server";
 
 import { AuthError } from "next-auth";
+import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { signIn } from "@/auth";
+import { credentialsEnabled, oauthConfigured, signIn } from "@/auth";
 import { isValidEmail } from "@/lib/auth-policy";
 import { getPool } from "@/lib/db";
 import { hashPassword, validatePassword } from "@/lib/password";
@@ -25,12 +26,15 @@ export async function setupAdminAction(_prev: SetupState, formData: FormData): P
   const confirm = String(formData.get("confirm") ?? "");
 
   if (!verifyBootstrapSetupToken(setupToken)) return { error: t("errors.setupTokenInvalid") };
+  if (!credentialsEnabled && !oauthConfigured) return { error: t("login.noLoginMethod") };
   if (!isValidEmail(email)) return { error: t("errors.invalidEmail") };
-  const pwErr = validatePassword(password);
-  if (pwErr) return { error: pwErr };
-  if (password !== confirm) return { error: t("errors.passwordMismatch") };
+  if (credentialsEnabled) {
+    const pwErr = validatePassword(password);
+    if (pwErr) return { error: pwErr };
+    if (password !== confirm) return { error: t("errors.passwordMismatch") };
+  }
 
-  const hash = await hashPassword(password);
+  const hash = credentialsEnabled ? await hashPassword(password) : null;
   try {
     const result = await createFirstAdmin(getPool(), {
       email,
@@ -45,6 +49,8 @@ export async function setupAdminAction(_prev: SetupState, formData: FormData): P
   } catch {
     return { error: t("errors.adminCreateFailed") };
   }
+
+  if (!credentialsEnabled) redirect("/login");
 
   try {
     await signIn("credentials", { email, password, redirectTo: "/" });

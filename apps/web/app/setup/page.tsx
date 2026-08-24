@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
+import { credentialsEnabled, oauthConfigured } from "@/auth";
 import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { browserSetupConfigured, hasAdminUser } from "@/lib/setup";
 import { SetupForm } from "./setup-form";
@@ -14,9 +15,9 @@ export default async function SetupPage() {
 
   return (
     <AuthPageShell title={t("setup.title")} description={t("setup.description")}>
-      {browserSetupConfigured()
-        ? <SetupForm />
-        : <p className="text-muted-foreground text-sm">{t("setup.configurationRequired")}</p>}
+      {browserSetupConfigured() && (credentialsEnabled || oauthConfigured)
+        ? <SetupForm credentialsEnabled={credentialsEnabled} />
+        : <p className="text-muted-foreground text-sm">{t(credentialsEnabled || oauthConfigured ? "setup.configurationRequired" : "login.noLoginMethod")}</p>}
     </AuthPageShell>
   );
 }

@@ -24,7 +24,7 @@ export type SetupPool = {
 export type CreateFirstAdminInput = {
   email: string;
   name: string;
-  passwordHash: string;
+  passwordHash: string | null;
 };
 
 export type CreateFirstAdminResult =

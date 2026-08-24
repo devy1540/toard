@@ -257,7 +257,9 @@ Select the mode appropriate for the organization with `AUTH_MODE`. Authenticatio
 
 OAuth and credentials can be enabled together, and both appear on `/login`. Email magic links are planned.
 
-**Initial administrator** — browser setup requires a separate high-entropy `BOOTSTRAP_SETUP_TOKEN`. Until an administrator exists, regular credentials sign-up and OAuth adapter user creation are blocked. The token is compared in constant time and the first-admin transaction uses a PostgreSQL advisory lock so concurrent setup requests cannot create multiple administrators. Remove the token from the runtime environment after setup. Headless provisioning with both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` does not require a browser setup token.
+**Initial administrator** — browser setup requires a separate high-entropy `BOOTSTRAP_SETUP_TOKEN`. Until an administrator exists, regular credentials sign-up and OAuth adapter user creation are blocked. The token is compared in constant time and the first-admin transaction uses a PostgreSQL advisory lock so concurrent setup requests cannot create multiple administrators. Remove the token from the runtime environment after setup. Headless credentials provisioning with both `BOOTSTRAP_ADMIN_EMAIL` and `BOOTSTRAP_ADMIN_PASSWORD` does not require a browser setup token.
+
+For OAuth-only deployments (`AUTH_CREDENTIALS_ENABLED=false`), configure GitHub or Google before opening `/setup`. The form creates a passwordless administrator whose email must exactly match the provider's verified email. Remove `BOOTSTRAP_SETUP_TOKEN` after the administrator row is created; the first OAuth sign-in links only a verified same-email administrator. GitHub accepts only the verified primary email returned by the `user:email` API and Google requires `email_verified=true`. Same-email automatic linking is disabled for member rows. A headless OAuth-only admin may omit both `BOOTSTRAP_ADMIN_PASSWORD` and the browser setup token, then link the verified same-email provider directly.
 
 **Credentials** — enabled by default. Registration is available at `/signup` with optional domain gating, and passwords can be set or changed at `/settings`:
 
@@ -265,7 +267,7 @@ OAuth and credentials can be enabled together, and both appear on `/login`. Emai
 AUTH_CREDENTIALS_ENABLED=true               # Set false for OAuth only
 ALLOWED_EMAIL_DOMAINS=example.com           # Optional registration allowlist
 BOOTSTRAP_SETUP_TOKEN=...                   # Browser setup only; openssl rand -hex 32
-BOOTSTRAP_ADMIN_PASSWORD=...                # Optional: seed stores an admin password hash
+BOOTSTRAP_ADMIN_PASSWORD=...                # Credentials admin only; OAuth-only may omit
 ```
 
 Passwords are stored only as bcrypt hashes with cost 12. Registration with the email address of an existing OAuth account is rejected to prevent account takeover; set a password from `/settings` instead.

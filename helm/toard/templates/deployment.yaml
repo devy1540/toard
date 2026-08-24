@@ -45,16 +45,67 @@ spec:
           ports:
             - containerPort: 3000
           envFrom:
-            - secretRef:
-                name: {{ include "toard.secretName" . }}
             - configMapRef:
                 name: {{ include "toard.fullname" . }}-config
             {{- if .Values.encryption.provider }}
             - configMapRef:
                 name: {{ include "toard.fullname" . }}-encryption-config
             {{- end }}
-          {{- if .Values.migrate.enabled }}
           env:
+            # runtime에 필요한 key만 명시적으로 주입한다. bootstrap admin/PG 비밀번호는 app에 주지 않는다.
+            - name: AUTH_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: AUTH_SECRET
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: DATABASE_URL
+            - name: CRON_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: CRON_SECRET
+                  optional: true
+            - name: AUTH_GITHUB_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: AUTH_GITHUB_ID
+                  optional: true
+            - name: AUTH_GITHUB_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: AUTH_GITHUB_SECRET
+                  optional: true
+            - name: AUTH_GOOGLE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: AUTH_GOOGLE_ID
+                  optional: true
+            - name: AUTH_GOOGLE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: AUTH_GOOGLE_SECRET
+                  optional: true
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.secretName" . }}
+                  key: CLICKHOUSE_PASSWORD
+                  optional: true
+            - name: BOOTSTRAP_SETUP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "toard.bootstrapSetupSecretName" . }}
+                  key: BOOTSTRAP_SETUP_TOKEN
+                  optional: {{ empty .Values.secrets.bootstrapSetupSecret }}
+          {{- if .Values.migrate.enabled }}
             - name: TOARD_DEPLOYMENT_ID
               value: {{ include "toard.deploymentId" . | quote }}
             - name: TOARD_RELEASE_COMPLETION_ID

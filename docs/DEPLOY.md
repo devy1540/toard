@@ -91,6 +91,15 @@ kubectl apply -k k8s/
 
 - 마이그레이션은 **앱 파드 initContainer**(`migrate`)가 처리 — 스키마 보장 후 앱 기동. node-pg-migrate
   락으로 멀티파드 안전. `k8s/migrate-job.yaml` 은 선택(CI·수동·시드)이라 기본 kustomization 에서 제외.
+- browser `/setup` 경로는 Secret의 `BOOTSTRAP_SETUP_TOKEN`(32자 이상)을 **app runtime에만** 주입한다.
+  `k8s/secret.example.yaml`을 사용할 때는 이 값을 비공개 파일/Secret 관리 도구에서 넣고, 최초 admin 생성 뒤에는
+  아래 OrbStack 절차와 동일하게 key를 제거한 뒤 app을 rollout한다. migrate Job에는 setup token을 전달하지 않고
+  `DATABASE_URL`과 선택한 headless admin 필드만 전달한다.
+- headless admin을 쓸 때는 Secret의 `BOOTSTRAP_ADMIN_EMAIL`·`BOOTSTRAP_ADMIN_PASSWORD`를 migrate에만 선택적으로
+  전달한다. OAuth-only headless admin은 password와 browser setup token을 비우고 verified same-email provider를
+  직접 연결할 수 있다.
+- headless seed가 admin을 만든 뒤에는 `BOOTSTRAP_ADMIN_EMAIL`·`BOOTSTRAP_ADMIN_PASSWORD` key를 Secret에서 제거하고
+  migrate Job을 재생성하지 않는다. app은 이 두 key와 `POSTGRES_PASSWORD`를 받지 않는다.
 - 외부 관리형 DB: `postgres.yaml` 을 `k8s/base/kustomization.yaml` 에서 빼고 Secret 의 `DATABASE_URL` 만 외부로.
 - 접속: `kubectl -n toard port-forward svc/toard-app 3000:80` 또는 Ingress(host·TLS 조정).
 
@@ -118,8 +127,9 @@ node가 `Ready`이고 기본 StorageClass가 표시되는지 확인한다. 기�
 
 #### 2. toard Secret 생성 후 앱 배포
 
-Secret은 Git에 넣지 않으며 helper가 `AUTH_SECRET`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `CRON_SECRET`을
-생성해 클러스터에만 저장한다. helper는 **최초 설치 전용**이다. `toard-secrets`가 이미 있으면 stderr를
+Secret은 Git에 넣지 않으며 helper가 `AUTH_SECRET`, `POSTGRES_PASSWORD`, `DATABASE_URL`, `CRON_SECRET`,
+`BOOTSTRAP_SETUP_TOKEN`을 생성해 클러스터에만 저장한다. browser setup token은 아래처럼 로컬의 mode 0600
+파일에서 helper에 전달할 수 있다. helper는 **최초 설치 전용**이다. `toard-secrets`가 이미 있으면 stderr를
 출력하고 non-zero로 중단하며 값을 교체하지 않는다. Secret이 없어도 기존 `statefulset/postgres` 또는
 `persistentvolumeclaim/data-postgres-0`가 있으면 새 DB 비밀번호를 만들지 않고 복구 필요 메시지와 함께
 중단한다. 이 상태는 Secret 유실로 간주하고, 백업해 둔 기존 `AUTH_SECRET`, `POSTGRES_PASSWORD`,
@@ -131,8 +141,13 @@ Secret은 Git에 넣지 않으며 helper가 `AUTH_SECRET`, `POSTGRES_PASSWORD`, 
 # namespace를 먼저 명시적으로 생성한다.
 kubectl apply -f k8s/overlays/orbstack-personal/namespace.yaml
 
+# 최초 설치에서만 browser token을 stdout·argv에 노출하지 않고 준비한다.
+setup_token_file="$(mktemp "${TMPDIR:-/tmp}/toard-setup-token.XXXXXX")"
+chmod 600 "$setup_token_file"
+openssl rand -hex 32 >"$setup_token_file"
+
 # 최초 설치에서만 값을 출력하지 않고 toard-personal/toard-secrets를 만든다.
-./scripts/k8s-create-toard-secret.sh
+TOARD_BOOTSTRAP_SETUP_TOKEN_FILE="$setup_token_file" ./scripts/k8s-create-toard-secret.sh
 
 # Secret 생성 성공 후에만 app·PostgreSQL 리소스를 적용한다.
 kubectl apply -k k8s/overlays/orbstack-personal
@@ -149,11 +164,23 @@ PVC를 삭제하지 말고 먼저 `kubectl -n toard-personal get events --sort-b
 #### 3. 공개 노출 전에 `/setup` 완료
 
 Cloudflare route를 만들기 전에 로컬 포트포워드만으로 초기 관리자를 만든다. 아래 명령을 실행한 터미널은
-열어 둔 채 브라우저에서 `http://localhost:3000/setup`을 열고 관리자 이메일·비밀번호를 직접 입력한다.
-그 뒤 로그아웃/로그인까지 확인한다.
+열어 둔 채 브라우저에서 `http://localhost:3000/setup`을 열고, 위의 private token file에 저장된 값을 직접
+붙여넣은 뒤 관리자 이메일·비밀번호를 입력한다. OAuth-only면 비밀번호 입력 대신 GitHub verified primary 또는
+Google verified email과 정확히 같은 관리자 이메일을 사용하고, admin 생성 직후 해당 provider로 첫 로그인을
+완료한다. token을 터미널·로그·명령 인자에 출력하지 않는다. 로그인까지 확인한 뒤 **즉시** Secret key와 로컬
+token file을 제거하고 새 app Pod로 rollout한다.
 
 ```bash
 kubectl -n toard-personal port-forward svc/toard-app 3000:80
+```
+
+```bash
+# 값은 출력하지 않고 key만 제거한다. app env는 Pod 시작 때 Secret key를 읽으므로 반드시 새 Pod를 만든다.
+kubectl -n toard-personal patch secret toard-secrets --type=json \
+  -p='[{"op":"remove","path":"/data/BOOTSTRAP_SETUP_TOKEN"}]'
+rm -f -- "$setup_token_file"
+kubectl -n toard-personal rollout restart deployment/toard-app
+kubectl -n toard-personal rollout status deployment/toard-app --timeout=10m
 ```
 
 이 단계가 끝나기 전에는 `toard.devy1540.com` published application route를 추가하지 않는다.
@@ -260,18 +287,58 @@ curl -fsS https://toard.devy1540.com/api/ready
 
 `helm/toard` — values 로 튜닝. GitOps/ArgoCD·다중 환경에 적합.
 
+browser `/setup`을 사용할 최초 설치에서는 token을 Helm values나 명령 인자에 넣지 않는다. Helm은 values와
+rendered manifest를 release 이력에 보관하므로, token은 사전에 만든 operator-managed Kubernetes Secret에만 둔다.
+아래 파일은 mode 0600으로 유지하고 token 값은 브라우저에만 직접 붙여넣는다.
+
+```bash
+kubectl create namespace toard --dry-run=client -o yaml | kubectl apply -f -
+setup_token_file="$(mktemp "${TMPDIR:-/tmp}/toard-helm-setup-token.XXXXXX")"
+chmod 600 "$setup_token_file"
+openssl rand -hex 32 >"$setup_token_file"
+kubectl -n toard create secret generic toard-bootstrap-setup \
+  --from-file=BOOTSTRAP_SETUP_TOKEN="$setup_token_file"
+```
+
 ```bash
 helm install toard ./helm/toard \
   --namespace toard --create-namespace \
   --set image.app.repository=REG/toard --set image.app.tag=TAG \
   --set image.migrate.repository=REG/toard-migrate --set image.migrate.tag=TAG \
   --set secrets.authSecret=$(openssl rand -base64 33) \
-  --set postgres.auth.password=$(openssl rand -hex 16)
+  --set postgres.auth.password=$(openssl rand -hex 16) \
+  --set secrets.bootstrapSetupSecret=toard-bootstrap-setup
 ```
 
 - `secrets.authSecret` 미설정 시 렌더가 실패(가드). 프로덕션은 `secrets.existingSecret` 로 외부 시크릿 권장.
+- browser `/setup`은 `secrets.bootstrapSetupSecret`이 가리키는 별도 Secret의 `BOOTSTRAP_SETUP_TOKEN`(32자 이상)을
+  app에만 주입한다. Secret 이름을 비우면 `existingSecret`(또는 chart main Secret)의 같은 key를 optional로
+  참조한다. token 값 자체는 Helm values·rendered manifest·release 이력에 들어가지 않으며 migration·seed·
+  content-admin에도 전달되지 않는다.
+- OAuth-only(`config.authCredentialsEnabled=false`)는 GitHub/Google 자격을 먼저 구성하고, `/setup`의 admin email을
+  provider verified email과 일치시킨다. 첫 OAuth account 연결이 끝날 때까지 token을 유지한 뒤 제거·rollout한다.
+- headless는 `BOOTSTRAP_ADMIN_EMAIL`과 credentials 모드에서 `BOOTSTRAP_ADMIN_PASSWORD`를 가진 별도
+  operator-managed Secret을 먼저 만들고 `migrate.seedOnInstall=true`, `migrate.bootstrapAdminSecret=<name>`을
+  설정한다. OAuth-only headless는 password와 browser setup token 없이 verified same-email provider를 직접 연결할
+  수 있다. OAuth provider key가 runtime `existingSecret`에 있다면 Helm이 내용을 검사할 수 없으므로 operator가
+  provider id/secret을 확인한다. admin 자격 값은 Helm values나 release manifest에 넣지 않는다.
+- 최초 browser admin 생성 직후에는 Secret부터 삭제하지 않는다. 먼저 `secrets.bootstrapSetupSecret=""`으로
+  upgrade해 새 Pod가 token 없는 optional runtime Secret 경로로 전환된 것을 확인한 뒤 별도 setup Secret을 삭제한다.
+  이 순서가 바뀌면 새 Pod가 삭제된 mandatory Secret을 참조해 기동하지 못한다. runtime `existingSecret`의 key를
+  직접 사용했다면 해당 Secret 관리 도구에서 `BOOTSTRAP_SETUP_TOKEN` key를 제거한 뒤 app을 restart한다. seed 완료
+  뒤에는 `migrate.bootstrapAdminSecret`이 가리키는 별도 Secret을 삭제한다. 실패 조사 중인 seed Secret은 복구 전까지
+  보존한다.
+
+```bash
+helm upgrade toard ./helm/toard -n toard --reuse-values \
+  --set-string secrets.bootstrapSetupSecret="" \
+  --wait --wait-for-jobs
+kubectl -n toard rollout status deployment/toard --timeout=10m
+kubectl -n toard delete secret toard-bootstrap-setup
+rm -f -- "$setup_token_file"
+```
 - `postgres.enabled=false` + `secrets.databaseUrl=...` → 외부 DB.
-- `migrate.seedOnInstall=true` + `secrets.bootstrapAdmin.*` → 최초 설치 시 providers·admin 시드(post-install 훅).
+- `migrate.seedOnInstall=true` + `migrate.bootstrapAdminSecret=<name>` → 최초 설치 시 providers·admin 시드(post-install 훅).
 - `ingress.enabled=true --set ingress.host=toard.corp.com` → Ingress.
 - 일반 migration Job은 `migrate → baseline seed → completion marker` 순서로 실행된다. Job 이름, 앱 Pod
   annotation, 앱/Job env, DB marker는 모두 동일한 64자리 release completion ID를 사용한다. 이 ID는

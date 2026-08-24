@@ -107,3 +107,15 @@ test("lock 획득 뒤 admin이 확인되면 추가 생성 없이 rollback한다"
   );
   assert.equal(fixture.released(), true);
 });
+
+test("OAuth-only bootstrap은 password hash 없이도 같은 직렬화 경계를 사용한다", async () => {
+  const fixture = setupPool(false);
+  const result = await createFirstAdmin(fixture.pool, {
+    email: "oauth-admin@example.com",
+    name: "OAuth Admin",
+    passwordHash: null,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(fixture.queries[3]?.params, ["oauth-admin@example.com", "OAuth Admin", null]);
+});

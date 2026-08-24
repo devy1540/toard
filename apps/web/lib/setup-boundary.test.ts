@@ -25,6 +25,11 @@ test("browser setup은 token 입력과 adapter createUser guard를 함께 사용
 
   assert.match(form, /name="setupToken"/);
   assert.match(form, /minLength=\{32\}/);
+  assert.match(form, /credentialsEnabled \?/);
   assert.match(action, /verifyBootstrapSetupToken\(setupToken\)/);
-  assert.match(auth, /guardAdapterUserCreation\(PostgresAdapter\(getPool\(\)\), hasAdminUser\)/);
+  assert.match(action, /if \(!credentialsEnabled\) redirect\("\/login"\)/);
+  assert.match(auth, /createVerifiedGitHubProvider/);
+  assert.match(auth, /adminOAuthLinkingEnabled = !credentialsEnabled/);
+  assert.match(auth, /guardAdapterUserCreation\([\s\S]*adminOAuthLinkingEnabled/);
+  assert.match(auth, /email_verified !== true/);
 });

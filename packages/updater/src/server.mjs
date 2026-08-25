@@ -312,7 +312,6 @@ async function runUpdate(targetVersion) {
     envChange = await persistTargetVersion(effectiveTargetVersion);
 
     if (status.currentVersion === effectiveTargetVersion) {
-      status.running = false;
       status.phase = phases.completed;
       status.message = "already up to date";
       status.finishedAt = new Date().toISOString();
@@ -338,7 +337,6 @@ async function runUpdate(targetVersion) {
       throw new Error(`updated server reported ${verifiedVersion}, expected ${effectiveTargetVersion}`);
     }
 
-    status.running = false;
     status.phase = phases.completed;
     status.message = "update completed";
     status.finishedAt = new Date().toISOString();
@@ -349,7 +347,6 @@ async function runUpdate(targetVersion) {
     } catch (restoreError) {
       addLog(`failed to restore ${ENV_FILE}: ${String(restoreError)}`);
     }
-    status.running = false;
     status.phase = phases.failed;
     status.message = "update failed";
     status.error = String(e);
@@ -358,26 +355,85 @@ async function runUpdate(targetVersion) {
   }
 }
 
-async function handle(req, res) {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  if (req.method === "GET" && url.pathname === "/health") {
-    return send(res, SECRET ? 200 : 503, { ok: Boolean(SECRET) });
-  }
-  if (!authorized(req)) return send(res, 401, { error: "unauthorized" });
-  if (req.method === "GET" && url.pathname === "/status") return send(res, 200, publicStatus());
-  if (req.method === "POST" && url.pathname === "/update") {
-    if (status.running) return send(res, 409, { error: "update already running", status: publicStatus() });
-    try {
-      const body = await readJson(req);
-      const targetVersion = normalizeTargetVersion(body.targetVersion);
-      void runUpdate(targetVersion);
-      return send(res, 202, publicStatus());
-    } catch (e) {
-      return send(res, 400, { error: String(e) });
-    }
-  }
-  return send(res, 404, { error: "not found" });
+function createSingleFlight(start, { onError = null, onSettled = null } = {}) {
+  let leased = false;
+  let active = null;
+
+  return {
+    tryStart(value) {
+      if (leased) return null;
+      leased = true;
+      let started;
+      try {
+        started = Promise.resolve(start(value));
+      } catch (error) {
+        leased = false;
+        throw error;
+      }
+      const completed = onError ? started.catch(onError) : started;
+      const tracked = completed.finally(() => {
+        onSettled?.();
+        if (active === tracked) active = null;
+        leased = false;
+      });
+      active = tracked;
+      return tracked;
+    },
+    isRunning() {
+      return leased;
+    },
+  };
 }
+
+function recordUnexpectedUpdateFailure(error) {
+  status.phase = phases.failed;
+  status.message = "update failed";
+  status.error = String(error);
+  status.finishedAt = new Date().toISOString();
+  addLog(`update failed unexpectedly: ${status.error}`);
+}
+
+const updateFlight = createSingleFlight(runUpdate, {
+  onError: recordUnexpectedUpdateFailure,
+  onSettled: () => {
+    status.running = false;
+  },
+});
+
+function createHandle({
+  authorize = authorized,
+  readRequestJson = readJson,
+  startUpdate = (targetVersion) => updateFlight.tryStart(targetVersion),
+  getPublicStatus = publicStatus,
+  configured = () => Boolean(SECRET),
+} = {}) {
+  return async function handleRequest(req, res) {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    if (req.method === "GET" && url.pathname === "/health") {
+      const ready = configured();
+      return send(res, ready ? 200 : 503, { ok: ready });
+    }
+    if (!authorize(req)) return send(res, 401, { error: "unauthorized" });
+    if (req.method === "GET" && url.pathname === "/status") return send(res, 200, getPublicStatus());
+    if (req.method === "POST" && url.pathname === "/update") {
+      let targetVersion;
+      try {
+        const body = await readRequestJson(req);
+        targetVersion = normalizeTargetVersion(body.targetVersion);
+      } catch (e) {
+        return send(res, 400, { error: String(e) });
+      }
+
+      const task = startUpdate(targetVersion);
+      if (!task) return send(res, 409, { error: "update already running", status: getPublicStatus() });
+      void task;
+      return send(res, 202, getPublicStatus());
+    }
+    return send(res, 404, { error: "not found" });
+  };
+}
+
+const handle = createHandle();
 
 function startServer() {
   if (!SECRET) {
@@ -399,6 +455,8 @@ export {
   composeMigrateArgs,
   composePullArgs,
   composeRestartAppArgs,
+  createHandle,
+  createSingleFlight,
   dockerComposeArgs,
   initialStatus,
   normalizeTargetVersion,

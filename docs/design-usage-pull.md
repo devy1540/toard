@@ -1,11 +1,13 @@
 # 설계: Claude Code·Codex 사용량 수집을 OTLP push → 트랜스크립트 pull 로 전환
 
-상태: 제안(Proposed) · 2026-07-06
+상태: 구현 완료(Implemented) · 2026-07-06 · **역사적 전환 설계**
 관련: [design-host-breakdown](./design-host-breakdown.md) · ADR-001(수집) · §5.6(로컬 로그 pull)
+
+> 이 문서는 OTLP-first에서 pull-primary로 전환한 당시의 근거와 구현 기록이다. 현재 운영 계약은 [ARCHITECTURE.md](./ARCHITECTURE.md) §5와 [shim README](../shim/README.md)를 따른다.
 
 ## 1. 배경 / 문제
 
-현재 Claude Code·Codex **사용량**은 OTLP push(`/api/v1/logs`)로, gemini·qwen 은 로컬 로그 pull(`/api/v1/events`)로 수집한다. OTLP 경로는 운영에서 **구조적으로 취약**함이 실측으로 드러났다:
+전환 전 Claude Code·Codex **사용량**은 OTLP push(`/api/v1/logs`)로, gemini·qwen 은 로컬 로그 pull(`/api/v1/events`)로 수집했다. OTLP 경로는 운영에서 **구조적으로 취약**함이 실측으로 드러났다:
 
 - **env 기반 · 재시작 필요**: 텔레메트리는 `CLAUDE_CODE_ENABLE_TELEMETRY`/`OTEL_*` env 로만 켜지고, 이 env 는 프로세스 시작 시 1회만 읽힌다(공식 문서: *"read at startup … no hot reload"*). 이미 떠 있는 Claude Code(특히 Desktop)는 **재시작 전엔 절대 수집 안 됨**.
 - **Desktop/IDE 는 shim 미경유**: PATH shim 이 env 를 주입하지만 Desktop·IDE 는 shim 을 안 거쳐 `claude-env`(settings.json 주입)라는 별도 보완 장치가 필요하고, 그마저 host 라벨 누락·토큰 stale 등으로 계속 새는 지점이 생겼다.
@@ -195,14 +197,13 @@ OTLP dedup_key(`req|…`, `packages/ingest/src/dedup.ts`)와 pull dedup_key(`{ad
 3. **캐시생성 5m/1h "minor" 가정 (틀림 — 리스크 B)**: 초안 리스크 B 는 5m/1h 단일요율 오차를 "대개 작음"으로 미뤘으나, 실측상 Claude 캐시생성 토큰의 **86.8% 가 1h**(5m 13.2%)라 단일요율은 캐시생성 34.3%·**총비용 15.3% 과소계상**(opus 대표가). 정정: shim 이 `ephemeral_1h_input_tokens` 를 `cacheCreation1hTokens` 힌트로 전송하고 `resolveCost` 가 1h=input×2 로 차등 가격(§4.4). 선재 이슈(OTLP 경로에도 있던 가격 근사)라 push/pull 과 독립.
 - **구현 후 검증(실측)**: shim `collect --dry-run` 이벤트 수 == 독립 Python(정정 규칙) 재현치 — **codex 33,665=33,665 정확 일치**, **claude 84,139=84,139 정확 일치**(동시 측정; 라이브 append 로 시점 차만큼만 증감). Codex 대량 세션(621MB·8,657 token_count 포함) 165파일 파싱 2.7초. 마이그레이션 up/down 실 DB(트랜잭션·롤백) 검증. `identifyProvider` 게이트 단위테스트 5건. 캐시 5m/1h 차등 가격 단위테스트(pricing 8건)·와이어 골든(1h 힌트 4번째 fixture, TS·Rust 양측).
 
-## 9. 구현 계획 (단계)
+## 9. 구현 완료 기록
 
-1. **서버 게이트 먼저**: provider `collection_method` otel→logfile 마이그레이션 + `/v1/logs` 가 logfile provider OTLP 를 드롭. (배포 순서상 1순위 — §5.3)
-2. **claude usage 어댑터**: `claude.rs` `collects_usage()→true` + `parse_file()`(§4.2). **isSidechain 스킵 안 함**(서브에이전트 사용량 보존, message.id dedup). 유닛테스트 + 골든 픽스처(실 jsonl 기반, 서브에이전트 세션 포함).
-3. **codex usage 어댑터**: `codex.rs` 동일. **`inputTokens = input − cached`**(§4.2 캐시 주의), `last_token_usage` 델타 합산, `session_meta` 모델 추적. 골든 픽스처.
-4. **OTLP 주입 강등**: `TOARD_EXPERIMENTAL_OTLP` 뒤로 inject_env·claude_env·codex config. `claude-env` deprecate 경고.
-5. **검증**: 실 DB 로 pull→usage_events(host 포함) 확인, OTLP off 상태에서 이중집계 없음 확인, 백필 정확도(ccusage 대조).
-6. **문서·릴리스**: shim README·온보딩 갱신(재시작·claude-env 불필요 안내), 릴리스.
+1. 서버 `collection_method` 대칭 gate와 logfile baseline 반영 — 완료.
+2. Claude Code·Codex usage adapter와 골든 fixture — 완료.
+3. OTLP 주입을 `TOARD_EXPERIMENTAL_OTLP` 뒤로 격리 — 완료.
+4. pull→usage_events, host, 백필, 중복 차단 검증 — 완료.
+5. 현재 운영 문서는 Architecture·Deploy·README·shim README로 통합 — 완료.
 
 ## 10. 대안 검토
 

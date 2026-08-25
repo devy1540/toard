@@ -9,6 +9,26 @@
 4. **experimental OTLP**(`TOARD_EXPERIMENTAL_OTLP=1` 일 때만): 옛 push 경로. claude 는 OTEL env 주입(`CLAUDE_CODE_ENABLE_TELEMETRY=1`·`OTEL_*`), codex 는 `~/.codex/config.toml` `[otel]` 멱등 주입. 서버 provider `collection_method` 도 `otel` 이어야 실제로 수집된다(대칭 게이트 §5.2). 켜지 않으면 env/config 주입 없이 순수 패스스루.
    - 사용자 env 존중·병합 규칙은 종전과 동일(이미 설정된 키는 덮지 않고, `OTEL_EXPORTER_OTLP_HEADERS`/`OTEL_RESOURCE_ATTRIBUTES` 는 병합, 사용자 Authorization 존재 시 미주입+경고).
 
+### provider·endpoint 지원표
+
+| provider | 기본 usage source | 본문 opt-in | tool activity / inventory | experimental OTLP |
+|---|---|---|---|---|
+| Claude Code | `~/.claude/projects/**/*.jsonl` | 지원 | 지원 / 지원 | 지원 |
+| Codex | `~/.codex/sessions/**/*.jsonl` | 지원 | 지원 / 지원 | 지원 |
+| Cursor | 최소 stop hook 정확 토큰 | transcript에서 지원 | 지원 / 지원 | 미지원 |
+| Gemini | local session log | 지원 | 미지원 / 미지원 | 미지원 |
+| Qwen | local session log | 지원되는 event 형식 범위 | 미지원 / 미지원 | 미지원 |
+
+| Method | endpoint | 역할 |
+|---|---|---|
+| `POST` | `/api/v1/events` | 기본 사용량 |
+| `POST` | `/api/v1/events/reconcile` | Codex replay exact-key 정정 |
+| `POST` | `/api/v1/prompts` | opt-in 본문 |
+| `POST` | `/api/v1/prompts/reconcile` | prompt agent metadata 정정 |
+| `POST` | `/api/v1/tool-events` | 도구 활동 메타데이터 |
+| `PUT` | `/api/v1/tool-inventory` | 설치 인벤토리 |
+| `POST` | `/api/v1/logs` | experimental OTLP/JSON 또는 doctor의 빈 인증 probe |
+
 진단 메시지는 TTY 에서만 stderr 로 출력한다(`TOARD_SHIM_DEBUG=1` 로 강제).
 
 ## 관리 CLI (`toard-shim`)

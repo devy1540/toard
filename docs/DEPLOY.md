@@ -1,12 +1,26 @@
 # 배포 (Docker · Kubernetes · Helm)
 
-toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리는 방법. 수집(OTLP)을 앱이
-직수신하므로 무중단 롤링 배포를 전제로 설계했다(ADR-001).
+toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리는 방법. 기본 사용량은 각 개발자 머신의 Rust shim이 로컬 session/transcript를 pull한 뒤 `POST /api/v1/events`로 전송한다. OTLP `/api/v1/logs`는 experimental 경로다.
 
-**분리 배치(서버 ↔ 개발자 머신)** — 수집은 push 구조: 각 개발자 머신의 shim 이 서버로 전송하므로
-서버는 개발자들이 접근 가능한 주소로 서빙하기만 하면 된다(개발자 → 서버 단방향 HTTPS, 역방향 접속
-없음). 토큰이 Bearer 로 전송되므로 공개망은 TLS 필수. 프록시 뒤라 브라우징 URL ≠ 수집 URL 이면
+**분리 배치(서버 ↔ 개발자 머신)** — "pull"은 shim이 로컬 파일을 읽는 방식이고 서버 전달은 outbound push다. 서버는 개발자들이 접근 가능한 주소로 서빙하기만 하면 된다(개발자 → 서버 단방향 HTTPS, 역방향 접속 없음). 토큰이 Bearer 로 전송되므로 공개망은 TLS 필수. 프록시 뒤라 브라우징 URL ≠ 수집 URL 이면
 `TOARD_PUBLIC_URL` 로 설치 스니펫용 공개 URL 을 지정한다(미설정 시 요청 host 자동 유추).
+
+## 수집 네트워크·장애 경계
+
+| Method | Endpoint | 운영 수준 |
+|---|---|---|
+| `POST` | `/api/v1/events` | 기본 사용량 |
+| `POST` | `/api/v1/events/reconcile` | Codex replay exact-key 정정 |
+| `POST` | `/api/v1/prompts` | opt-in 본문 |
+| `POST` | `/api/v1/prompts/reconcile` | prompt agent metadata 정정 |
+| `POST` | `/api/v1/tool-events` | Claude/Codex/Cursor 활동 메타데이터 |
+| `PUT` | `/api/v1/tool-inventory` | Claude/Codex/Cursor 설치 인벤토리 |
+| `POST` | `/api/v1/logs` | experimental OTLP/JSON |
+
+- 기본 provider(Claude Code, Codex, Cursor, Gemini, Qwen)는 `collection_method='logfile'`이며 `/events`로 수렴한다. experimental OTLP 전환은 단일 target의 `TOARD_EXPERIMENTAL_OTLP=1`과 서버 provider `collection_method='otel'`을 함께 바꿔야 한다.
+- shim은 target별 파일 stamp와 전송 진행 cursor를 성공 뒤에만 전진시킨다. 앱이 일시 중단되면 그 target만 다음 수집에서 미전송 범위를 다시 구성하고 다른 target은 계속 전송한다.
+- shim에 별도 durable outbox는 없다. 로컬 source file과 target cursor가 재전송 SSOT이므로 장애 중 원본 session 파일을 삭제하면 누락분을 복구할 수 없다.
+- 재전송은 동일 `dedup_key`를 포함할 수 있으며 서버의 unique constraint/ClickHouse outbox가 중복을 흡수한다.
 
 ## 이미지
 
@@ -407,11 +421,12 @@ migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed 
 계정이 없거나 계정만 있고 legacy 행이 없는 사용자는 이 API도 body 처리 전에 410으로 종료한다. capability 조회
 오류는 `500 E2EE_LEGACY_GATE_FAILED`와 `Cache-Control: no-store`로 fail-closed한다.
 
-## 무중단 배포 노트 (ADR-001)
+## 무중단 배포 노트
 
 - Deployment `RollingUpdate maxUnavailable=0, maxSurge=1` — 항상 최소 replica 유지.
 - `readinessProbe=/api/ready`(DB 포함) 로 준비된 파드만 트래픽 수신, `livenessProbe=/api/health`(DB 무관)로 재시작 루프 방지.
-- 종료 시 `preStop sleep` + `terminationGracePeriodSeconds` 로 in-flight OTLP 수집을 드레인.
+- 종료 시 `preStop sleep` + `terminationGracePeriodSeconds` 로 in-flight HTTP 요청을 드레인.
+- rolling 배포는 가용성과 구/신 schema 호환을 위한 권장사항이다. pull-primary의 실패 target은 cursor를 전진시키지 않으므로 rolling 자체가 재전송 정확성의 유일한 보장은 아니다. experimental OTLP는 별도 local cursor가 없으므로 SDK retry 경계를 따로 확인한다.
 - **스키마 변경**은 파괴적 변경을 한 번에 넣지 말 것 — 아래 expand→contract 절.
 - cron(`sync-pricing`)은 앱 내장 스케줄러가 일 1회 자동 실행 — 별도 등록 불필요. on/off 는 관리 → 시스템 탭 토글(재시작 불필요), env `PRICING_AUTO_SYNC=off` 는 인프라 킬스위치. replica 가 여럿이면 각자 틱을 돌지만 "오늘 이미 동기화됨" 검사 + UPSERT 멱등이라 무해. 외부 스케줄러(Vercel·GH Actions)를 쓸 때만 별도 등록(README 스케줄러 절).
 

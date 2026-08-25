@@ -24,7 +24,7 @@ spec:
               valueFrom: { configMapKeyRef: { name: toard-config, key: POSTGRES_USER } }
       containers:
         - name: migrate
-          image: toard-migrate:0.0.1 # 기본 CMD = pnpm migrate
+          image: toard-migrate:0.0.2 # 기본 CMD = pnpm migrate
           # browser setup token을 포함한 runtime Secret은 app에만 준다.
           env:
             - name: DATABASE_URL

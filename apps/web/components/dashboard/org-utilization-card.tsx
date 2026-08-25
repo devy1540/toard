@@ -1,16 +1,36 @@
-import type { OrganizationUtilizationResult, UtilizationDimensionKey } from "@toard/core";
+import type { UtilizationDimensionKey } from "@toard/core";
 import { getFormatter, getTranslations } from "next-intl/server";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { FeatureStatusBadge } from "@/components/dashboard/feature-status-badge";
 import { Surface } from "@/components/ui/surface";
+import type { OrganizationUtilizationView } from "@/lib/ai-utilization";
 
 const dimensions: UtilizationDimensionKey[] = [
   "context_continuity",
   "execution_stability",
 ];
 
-export async function OrgUtilizationCard({ result }: { result: OrganizationUtilizationResult }) {
+export async function OrgUtilizationCard({ result }: { result: OrganizationUtilizationView }) {
   const [t, format] = await Promise.all([getTranslations("org"), getFormatter()]);
+  const period = (from: Date, to: Date) => t("utilization.methodology.periodRange", {
+    from: format.dateTime(from, { dateStyle: "medium", timeZone: result.timezone }),
+    to: format.dateTime(new Date(to.getTime() - 1), { dateStyle: "medium", timeZone: result.timezone }),
+  });
+  const methodology = (
+    <MethodologyDisclosure
+      currentPeriod={period(result.currentPeriod.from, result.currentPeriod.to)}
+      baselinePeriod={period(result.baselinePeriod.from, result.baselinePeriod.to)}
+      timezone={result.timezone}
+      methodologyVersion={result.methodologyVersion}
+      labels={{
+        current: t("utilization.methodology.current"),
+        baseline: t("utilization.methodology.baseline"),
+        timezone: t("utilization.methodology.timezone"),
+        version: t("utilization.methodology.version"),
+        fixed: t("utilization.methodology.fixed"),
+      }}
+    />
+  );
 
   if (result.state === "suppressed") {
     return (
@@ -22,11 +42,12 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
           </CardTitle>
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <Surface variant="muted" className="border-0 px-4 py-4">
             <p className="font-medium">{t("utilization.suppressed.title")}</p>
             <p className="text-muted-foreground mt-1 text-sm">{t("utilization.suppressed.description")}</p>
           </Surface>
+          {methodology}
         </CardContent>
         <PolicyFooter label={t("utilization.policy")} disclaimer={t("utilization.disclaimer")} />
       </Card>
@@ -43,11 +64,12 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
           </CardTitle>
           <CardDescription>{t("utilization.description")}</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <Surface variant="muted" className="border-0 px-4 py-4">
             <p className="font-medium">{t("utilization.insufficient.title")}</p>
             <p className="text-muted-foreground mt-1 text-sm">{t(`utilization.insufficient.${result.reason}`)}</p>
           </Surface>
+          {methodology}
         </CardContent>
         <PolicyFooter label={t("utilization.policy")} disclaimer={t("utilization.disclaimer")} />
       </Card>
@@ -95,9 +117,45 @@ export async function OrgUtilizationCard({ result }: { result: OrganizationUtili
             {t("utilization.sample", { included: result.sampleSize, excluded: result.excludedUsers })}
           </p>
         </div>
+
+        {methodology}
       </CardContent>
       <PolicyFooter label={t("utilization.policy")} disclaimer={t("utilization.disclaimer")} />
     </Card>
+  );
+}
+
+function MethodologyDisclosure({
+  currentPeriod,
+  baselinePeriod,
+  timezone,
+  methodologyVersion,
+  labels,
+}: {
+  currentPeriod: string;
+  baselinePeriod: string;
+  timezone: string;
+  methodologyVersion: string;
+  labels: { current: string; baseline: string; timezone: string; version: string; fixed: string };
+}) {
+  const entries = [
+    [labels.current, currentPeriod],
+    [labels.baseline, baselinePeriod],
+    [labels.timezone, timezone],
+    [labels.version, methodologyVersion],
+  ];
+  return (
+    <Surface padding="md">
+      <dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2">
+        {entries.map(([label, value]) => (
+          <div key={label} className="min-w-0">
+            <dt className="text-muted-foreground text-xs">{label}</dt>
+            <dd className="mt-1 break-words text-sm font-medium">{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <p className="text-muted-foreground mt-4 border-t pt-3 text-xs leading-relaxed">{labels.fixed}</p>
+    </Surface>
   );
 }
 

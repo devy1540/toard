@@ -12,6 +12,8 @@ import { getStorage } from "@/lib/storage";
 import { hostFromResourceAttrs, sanitizeAttrs } from "@/lib/sanitize";
 import { readBoundedJson, USAGE_INGEST_MAX_BODY_BYTES } from "@/lib/tool-ingest";
 import { recordTokenHost } from "@/lib/tokens";
+import { invalidateUtilizationForUser } from "@/lib/utilization-cache";
+import { withUserUtilizationCacheChange } from "@/lib/utilization-cache-generation";
 import { finalizeUsageEvents } from "@/lib/usage-finalization";
 
 // OTLP/JSON 수신 (ADR-001). shim 의 OTEL_EXPORTER_OTLP_ENDPOINT=<base>/api 가 /v1/logs 로 도달.
@@ -25,6 +27,8 @@ type LogsPostDeps = {
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
   recordTokenHost: typeof recordTokenHost;
+  invalidateUtilizationForUser(userId: string): void | Promise<void>;
+  withUserUtilizationCacheChange: typeof withUserUtilizationCacheChange;
   now(): Date;
 };
 
@@ -38,11 +42,16 @@ const defaultLogsPostDeps: LogsPostDeps = {
   saveRawEvent: (providerKey, payload) => getStorage().saveRawEvent(providerKey, payload),
   saveUsageEvents: (events) => getStorage().saveUsageEvents(events),
   recordTokenHost,
+  invalidateUtilizationForUser,
+  withUserUtilizationCacheChange,
   now: () => new Date(),
 };
 
 function createLogsPost(overrides: Partial<LogsPostDeps> = {}) {
   const deps: LogsPostDeps = { ...defaultLogsPostDeps, ...overrides };
+  if (overrides.saveUsageEvents && !overrides.withUserUtilizationCacheChange) {
+    deps.withUserUtilizationCacheChange = async (_userId, operation) => operation();
+  }
   return (req: Request) => postLogs(req, deps);
 }
 
@@ -93,62 +102,75 @@ async function postLogs(req: Request, deps: LogsPostDeps): Promise<Response> {
   let expired = 0;
   const failed: string[] = [];
   const hosts: Array<string | null> = [];
-  for (const [providerKey, recs] of byProvider) {
-    // 프로바이더 그룹별로 격리 — 한 그룹 실패가 다른 그룹·이미 저장분을 무효화하지 않도록
+  const processProviders = async () => {
+    for (const [providerKey, recs] of byProvider) {
+      // 프로바이더 그룹별로 격리 — 한 그룹 실패가 다른 그룹·이미 저장분을 무효화하지 않도록
+      try {
+        // 3. raw 보존
+        await deps.saveRawEvent(providerKey, recs);
+
+        const normalizer = deps.normalizers[providerKey];
+        if (!normalizer) continue;
+
+        // 컴퓨터별 구분(§design-host-breakdown): normalize 후엔 원본 레코드 연결이 끊기므로
+        // 여기서 그룹 recs 의 resourceAttrs(toard.host / host.name)를 읽어 이벤트에 부착.
+        // 한 provider 그룹 = 한 머신(한 POST=한 머신, ADR-001)이라 그룹 대표값이 곧 host.
+        const host = hostFromResourceAttrs(recs);
+        hosts.push(host);
+
+        // 4. 정규화 → 5. 이벤트 시각 기준 비용·가격 revision 확정
+        const normalized = normalizer.normalize(recs, { userId: auth.userId });
+        const events: UsageEvent[] = normalized.map((u) => ({
+          dedupKey: u.dedupKey,
+          providerKey: u.providerKey,
+          userId: u.userId,
+          sessionId: u.sessionId,
+          model: u.model,
+          ts: u.ts,
+          inputTokens: u.inputTokens,
+          outputTokens: u.outputTokens,
+          cacheReadTokens: u.cacheReadTokens,
+          cacheCreationTokens: u.cacheCreationTokens,
+          host,
+          costUsd: 0,
+        }));
+        const priceHints = new Map(
+          normalized.map((u) => [
+            u.dedupKey,
+            { providedCostUsd: u.providedCostUsd, isFast: u.isFast },
+          ]),
+        );
+        const finalized = finalizeUsageEvents(
+          events,
+          auth.userId,
+          schedule,
+          {
+            mode: "auto",
+            priceHints,
+          },
+          receivedAt,
+        );
+        expired += finalized.expired;
+
+        // 6. 멱등 저장 + 당일 Mart 증분
+        const res = await deps.saveUsageEvents(finalized.events);
+        inserted += res.inserted;
+        deduped += res.deduped;
+      } catch (e) {
+        failed.push(providerKey);
+        console.error(`ingest: provider ${providerKey} 처리 실패`, e);
+      }
+    }
+    return { inserted };
+  };
+  const saved = byProvider.size > 0
+    ? await deps.withUserUtilizationCacheChange(auth.userId, processProviders)
+    : await processProviders();
+  if (saved.inserted > 0) {
     try {
-      // 3. raw 보존
-      await deps.saveRawEvent(providerKey, recs);
-
-      const normalizer = deps.normalizers[providerKey];
-      if (!normalizer) continue;
-
-      // 컴퓨터별 구분(§design-host-breakdown): normalize 후엔 원본 레코드 연결이 끊기므로
-      // 여기서 그룹 recs 의 resourceAttrs(toard.host / host.name)를 읽어 이벤트에 부착.
-      // 한 provider 그룹 = 한 머신(한 POST=한 머신, ADR-001)이라 그룹 대표값이 곧 host.
-      const host = hostFromResourceAttrs(recs);
-      hosts.push(host);
-
-      // 4. 정규화 → 5. 이벤트 시각 기준 비용·가격 revision 확정
-      const normalized = normalizer.normalize(recs, { userId: auth.userId });
-      const events: UsageEvent[] = normalized.map((u) => ({
-        dedupKey: u.dedupKey,
-        providerKey: u.providerKey,
-        userId: u.userId,
-        sessionId: u.sessionId,
-        model: u.model,
-        ts: u.ts,
-        inputTokens: u.inputTokens,
-        outputTokens: u.outputTokens,
-        cacheReadTokens: u.cacheReadTokens,
-        cacheCreationTokens: u.cacheCreationTokens,
-        host,
-        costUsd: 0,
-      }));
-      const priceHints = new Map(
-        normalized.map((u) => [
-          u.dedupKey,
-          { providedCostUsd: u.providedCostUsd, isFast: u.isFast },
-        ]),
-      );
-      const finalized = finalizeUsageEvents(
-        events,
-        auth.userId,
-        schedule,
-        {
-          mode: "auto",
-          priceHints,
-        },
-        receivedAt,
-      );
-      expired += finalized.expired;
-
-      // 6. 멱등 저장 + 당일 Mart 증분
-      const res = await deps.saveUsageEvents(finalized.events);
-      inserted += res.inserted;
-      deduped += res.deduped;
-    } catch (e) {
-      failed.push(providerKey);
-      console.error(`ingest: provider ${providerKey} 처리 실패`, e);
+      await deps.invalidateUtilizationForUser(auth.userId);
+    } catch {
+      // 공유 generation이 전 pod cache key를 전진시키므로 local tag 정리 실패는 수집을 막지 않는다.
     }
   }
   try {

@@ -322,6 +322,102 @@ test("logs 경로는 provider별 expired를 합산하고 gate와 dedup 결과를
   assert.equal(saved[0]?.[0]?.pricingRevisionId, "old");
 });
 
+test("events와 logs는 새 사용량 저장 뒤 해당 사용자의 활용 지수 cache를 무효화한다", async () => {
+  const eventInvalidations: string[] = [];
+  const generationChanges: string[] = [];
+  const eventHandler = eventsPost.withDependencies({
+    authenticateIngestToken: async () => ({ userId: "events-user", tokenId: "token-1" }),
+    loadProviders: async () => providers,
+    getPricingSchedule: async () => schedule,
+    saveUsageEvents: async (events) => ({ inserted: events.length, deduped: 0 }),
+    recordTokenHost: async () => {},
+    recordShimVersions: async () => {},
+    invalidateUtilizationForUser: async (userId) => { eventInvalidations.push(userId); },
+    withUserUtilizationCacheChange: async (userId, operation) => {
+      const result = await operation();
+      generationChanges.push(userId);
+      return result;
+    },
+    now: () => new Date("2026-07-10T00:00:00Z"),
+  });
+  const eventResponse = await eventHandler(new Request("http://toard.test/api/v1/events", {
+    method: "POST",
+    headers: { authorization: "Bearer token" },
+    body: JSON.stringify([eventAt("2026-07-09T10:00:00Z", { providerKey: "claude_code" })]),
+  }));
+
+  const logInvalidations: string[] = [];
+  const logHandler = logsPost.withDependencies({
+    authenticateIngestToken: async () => ({ userId: "logs-user", tokenId: "token-2" }),
+    loadProviders: async () => providers,
+    getPricingSchedule: async () => schedule,
+    parseOtlpLogs: () => [{ scopeName: null, eventName: "claude_code", ts: new Date(), attrs: {}, resourceAttrs: {} }],
+    identifyProvider: () => "claude_code",
+    normalizers: {
+      claude_code: {
+        providerKey: "claude_code",
+        normalize: () => [{
+          dedupKey: "new-log",
+          providerKey: "claude_code",
+          userId: "client-user",
+          sessionId: "session-1",
+          model: "model-a",
+          ts: new Date("2026-07-09T10:00:00Z"),
+          inputTokens: 100,
+          outputTokens: 10,
+          cacheReadTokens: 0,
+          cacheCreationTokens: 0,
+          providedCostUsd: null,
+          isFast: false,
+        }],
+      },
+    },
+    saveRawEvent: async () => 1,
+    saveUsageEvents: async (events) => ({ inserted: events.length, deduped: 0 }),
+    recordTokenHost: async () => {},
+    invalidateUtilizationForUser: async (userId) => { logInvalidations.push(userId); },
+    withUserUtilizationCacheChange: async (userId, operation) => {
+      const result = await operation();
+      generationChanges.push(userId);
+      return result;
+    },
+    now: () => new Date("2026-07-10T00:00:00Z"),
+  });
+  const logResponse = await logHandler(new Request("http://toard.test/api/v1/logs", {
+    method: "POST",
+    headers: { authorization: "Bearer token" },
+    body: "{}",
+  }));
+
+  assert.equal(eventResponse.status, 200);
+  assert.equal(logResponse.status, 200);
+  assert.deepEqual(eventInvalidations, ["events-user"]);
+  assert.deepEqual(logInvalidations, ["logs-user"]);
+  assert.deepEqual(generationChanges, ["events-user", "logs-user"]);
+});
+
+test("events와 logs는 중복 사용량만 있으면 활용 지수 cache를 무효화하지 않는다", async () => {
+  let invalidations = 0;
+  const eventHandler = eventsPost.withDependencies({
+    authenticateIngestToken: async () => ({ userId: "user-1", tokenId: "token-1" }),
+    loadProviders: async () => providers,
+    getPricingSchedule: async () => schedule,
+    saveUsageEvents: async (events) => ({ inserted: 0, deduped: events.length }),
+    recordTokenHost: async () => {},
+    recordShimVersions: async () => {},
+    invalidateUtilizationForUser: async () => { invalidations += 1; },
+    now: () => new Date("2026-07-10T00:00:00Z"),
+  });
+
+  await eventHandler(new Request("http://toard.test/api/v1/events", {
+    method: "POST",
+    headers: { authorization: "Bearer token" },
+    body: JSON.stringify([eventAt("2026-07-09T10:00:00Z", { providerKey: "claude_code" })]),
+  }));
+
+  assert.equal(invalidations, 0);
+});
+
 test("events와 logs는 oversized Content-Length를 body read와 downstream 전에 거부한다", async () => {
   for (const [path, handler] of [
     ["events", eventsPost.withDependencies({ authenticateIngestToken: async () => ({ userId: "u", tokenId: "t" }) })],

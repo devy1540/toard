@@ -17,6 +17,15 @@ import { unstable_cache } from "next/cache";
 import { getOrganizationUtilizationToolDays, getUserUtilizationToolDays } from "./tool-metadata";
 import { getOrgTimezone } from "./org-time";
 import { getStorage } from "./storage";
+import {
+  ALL_PERSONAL_UTILIZATION_CACHE_TAG,
+  ORGANIZATION_UTILIZATION_CACHE_TAG,
+  personalUtilizationCacheTag,
+} from "./utilization-cache";
+import {
+  readUtilizationCacheGeneration,
+  type UtilizationCacheGenerationState,
+} from "./utilization-cache-generation";
 
 const featureKey = (userId: string, day: string): string => `${userId}\0${day}`;
 const UTILIZATION_HISTORY_WEEKS = 12;
@@ -30,6 +39,11 @@ export type PersonalUtilizationHistoryPoint = {
 export type PersonalUtilizationView = PersonalUtilizationResult & {
   calculatedAt: string;
   history: PersonalUtilizationHistoryPoint[];
+};
+export type OrganizationUtilizationView = OrganizationUtilizationResult & {
+  currentPeriod: { from: Date; to: Date };
+  baselinePeriod: { from: Date; to: Date };
+  timezone: string;
 };
 const reviveDate = (value: Date | string): Date =>
   value instanceof Date ? new Date(value.getTime()) : new Date(value);
@@ -151,7 +165,7 @@ export function calculateOrganizationUtilizationFromRows(
   usageRows: UtilizationUsageDay[],
   toolRows: UtilizationToolDay[],
   periods: UtilizationPeriods,
-): OrganizationUtilizationResult {
+): OrganizationUtilizationView {
   const merged = mergeUtilizationDays(usageRows, toolRows);
   const currentFrom = localDateKey(periods.current.from, periods.timezone);
   const currentTo = localDateKey(periods.current.to, periods.timezone);
@@ -169,12 +183,17 @@ export function calculateOrganizationUtilizationFromRows(
   }
   const personalResults = [...activeUsers].map((userId) =>
     calculatePersonalUtilization(byUser.get(userId) ?? [], periods));
-  return aggregateOrganizationUtilization(personalResults, activeUsers.size);
+  return {
+    ...aggregateOrganizationUtilization(personalResults, activeUsers.size),
+    currentPeriod: periods.current,
+    baselinePeriod: periods.baseline,
+    timezone: periods.timezone,
+  };
 }
 
 async function calculateOrganizationForPeriods(
   periods: UtilizationPeriods,
-): Promise<OrganizationUtilizationResult> {
+): Promise<OrganizationUtilizationView> {
   const range = utilizationRange(periods);
   const [usage, tools] = await Promise.all([
     getStorage().getOrganizationUtilizationUsage(range),
@@ -185,12 +204,37 @@ async function calculateOrganizationForPeriods(
 
 export async function calculateOrganizationUtilization(
   now = new Date(),
-): Promise<OrganizationUtilizationResult> {
+): Promise<OrganizationUtilizationView> {
   const periods = buildUtilizationPeriods(now, getOrgTimezone());
   return calculateOrganizationForPeriods(periods);
 }
 
-export function utilizationCacheArgs(userId: string, periods: UtilizationPeriods) {
+const EMPTY_CACHE_GENERATION: UtilizationCacheGenerationState = {
+  personalUserGeneration: 0,
+  personalUserPending: 0,
+  personalAllGeneration: 0,
+  personalAllPending: 0,
+  organizationGeneration: 0,
+  organizationPending: 0,
+};
+
+export function shouldBypassPersonalUtilizationCache(
+  generation: UtilizationCacheGenerationState,
+): boolean {
+  return generation.personalUserPending > 0 || generation.personalAllPending > 0;
+}
+
+export function shouldBypassOrganizationUtilizationCache(
+  generation: UtilizationCacheGenerationState,
+): boolean {
+  return generation.organizationPending > 0;
+}
+
+export function utilizationCacheArgs(
+  userId: string,
+  periods: UtilizationPeriods,
+  generation: UtilizationCacheGenerationState = EMPTY_CACHE_GENERATION,
+) {
   return [
     userId,
     periods.baseline.from.toISOString(),
@@ -198,16 +242,22 @@ export function utilizationCacheArgs(userId: string, periods: UtilizationPeriods
     periods.current.to.toISOString(),
     periods.timezone,
     UTILIZATION_METHODOLOGY_VERSION,
+    generation.personalUserGeneration,
+    generation.personalAllGeneration,
   ] as const;
 }
 
-function organizationCacheArgs(periods: UtilizationPeriods) {
+function organizationCacheArgs(
+  periods: UtilizationPeriods,
+  generation: UtilizationCacheGenerationState,
+) {
   return [
     periods.baseline.from.toISOString(),
     periods.current.from.toISOString(),
     periods.current.to.toISOString(),
     periods.timezone,
     UTILIZATION_METHODOLOGY_VERSION,
+    generation.organizationGeneration,
   ] as const;
 }
 
@@ -224,21 +274,47 @@ function periodsFromCacheArgs(
   };
 }
 
-const readCachedPersonal = unstable_cache(
-  async (
-    userId: string,
-    baselineFrom: string,
-    currentFrom: string,
-    currentTo: string,
-    timezone: string,
-    _methodologyVersion: string,
-  ) => calculatePersonalForPeriods(
+function readCachedPersonal(
+  userId: string,
+  baselineFrom: string,
+  currentFrom: string,
+  currentTo: string,
+  timezone: string,
+  methodologyVersion: string,
+  personalGeneration: number,
+  allPersonalGeneration: number,
+) {
+  const read = unstable_cache(
+    async (
+      cachedUserId: string,
+      cachedBaselineFrom: string,
+      cachedCurrentFrom: string,
+      cachedCurrentTo: string,
+      cachedTimezone: string,
+      _methodologyVersion: string,
+      _personalGeneration: number,
+      _allPersonalGeneration: number,
+    ) => calculatePersonalForPeriods(
+      cachedUserId,
+      periodsFromCacheArgs(cachedBaselineFrom, cachedCurrentFrom, cachedCurrentTo, cachedTimezone),
+    ),
+    ["personal-utilization-v2"],
+    {
+      revalidate: 600,
+      tags: [personalUtilizationCacheTag(userId), ALL_PERSONAL_UTILIZATION_CACHE_TAG],
+    },
+  );
+  return read(
     userId,
-    periodsFromCacheArgs(baselineFrom, currentFrom, currentTo, timezone),
-  ),
-  ["personal-utilization-v2"],
-  { revalidate: 600 },
-);
+    baselineFrom,
+    currentFrom,
+    currentTo,
+    timezone,
+    methodologyVersion,
+    personalGeneration,
+    allPersonalGeneration,
+  );
+}
 
 const readCachedOrganization = unstable_cache(
   async (
@@ -247,16 +323,20 @@ const readCachedOrganization = unstable_cache(
     currentTo: string,
     timezone: string,
     _methodologyVersion: string,
+    _organizationGeneration: number,
   ) => calculateOrganizationForPeriods(
     periodsFromCacheArgs(baselineFrom, currentFrom, currentTo, timezone),
   ),
   ["organization-utilization-v2"],
-  { revalidate: 600 },
+  { revalidate: 600, tags: [ORGANIZATION_UTILIZATION_CACHE_TAG] },
 );
 
 export async function getCachedPersonalUtilization(userId: string, now = new Date()) {
   const periods = buildUtilizationPeriods(now, getOrgTimezone());
-  const result = await readCachedPersonal(...utilizationCacheArgs(userId, periods));
+  const generation = await readUtilizationCacheGeneration(userId);
+  const result = shouldBypassPersonalUtilizationCache(generation)
+    ? await calculatePersonalForPeriods(userId, periods)
+    : await readCachedPersonal(...utilizationCacheArgs(userId, periods, generation));
   return {
     ...result,
     currentPeriod: {
@@ -277,7 +357,21 @@ export async function getCachedPersonalUtilization(userId: string, now = new Dat
   } satisfies PersonalUtilizationView;
 }
 
-export function getCachedOrganizationUtilization(now = new Date()) {
+export async function getCachedOrganizationUtilization(now = new Date()): Promise<OrganizationUtilizationView> {
   const periods = buildUtilizationPeriods(now, getOrgTimezone());
-  return readCachedOrganization(...organizationCacheArgs(periods));
+  const generation = await readUtilizationCacheGeneration(null);
+  const result = shouldBypassOrganizationUtilizationCache(generation)
+    ? await calculateOrganizationForPeriods(periods)
+    : await readCachedOrganization(...organizationCacheArgs(periods, generation));
+  return {
+    ...result,
+    currentPeriod: {
+      from: reviveDate(result.currentPeriod.from),
+      to: reviveDate(result.currentPeriod.to),
+    },
+    baselinePeriod: {
+      from: reviveDate(result.baselinePeriod.from),
+      to: reviveDate(result.baselinePeriod.to),
+    },
+  };
 }

@@ -7,6 +7,8 @@ import { sanitizeHost } from "@/lib/sanitize";
 import { getStorage } from "@/lib/storage";
 import { readBoundedJson, USAGE_INGEST_MAX_BODY_BYTES } from "@/lib/tool-ingest";
 import { recordTokenHost } from "@/lib/tokens";
+import { invalidateUtilizationForUser } from "@/lib/utilization-cache";
+import { withUserUtilizationCacheChange } from "@/lib/utilization-cache-generation";
 import { finalizeUsageEvents } from "@/lib/usage-finalization";
 
 // 정규화 UsageEvent[] 수신 — shim 로컬 로그 pull 경로 (설계 §5.6, ADR-002).
@@ -19,6 +21,8 @@ type EventsPostDeps = {
   saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
   recordTokenHost: typeof recordTokenHost;
   recordShimVersions: typeof recordShimVersions;
+  invalidateUtilizationForUser(userId: string): void | Promise<void>;
+  withUserUtilizationCacheChange: typeof withUserUtilizationCacheChange;
   now(): Date;
 };
 
@@ -29,11 +33,16 @@ const defaultEventsPostDeps: EventsPostDeps = {
   saveUsageEvents: (events) => getStorage().saveUsageEvents(events),
   recordTokenHost,
   recordShimVersions,
+  invalidateUtilizationForUser,
+  withUserUtilizationCacheChange,
   now: () => new Date(),
 };
 
 function createEventsPost(overrides: Partial<EventsPostDeps> = {}) {
   const deps: EventsPostDeps = { ...defaultEventsPostDeps, ...overrides };
+  if (overrides.saveUsageEvents && !overrides.withUserUtilizationCacheChange) {
+    deps.withUserUtilizationCacheChange = async (_userId, operation) => operation();
+  }
   return (req: Request) => postEvents(req, deps);
 }
 
@@ -94,7 +103,17 @@ async function postEvents(req: Request, deps: EventsPostDeps): Promise<Response>
   );
 
   // 5. 멱등 저장 + 당일 Mart 증분 — dedupKey 는 shim 생성 값 신뢰(멱등이라 무해, §4.4)
-  const res = await deps.saveUsageEvents(finalized.events);
+  const res = await deps.withUserUtilizationCacheChange(
+    auth.userId,
+    () => deps.saveUsageEvents(finalized.events),
+  );
+  if (res.inserted > 0) {
+    try {
+      await deps.invalidateUtilizationForUser(auth.userId);
+    } catch {
+      // 공유 generation이 전 pod cache key를 전진시키므로 local tag 정리 실패는 수집을 막지 않는다.
+    }
+  }
   try {
     await deps.recordTokenHost(auth.tokenId, sanitized.map((e) => e.host));
   } catch {

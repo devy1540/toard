@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { ToolActivityEvent, ToolInventorySnapshot } from "@toard/core";
 import { ToolWireParseError } from "@toard/core";
-import { finalizeToolActivity, finalizeToolInventory, readBoundedJson, toolIngestClientError } from "./tool-ingest";
+import {
+  finalizeToolActivity,
+  finalizeToolInventory,
+  ingestToolActivity,
+  readBoundedJson,
+  toolIngestClientError,
+} from "./tool-ingest";
 
 const event: ToolActivityEvent = {
   dedupKey: "a".repeat(64),
@@ -25,6 +31,56 @@ test("활동 ingest는 인증 소유권과 살균된 host를 강제한다", () =
   assert.equal(result?.host, "macbook.local");
   assert.equal("arguments" in (result ?? {}), false);
   assert.equal("output" in (result ?? {}), false);
+});
+
+test("새 도구 활동은 저장 뒤 해당 사용자의 활용 지수 cache를 무효화한다", async () => {
+  const invalidated: string[] = [];
+  const generation: boolean[] = [];
+  const result = await ingestToolActivity(
+    { userId: "user-auth", tokenId: "token-auth" },
+    [event],
+    {
+      insertToolActivity: async () => ({ inserted: 1, deduped: 0 }),
+      invalidateUtilizationForUser: async (userId) => { invalidated.push(userId); },
+      withUserUtilizationCacheChange: async (_userId, operation) => {
+        const result = await operation();
+        generation.push(true);
+        return result;
+      },
+    },
+  );
+
+  assert.deepEqual(result, { inserted: 1, deduped: 0 });
+  assert.deepEqual(invalidated, ["user-auth"]);
+  assert.deepEqual(generation, [true]);
+});
+
+test("중복 도구 활동은 활용 지수 cache를 무효화하지 않는다", async () => {
+  let invalidations = 0;
+  await ingestToolActivity(
+    { userId: "user-auth", tokenId: "token-auth" },
+    [event],
+    {
+      insertToolActivity: async () => ({ inserted: 0, deduped: 1 }),
+      invalidateUtilizationForUser: async () => { invalidations += 1; },
+    },
+  );
+
+  assert.equal(invalidations, 0);
+});
+
+test("활용 지수 산식이 지원하지 않는 provider 활동은 cache를 무효화하지 않는다", async () => {
+  let invalidations = 0;
+  await ingestToolActivity(
+    { userId: "user-auth", tokenId: "token-auth" },
+    [{ ...event, providerKey: "gemini" }],
+    {
+      insertToolActivity: async () => ({ inserted: 1, deduped: 0 }),
+      invalidateUtilizationForUser: async () => { invalidations += 1; },
+    },
+  );
+
+  assert.equal(invalidations, 0);
 });
 
 test("인벤토리 ingest는 인증 소유권을 강제하고 안전한 필드만 유지한다", () => {

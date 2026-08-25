@@ -2623,7 +2623,21 @@ export class ClickHouseStorage implements StorageBackend {
            ORDER BY dedup_key`,
           [batch.id],
         );
+        let utilizationLeaseId: string | null = null;
+        let utilizationHeartbeat: ReturnType<typeof setInterval> | null = null;
         try {
+          const lease = await client.query<{ lease_id: string }>(
+            "SELECT begin_all_utilization_cache_change()::text AS lease_id",
+          );
+          utilizationLeaseId = lease.rows[0]?.lease_id ?? null;
+          if (!utilizationLeaseId) throw new Error("utilization cache change lease missing");
+          utilizationHeartbeat = setInterval(() => {
+            void client.query(
+              "SELECT heartbeat_utilization_cache_change($1::uuid)",
+              [utilizationLeaseId],
+            ).catch(() => undefined);
+          }, 30_000);
+          utilizationHeartbeat.unref();
           await this.insertOutboxRows(batch, batchRows.rows);
           await client.query("BEGIN");
           await this.mark15mRollupDirty(client, batchRows.rows);
@@ -2646,11 +2660,26 @@ export class ClickHouseStorage implements StorageBackend {
           if (batchRows.rows.some((row) => row.cost_status === "unpriced")) {
             await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
           }
+          await client.query(
+            "SELECT finish_all_utilization_cache_change($1::uuid, true)",
+            [utilizationLeaseId],
+          );
           await client.query("COMMIT");
+          if (utilizationHeartbeat) clearInterval(utilizationHeartbeat);
+          utilizationHeartbeat = null;
+          utilizationLeaseId = null;
           batches++;
           rows += batchRows.rowCount ?? 0;
         } catch (e) {
           await client.query("ROLLBACK").catch(() => undefined);
+          if (utilizationHeartbeat) clearInterval(utilizationHeartbeat);
+          utilizationHeartbeat = null;
+          if (utilizationLeaseId) {
+            await client.query(
+              "SELECT finish_all_utilization_cache_change($1::uuid, true)",
+              [utilizationLeaseId],
+            ).catch(() => undefined);
+          }
           await client.query(
             `UPDATE clickhouse_usage_batches
              SET status = 'pending',

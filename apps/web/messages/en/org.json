@@ -100,6 +100,14 @@
     "sample": "{included} included · {excluded} below the threshold",
     "policy": "View utilization index policy",
     "disclaimer": "Not for personal ranking or performance evaluation.",
+    "methodology": {
+      "current": "Current completed 7 days",
+      "baseline": "28-day baseline",
+      "timezone": "Organization timezone",
+      "version": "Methodology",
+      "periodRange": "{from}–{to}",
+      "fixed": "Uses the completed 7 days and preceding 28 days in the organization timezone, independently of the general dashboard period and provider filters."
+    },
     "dimensions": {
       "context_continuity": "Context reuse median",
       "execution_stability": "Tool execution success median"

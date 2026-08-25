@@ -12,11 +12,19 @@ const request = (body: unknown) => new Request("http://localhost/api/v1/events/r
 
 test("Codex reconciliation은 인증 사용자 범위와 중복 제거된 키만 저장소에 전달한다", async () => {
   let captured: UsageEventReconciliationRequest | undefined;
+  const invalidated: string[] = [];
+  const generation: string[] = [];
   const handler = POST.withDependencies({
     authenticateIngestToken: async () => ({ userId: "server-user", tokenId: "token-1" }),
     reconcileUsageEvents: async (input) => {
       captured = input;
       return { reconciled: 1, affectedBuckets: [new Date()] };
+    },
+    invalidateUtilizationForUser: async (userId) => { invalidated.push(userId); },
+    withUserUtilizationCacheChange: async (userId, operation) => {
+      const result = await operation();
+      generation.push(userId);
+      return result;
     },
   });
 
@@ -34,6 +42,8 @@ test("Codex reconciliation은 인증 사용자 범위와 중복 제거된 키만
     dedupKeys: [key],
   });
   assert.deepEqual(await response.json(), { reconciled: 1 });
+  assert.deepEqual(invalidated, ["server-user"]);
+  assert.deepEqual(generation, ["server-user"]);
 });
 
 test("Codex reconciliation은 미인증 요청을 거부한다", async () => {
@@ -61,18 +71,56 @@ test("Codex reconciliation은 malformed JSON, 잘못된 키, 1001개 초과를 �
 
 test("Codex reconciliation 빈 배열은 저장소를 호출하지 않고 멱등 성공한다", async () => {
   let calls = 0;
+  let invalidations = 0;
   const handler = POST.withDependencies({
     authenticateIngestToken: async () => ({ userId: "user-1", tokenId: "token-1" }),
     reconcileUsageEvents: async () => {
       calls += 1;
       return { reconciled: 0, affectedBuckets: [] };
     },
+    invalidateUtilizationForUser: async () => { invalidations += 1; },
   });
 
   const response = await handler(request({ dedupKeys: [] }));
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { reconciled: 0 });
   assert.equal(calls, 0);
+  assert.equal(invalidations, 0);
+});
+
+test("Codex reconciliation은 실제 삭제가 없으면 활용 지수 cache를 무효화하지 않는다", async () => {
+  let invalidations = 0;
+  const handler = POST.withDependencies({
+    authenticateIngestToken: async () => ({ userId: "user-1", tokenId: "token-1" }),
+    reconcileUsageEvents: async () => ({ reconciled: 0, affectedBuckets: [] }),
+    invalidateUtilizationForUser: async () => { invalidations += 1; },
+  });
+
+  const response = await handler(request({ dedupKeys: [key] }));
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { reconciled: 0 });
+  assert.equal(invalidations, 0);
+});
+
+test("공유 generation 완료 뒤 local tag 정리가 실패해도 보정 결과는 성공한다", async () => {
+  let generationFinished = false;
+  const handler = POST.withDependencies({
+    authenticateIngestToken: async () => ({ userId: "user-1", tokenId: "token-1" }),
+    reconcileUsageEvents: async () => ({ reconciled: 1, affectedBuckets: [] }),
+    withUserUtilizationCacheChange: async (_userId, operation) => {
+      const result = await operation();
+      generationFinished = true;
+      return result;
+    },
+    invalidateUtilizationForUser: async () => { throw new Error("local cache unavailable"); },
+  });
+
+  const response = await handler(request({ dedupKeys: [key] }));
+
+  assert.equal(response.status, 200);
+  assert.equal(generationFinished, true);
+  assert.deepEqual(await response.json(), { reconciled: 1 });
 });
 
 test("Codex reconciliation은 Content-Length 초과를 body 읽기 전에 거부한다", async () => {

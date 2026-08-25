@@ -30,7 +30,7 @@
 - **🔌 Multi-provider** — bring Claude Code, Codex, Cursor, Gemini, Qwen, and other tools into one dashboard
 - **🪶 Lightweight collection** — the shim collects usage and AI-tool activity from local session files and Cursor's minimal token hook; devices are identified automatically, idempotent deduplication is built in, and experimental OTLP push ingestion is also available
 - **🧰 AI-tool visibility** — inspect MCP and skill activity, plus plugin, skill, and MCP installation status by device, using metadata only
-- **🧭 AI utilization index** — personal dashboards provide a three-axis score relative to the individual; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
+- **🧭 AI utilization index** — personal dashboards provide a two-axis composite score relative to the individual, with failure recovery shown as a separate diagnostic; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
 - **💰 Accurate cost calculation** — a LiteLLM-price-based engine supports per-million, tiered 200k, cache, and fast-mode pricing with daily automatic synchronization
 - **👥 Organization views** — organization and team aggregates, leaderboards, personal dashboards, an admin panel, and invitation-based self-onboarding
 - **🗄️ Scalable storage** — PostgreSQL is the default single backend; ClickHouse is an opt-in option for medium and larger installations through the `StorageBackend` abstraction

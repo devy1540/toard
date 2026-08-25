@@ -14,6 +14,7 @@ import type { RollupCoordinatorCandidate } from "./rollup-coordinator";
 import type { RollupSchedulerOutcome } from "./rollup-coordinator-state";
 import { sanitizeRollupError } from "./rollup-worker-state";
 import { getStorage } from "./storage";
+import { withAllUtilizationCacheChange } from "./utilization-cache-generation";
 
 const STALE_RUNNING_MS = 5 * 60 * 1_000;
 const WAITING_RETRY_MS = 60 * 60 * 1_000;
@@ -273,6 +274,7 @@ type PricingRepairTaskDependencies = {
     diagnostics: HistoricalPricingDiagnostic[],
   ): Promise<HistoricalPricingStepResult>;
   invalidateInsightCache?(): void;
+  withAllUtilizationCacheChange?: typeof withAllUtilizationCacheChange;
   now(): Date;
 };
 
@@ -377,13 +379,17 @@ export async function runPricingRepairTaskWith(
   const startedAt = dependencies.now();
   const claimed = await dependencies.repository.claim(startedAt);
   if (!claimed?.generation || !claimed.targetTo) return "superseded";
+  const targetTo = claimed.targetTo;
   const from = new Date(0);
   try {
-    const replay = await dependencies.storage.reconcileCodexReplayUsage({
+    const replayOperation = () => dependencies.storage.reconcileCodexReplayUsage({
       from,
-      to: claimed.targetTo,
+      to: targetTo,
       limit: claimed.adaptiveLimit,
     });
+    const replay = dependencies.withAllUtilizationCacheChange
+      ? await dependencies.withAllUtilizationCacheChange(replayOperation)
+      : await replayOperation();
     if (replay.scanned > 0) {
       const at = dependencies.now();
       const adaptive = nextPricingRepairBatchLimit(
@@ -551,6 +557,7 @@ export async function runPricingRepairTask(now?: Date): Promise<RollupSchedulerO
     getNonAuthoritativeRevisionIds: loadNonAuthoritativeRevisionIds,
     runHistoricalPricingStep,
     invalidateInsightCache: () => revalidateTag("user-insights"),
+    withAllUtilizationCacheChange,
     now: clock,
   });
 }

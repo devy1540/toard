@@ -106,9 +106,27 @@ test("조직 활용 지수 UI는 최소 표본을 지키고 개인 식별자를 
   assert.match(page, /loadOrganizationDashboardData/);
   assert.match(loader, /getUtilization:\s*(?:\(\)\s*=>\s*)?getCachedOrganizationUtilization\b/);
   assert.match(card, /result\.state === "suppressed"/);
+  assert.match(card, /result\.currentPeriod/);
+  assert.match(card, /result\.baselinePeriod/);
+  assert.match(card, /result\.timezone/);
+  assert.match(card, /result\.methodologyVersion/);
+  assert.match(card, /utilization\.methodology\.fixed/);
   assert.doesNotMatch(card, /userId|email|individualScores|leaderboard/i);
   assert.match(ko, /활성 사용자 5명/);
+  assert.match(ko, /현재 완료 7일/);
+  assert.match(ko, /기준 28일/);
+  assert.match(ko, /기간·프로바이더 필터와 별도로/);
   assert.match(en, /5 active users/);
+  assert.match(en, /Current completed 7 days/);
+  assert.match(en, /28-day baseline/);
+});
+
+test("README는 v2를 두 점수축과 별도 복구 진단으로 설명한다", () => {
+  const readme = repoSource("README.md");
+
+  assert.doesNotMatch(readme, /three-axis score/);
+  assert.match(readme, /two-axis composite score/);
+  assert.match(readme, /failure recovery shown as a separate diagnostic/);
 });
 
 test("활용 지수 코드와 문서는 콘텐츠 비수집·방법론·최소 표본 계약을 유지한다", () => {

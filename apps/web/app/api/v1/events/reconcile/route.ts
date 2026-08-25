@@ -5,6 +5,8 @@ import type {
 import { authenticateIngestToken } from "@/lib/ingest-auth";
 import { getStorage } from "@/lib/storage";
 import { readBoundedJson } from "@/lib/tool-ingest";
+import { invalidateUtilizationForUser } from "@/lib/utilization-cache";
+import { withUserUtilizationCacheChange } from "@/lib/utilization-cache-generation";
 
 const MAX_BODY_BYTES = 128 * 1024;
 const MAX_DEDUP_KEYS = 1_000;
@@ -15,15 +17,22 @@ type ReconcilePostDeps = {
   reconcileUsageEvents(
     request: UsageEventReconciliationRequest,
   ): Promise<UsageEventReconciliationResult>;
+  invalidateUtilizationForUser(userId: string): void | Promise<void>;
+  withUserUtilizationCacheChange: typeof withUserUtilizationCacheChange;
 };
 
 const defaultReconcilePostDeps: ReconcilePostDeps = {
   authenticateIngestToken,
   reconcileUsageEvents: (request) => getStorage().reconcileUsageEvents(request),
+  invalidateUtilizationForUser,
+  withUserUtilizationCacheChange,
 };
 
 function createReconcilePost(overrides: Partial<ReconcilePostDeps> = {}) {
   const deps: ReconcilePostDeps = { ...defaultReconcilePostDeps, ...overrides };
+  if (overrides.reconcileUsageEvents && !overrides.withUserUtilizationCacheChange) {
+    deps.withUserUtilizationCacheChange = async (_userId, operation) => operation();
+  }
   return (req: Request) => postReconciliation(req, deps);
 }
 
@@ -56,12 +65,22 @@ async function postReconciliation(req: Request, deps: ReconcilePostDeps): Promis
     return Response.json({ reconciled: 0 });
   }
 
-  const result = await deps.reconcileUsageEvents({
-    userId: auth.userId,
-    providerKey: "codex",
-    logAdapter: "codex",
-    dedupKeys,
-  });
+  const result = await deps.withUserUtilizationCacheChange(
+    auth.userId,
+    () => deps.reconcileUsageEvents({
+      userId: auth.userId,
+      providerKey: "codex",
+      logAdapter: "codex",
+      dedupKeys,
+    }),
+  );
+  if (result.reconciled > 0) {
+    try {
+      await deps.invalidateUtilizationForUser(auth.userId);
+    } catch {
+      // 공유 generation이 전 pod cache key를 전진시키므로 local tag 정리 실패는 보정 응답을 막지 않는다.
+    }
+  }
   return Response.json({ reconciled: result.reconciled });
 }
 

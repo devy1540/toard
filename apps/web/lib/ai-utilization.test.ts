@@ -9,8 +9,11 @@ import {
   calculateOrganizationUtilizationFromRows,
   buildUtilizationHistoryPeriods,
   mergeUtilizationDays,
+  shouldBypassOrganizationUtilizationCache,
+  shouldBypassPersonalUtilizationCache,
   utilizationCacheArgs,
 } from "./ai-utilization";
+import type { UtilizationCacheGenerationState } from "./utilization-cache-generation";
 
 test("활용 지수 서비스는 사용량과 도구 일별 행의 합집합을 0 기본값으로 병합한다", () => {
   const usage: UtilizationUsageDay[] = [
@@ -134,6 +137,10 @@ test("활용 지수 조직 집계는 4명을 억제하고 5명부터 개인 식�
 
   assert.equal(fourResult.state, "suppressed");
   assert.equal(fiveResult.state, "available");
+  assert.deepEqual(fiveResult.currentPeriod, periods.current);
+  assert.deepEqual(fiveResult.baselinePeriod, periods.baseline);
+  assert.equal(fiveResult.timezone, "UTC");
+  assert.equal(fiveResult.methodologyVersion, "utilization-v2");
   for (const forbidden of ["userId", "email", "name", "individualScores"]) {
     assert.equal(JSON.stringify(fiveResult).includes(forbidden), false);
   }
@@ -141,13 +148,40 @@ test("활용 지수 조직 집계는 4명을 억제하고 5명부터 개인 식�
 
 test("활용 지수 개인 캐시 키는 사용자·기간·시간대·방법론 버전을 포함한다", () => {
   const periods = buildUtilizationPeriods(new Date("2026-07-15T12:00:00Z"), "Asia/Seoul");
-  const args = utilizationCacheArgs("user-1", periods);
+  const generation: UtilizationCacheGenerationState = {
+    personalUserGeneration: 7,
+    personalUserPending: 0,
+    personalAllGeneration: 3,
+    personalAllPending: 0,
+    organizationGeneration: 11,
+    organizationPending: 0,
+  };
+  const args = utilizationCacheArgs("user-1", periods, generation);
 
   assert.equal(args[0], "user-1");
   assert.ok(args.includes("Asia/Seoul"));
   assert.ok(args.includes("utilization-v2"));
   assert.ok(args.includes(periods.baseline.from.toISOString()));
   assert.ok(args.includes(periods.current.to.toISOString()));
+  assert.equal(args.at(-2), 7);
+  assert.equal(args.at(-1), 3);
+});
+
+test("공유 generation pending 동안 personal과 organization cache를 우회한다", () => {
+  const state: UtilizationCacheGenerationState = {
+    personalUserGeneration: 1,
+    personalUserPending: 0,
+    personalAllGeneration: 1,
+    personalAllPending: 0,
+    organizationGeneration: 1,
+    organizationPending: 0,
+  };
+
+  assert.equal(shouldBypassPersonalUtilizationCache(state), false);
+  assert.equal(shouldBypassOrganizationUtilizationCache(state), false);
+  assert.equal(shouldBypassPersonalUtilizationCache({ ...state, personalUserPending: 1 }), true);
+  assert.equal(shouldBypassPersonalUtilizationCache({ ...state, personalAllPending: 1 }), true);
+  assert.equal(shouldBypassOrganizationUtilizationCache({ ...state, organizationPending: 1 }), true);
 });
 
 test("활용 지수 과거 추세는 동일한 7일/28일 창을 12주 생성한다", () => {

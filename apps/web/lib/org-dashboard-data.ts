@@ -1,11 +1,13 @@
 import type {
   OrganizationDashboardData,
   OrganizationDashboardQuery,
-  OrganizationUtilizationResult,
   PeriodQuery,
   ToolActivitySummary,
 } from "@toard/core";
-import { getCachedOrganizationUtilization } from "./ai-utilization";
+import {
+  getCachedOrganizationUtilization,
+  type OrganizationUtilizationView,
+} from "./ai-utilization";
 import { getStorage } from "./storage";
 import { getOrgToolSummary } from "./tool-metadata";
 
@@ -21,7 +23,7 @@ export type OrganizationDashboardWarning = {
 export interface OrganizationDashboardDependencies {
   getDashboard(query: OrganizationDashboardQuery): Promise<OrganizationDashboardData>;
   getToolActivity(query: PeriodQuery): Promise<ToolActivitySummary>;
-  getUtilization(): Promise<OrganizationUtilizationResult>;
+  getUtilization(): Promise<OrganizationUtilizationView>;
   warn(record: OrganizationDashboardWarning): void;
 }
 
@@ -53,7 +55,7 @@ export async function loadOrganizationDashboardData(
 ): Promise<{
   dashboard: OrganizationDashboardData;
   toolActivity: OptionalDashboardSection<ToolActivitySummary>;
-  utilization: OptionalDashboardSection<OrganizationUtilizationResult>;
+  utilization: OptionalDashboardSection<OrganizationUtilizationView>;
 }> {
   const [dashboard, toolActivity, utilization] = await Promise.allSettled([
     deps.getDashboard(input.dashboard),
@@ -70,6 +72,6 @@ export async function loadOrganizationDashboardData(
       : unavailable<ToolActivitySummary>(deps, "tool_activity"),
     utilization: utilization.status === "fulfilled"
       ? { state: "available", value: utilization.value }
-      : unavailable<OrganizationUtilizationResult>(deps, "utilization"),
+      : unavailable<OrganizationUtilizationView>(deps, "utilization"),
   };
 }

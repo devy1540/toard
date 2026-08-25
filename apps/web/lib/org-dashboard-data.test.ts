@@ -3,10 +3,10 @@ import test from "node:test";
 import type {
   OrganizationDashboardData,
   OrganizationDashboardQuery,
-  OrganizationUtilizationResult,
   PeriodQuery,
   ToolActivitySummary,
 } from "@toard/core";
+import type { OrganizationUtilizationView } from "./ai-utilization";
 import {
   loadOrganizationDashboardData,
   type OrganizationDashboardDependencies,
@@ -43,10 +43,19 @@ const toolActivity: ToolActivitySummary = {
   activeUsers: 4,
   activeDevices: 5,
 };
-const utilization: OrganizationUtilizationResult = {
+const utilization: OrganizationUtilizationView = {
   state: "suppressed",
   methodologyVersion: "utilization-v2",
   reason: "suppressed_small_cohort",
+  currentPeriod: {
+    from: new Date("2026-07-01T00:00:00.000Z"),
+    to: new Date("2026-07-08T00:00:00.000Z"),
+  },
+  baselinePeriod: {
+    from: new Date("2026-06-03T00:00:00.000Z"),
+    to: new Date("2026-07-01T00:00:00.000Z"),
+  },
+  timezone: "UTC",
 };
 
 function dependencies(overrides: Partial<OrganizationDashboardDependencies> = {}): OrganizationDashboardDependencies {
@@ -121,7 +130,7 @@ test("세 dashboard 읽기는 서로 기다리지 않고 모두 시작한다", a
   const started: string[] = [];
   let resolveDashboard!: (value: OrganizationDashboardData) => void;
   let resolveToolActivity!: (value: ToolActivitySummary) => void;
-  let resolveUtilization!: (value: OrganizationUtilizationResult) => void;
+  let resolveUtilization!: (value: OrganizationUtilizationView) => void;
   const result = load(dependencies({
     getDashboard: () => new Promise((resolve) => {
       started.push("dashboard");

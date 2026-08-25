@@ -168,6 +168,45 @@ BEGIN
     EXECUTE 'REVOKE ALL ON FUNCTION public.clear_credential_account_rate_limit(BYTEA) FROM PUBLIC';
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.clear_credential_account_rate_limit(BYTEA) TO toard_app';
   END IF;
+
+  -- 활용 지수 cache generation 원본은 감추고, shared generation 함수만 실행시킨다.
+  IF to_regclass('public.utilization_cache_generations') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.utilization_cache_generations FROM toard_app';
+  END IF;
+
+  IF to_regclass('public.utilization_cache_change_leases') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.utilization_cache_change_leases FROM toard_app';
+  END IF;
+
+  IF to_regprocedure('public.read_utilization_cache_generation(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.read_utilization_cache_generation(UUID) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.read_utilization_cache_generation(UUID) TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.begin_user_utilization_cache_change(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.begin_user_utilization_cache_change(UUID) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.begin_user_utilization_cache_change(UUID) TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.finish_user_utilization_cache_change(uuid,uuid,boolean)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.finish_user_utilization_cache_change(UUID, UUID, BOOLEAN) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.finish_user_utilization_cache_change(UUID, UUID, BOOLEAN) TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.begin_all_utilization_cache_change()') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.begin_all_utilization_cache_change() FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.begin_all_utilization_cache_change() TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.finish_all_utilization_cache_change(uuid,boolean)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.finish_all_utilization_cache_change(UUID, BOOLEAN) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.finish_all_utilization_cache_change(UUID, BOOLEAN) TO toard_app';
+  END IF;
+
+  IF to_regprocedure('public.heartbeat_utilization_cache_change(uuid)') IS NOT NULL THEN
+    EXECUTE 'REVOKE ALL ON FUNCTION public.heartbeat_utilization_cache_change(UUID) FROM PUBLIC';
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.heartbeat_utilization_cache_change(UUID) TO toard_app';
+  END IF;
 END $$;
 
 -- 3) 이후 마이그레이션이 만드는 객체에도 자동 적용

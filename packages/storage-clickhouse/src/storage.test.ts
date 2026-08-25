@@ -99,6 +99,9 @@ function storageWithInsertedRows(
       if (normalized.startsWith("SELECT dedup_key")) {
         return { rows: outboxRows, rowCount: outboxRows.length };
       }
+      if (normalized.includes("begin_all_utilization_cache_change")) {
+        return { rows: [{ lease_id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" }], rowCount: 1 };
+      }
       if (normalized.includes("enqueue_pricing_repair")) {
         if (options.failEnqueue) throw new Error("enqueue unavailable");
         return { rows: [], rowCount: 1 };
@@ -1399,6 +1402,15 @@ test("ClickHouse outbox raw insert는 pricing revision과 status를 보존한다
   const outboxDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET delivered_at = now()"));
   const batchDeliveredIndex = pgQueries.findIndex(({ sql }) => sql.includes("SET status = 'delivered'"));
   const deliveryCommitIndex = pgQueries.map(({ sql }) => sql).lastIndexOf("COMMIT");
+  const utilizationBeginIndex = pgQueries.findIndex(({ sql }) =>
+    sql.includes("begin_all_utilization_cache_change")
+  );
+  const utilizationFinishIndex = pgQueries.findIndex(({ sql }) =>
+    sql.includes("finish_all_utilization_cache_change")
+  );
+  assert.ok(utilizationBeginIndex >= 0);
+  assert.ok(utilizationBeginIndex < outboxDeliveredIndex);
+  assert.ok(utilizationFinishIndex > enqueueIndexes[0]!);
   assert.ok(enqueueIndexes[0]! > outboxDeliveredIndex);
   assert.ok(enqueueIndexes[0]! > batchDeliveredIndex);
   assert.ok(deliveryCommitIndex > enqueueIndexes[0]!);
@@ -1724,6 +1736,9 @@ test("ClickHouse delivery의 가격 복구 예약 실패는 outbox batch를 pend
     sql.includes("SET status = 'pending'")
   ), true);
   assert.equal(pgQueries.some(({ sql }) => sql === "ROLLBACK"), true);
+  assert.equal(pgQueries.some(({ sql }) =>
+    /finish_all_utilization_cache_change[\s\S]*true/.test(sql)
+  ), true);
   assert.equal(warnings.some((warning) => warning.includes("queued rows retained")), true);
 });
 
@@ -1744,6 +1759,9 @@ test("ClickHouse raw insert 실패 전에는 가격 복구를 예약하지 않�
 
   assert.equal(pgQueries.some(({ sql }) => sql.includes("enqueue_pricing_repair")), false);
   assert.equal(pgQueries.some(({ sql }) => sql.includes("SET status = 'pending'")), true);
+  assert.equal(pgQueries.some(({ sql }) =>
+    /finish_all_utilization_cache_change[\s\S]*true/.test(sql)
+  ), true);
   assert.equal(warnings.some((warning) => warning.includes("queued rows retained")), true);
 });
 

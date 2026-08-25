@@ -1,7 +1,14 @@
-import { ToolWireParseError, type ToolActivityEvent, type ToolInventorySnapshot } from "@toard/core";
+import {
+  TOOL_OUTCOME_PROVIDER_KEYS,
+  ToolWireParseError,
+  type ToolActivityEvent,
+  type ToolInventorySnapshot,
+} from "@toard/core";
 import type { IngestAuthResult } from "./ingest-auth";
 import { sanitizeHost } from "./sanitize";
 import { insertToolActivity, replaceDeviceInventory } from "./tool-metadata";
+import { invalidateUtilizationForUser } from "./utilization-cache";
+import { withUserUtilizationCacheChange } from "./utilization-cache-generation";
 
 export type OwnedToolActivity = ToolActivityEvent & { userId: string; ingestTokenId: string };
 export type OwnedToolInventory = ToolInventorySnapshot & { userId: string; ingestTokenId: string };
@@ -44,9 +51,45 @@ export function finalizeToolInventory(auth: IngestAuthResult, snapshot: ToolInve
   };
 }
 
-export async function ingestToolActivity(auth: IngestAuthResult, events: ToolActivityEvent[]) {
+type ToolActivityIngestDependencies = {
+  insertToolActivity: typeof insertToolActivity;
+  invalidateUtilizationForUser(userId: string): void | Promise<void>;
+  withUserUtilizationCacheChange: typeof withUserUtilizationCacheChange;
+};
+
+const defaultToolActivityIngestDependencies: ToolActivityIngestDependencies = {
+  insertToolActivity,
+  invalidateUtilizationForUser,
+  withUserUtilizationCacheChange,
+};
+const UTILIZATION_TOOL_PROVIDERS = new Set<string>(TOOL_OUTCOME_PROVIDER_KEYS);
+
+export async function ingestToolActivity(
+  auth: IngestAuthResult,
+  events: ToolActivityEvent[],
+  overrides: Partial<ToolActivityIngestDependencies> = {},
+) {
+  const dependencies = { ...defaultToolActivityIngestDependencies, ...overrides };
+  if (overrides.insertToolActivity && !overrides.withUserUtilizationCacheChange) {
+    dependencies.withUserUtilizationCacheChange = async (_userId, operation) => operation();
+  }
   const finalized = finalizeToolActivity(auth, events);
-  return insertToolActivity(auth, finalized);
+  const changesUtilization = finalized.some((event) => UTILIZATION_TOOL_PROVIDERS.has(event.providerKey));
+  const operation = () => dependencies.insertToolActivity(auth, finalized);
+  const result = changesUtilization
+      ? await dependencies.withUserUtilizationCacheChange(
+        auth.userId,
+        operation,
+      )
+    : await operation();
+  if (result.inserted > 0 && changesUtilization) {
+    try {
+      await dependencies.invalidateUtilizationForUser(auth.userId);
+    } catch {
+      // 공유 generation이 전 pod cache key를 전진시키므로 local tag 정리 실패는 수집을 막지 않는다.
+    }
+  }
+  return result;
 }
 
 export async function ingestToolInventory(auth: IngestAuthResult, snapshot: ToolInventorySnapshot) {

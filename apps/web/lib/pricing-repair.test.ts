@@ -446,6 +446,7 @@ test("Codex 재생 중복이 남아 있으면 가격표 대상이 없어도 다�
     },
   };
   let reconcileCalls = 0;
+  let utilizationGenerationBumps = 0;
   const storage = {
     async reconcileCodexReplayUsage() {
       reconcileCalls += 1;
@@ -469,6 +470,11 @@ test("Codex 재생 중복이 남아 있으면 가격표 대상이 없어도 다�
       throw new Error("재생 중복이 남은 batch에서는 가격표를 읽으면 안 됩니다");
     },
     now: () => NOW,
+    withAllUtilizationCacheChange: async (operation) => {
+      const result = await operation();
+      utilizationGenerationBumps += 1;
+      return result;
+    },
   }), "success");
   assert.equal(reconcileCalls, 1);
   assert.equal(status.state, "pending");
@@ -476,6 +482,7 @@ test("Codex 재생 중복이 남아 있으면 가격표 대상이 없어도 다�
   assert.equal(status.reconciledEvents, 100);
   assert.equal(status.remainingUnpricedEvents, 12_433);
   assert.equal(status.nextAttemptAt?.toISOString(), NOW.toISOString());
+  assert.equal(utilizationGenerationBumps, 1);
 });
 
 test("Codex 재생 중복의 마지막 삭제 batch도 가격 진단 전에 진행률을 확정한다", async () => {
@@ -503,6 +510,7 @@ test("Codex 재생 중복의 마지막 삭제 batch도 가격 진단 전에 진�
       throw new Error("삭제 진행률을 저장하기 전에 가격 진단을 실행하면 안 됩니다");
     },
   } as unknown as StorageBackend;
+  let utilizationGenerationBumps = 0;
 
   assert.equal(await runPricingRepairTaskWith({
     repository,
@@ -511,11 +519,76 @@ test("Codex 재생 중복의 마지막 삭제 batch도 가격 진단 전에 진�
       throw new Error("삭제 진행률을 저장하기 전에 가격표를 읽으면 안 됩니다");
     },
     now: () => NOW,
+    withAllUtilizationCacheChange: async (operation) => {
+      const result = await operation();
+      utilizationGenerationBumps += 1;
+      return result;
+    },
   }), "success");
   assert.equal(progress?.state, "pending");
   assert.equal(progress?.processed, 33);
   assert.equal(progress?.reconciled, 33);
   assert.equal(progress?.remaining, 40);
+  assert.equal(utilizationGenerationBumps, 1);
+});
+
+test("가격-only batch도 rolling overlap 안전을 위해 replay lease generation을 전진시킨다", async () => {
+  let status = pendingStatus({ remainingUnpricedEvents: 1 });
+  let utilizationGenerationBumps = 0;
+  const repository: PricingRepairRepository = {
+    get: async () => status,
+    claim: async () => ({ ...status, state: "running", lastStartedAt: NOW }),
+    async markProgress(input) {
+      status = { ...status, state: input.state, remainingUnpricedEvents: input.remaining };
+      return true;
+    },
+    async markFailed() { throw new Error("unexpected failure"); },
+  };
+  const storage = {
+    reconcileCodexReplayUsage: async () => ({
+      scanned: 0,
+      reconciled: 0,
+      remainingUnpriced: 0,
+      affectedBuckets: [],
+      hasMore: false,
+    }),
+    getPricingRecoveryModels: async () => [{
+      providerKey: "openai",
+      logAdapter: null,
+      model: "model-a",
+      events: 1,
+      unpricedEvents: 1,
+      legacyEvents: 0,
+      firstAt: NOW,
+      lastAt: NOW,
+    }],
+    repairPricingUsage: async () => ({
+      scanned: 1,
+      recovered: 1,
+      repricedLegacy: 0,
+      affectedBuckets: [],
+      hasMore: false,
+    }),
+  } as unknown as StorageBackend;
+  const schedule: PricingSchedule = new Map([["model-a", [{
+    id: "revision-1",
+    modelId: "model-a",
+    effectiveAt: new Date("2026-01-01T00:00:00.000Z"),
+    pricing: { inputPerM: 1, outputPerM: 2 },
+  }]]]);
+
+  assert.equal(await runPricingRepairTaskWith({
+    repository,
+    storage,
+    getSchedule: async () => schedule,
+    withAllUtilizationCacheChange: async (operation) => {
+      const result = await operation();
+      utilizationGenerationBumps += 1;
+      return result;
+    },
+    now: () => NOW,
+  }), "success");
+  assert.equal(utilizationGenerationBumps, 1);
 });
 
 test("pending과 오래 멈춘 running만 coordinator 후보가 된다", () => {

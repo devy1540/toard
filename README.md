@@ -40,13 +40,13 @@
 
 ## 🧭 How it works
 
-The shim transparently wraps `claude` and `codex` on each developer machine. It collects usage, opt-in conversation content, and AI-tool activity metadata from local session files under `~/.claude`, `~/.codex`, and `~/.cursor`, plus exact token counts from Cursor's minimal stop hook. toard presents the resulting cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
+The shim transparently wraps `claude` and `codex` on each developer machine. It collects usage and opt-in conversation content from Claude Code, Codex, Gemini, and Qwen local session files, exact Cursor usage from a minimal stop hook, and supported AI-tool metadata from Claude Code, Codex, and Cursor. toard presents the resulting cost, activity, and installation status in its dashboards. OTLP push ingestion is experimental.
 
 ```mermaid
 flowchart LR
     subgraph dev["Developer machine"]
         CLI["claude / codex"] --> SHIM["toard shim (Rust)"]
-        FILES["~/.claude · ~/.codex · ~/.cursor<br/>session files"] -. "pull" .-> SHIM
+        FILES["~/.claude · ~/.codex · ~/.gemini · ~/.qwen<br/>session files"] -. "pull" .-> SHIM
         CURSOR["Cursor stop hook<br/>exact tokens"] -. "capture" .-> SHIM
     end
     SHIM -- "UsageEvent (JSON) + bearer token" --> API["POST /api/v1/events"]
@@ -128,9 +128,9 @@ The token is sent as a bearer token, so HTTPS is required for every non-loopback
 ## 📁 Repository structure (pnpm monorepo)
 
 ```text
-apps/web                    # Next.js: OTLP/JSON ingestion, dashboards, and Auth.js
+apps/web                    # Next.js: pull-primary ingestion APIs, dashboards, and Auth.js
 packages/core               # Domain types and StorageBackend interface, with no dependencies
-packages/ingest             # OTLP parsing, provider detection, normalization, and deduplication
+packages/ingest             # Experimental OTLP parsing, provider detection, and normalization
 packages/pricing            # LiteLLM cost engine (resolveCost)
 packages/storage-postgres   # Default PostgreSQL StorageBackend implementation
 packages/storage-clickhouse # Opt-in ClickHouse StorageBackend implementation
@@ -141,14 +141,18 @@ scripts/                    # Seed, sample-event, and verification scripts
 docs/                       # Architecture and deployment documentation
 ```
 
-## 📡 Test ingestion without the shim
+## 📡 Test experimental OTLP ingestion
+
+The default usage path is the installed shim sending normalized events to `/api/v1/events`. The commands below exercise only the optional OTLP compatibility path at `/api/v1/logs`.
+
+> Run this only in an isolated test deployment after changing the target provider from the default `collection_method='logfile'` to `collection_method='otel'`. Without that server-side switch, the symmetric gate intentionally accepts the request but stores zero events. Do not leave pull and OTLP enabled for the same provider.
 
 ```bash
 TOARD_INGEST_TOKEN=<token from seed or Settings → Connect computer> pnpm exec tsx scripts/send-sample-event.ts
 # → 200 {"inserted":1,"deduped":0}; the event uses the current time and appears under “today”
 ```
 
-To inspect the raw OTLP payload and idempotent deduplication, send the fixture directly:
+To inspect the experimental raw OTLP payload and idempotent deduplication, send the fixture directly:
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/logs \
@@ -329,7 +333,7 @@ toard provides container deployment artifacts. See [docs/DEPLOY.md](docs/DEPLOY.
 
 | Area | Decision | ADR |
 |---|---|---|
-| Ingestion | Shim sends OTLP/JSON directly to the app without a Collector; zero-downtime deployment is required | ADR-001 |
+| Ingestion | Shim pulls local session files and sends normalized usage to `/api/v1/events`; OTLP `/api/v1/logs` is experimental | ADR-001 |
 | Storage | PostgreSQL only by default, with opt-in ClickHouse behind the `StorageBackend` abstraction | ADR-003 |
 | Cost | LiteLLM per-million, tiered 200k, cache, and fast-mode pricing | ADR-004 |
 | Authentication | Auth.js with OAuth, credentials, and open modes using JWT sessions | ADR-007 |

@@ -31,12 +31,22 @@ AI 도구 메타데이터 경로는 아래 내용을 직렬화하거나 서버�
 
 ## 감지 방식과 한계
 
+| provider | 활동 이벤트 | 설치 인벤토리 |
+|---|---|---|
+| Claude Code | 지원 | 지원 |
+| Codex | 지원 | 지원 |
+| Cursor | 지원 | 지원 |
+| Gemini | 미지원 | 미지원 |
+| Qwen | 미지원 | 미지원 |
+
+Gemini와 Qwen의 **사용량·opt-in 본문** pull은 지원하지만 tool activity/inventory parser는 아직 없다. 사용량 provider 지원과 도구 메타데이터 지원을 같은 범위로 해석하면 안 된다.
+
 - Claude Code의 `Skill` 도구 호출은 `explicit`로 기록한다.
 - Codex는 알려진 스킬 루트의 `SKILL.md` 로드를 `derived_load`로 기록한다. 독립적인 스킬 호출 이벤트가 없는 경우가 있으므로 화면에는 “로드”로 구분한다.
 - Cursor는 `~/.cursor/projects/**/agent-transcripts`의 JSONL·레거시 TXT에서 명시적으로 식별되는 MCP·Skill 호출만 `explicit`로 기록한다. Cursor가 도구 결과를 트랜스크립트에 남기지 않은 호출은 성공으로 추측하지 않고 `unknown`으로 둔다.
 - 플러그인 키는 `superpowers:brainstorming` 같은 명시적 접두사나 Codex 플러그인 캐시 경로처럼 출처가 확인되는 경우에만 기록한다. 추측으로 연결하지 않는다.
 - MCP 도구명은 서버와 도구 이름만 정규화한다. 호출 인자는 읽더라도 활동 이벤트에 보관하거나 직렬화하지 않는다.
-- Cursor 인벤토리는 `~/.cursor/mcp.json`, `~/.cursor/skills`, `~/.cursor/skills-cursor`, 공유 `~/.agents/skills`에서 이름만 읽는다. MCP 명령·인자·환경변수와 `SKILL.md` 본문은 전송하지 않는다.
+- Claude Code·Codex·Cursor 인벤토리는 각 provider의 알려진 MCP·Skill·plugin 설정 경로에서 이름·버전·활성 상태만 읽는다. Cursor는 `~/.cursor/mcp.json`, `~/.cursor/skills`, `~/.cursor/skills-cursor`, 공유 `~/.agents/skills`를 포함한다. MCP 명령·인자·환경변수와 `SKILL.md` 본문은 전송하지 않는다.
 
 ## 부하 제어
 

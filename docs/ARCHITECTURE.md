@@ -1,18 +1,17 @@
 # toard 아키텍처 설계
 
-> **상태:** v4 (오픈소스 재포지셔닝) · **최종 수정:** 2026-07-02 · **범위:** 1차 설계
+> **상태:** 현재 구현 SSOT · **최종 수정:** 2026-08-25
 >
-> v4 수집 정정(2026-07-06): **Claude Code·Codex 사용량을 OTLP push → 로컬 트랜스크립트 pull로 전환**(gemini·qwen과 동일 파이프라인, ccusage 방식). env·재시작·host 주입 dance 제거, Desktop·IDE도 파일만 있으면 자동 수집, 과거 백필. OTLP push는 **experimental**(`TOARD_EXPERIMENTAL_OTLP`)로 강등하되 코드·서버 보존. 서버는 provider `collection_method`(`otel`|`logfile`)를 push(`/v1/logs`)·pull(`/v1/events`) **대칭 게이트**로 삼아 provider당 단일 소스만 저장→이중집계 구조적 차단. 아래 ADR-001/002/006의 "OTLP push 1급" 전제는 **docs/design-usage-pull.md**로 갱신됨.
-> v3 대비: **오픈소스·범용화** — "사내 대시보드" 전제를 제거하고 **어느 조직이든 셀프호스팅하는 오픈소스 프로젝트**로 재정의. 일별 집계 타임존을 KST 고정에서 `ORG_TIMEZONE` 설정(기본 UTC)으로 일반화(**ADR-008 신설**), 조직 고유 예시 값(이메일 도메인·데모 데이터) 중립화, §12 오픈소스 운영 신설. 데이터 모델 구조 무변경(Mart `day` 의미만 "조직 타임존 기준"으로 일반화 — 기존 KST 데이터는 재계산 대상).
-> v2→v3: **수집 범용화** — OTLP push 단일 1급에서 **다중 프론트엔드(OTLP push + 로컬 로그 pull)가 `UsageEvent[]`로 수렴**하는 구조로 재설계. shim을 "범용 수집 에이전트"로 격상(ADR-006 Rust 확정에 ccusage MIT 어댑터 벤더링 추가).
-> v1→v2: dedup 키 교정(`request_id`), shim env 정정, 수집 방식 확정(앱 직접 + JSON only), 인증(Auth.js → AUTH_MODE/JWT), 비용 계산 정확화(tiered/캐시/단위), 보안 강화. 가장 되돌리기 비싼 부분은 **§4 데이터 모델**과 **§5 수집 계약**이다.
+> 기본 사용량 수집은 Rust shim이 Claude Code·Codex·Gemini·Qwen의 로컬 session/transcript와 Cursor stop-hook 로그를 읽고 `UsageEvent[]`로 정규화해 `POST /api/v1/events`로 보내는 **pull-primary** 구조다. `POST /api/v1/logs` OTLP/JSON 수신은 `TOARD_EXPERIMENTAL_OTLP`로 명시적으로 켜는 experimental 호환 경로다.
+>
+> 과거 OTLP-first 설계와 1차·2차·3차 계획은 현재 실행 지침이 아니다. 전환 근거는 [design-usage-pull.md](design-usage-pull.md)에 변경 이력으로 보존한다.
 
 ---
 
 ## 1. 개요 & 목표
 
 ### 1.1 정의
-toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · Gemini CLI · Copilot · OpenCode 등 코딩 에이전트 CLI)의 **사용량·비용을 추적하는 경량·범용 멀티 프로바이더 대시보드**다. **오픈소스·셀프호스팅이 전제**이며, 특정 조직에 묶인 가정(타임존·이메일 도메인·언어 등)은 모두 설정으로 밀어낸다(v4 재포지셔닝). day1co(선행 사내 대시보드, 비공개) · zeude · ccusage를 벤치마킹해 **"더 가볍고, 더 많은 도구를 먹는"** 버전을 목표로 한다 — 수집은 도구가 OTEL을 뿜든(push) 로컬 로그만 남기든(pull) 무관하게 흡수한다.
+toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · Cursor · Gemini · Qwen 등)의 **사용량·비용을 추적하는 경량·범용 멀티 프로바이더 대시보드**다. **오픈소스·셀프호스팅이 전제**이며, 특정 조직에 묶인 가정은 설정으로 밀어낸다. 기본 경로는 로컬 파일 pull이고, OTLP push는 호환이 필요한 환경에서만 선택적으로 사용한다.
 
 ### 1.2 배경 — 세 레퍼런스 벤치마킹
 
@@ -26,41 +25,33 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 
 ### 1.3 설계 철학
 1. **가볍게 시작, 무손실 확장** — 불확실한 규모를 위해 미리 짊어지지 않되, 이관을 봉쇄하는 결정은 피한다.
-2. **범용 수집, 단일 수렴** — 수집 방식(OTLP push / 로컬 로그 pull)은 도구에 맞춰 열되, 모든 소스는 **`UsageEvent[]` 한 형태로 수렴**한다(§4.1). OTEL 지원 도구는 OTLP/JSON push가 1급(실시간·고품질), 미지원 도구는 shim이 로컬 로그를 읽어 pull. 표준(OTLP)은 "가능한 곳에서 우선"이지 "유일한 관문"이 아니다.
+2. **pull-primary, 단일 수렴** — shim이 로컬 session/transcript를 읽어 모든 기본 provider를 **`UsageEvent[]` 한 형태로 수렴**시킨다(§4.1). OTLP/JSON push는 experimental이며 기본 수집의 우선 경로나 필수조건이 아니다.
 3. **역할 분리** — OLTP(메타·인증)는 Postgres, OLAP(이벤트 집계)는 필요 시 ClickHouse.
 4. **의존성 미니멀리즘** — 선행 벤치마크(day1co)의 최소 의존성 수준 지향.
 5. **되돌리기 비싼 것만 신중히** — 데이터 모델·수집 계약은 정밀하게, 화면·표현은 가볍게.
 6. **특정 조직 비의존** — 타임존·이메일 도메인 등 조직 고유 값은 하드코딩하지 않고 설정(env)으로 받는다. 어느 조직이든 그대로 배포 가능해야 한다(v4).
 
-### 1.4 1차 범위 / 비범위
+### 1.4 현재 지원 범위
 
-**1차 범위 (In Scope)**
-- **shim** — Claude Code 텔레메트리 활성화 + 식별자 주입 (투명 wrapping)
-- 멀티 프로바이더 **수집** (앱 직접 OTLP/JSON 수신)
-- **비용/사용량 차트** (KPI 카드 + 시계열)
-- **개인 마이페이지** (자기 사용량 + 모델별 분해)
-- **리더보드 / 팀별 비교**
-
-**1차 비범위 (Out of Scope, 추후)**
-- OTEL Collector(진화 경로 — §ADR-001) · ClickHouse 모드(옵트인) · metrics 수신(logs만)
-- 중앙 설정 배포(zeude Delivery) · LLM 분류/해석(day1co 2차)
-- **범용 로컬 로그 pull 수집** (2차 핵심 — fat shim + ccusage 어댑터 벤더링, §ADR-002/006·§5.6). 1차는 OTLP push로 수렴 아키텍처를 검증하고, 2차에서 비-OTEL 도구를 대량 확장한다.
+| 상태 | 범위 |
+|---|---|
+| **기본 지원** | Rust shim 로컬 pull, Claude Code·Codex·Cursor·Gemini·Qwen 사용량, opt-in 본문, Claude/Codex/Cursor 도구 메타데이터, PostgreSQL, opt-in ClickHouse, 개인·팀·조직 화면 |
+| **Experimental** | 단일 target의 Claude Code·Codex OTLP/JSON push(`/api/v1/logs`), 자동 도구 배포 |
+| **미지원·향후** | OTEL metrics 수신, Collector 번들, 모든 provider의 동일한 tool/inventory coverage, 중앙 설정 배포 |
 
 ---
 
 ## 2. 아키텍처 결정 기록 (ADR)
 
-### ADR-001 — 수집: 앱이 OTLP/JSON 직접 수신 (Collector는 진화 경로)
-- **결정:** shim이 Claude Code 텔레메트리를 켜고, 텔레메트리는 toard 앱의 OTLP/HTTP 엔드포인트가 **`http/json`으로 직접 수신**한다. **Collector를 두지 않는다.**
-- **근거:** Claude Code는 `http/json` 프로토콜을 지원하므로 앱은 표준 `JSON.parse`로 OTLP 로그 트리를 읽을 수 있다(protobuf 디코더 자체구현 불필요). 인프라가 앱 하나로 끝난다.
-- **트레이드오프(정직하게):** Collector의 retry 버퍼가 없어 **앱 재시작·배포 중 도착 배치가 유실**될 수 있다. → **무중단 배포(rolling/blue-green)를 운영 제약으로 강제**(단일 인스턴스가 순간 0이 되는 배포 금지)해 유실을 0에 수렴시킨다.
-- **기각/진화:** ① 경량 Collector(zeude식) — 유실 0·검증됨이지만 인프라 +1, 1차엔 과함. **유실이 실제 문제로 드러나면 Collector를 추가**(앱 코드 무변경, shim endpoint만 Collector로). ② protobuf 수신 — 디코더 유지부담으로 1차 제외(JSON only).
+### ADR-001 — 수집: 로컬 pull 기본, 앱 직접 수신
+- **결정:** shim이 로컬 원본을 읽어 `/api/v1/events`로 직접 전송한다. Collector는 두지 않는다. 서버는 개발자 머신에 접속하지 않으며 개발자 머신에서 서버로의 단방향 HTTPS만 필요하다.
+- **재전송 경계:** 원본 session 파일과 target별 cursor가 SSOT다. 전송 실패 시 해당 target cursor를 전진시키지 않고 다음 회차에 다시 구성한다. 별도 durable shim outbox는 없으므로 장애 중 원본 파일을 삭제하면 누락분을 복구할 수 없다.
+- **OTLP 호환:** `/api/v1/logs` 직접 수신은 experimental로 보존한다. Collector를 추가하더라도 이 선택 경로의 endpoint 앞에 둘 수 있다.
 
-### ADR-002 — 멀티 프로바이더: 다중 수집 프론트엔드가 `UsageEvent[]`로 수렴 (범용 1급)
-- **결정:** 수집은 **두 개의 대등한 프론트엔드**를 둔다 — ① **OTLP push**(OTEL 지원 도구: Claude Code·Codex → 앱이 `/api/v1/logs` 수신·정규화), ② **로컬 로그 pull**(비-OTEL 도구: **fat shim이 로컬 로그를 읽어 정규화** → `/api/v1/events`로 `UsageEvent[]` POST). 둘 다 동일한 `UsageEvent` 계약(§4.1)으로 수렴하고, 이후 비용·저장·쿼리 경로는 완전히 공유한다. **pull은 폴백이 아니라 범용성의 본선**이며, 구현 시점만 2차로 미룬다.
-- **근거:** OTEL push는 도구가 협조해야만 가능해 커버리지 상한이 있다(≈Claude Code·Codex). "최대한 범용"의 유일한 길은 로컬 로그 pull이며(ccusage가 15개 도구를 이 방식으로 지원), 정규화가 어디서 일어나든 `UsageEvent[]`로만 수렴하면 앱의 나머지(§4·§6·§7)는 소스 무관하게 재사용된다.
-- **정규화 위치(ADR-006과 직결):** pull 경로 정규화는 **shim(Rust)에서** 수행하고 ccusage의 MIT Rust 어댑터를 벤더링한다(fat shim). 앱은 `UsageEvent[]`를 받아 **user_id(토큰)·cost(pricing)만 서버 권위로 덮어씀** — 신뢰경계는 유지(§5.6·§10.1).
-- **프로바이더 추가 비용:** OTEL 도구 = normalizer 하나(앱 `packages/ingest`). 비-OTEL 도구 = shim에 어댑터 하나(대부분 ccusage 벤더링으로 공짜) + `providers` 행 하나.
+### ADR-002 — 멀티 프로바이더: shim 정규화 후 `UsageEvent[]`로 수렴
+- **결정:** 기본 provider 5종은 shim의 고정 adapter가 로컬 파일을 정규화해 `/api/v1/events`로 보낸다. 앱은 인증 토큰으로 `user_id`를, 가격표로 비용을 다시 확정한다.
+- **대칭 gate:** provider `collection_method='logfile'`이면 `/events`만 저장하고 OTLP는 버린다. experimental 전환으로 `collection_method='otel'`이면 `/logs`만 저장하고 같은 provider의 `/events`는 저장하지 않는다.
+- **확장:** 기본 pull provider는 shim adapter와 provider baseline을 함께 추가한다. experimental OTLP provider는 서버 normalizer도 필요하다.
 
 ### ADR-003 — 저장: Pluggable backend (기본 PG, 옵트인 CH)
 - **결정:** `StorageBackend` 인터페이스로 저장을 추상화. **기본 = Postgres 단일**(메타+이벤트+Mart). **옵트인 = ClickHouse 모드**(이벤트·집계만 CH, 메타·인증은 항상 PG).
@@ -74,13 +65,11 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 ### ADR-005 — 프론트엔드: Next.js 15 + TanStack Query + shadcn/ui + Recharts
 - **결정/근거:** 세 벤치마크 공통 스택. TanStack Query는 zeude 검증.
 
-### ADR-006 — shim: 범용 수집 에이전트, 언어 Rust 확정
-- **결정:** shim을 1차부터 포함(투명 wrapping + 자동 업데이트). **언어 = Rust**(2026-06-30 확정 — PoC 측정 + 팀 선택). `claude`/`codex` 이름으로 설치돼 PATH resolver 로 진짜 바이너리를 exec(자기 자신 제외)하며, `~/.toard/credentials`(또는 env)에서 token·endpoint 를 로딩한다.
-- **범용 수집 에이전트로 격상(v3, ADR-002):** shim은 단순 env 주입기가 아니라 **두 역할을 겸한다** — ① OTEL 도구: 텔레메트리 env 주입 → 앱이 OTLP push 수신, ② 비-OTEL 도구: **로컬 로그 tail·읽기 → `UsageEvent[]` 정규화 → `/api/v1/events` POST**. 1차는 ①만, 로컬 로그 pull(②)은 2차.
-- **fat shim + ccusage 벤더링:** pull 경로 정규화를 shim이 수행하고 **ccusage(MIT)의 Rust 어댑터 15종을 벤더링**(`ccusage rust/crates/ccusage/src/adapter/`: gemini·qwen·opencode·goose·hermes·openclaw·kimi·amp·… )해 파서를 사실상 공짜로 얻는다. shim이 ingest_token 을 쥔 채 POST 하므로 **pull 경로도 사용자 귀속(§10.1)이 성립**. 트레이드오프 — 어댑터/포맷 변경 시 shim 재배포(자동 업데이트 + ccusage 업스트림 rebase 로 완화). thin shim(앱이 파싱)은 15개 파서 TS 재작성 부담으로 기각. 라이선스 MIT — attribution 유지(shim NOTICE).
-- **근거:** shim은 OTEL SDK 없는 얇은 래퍼. Go=크로스컴파일 간편, Rust=바이너리 작음. 바이너리는 GitHub Release에서 플랫폼별 자산과 체크섬으로 직접 배포한다.
-- **기각:** "1차엔 설치 스크립트만" — 매 실행 동기화·자동 업데이트 부재로 기각.
-- **PoC 결과(2026-06-30, `shim/`):** Go·Rust 동일 기능 구현·측정 — 바이너리 **Go 1.4MB vs Rust 312KB(4.4배 작음)**, cold start **Rust 우위**(20회 exec 0.17s vs Go 0.27s). 둘 다 env 주입 + exec end-to-end 동작(shim → 대역 도구 → toard 수신, 멱등 dedup까지 검증). → 크기·cold start 우위로 **Rust 채택**(L70 확정). 배포 파이프라인(GitHub Actions OS 네이티브 매트릭스 + macOS·Linux `install.sh`와 Windows PowerShell 설치기)까지 구축 완료.
+### ADR-006 — shim: Rust 범용 수집 에이전트
+- **결정:** Rust shim은 `claude`/`codex`를 투명 wrapping하고 OS scheduler의 단발 `collect`를 실행한다. Claude Code·Codex·Cursor·Gemini·Qwen adapter, target별 자격증명·cursor, 자동 업데이트를 포함한다.
+- **기본 동작:** 로컬 파일은 회차당 한 번 파싱하고 각 target의 독립 cursor 이후분만 보낸다. 한 target 실패가 다른 target을 막지 않는다.
+- **Experimental OTLP:** 단일 target에서 `TOARD_EXPERIMENTAL_OTLP=1`일 때만 Claude env와 Codex config를 주입한다. 기본 실행에는 OTEL 설정을 주입하지 않는다.
+- **배포:** 플랫폼별 바이너리와 checksum을 GitHub Release로 제공하며 ccusage MIT adapter attribution은 `shim/NOTICE`에 유지한다.
 
 ### ADR-007 — 인증: Auth.js (NextAuth), AUTH_MODE + JWT 세션
 - **결정:** 인증은 **Auth.js**. 계정·user 는 **Postgres**(adapter), 세션은 **JWT**(Credentials 는 database 세션 미지원). `AUTH_MODE` 로 배포 시 선택: `oauth`(GitHub/Google **+ id/pw credentials**)·`open`(인증 없음·내부망 전제). credentials 는 `AUTH_CREDENTIALS_ENABLED`(기본 on)로 토글 — 로그인 `/login`·가입 `/signup`(도메인 게이팅)·비번 변경/설정 `/settings`. 비번은 **bcrypt(cost 12)** 해시로만 저장. magic-link 는 확장 예정. 이메일 도메인 제한 + 검증된 identity.
@@ -109,8 +98,10 @@ toard/
 ├── apps/
 │   └── web/                      # Next.js 15 (App Router)
 │       ├── app/
-│       │   ├── api/v1/logs/route.ts   # OTLP/JSON 수신 (OTEL push 경로, logs only)
-│       │   ├── api/v1/events/route.ts # 정규화 UsageEvent[] 수신 (shim pull 경로, 2차)
+│       │   ├── api/v1/events/route.ts # 기본 사용량: shim이 정규화한 UsageEvent[]
+│       │   ├── api/v1/logs/route.ts   # experimental OTLP/JSON
+│       │   ├── api/v1/prompts/        # opt-in 본문
+│       │   ├── api/v1/tool-{events,inventory}/ # 도구 메타데이터
 │       │   ├── api/tokens/route.ts    # ingest token 발급/폐기
 │       │   ├── api/stats/...           # 대시보드 쿼리 API
 │       │   ├── (dashboard)/            # 대시보드 레이아웃 (+ /settings 비번 변경)
@@ -118,9 +109,10 @@ toard/
 │       └── components/
 ├── packages/
 │   ├── core/                     # 도메인 타입 + StorageBackend 인터페이스 (의존성 0)
-│   ├── ingest/                   # OTLP/JSON 파싱 + 프로바이더 정규화 (provider 식별·dedup키 생성)
+│   ├── ingest/                   # experimental OTLP 파싱·provider 식별·정규화
 │   ├── pricing/                  # LiteLLM 비용 엔진 (resolveCost)
-│   └── storage-postgres/         # PG 구현체 (추후: storage-clickhouse)
+│   ├── storage-postgres/         # 기본 PG 구현체
+│   └── storage-clickhouse/       # opt-in CH 구현체
 ├── shim/                         # 범용 수집 에이전트 (Rust — ADR-006; ccusage 어댑터 벤더링)
 ├── migrations/                   # 순수 SQL 마이그레이션 (node-pg-migrate)
 ├── docker-compose.dev.yml        # 로컬 Postgres
@@ -134,14 +126,14 @@ toard/
 | 패키지 | 책임 | 의존 |
 |---|---|---|
 | `core` | 도메인 타입, `StorageBackend` 인터페이스, enum | **없음** |
-| `ingest` | OTLP/JSON 트리 파싱, provider 식별, 정규화(`UsageEvent[]`), dedup_key 생성 | `core` |
+| `ingest` | experimental OTLP/JSON 트리 파싱, provider 식별, 정규화(`UsageEvent[]`) | `core` |
 | `pricing` | LiteLLM 동기화, `resolveCost`(토큰→USD) | `core` |
 | `storage-postgres` | `StorageBackend` PG 구현(이벤트 저장 + Mart + 쿼리) | `core` |
-| `apps/web` | route handler(bytes→`ingest`), 대시보드, Auth.js, 비용 채움 | 위 전부 |
-| `shim` | (Rust) OTEL 도구=텔레메트리 env 주입+exec / 비-OTEL 도구=로컬 로그 읽기·`UsageEvent[]` 정규화·POST (ccusage 어댑터 벤더링) | 독립(별도 툴체인) |
+| `apps/web` | 수집 route, 대시보드, Auth.js, 서버 권위 user·비용 확정 | 위 전부 |
+| `shim` | (Rust) 기본 로컬 파일 pull·정규화·target별 전송, experimental OTLP 주입 | 독립(별도 툴체인) |
 
 - **의존은 항상 `core`로** 흐른다(순환 없음). 비용 계산은 `ingest`가 아니라 **수집 라우트에서 정규화 직후 `pricing.resolveCost`를 별도 단계로 호출**(테스트 격리 — `ingest`는 토큰까지만).
-- route handler는 raw bytes를 `ingest`에 넘기고, `ingest`가 JSON 파싱·정규화를 책임진다.
+- `/events`는 shim이 정규화한 wire를 core parser로 검증하고, `/logs`만 raw OTLP bytes를 `ingest`에 넘긴다.
 
 ### 3.3 빌드 도구
 - **pnpm workspace** + **TypeScript(strict)**. 마이그레이션 = **순수 SQL + node-pg-migrate**, 쿼리 = `pg` raw(StorageBackend 내부). `shim`은 별도 툴체인.
@@ -170,7 +162,7 @@ export interface PeriodQuery {
 export interface UsageEvent {
   dedupKey: string;           // hash(request_id, model, input,output,cacheRead,cacheCreation). request_id 없으면 hash(session.id, event.sequence, ts, input+output) — prompt.id는 api_request에 없을 수 있어 미사용
   providerKey: string;        // 등록된 provider key (열린 집합: 'claude_code'|'codex'|'gemini'|'opencode'|… — providers 테이블)
-  userId: string | null;      // 미식별 시 null (등록 후 소급)
+  userId: string | null;      // client wire에서는 null 가능, 서버가 bearer token 소유자로 덮어씀
   sessionId: string | null;
   model: string | null;
   ts: Date;                   // 발생 시각 (UTC)
@@ -353,19 +345,19 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 
 | 항목 | 결정 |
 |---|---|
-| **dedup** | `dedup_key = hash(request_id, model, input/output/cache_read/cache_creation tokens)`. `request_id`(= Anthropic API request-id, `claude_code.api_request` 로그 이벤트에 실재)가 1차 키. 없으면 `hash(session.id, event.sequence, ts, input+output 토큰)`(`prompt.id`는 `api_request`에 없을 수 있어 미사용). **TraceId/SpanId는 베타에서만 생기고 기본 모드엔 비어 있어 키로 부적합 → 미사용.** PG=`UNIQUE`+`ON CONFLICT DO NOTHING`, CH=`ReplacingMergeTree`. **logfile 경로도 동일 규칙으로 shim이 `dedup_key` 생성**(대부분 로컬 로그에 request-id류 존재; 없으면 session+sequence+ts+토큰 해시). 앱은 shim 제공 키를 신뢰(멱등이라 무해). |
+| **dedup** | shim adapter가 provider·session·원본 이벤트 위치·토큰에서 안정적인 `dedup_key`를 생성한다. 파일 재작성이나 부분 성공 뒤 전체 전송으로 폴백해도 PG=`UNIQUE`+`ON CONFLICT DO NOTHING`, CH outbox/`ReplacingMergeTree`가 중복을 흡수한다. experimental OTLP normalizer도 자체 안정 키를 만든다. |
 | **provider 식별** | **otel 경로:** OTLP `ResourceAttributes['service.name']`을 `providers.service_name_patterns`와 매칭해 `provider_key` 도출(Codex는 `codex`/`codex_cli_rs`). **logfile 경로:** shim이 어떤 어댑터로 읽었는지가 곧 `provider_key`(매칭 불필요, shim이 POST 시 명시). |
-| **무손실 보존** | **otel 경로:** `raw_events`에 OTLP/JSON 원형(프롬프트 제거 후) 저장 → 재처리·CH 백필. **logfile 경로:** shim이 이미 정규화해 보내므로 서버 raw 없음 — 재처리 원본은 dev 머신 로컬 로그(shim이 오프셋 커서로 재전송). 비대칭이지만 로컬 로그가 진짜 SSOT라 손실 아님. raw 멱등은 비강제, 중복분은 usage dedup이 흡수·재처리 시 무해. |
-| **토큰·비용 권위 소스** | **logs**(`api_request` 이벤트). metrics에도 토큰 카운터가 있으나 per-event 정확도·dedup·세션 귀속 위해 logs를 SSOT로 채택, **metrics는 1차 미수신**(§5.2). 비용은 `pricing_models`로 재계산(제공 `cost_usd`는 `auto` 모드 fallback). |
+| **재전송 원본** | 기본 경로의 SSOT는 개발자 머신의 local source file과 target별 cursor다. 별도 durable shim outbox는 없다. 실패 target은 cursor를 전진시키지 않고 다음 회차에 재구성하지만, 장애 중 원본을 삭제하면 복구할 수 없다. experimental OTLP만 프롬프트 제거 후 `raw_events`에 보조 원형을 남긴다. |
+| **토큰·비용 권위 소스** | token count는 각 shim adapter가 정확한 로컬 이벤트를 해석한다. `user_id`는 bearer token 소유자, 비용은 서버 pricing revision이 최종 권위다. OTEL metrics endpoint는 지원하지 않는다. |
 | **Mart 갱신** | SUM 지표(토큰·비용·`request_count`)는 **당일(미마감)에만** 증분 upsert. DISTINCT(`sessions`·`active_users`)와 **마감된 과거 날짜**는 항상 `recomputeDaily`(DELETE 후 `usage_events`에서 통째 재INSERT). 재처리·지연도착이 건드린 `(user_id, day)`를 dirty로 마킹 → cron이 그 집합만 재계산. |
 | **데이터 보존(TTL)** | `raw_events`=처리 후 14일. `usage_events`=365일(파티션 드롭). Mart=영속. |
 | **타임존** | `ts`=UTC `timestamptz`. 일별 `day`=`(ts AT TIME ZONE <ORG_TIMEZONE>)::date` — 타임존은 **`ORG_TIMEZONE` 설정(기본 UTC)을 앱이 검증 후 `StorageBackend` 생성자로 주입**(SQL에 서버 TZ 비의존, ADR-008). 필터의 조직 타임존→UTC 환산은 앱이 책임. |
-| **사용자 매칭** | **인증 토큰의 user_id가 유일·최종 권위.** resource attribute의 user.id/email은 **신뢰하지 않음**(토큰 없을 때만 email로 임시 귀속 후 등록 시 소급). §10.1과 일치. |
+| **사용자 매칭** | **인증 토큰의 user_id가 유일·최종 권위.** POST 본문의 userId와 experimental OTLP resource identity는 신뢰하지 않는다. |
 | **팀 귀속** | 신규 이벤트는 수집 시각의 현재 팀이 아니라 이벤트 `ts`에 유효한 `user_team_assignments` 기간으로 귀속한다. 최초 `팀 없음 → 팀`은 아직 미배정인 과거 사용량을 durable worker가 소급 귀속하고, 이후 이동·해제·재배정은 변경 시각 이후에만 적용한다. 기존 설치의 `legacy_seed` 사용자는 관리자가 preview를 확인한 뒤 `legacy_adoption`을 명시 실행해야 한다. |
 
-> **1차 구현 한계 (검증 반영, 2026-06-30)**
+> **현재 구현 경계**
 > - **서빙은 event-direct**: 대시보드 쿼리는 `usage_events`를 직접 집계하며 Mart(`usage_daily_*`)·`bumpDailyUser`·`recomputeDaily`는 **미래 서빙 레이어로 현재 미사용**(데이터 규모가 커지면 읽기를 Mart로 전환). 따라서 "당일 증분 vs 마감 재계산 정합"은 현재 사용자 화면과 무관.
-> - **재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성은 2차 목표. 현재 `processed`는 항상 false, `raw_event_id`는 NULL.
+> - **OTLP raw 재처리 미구현**: `raw_events.processed`·`usage_events.raw_event_id` 연결과 raw→usage 재생성 경로는 없다. 기본 pull의 재전송은 shim 원본·cursor 계약으로 처리한다.
 > - **팀 귀속 백필**: 최초 팀 배정은 아직 미배정인 과거 이벤트만 batch 백필한다. 작업은 PostgreSQL durable queue에서 재시도되며, ClickHouse rollup-only 보정 중에는 read fence로 영향 기간의 불완전한 팀 집계를 숨긴다. 기존 설치의 현재 팀은 `legacy_seed`로 보존하고 자동 백필하지 않는다.
 > - **기간 프리셋**: 기본 UI 는 뷰어 타임존 기준 캘린더 프리셋(`오늘`·`이번 주`·`이번 달`·`최근 3개월`·`최근 12개월`)을 사용한다. 구 URL 호환용 `period=7|30|90`은 현재 시각 기준 롤링 윈도우로 계속 해석한다.
 
@@ -373,65 +365,59 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 
 ## 5. 수집 파이프라인
 
-### 5.1 전체 흐름 + shim env
-```
-[개발자 머신] shim (claude 래핑)
-  주입 env:
-    CLAUDE_CODE_ENABLE_TELEMETRY=1
-    OTEL_LOGS_EXPORTER=otlp                 # ← 없으면 logs 미방출(필수)
-    OTEL_METRICS_EXPORTER=none              # 1차 logs only
-    OTEL_EXPORTER_OTLP_PROTOCOL=http/json   # ← 앱이 JSON 파싱(필수)
-    OTEL_EXPORTER_OTLP_ENDPOINT=https://toard.example.com/api    # base — SDK가 /v1/logs 자동 append
-    OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <ingest_token>
-    OTEL_RESOURCE_ATTRIBUTES=toard.user.id=…(표시용)  # 권위는 토큰(§10.1)
-  └ exec 실제 claude
-       ↓ (OTLP/HTTP JSON, POST …/api/v1/logs)
-[toard 앱] app/api/v1/logs/route.ts
-  1. 인증        ingest_token(SHA-256) → user_id 확정
-  2. raw 저장     프롬프트 필드 제거 후 raw_events INSERT → 빠른 2xx
-  3. 파싱·정규화  ingest: JSON 트리(ResourceLogs→…)→ provider 식별 → UsageEvent[]
-  4. 비용        pricing.resolveCost로 costUsd 채움
-  5. 멱등 저장    storage.saveUsageEvents (dedup + 당일 Mart 증분)
+### 5.1 기본 흐름 (pull-primary)
+
+```text
+[개발자 머신]
+  Claude ~/.claude/projects/**/*.jsonl
+  Codex  ~/.codex/sessions/**/*.jsonl
+  Gemini/Qwen session logs
+  Cursor ~/.toard/cursor/usage.jsonl (stop hook exact tokens)
+        ↓ shim이 회차당 한 번 파싱·UsageEvent[] 정규화
+        ↓ target별 HTTPS POST /api/v1/events
+[toard 앱]
+  bearer 인증 → provider gate → user/cost 서버 권위 확정 → 멱등 저장
 ```
 
-### 5.2 수신 엔드포인트
-- `POST /api/v1/logs`만 1차 구현(**OTLP/JSON**). `OTEL_EXPORTER_OTLP_ENDPOINT`는 **base URL**(`…/api`)이고 SDK가 `/v1/logs`를 붙인다 → 라우트 `app/api/v1/logs/route.ts`와 정합. **`/api/v1/metrics`는 1차 미구현**(`OTEL_METRICS_EXPORTER=none`으로 애초에 안 옴).
-- **수신 신뢰성:** Collector가 없어 앱 다운·배포 중 배치는 유실 가능(SDK 무한버퍼 아님). → **무중단 배포 필수**(ADR-001). raw 진입 후는 무손실(`processed` 재처리). 유실이 문제화되면 Collector 추가.
+"pull"은 shim이 로컬 파일을 읽는 방식을 뜻한다. 서버 전달은 개발자 머신에서 서버로 향하는 단방향 HTTPS POST이며 서버가 개발자 머신에 접속하지 않는다.
 
-### 5.3 정규화 (`packages/ingest`)
-```ts
-export interface ProviderNormalizer { providerKey: string; normalize(input: NormalizeInput, ctx: NormalizeContext): UsageEvent[]; }
-```
-- **`claude_code.api_request` 이벤트만**(prefix 포함, `event.name` 매칭) `UsageEvent`로(토큰 0·prompt/tool 이벤트 제외 → `request_count` 정확).
-- **Claude Code:** `input_tokens`/`output_tokens`/`cache_read_tokens`/`cache_creation_tokens` 그대로(input과 캐시는 별개·가산).
-- **Codex:** `input_token_count→inputTokens`, `output_token_count→outputTokens`, `cached_token_count→cacheReadTokens`, `conversation.id→sessionId`. **`inputTokens = input_token_count − cached_token_count`**(부분집합 보정), `cacheCreationTokens=0`(Codex 미제공), `cost 없음→pricing 계산`. (Codex는 env가 아니라 config.toml 주입 — 2차 §9.)
+### 5.2 endpoint와 지원 수준
 
-### 5.4 인증
-- `Authorization: Bearer <ingest_token>` → `sha256` 조회 → `user_id` 확정, `last_used_at` 갱신. 만료/폐기 토큰은 401.
-- resource attribute의 user.id/email은 **무시**(표시·디버그용). 토큰 없을 때만 email 보조 귀속(미식별 NULL 수용).
+| Method | Endpoint | 용도 | 수준 |
+|---|---|---|---|
+| `POST` | `/api/v1/events` | 정규화된 사용량 | **기본** |
+| `POST` | `/api/v1/events/reconcile` | Codex replay exact-key 정정 | 기본 호환 |
+| `POST` | `/api/v1/prompts` | opt-in 대화 본문 | 선택 |
+| `POST` | `/api/v1/prompts/reconcile` | prompt agent metadata 정정 | 선택 호환 |
+| `POST` | `/api/v1/tool-events` | MCP·Skill 활동 메타데이터 | 기본(지원 provider만) |
+| `PUT` | `/api/v1/tool-inventory` | 기기별 설치 메타데이터 | 기본(지원 provider만) |
+| `POST` | `/api/v1/logs` | OTLP/JSON logs | **Experimental** |
 
-### 5.5 처리 순서·멱등성
-1. raw 저장(프롬프트 제거) → 2xx  2. 정규화(`dedup_key` 생성)  3. `pricing.resolveCost`  4. `saveUsageEvents`(`ON CONFLICT (dedup_key) DO NOTHING` + 당일 Mart 증분, 동일 트랜잭션)  5. `processed=true`
-- 멱등성: `dedup_key`(request_id 기반) UNIQUE. 복구: `processed=false` 재처리(정규화 변경 시 raw에서 재생성).
+OTEL metrics endpoint는 지원하지 않는다. `doctor`가 빈 `/v1/logs`를 보내는 것은 인증·연결 probe일 뿐 기본 수집 경로를 의미하지 않는다.
 
-### 5.6 로컬 로그 pull 경로 (범용 수집 — 2차, ADR-002/006)
-비-OTEL 도구는 **shim(Rust)이 로컬 로그를 읽어 정규화**한 뒤 앱으로 보낸다. OTLP push와 대등한 두 번째 수집 프론트엔드.
-```
-[개발자 머신] shim (Rust, ccusage 어댑터 벤더링)
-  watch 대상: providers(collection_method='logfile', enabled) — 로컬 config 또는 앱 config 핸드셰이크(3차)
-  1. 오프셋 커서로 각 도구 로컬 로그 증분 읽기 (~/.gemini, ~/.qwen, ~/.hermes/state.db, ~/.local/share/opencode/*.db …)
-  2. ccusage 어댑터로 파싱 → UsageEvent[] (costUsd=0, userId=null, dedupKey는 §4.4 규칙으로 shim이 생성)
-  3. POST /api/v1/events   (Authorization: Bearer <ingest_token>, 배치 ≤4MB)
-       ↓
-[toard 앱] app/api/v1/events/route.ts
-  1. 인증      ingest_token(SHA-256) → user_id 확정 (본문 userId 무시 — §10.1)
-  2. 비용      pricing.resolveCost로 costUsd 채움 (가격은 서버 권위 — shim은 토큰 카운트만)
-  3. 멱등 저장  storage.saveUsageEvents (dedup + 당일 Mart 증분) — otel 경로와 완전 동일
-```
-- **신뢰경계 유지:** shim은 **토큰 카운트(정규화)까지만**, **user_id·cost는 앱이 서버 권위로 확정**. → OTLP 경로와 동일한 보안·비용 중앙화.
-- **UsageEvent 계약 미러:** 계약 원본은 TS(`core`), shim(Rust)은 동일 필드를 JSON으로 미러. 계약 변경 시 양쪽 동시 갱신(§부록 주의).
-- **raw 비저장:** events 경로는 서버 `raw_events`를 남기지 않음(shim이 이미 정규화). 재처리 원본 = dev 머신 로컬 로그(shim 오프셋 커서 재전송). §4.4 참조.
-- **실시간성:** otel push=라이브, logfile pull=shim 수집 주기만큼 지연(의도된 트레이드오프, ADR-002).
+### 5.3 provider 대칭 gate
+
+- 기본 baseline의 Claude Code·Codex·Cursor·Gemini·Qwen은 모두 `collection_method='logfile'`이다.
+- `/events`는 등록된 provider 중 `logfile`만 저장한다. `otel` provider의 pull event는 shim cursor 전진을 위해 200으로 응답하지만 저장하지 않는다.
+- `/logs`는 enabled이면서 `collection_method='otel'`인 provider만 식별한다. 기본 `logfile` provider의 OTLP는 저장하지 않는다.
+- Experimental OTLP는 단일 target에서 client `TOARD_EXPERIMENTAL_OTLP=1`과 서버 provider `collection_method='otel'`을 함께 전환해야 한다.
+
+### 5.4 인증·서버 권위
+
+- `Authorization: Bearer <ingest_token>`의 SHA-256 hash로 소유자를 찾고 만료·폐기를 확인한다.
+- shim payload의 `userId`, OTLP resource identity, client 비용은 권위가 아니다. 서버가 token 소유자와 event-time pricing revision으로 덮어쓴다.
+- batch는 4MB로 제한하며 stable `dedup_key`를 PG unique constraint 또는 CH outbox가 흡수한다.
+
+### 5.5 cursor·장애·재전송
+
+- target별 cursor는 파일 stamp(`mtime+size`), 전송 개수, dedup prefix hash를 기록한다. 전송 성공 뒤에만 해당 target 진행 위치를 전진시킨다.
+- 한 target 실패는 다른 target을 막지 않는다. 실패 target만 다음 수집에서 미전송 범위를 로컬 원본으로부터 다시 구성한다.
+- 별도 durable shim outbox는 없다. 장애 중 원본 session 파일을 삭제하면 그 target의 누락분은 복구할 수 없다.
+- 파일 재작성이나 부분 성공 때문에 전체 전송으로 폴백해도 서버 dedup이 중복을 흡수한다.
+
+### 5.6 Experimental OTLP
+
+Claude Code·Codex의 과거 OTLP-first 구현은 호환 경로로 보존한다. 단일 target에서 opt-in하면 Claude env 또는 Codex config를 주입하고 `/api/v1/logs`가 OTLP/JSON을 정규화한다. 이 경로에는 shim local cursor 재전송 계약이 적용되지 않으므로 운영자는 실험 기능의 SDK retry·배포 경계를 별도로 검토해야 한다.
 
 ---
 
@@ -516,13 +502,16 @@ app/
 │   ├── admin/page.tsx                    # 관리(admin 전용) — 탭: 멤버 | 팀 | 초대 | 시스템(가격 동기화)
 │   └── {me,onboarding,leaderboard}/      # 구 경로 — 리다이렉트(호환)
 └── api/
-    ├── v1/logs/route.ts                  # OTLP/JSON 수신 — OTEL push (metrics 1차 미구현)
-    ├── v1/events/route.ts                # 정규화 UsageEvent[] 수신 — shim pull (2차, §5.6)
+    ├── v1/events/route.ts                # 기본 정규화 사용량
+    ├── v1/logs/route.ts                  # experimental OTLP/JSON
+    ├── v1/prompts/route.ts               # opt-in 본문
+    ├── v1/tool-events/route.ts           # 활동 메타데이터
+    ├── v1/tool-inventory/route.ts        # 설치 인벤토리
     ├── tokens/route.ts                   # POST 발급(평문 1회) · DELETE 폐기
     └── stats/{overview,timeseries,leaderboard}/route.ts
 ```
 
-### 7.3 1차 화면
+### 7.3 현재 화면
 - **① 내 사용량(`/`, 랜딩)**: 개인 KPI + 일별 시계열 + **모델별 분해**. 미설치(토큰 없음/수신 이력 없음) 시 빈 상태에 설치 CTA. `getUserUsage`.
 - **② 전체 현황(`/org`)**: **개요 탭** — KPI(총비용·총토큰·세션수·활성 사용자) + 일별 시계열 + 상위 사용자(→ 순위 탭 링크). **순위 탭** — 개인↔팀 토글, 비교 막대 + 순위 테이블. `getOverview`+`getDailyTimeseries`+`getLeaderboard`.
 - **③ 설정(`/settings`)**: 계정(비밀번호) · 설치·토큰(shim 설치, 구 온보딩) 탭. 설치 탭에 **연결 확인**(내 토큰 `last_used_at` 폴링 — 설치 직후 실수신 셀프 점검)과 **프롬프트 미수집 고지**(메타데이터만 전송) 포함.
@@ -537,7 +526,7 @@ app/
 - `member`: 내 사용량 + 공개 전체 현황. `admin`: 전체 + 관리(`/admin` — 멤버·초대, 향후 수집 상태·도구·토큰 관리). role은 **Auth.js 세션 클레임**으로 서버 검증.
 
 ### 7.6 온보딩
-1. `/login`(Auth.js, 도메인 제한) → 2. 첫 로그인 시 `users` 생성 → 3. setup에서 `POST /api/tokens`로 ingest_token 발급(평문 1회) + OS별 shim 설치 → 4. 첫 텔레메트리 도착 시 `user_id` 매칭 → 5. 미식별(`NULL`) 이벤트는 email 매칭으로 소급.
+1. `/login`(Auth.js, 도메인 제한) → 2. 첫 로그인 시 `users` 생성 → 3. Settings → Connect computer에서 ingest token 발급(평문 1회) + OS별 shim 설치 → 4. 첫 인증 수집 요청으로 연결 확인. 모든 수집은 token 소유자에게 귀속하며 email 기반 미식별 소급은 사용하지 않는다.
 
 ---
 
@@ -553,34 +542,31 @@ AUTH_SECRET=…                            # Auth.js
 AUTH_TRUST_HOST=true
 ALLOWED_EMAIL_DOMAINS=example.com        # (선택) 가입 허용 도메인
 BOOTSTRAP_SETUP_TOKEN=…                  # browser 최초 admin용 1회 token(32자 이상, 완료 후 제거)
-INGEST_BASE_URL=https://toard.example.com/api   # shim OTEL_EXPORTER_OTLP_ENDPOINT (base)
+TOARD_PUBLIC_URL=https://toard.example.com      # 프록시에서 browser URL과 ingest URL이 다를 때만
 LITELLM_PRICING_URL=…
 BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 ```
 
 ### 8.2 배포
-- Next.js **standalone** 단일 Docker 이미지 + 매니지드 Postgres. **무중단 배포(rolling/blue-green) 필수**(ADR-001 — 수집 유실 방지).
-- cron: ① 가격 동기화(+sanity) ② 미처리 raw 재처리 ③ dirty 날짜 Mart 재계산.
+- Next.js standalone runner와 migrator, 기본 Postgres, opt-in ClickHouse를 제공한다. rolling/blue-green은 가용성과 schema 호환을 위해 권장하지만 pull 재전송 정확성의 필수조건은 아니다.
+- cron/worker: 가격 동기화·가격 복구, ClickHouse outbox/rollup, retention cleanup을 담당한다. OTLP raw 재처리 worker는 없다.
 
-### 8.3 로컬 개발 (스캐폴딩 대상)
+### 8.3 로컬 개발
 - `docker-compose.dev.yml`(Postgres 16) + `.env.example`.
 - 마이그레이션: `migrations/*.sql` + node-pg-migrate.
 - seed: provider/pricing baseline + 선택한 `BOOTSTRAP_ADMIN_EMAIL` admin 1명. ingest token은 seed·배포 로그에서 생성하거나 출력하지 않고, 로그인한 관리자가 Settings → Computers에서 1회 발급한다.
-- shim: `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:3000/api`로 로컬 수신 테스트.
+- shim: 로컬 target을 등록하고 `toard-shim collect --dry-run` 또는 `collect`로 `/api/v1/events` 기본 경로를 검증한다. OTLP fixture는 experimental 경로를 따로 검사할 때만 사용한다.
 
 ### 8.4 shim 배포
 - Rust 바이너리(ADR-006), OS 네이티브 매트릭스. macOS·Linux는 `install.sh`, Windows는 toard 서버의 `/install.ps1`을 사용한다. 온보딩은 §7.6.
 
 ---
 
-## 9. 로드맵
+## 9. 지원 상태와 변경 이력
 
-| 단계 | 내용 |
-|---|---|
-| **1차 (MVP)** | shim(env 주입) + OTLP push 수신(Claude Code, JSON) · PG 단일 · LiteLLM 비용 · 4개 화면 · Auth.js. **수렴 아키텍처(`UsageEvent[]`) 검증.** |
-| **공개 준비 (OSS, v4)** | **완료:** 타임존 설정화(ADR-008) · 예시 값 중립화 · LICENSE=MIT(§12.1) · PR 검증 CI(typecheck·test + shim clippy) · SECURITY.md · CONTRIBUTING.md · 이슈/PR 템플릿. **남은 것:** NOTICE(ccusage 벤더링 시) · i18n 백로그(§12.2) |
-| **2차 (범용 수집)** | **fat shim(Rust) + ccusage 어댑터 벤더링 → 로컬 로그 pull(`/api/v1/events`)** · Codex(config.toml 주입) · 비-OTEL 도구 대량 확장(Gemini·Qwen·Copilot·OpenCode·Goose·… 실사용분부터 `enabled`) · 팀 이동 이력 · OTEL Collector(유실 문제화 시) |
-| **3차 (스케일·기능)** | ClickHouse 모드 · 중앙 설정 배포(shim watch-list 핸드셰이크 포함) · LLM 분류/해석 |
+현재 지원 범위는 §1.4와 §5가 SSOT다. pull-primary, ClickHouse opt-in, ccusage attribution, 팀 귀속과 공개 배포는 구현 완료 상태다. 향후 범위에는 신규 provider adapter, provider별 tool/inventory coverage 확대, 필요 시 Collector 연동이 있다.
+
+과거 OTLP-first MVP와 1차·2차·3차 단계 계획은 [design-usage-pull.md](design-usage-pull.md)의 역사적 전환 근거로만 보존하며 현재 운영 상태를 나타내지 않는다.
 
 ---
 
@@ -594,8 +580,10 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 - `ingest_tokens.expires_at`(만료)·`revoked_at`(폐기/회전). 새 토큰 발급은 additive 이며, 폐기는 특정 토큰 단위로 수행한다. 주기적 재발급 권장. admin의 타인 토큰 폐기는 별도 관리 기능으로 확장 가능(§7.5).
 - **Rate limit(수치):** 토큰당 ≤ N req/min(예 120), 일일 이벤트 상한. 수집 배치 페이로드(logs·events)는 Content-Length를 먼저 거부하고 chunked stream도 읽는 도중 ≤4MB를 강제한다(초과 413). rate 초과 시 429 + Retry-After. 카운터는 단일 인스턴스 인메모리(다중 시 Redis). 이상 탐지: 토큰별 IP 수·이벤트율 급증 경보.
 
-### 10.3 PII / 프롬프트 미수집
-- shim은 `OTEL_LOG_USER_PROMPTS`를 켜지 않음. **수신 최초 단계(raw_events INSERT 이전)에서** 프롬프트를 제거한다 — 권장은 **화이트리스트**(토큰/비용/식별 attribute만 보존, 나머지 자유텍스트 전부 폐기)로 신규 필드 누락 위험을 없앤다. 차선은 denylist(`prompt`, `prompt_text`, `Body`, `latest_user_message` 등). 결과적으로 프롬프트가 raw에도 남지 않음. (shim 우회 + 자기 토큰으로 직접 켜는 경우만 자기 프롬프트 유입, 위협 낮음.)
+### 10.3 본문 opt-in과 메타데이터 경계
+- 기본 사용량·도구 메타데이터 경로는 프롬프트, 도구 인자·출력, 환경변수, 절대경로를 전송하지 않는다.
+- 대화 본문은 사용자가 명시적으로 켠 `/api/v1/prompts` 경로로만 보내며 서버 관리형 암호화와 사용자 RLS를 적용한다.
+- Experimental OTLP route는 raw 저장 전에 prompt/free-text 필드를 제거한다.
 
 ### 10.4 접근 제어
 - Auth.js OAuth/이메일 identity 기반 도메인 제한(자칭 이메일 불가). 최초 admin은 `BOOTSTRAP_ADMIN_EMAIL`로 시드, 이후 role 변경은 감사 로그. ingest(토큰)와 dashboard(세션) 인증 분리.
@@ -605,13 +593,13 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 ## 11. 운영 · 관측 · 테스트
 
 ### 11.1 관측
-- 수집 헬스(최근 수신 시각·분당 이벤트), raw 적체(`processed=false` 카운트), dirty Mart 적체, 가격 동기화 성공 시각.
+- 수집 헬스(최근 수신 시각·분당 이벤트), target별 shim delivery 상태, ClickHouse outbox·rollup 적체, 가격 동기화 성공 시각.
 
 ### 11.2 테스트 (핵심만)
 - `pricing`: tiered·캐시 fallback(1.25/0.1)·OpenAI cacheCreation=0·모드별·단위(per-million).
-- `ingest`: provider 식별(service.name)·api_request 필터·Codex subset 보정·dedup_key 멱등.
+- `ingest`: experimental OTLP provider 식별·api_request 필터·Codex subset 보정.
 - `storage-postgres`: 당일 증분 vs 마감 재계산 정합·dirty 재계산·조직 타임존(`ORG_TIMEZONE`) day 경계.
-- `shim`(2차): 벤더 어댑터별 파싱 파리티(ccusage 픽스처 재사용)·`UsageEvent` 계약 미러·`dedup_key` 규칙 일치·오프셋 커서 재전송 멱등.
+- `shim`: 5개 usage adapter, provider별 본문/tool/inventory parser, `UsageEvent` 계약 미러, target별 cursor·부분 성공·재전송 멱등.
 
 ---
 
@@ -619,13 +607,13 @@ BOOTSTRAP_ADMIN_EMAIL=…                  # 최초 admin 부트스트랩
 
 ### 12.1 라이선스
 - **본체 라이선스: MIT**(2026-07-02 확정, 루트 `LICENSE`). 선정 근거 — 채택 극대화가 목표이고, 벤더링 대상 ccusage 와 동일 계열이라 호환 부담 최소, 특허 민감도·SaaS 경쟁 위협이 낮아 Apache-2.0/AGPL 의 추가 조항 실익이 작음.
-- **서드파티 attribution:** 2차의 ccusage(MIT) Rust 어댑터 벤더링 시 **NOTICE 파일에 원저작자·라이선스 고지 필수**(ADR-006). LiteLLM 가격 데이터는 원격 fetch(코드 벤더링 아님)라 고지 대상 아님.
+- **서드파티 attribution:** ccusage(MIT) Rust adapter 고지는 `shim/NOTICE`에 포함한다. LiteLLM 가격 데이터는 원격 fetch라 코드 벤더링 고지 대상이 아니다.
 
 ### 12.2 언어 정책
 - **한국어 1급**(문서·UI·커밋). 영어 README·UI i18n은 **백로그**로 관리(GitHub Projects) — 다국어화 시 next-intl류 도입과 UI 문자열(~320곳) 추출이 선행 과제.
 
 ### 12.3 공개 체크리스트 (2026-07-02 구비 완료)
-- `LICENSE`(MIT) · `SECURITY.md`(GitHub 비공개 advisory 신고 채널 — 인증·토큰을 다루므로 필수) · `CONTRIBUTING.md` · 이슈/PR 템플릿 · **PR 검증 CI**(`ci.yml` — typecheck·test; shim 은 `shim-ci.yml` paths 필터로 clippy·build). `NOTICE` 만 ccusage 벤더링 시점(2차)에 추가.
+- `LICENSE`(MIT) · `SECURITY.md` · `CONTRIBUTING.md` · 이슈/PR 템플릿 · PR 검증 CI · `shim/NOTICE`를 유지한다.
 - 조직 고유 값 하드코딩 금지(§1.3-6): 타임존(ADR-008)·이메일 도메인·데모 데이터는 env/예시값(example.com)으로 완료.
 
 ### 12.4 배포 채널

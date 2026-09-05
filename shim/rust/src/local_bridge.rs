@@ -30,17 +30,18 @@ const BRIDGE_ERR_FILE: &str = "local-bridge.err.log";
 pub(crate) const BRIDGE_ACTION_ENV: &str = "TOARD_SHIM_LOCAL_ACTION";
 
 #[derive(Debug)]
-struct Request {
-    method: String,
-    path: String,
-    headers: HashMap<String, String>,
+pub(crate) struct Request {
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) headers: HashMap<String, String>,
+    pub(crate) body: Vec<u8>,
 }
 
 #[derive(Debug)]
-struct Response {
+pub(crate) struct Response {
     status: u16,
     content_type: &'static str,
-    body: String,
+    pub(crate) body: String,
     headers: Vec<(String, String)>,
 }
 
@@ -52,7 +53,7 @@ enum ConnectionFlow {
 }
 
 impl Response {
-    fn json(status: u16, value: serde_json::Value) -> Self {
+    pub(crate) fn json(status: u16, value: serde_json::Value) -> Self {
         Self {
             status,
             content_type: "application/json; charset=utf-8",
@@ -70,7 +71,7 @@ impl Response {
         }
     }
 
-    fn html(body: String, script_nonce: &str) -> Self {
+    pub(crate) fn html(body: String, script_nonce: &str) -> Self {
         Self {
             status: 200,
             content_type: "text/html; charset=utf-8",
@@ -154,7 +155,7 @@ struct HelperSession {
 }
 
 #[derive(Default)]
-struct HelperSessions(Vec<HelperSession>);
+struct HelperSessions(Vec<HelperSession>, crate::scope_ui::Sessions);
 
 impl HelperSessions {
     fn issue(&mut self, target_id: &str, now: u64) -> String {
@@ -422,6 +423,12 @@ fn route_request(
     sessions: &mut Sessions,
     helper_sessions: &mut HelperSessions,
 ) -> (Response, ConnectionFlow) {
+    if request.path.starts_with("/v1/scope/") {
+        return (
+            crate::scope_ui::route(request, store, &mut helper_sessions.1),
+            ConnectionFlow::Continue,
+        );
+    }
     if request.path == "/internal/ping" || request.path == "/internal/shutdown" {
         let allowed = request
             .headers
@@ -595,6 +602,12 @@ fn helper_page_response(
             ConnectionFlow::Continue,
         );
     };
+    if params.get("mode").is_some_and(|mode| mode == "scope") {
+        return (
+            crate::scope_ui::page(request, target, &ui_origin, nonce, &mut helper_sessions.1),
+            ConnectionFlow::Continue,
+        );
+    }
     let capability = helper_sessions.issue(&target.id, crate::bg::now_unix());
     let script_nonce = random_hex::<16>();
     let expected_origin = serde_json::to_string(&ui_origin).unwrap_or_else(|_| "null".into());
@@ -720,7 +733,7 @@ fn restart_process() -> i32 {
     }
 }
 
-fn status_response(target: &Target, session: String) -> Response {
+pub(crate) fn status_response(target: &Target, session: String) -> Response {
     let content = match target.credentials.collect_content {
         ContentCollectionMode::Off => "off",
         ContentCollectionMode::ServerManaged => "server_v1",
@@ -733,7 +746,15 @@ fn status_response(target: &Target, session: String) -> Response {
             "lastSuccessAt": status.last_success_at,
         })
     });
-    let queue = match crate::usage_queue::read_status(&target.state_dir) {
+    let queue = match crate::usage_queue::scoped_status(
+        &target.state_dir,
+        crate::usage_queue::QueueIdentity::new(
+            &target.id,
+            None,
+            target.credentials.token.as_deref().unwrap_or(""),
+        ),
+        &target.credentials.collection_scope,
+    ) {
         Ok(Some(status)) => {
             json!({ "state": "ready", "pendingEvents": status.records, "pendingBytes": status.bytes })
         }
@@ -773,8 +794,9 @@ fn status_response(target: &Target, session: String) -> Response {
                 "tools": target.credentials.collect_tools,
                 "delivery": delivery,
                 "usageQueue": queue,
+                "scope": { "mode": target.credentials.collection_scope.mode },
             },
-            "capabilities": ["collect", "doctor", "update"],
+            "capabilities": ["collect", "doctor", "update", "scope"],
         }),
     )
 }
@@ -872,7 +894,7 @@ fn configure_detached(command: &mut Command) {
     }
 }
 
-fn port() -> u16 {
+pub(crate) fn port() -> u16 {
     std::env::var("TOARD_SHIM_LOCAL_PORT")
         .ok()
         .and_then(|value| value.parse::<u16>().ok())
@@ -900,7 +922,7 @@ fn load_or_create_secret() -> Option<String> {
     Some(secret)
 }
 
-fn random_hex<const N: usize>() -> String {
+pub(crate) fn random_hex<const N: usize>() -> String {
     rand::random::<[u8; N]>()
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -909,35 +931,64 @@ fn random_hex<const N: usize>() -> String {
 
 fn read_request(stream: &mut TcpStream) -> Result<Request, ()> {
     let mut bytes = Vec::with_capacity(2048);
-    let mut chunk = [0u8; 2048];
-    loop {
+    let split = loop {
+        let mut chunk = [0u8; 2048];
         let read = stream.read(&mut chunk).map_err(|_| ())?;
         if read == 0 {
-            break;
+            return Err(());
         }
         bytes.extend_from_slice(&chunk[..read]);
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err(());
         }
-        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-            break;
+        if let Some(position) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
         }
-    }
-    let text = String::from_utf8(bytes).map_err(|_| ())?;
-    let headers_text = text.split_once("\r\n\r\n").map_or(text.as_str(), |v| v.0);
-    let mut lines = headers_text.lines();
+    };
+    let text = std::str::from_utf8(&bytes[..split]).map_err(|_| ())?;
+    let mut lines = text.trim_end().lines();
     let mut request_line = lines.next().ok_or(())?.split_whitespace();
     let method = request_line.next().ok_or(())?.to_string();
     let path = request_line.next().ok_or(())?.to_string();
+    if !matches!(request_line.next(), Some("HTTP/1.1" | "HTTP/1.0")) {
+        return Err(());
+    }
     let mut headers = HashMap::new();
     for line in lines {
         let (name, value) = line.split_once(':').ok_or(())?;
-        headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        let name = name.trim().to_ascii_lowercase();
+        if headers.insert(name, value.trim().to_string()).is_some() {
+            return Err(());
+        }
+    }
+    if headers.contains_key("transfer-encoding") {
+        return Err(());
+    }
+    let length = headers
+        .get("content-length")
+        .map(|value| value.parse::<usize>().map_err(|_| ()))
+        .transpose()?
+        .unwrap_or(0);
+    let total = split
+        .checked_add(length)
+        .filter(|total| *total <= MAX_REQUEST_BYTES)
+        .ok_or(())?;
+    while bytes.len() < total {
+        let mut chunk = [0u8; 2048];
+        let read = stream.read(&mut chunk).map_err(|_| ())?;
+        if read == 0 {
+            return Err(());
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    if bytes.len() != total {
+        return Err(());
     }
     Ok(Request {
         method,
         path,
         headers,
+        body: bytes[split..].to_vec(),
     })
 }
 
@@ -1078,6 +1129,7 @@ mod tests {
             })
             .unwrap();
         let request = Request {
+            body: Vec::new(),
             method: "OPTIONS".into(),
             path: "/v1/status".into(),
             headers: HashMap::from([("origin".into(), "https://dashboard.example".into())]),
@@ -1120,6 +1172,7 @@ mod tests {
             .unwrap();
         let target_id = crate::targets::target_id("https://ingest.example/api");
         let request = Request {
+            body: Vec::new(),
             method: "GET".into(),
             path: format!("/v1/helper?target={target_id}&nonce={}", "a".repeat(32)),
             headers: HashMap::new(),
@@ -1151,6 +1204,7 @@ mod tests {
 
         let capability = helper_sessions.0[0].capability.clone();
         let status_request = Request {
+            body: Vec::new(),
             method: "GET".into(),
             path: "/v1/helper/status".into(),
             headers: HashMap::from([("authorization".into(), format!("Bearer {capability}"))]),
@@ -1225,6 +1279,7 @@ mod tests {
             .unwrap();
         let target_id = crate::targets::target_id("https://toard.example/api");
         let request = Request {
+            body: Vec::new(),
             method: "GET".into(),
             path: "/v1/status".into(),
             headers: HashMap::from([

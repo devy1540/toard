@@ -26,13 +26,21 @@ impl LogAdapter for Claude {
 
     /// ~/.claude/projects 아래 트랜스크립트(*.jsonl) 재귀 수집.
     fn discover_files(&self) -> Vec<PathBuf> {
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
         let mut files = Vec::new();
-        if let Some(root) = projects_dir() {
-            walk_files(&root, &["jsonl"], &mut files, 0);
+        let mut failures = 0;
+        for root in projects_dir().into_iter() {
+            failures += walk_files(&root, &["jsonl"], &mut files, 0);
         }
         files.sort();
         files.dedup();
-        files
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -134,6 +142,12 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
         let Some(obj) = value.as_object() else {
             continue;
         };
+        let project = obj
+            .get("cwd")
+            .and_then(Value::as_str)
+            .and_then(|cwd| crate::collection_scope::LocalProject::cwd("claude_code", cwd))
+            .map(Arc::new);
+        parsed.remember_project(&project);
         let role = obj.get("type").and_then(Value::as_str);
         let Some(message) = obj.get("message").and_then(Value::as_object) else {
             continue;
@@ -152,8 +166,13 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                 let output_tokens = tok("output_tokens");
                 let cache_read_tokens = tok("cache_read_input_tokens");
                 let cache_creation_tokens = tok("cache_creation_input_tokens");
-                if input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens > 0 {
+                if input_tokens > 0
+                    || output_tokens > 0
+                    || cache_read_tokens > 0
+                    || cache_creation_tokens > 0
+                {
                     parsed.usage.push(RawUsage {
+                        project: project.clone(),
                         ts_ms,
                         session_id: session_id.as_deref().map(str::to_string),
                         model: message
@@ -202,6 +221,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
                         if let Some((kind, item_key, plugin_key)) = activity {
                             let index = parsed.tools.len();
                             parsed.tools.push(RawToolActivity {
+                                project: project.clone(),
                                 ts_ms,
                                 session_id: session_id.clone(),
                                 call_id: call_id.to_string(),
@@ -223,6 +243,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
             let text = text.trim();
             if !text.is_empty() {
                 parsed.content.push(RawContent {
+                    project: project.clone(),
                     ts_ms,
                     session_id: session_id.as_deref().map(str::to_string),
                     message_id: message
@@ -269,73 +290,7 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
 /// 트랜스크립트 jsonl → 사용량 레코드 (§4.2 필드 매핑).
 /// type=="assistant" 라인의 message.usage 만 집계한다.
 fn parse_transcript_usage(path: &Path) -> Vec<RawUsage> {
-    let fallback = file_mtime_ms(path);
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for line in bytes.split(|b| *b == b'\n') {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Some(obj) = v.as_object() else {
-            continue;
-        };
-        // assistant 라인만 사용량을 담는다. **isSidechain 은 스킵하지 않는다**(§4.2): 서브에이전트
-        // 턴도 고유 message.id 로 실제 토큰을 쓰므로 스킵하면 누락된다. 파일 재작성 리플레이
-        // 중복은 message.id 기반 dedup_key(§4.3)가 흡수한다.
-        if obj.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(msg) = obj.get("message").and_then(Value::as_object) else {
-            continue;
-        };
-        let Some(usage) = msg.get("usage").and_then(Value::as_object) else {
-            continue;
-        };
-        let tok = |k: &str| usage.get(k).and_then(Value::as_u64).unwrap_or(0);
-        // input_tokens 는 Claude 가 이미 캐시 제외로 기록(cache_read/creation 별도) → UsageEvent 불변식과 일치.
-        let input_tokens = tok("input_tokens");
-        let output_tokens = tok("output_tokens");
-        let cache_read_tokens = tok("cache_read_input_tokens");
-        // 상위 cache_creation_input_tokens 는 5m+1h 합(실측).
-        let cache_creation_tokens = tok("cache_creation_input_tokens");
-        // 1h TTL 분량은 usage.cache_creation.ephemeral_1h_input_tokens 에 별도로 있다. 서버가
-        // 1h=input×2, 5m=input×1.25 로 차등 가격하도록 힌트로 전달(§리스크 B — 실측상 1h 비중이 큼).
-        let cache_creation_1h_tokens = usage
-            .get("cache_creation")
-            .and_then(Value::as_object)
-            .and_then(|c| c.get("ephemeral_1h_input_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        // 토큰이 전부 0 이면(빈 usage) 스킵 — 비용 0 이벤트로 dedup 공간만 낭비.
-        if input_tokens == 0
-            && output_tokens == 0
-            && cache_read_tokens == 0
-            && cache_creation_tokens == 0
-        {
-            continue;
-        }
-        out.push(RawUsage {
-            ts_ms: obj
-                .get("timestamp")
-                .and_then(Value::as_str)
-                .and_then(iso_to_epoch_ms)
-                .unwrap_or(fallback),
-            session_id: obj
-                .get("sessionId")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            model: msg.get("model").and_then(Value::as_str).map(str::to_string),
-            message_id: msg.get("id").and_then(Value::as_str).map(str::to_string),
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_creation_tokens,
-            cache_creation_1h_tokens,
-        });
-    }
-    out
+    parse_transcript_all(path, false, false).usage
 }
 
 fn projects_dir() -> Option<PathBuf> {
@@ -360,57 +315,7 @@ fn extract_text(content: Option<&Value>) -> String {
 /// 트랜스크립트 jsonl → user/assistant 본문 레코드.
 /// type=user|assistant 라인의 message.content 를 뽑는다. text 가 없는 라인(순수 tool/thinking)은 제외.
 fn parse_transcript(path: &Path) -> Vec<RawContent> {
-    let fallback = file_mtime_ms(path);
-    let agent_role = prompt_agent_role(path);
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for line in bytes.split(|b| *b == b'\n') {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Some(obj) = v.as_object() else {
-            continue;
-        };
-        let role: &'static str = match obj.get("type").and_then(Value::as_str) {
-            Some("user") => "user",
-            Some("assistant") => "assistant",
-            _ => continue,
-        };
-        let Some(msg) = obj.get("message").and_then(Value::as_object) else {
-            continue;
-        };
-        let text = extract_text(msg.get("content"));
-        let text = text.trim();
-        if text.is_empty() {
-            continue;
-        }
-        let session_id = obj
-            .get("sessionId")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        // dedup 1차 키: assistant 는 message.id, 없으면 라인 uuid 폴백
-        let message_id = msg
-            .get("id")
-            .and_then(Value::as_str)
-            .or_else(|| obj.get("uuid").and_then(Value::as_str))
-            .map(str::to_string);
-        let ts_ms = obj
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .and_then(iso_to_epoch_ms)
-            .unwrap_or(fallback);
-        out.push(RawContent {
-            ts_ms,
-            session_id,
-            message_id,
-            role,
-            text: text.to_string(),
-            agent: prompt_agent(obj, path, agent_role.as_deref()),
-        });
-    }
-    out
+    parse_transcript_all(path, true, false).content
 }
 
 #[cfg(test)]

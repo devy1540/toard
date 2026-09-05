@@ -1,6 +1,6 @@
 # toard 아키텍처 설계
 
-> **상태:** 현재 구현 SSOT · **최종 수정:** 2026-08-25
+> **상태:** 현재 구현 SSOT · **최종 수정:** 2026-09-06
 >
 > 기본 사용량 수집은 Rust shim이 Claude Code·Codex·Gemini·Qwen의 로컬 session/transcript와 Cursor stop-hook 로그를 읽고 `UsageEvent[]`로 정규화해 `POST /api/v1/events`로 보내는 **pull-primary** 구조다. `POST /api/v1/logs` OTLP/JSON 수신은 `TOARD_EXPERIMENTAL_OTLP`로 명시적으로 켜는 experimental 호환 경로다.
 >
@@ -400,6 +400,7 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 | Method | Endpoint | 용도 | 수준 |
 |---|---|---|---|
 | `POST` | `/api/v1/events` | 정규화된 사용량 | **기본** |
+| `POST` | `/api/v1/collection-status` | 수집기 상태 보고 및 저장 확인 handshake. 원본 로그·경로는 받지 않는다. | 기본 |
 | `POST` | `/api/v1/events/reconcile` | Codex replay exact-key 정정 | 기본 호환 |
 | `POST` | `/api/v1/prompts` | opt-in 대화 본문 | 선택 |
 | `POST` | `/api/v1/prompts/reconcile` | prompt agent metadata 정정 | 선택 호환 |

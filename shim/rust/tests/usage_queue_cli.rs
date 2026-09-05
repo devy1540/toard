@@ -5,9 +5,12 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Default)]
 struct ServerState {
@@ -32,8 +35,11 @@ impl Fixture {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("toard-queue-cli-{}-{nonce}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "toard-queue-cli-{}-{nonce}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir_all(root.join("home/.codex/sessions")).unwrap();
         let shim = root.join(if cfg!(windows) {
             "toard-shim.exe"
@@ -343,4 +349,99 @@ fn malformed_tail_is_reported_and_retried_after_repair() {
         0
     );
     assert_eq!(state.events.len(), 1);
+}
+
+#[test]
+fn registering_an_env_only_collector_recovers_its_shared_journal_after_source_deletion() {
+    let fixture = Fixture::new();
+    let source = fixture.write_source();
+    let before_registration = fixture
+        .command()
+        .args(["collect", "--adapter", "codex"])
+        .output()
+        .unwrap();
+    assert_eq!(before_registration.status.code(), Some(1));
+    let legacy_path = fixture.root.join("home/.toard/state/usage-queue.sqlite3");
+    let legacy_count = || {
+        let connection = rusqlite::Connection::open_with_flags(
+            &legacy_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .unwrap();
+        connection
+            .query_row("SELECT count(*) FROM pending_usage", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(legacy_count(), 1);
+    fs::remove_file(source).unwrap();
+    assert!(fixture
+        .command()
+        .args(["target", "upsert"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    fixture.state.lock().unwrap().mode = 2;
+    let recovered = fixture.collect();
+    assert!(
+        recovered.status.success(),
+        "{}",
+        String::from_utf8_lossy(&recovered.stderr)
+    );
+    assert_eq!(legacy_count(), 0);
+    assert_eq!(fixture.pending(), 0);
+    assert_eq!(fixture.state.lock().unwrap().events.len(), 1);
+}
+
+#[test]
+fn direct_exporters_must_be_disabled_before_scope_restriction_and_cannot_be_reenabled() {
+    let fixture = Fixture::new();
+    assert!(fixture
+        .command()
+        .args(["target", "upsert"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let config = fixture.root.join("home/.codex/config.toml");
+    fs::write(&config, format!("model = \"user-model\"\n# >>> toard otel >>>\n[otel]\nlog_user_prompt = false\n[otel.exporter.otlp-http]\nendpoint = \"{}/v1/logs\"\n# <<< toard otel <<<\n", fixture.endpoint)).unwrap();
+    let policy = fixture.root.join("paused.json");
+    fs::write(
+        &policy,
+        r#"{"schemaVersion":1,"mode":"paused","providers":{}}"#,
+    )
+    .unwrap();
+    let apply = || {
+        fixture
+            .command()
+            .args(["scope", "set", "--target-env", "--file"])
+            .arg(&policy)
+            .output()
+            .unwrap()
+    };
+    assert_eq!(apply().status.code(), Some(1));
+    assert!(fs::read_to_string(&config).unwrap().contains("toard otel"));
+    assert!(fixture
+        .command()
+        .args(["otlp", "off"])
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(fs::read_to_string(&config).unwrap().contains("user-model"));
+    assert!(apply().status.success());
+    assert_eq!(
+        fixture
+            .command()
+            .args(["claude-env", "on"])
+            .output()
+            .unwrap()
+            .status
+            .code(),
+        Some(1)
+    );
+    assert!(!fixture.root.join("home/.claude/settings.json").exists());
+    assert_eq!(fixture.state.lock().unwrap().requests, 0);
 }

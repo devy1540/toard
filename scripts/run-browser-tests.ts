@@ -71,8 +71,14 @@ try {
     TOARD_DEMO_PASSWORD: password, TOARD_DEMO_DAYS: "35",
     TOARD_BROWSER_TEST_URL: origin, TOARD_BROWSER_TEST_PASSWORD: password,
     TOARD_BROWSER_TEST_TOKEN: token,
+    TOARD_BROWSER_TEST_FIXTURE_DIR: directory,
     ...(process.env.TOARD_UPDATE_DEMO === "1" ? { TOARD_UPDATE_DEMO: "1" } : {}),
   });
+  const shimPort = String(await availablePort());
+  env.NEXT_PUBLIC_TOARD_LOCAL_SHIM_PORT = shimPort;
+  env.TOARD_BROWSER_TEST_SHIM_PORT = shimPort;
+  console.log("Building the shim for isolated local-scope browser tests…");
+  await exec("cargo", ["build", "--manifest-path", "shim/rust/Cargo.toml"], { env, signal: buildAbort.signal, maxBuffer: 4 * 1024 * 1024 });
   await exec("pnpm", ["seed:dashboard-demo"], { env, maxBuffer: 4 * 1024 * 1024 });
   await syncPricingRevisions(db.pool, fromLiteLLM({
     "gemini-2.5-pro": {
@@ -87,6 +93,10 @@ try {
     "INSERT INTO users(email, name, password_hash, role, team_onboarding_completed_at) VALUES('browser.member@example.test','Browser Member',$1,'member',now()) RETURNING id",
     [await bcrypt.hash(password, 12)],
   )).rows[0].id;
+  await db.pool.query(
+    "INSERT INTO users(email, name, password_hash, role, team_onboarding_completed_at) VALUES('browser.scope@example.test','Browser Scope',$1,'member',now())",
+    [await bcrypt.hash(password, 12)],
+  );
   await db.pool.query("INSERT INTO ingest_tokens(user_id, token_hash) VALUES($1,$2)", [owner, createHash("sha256").update(token).digest("hex")]);
   const invite = await createInvite("browser.invited@example.test", "member", team, owner, db.pool);
   if (!invite.ok) throw new Error("TEST_INVITATION_FAILED");

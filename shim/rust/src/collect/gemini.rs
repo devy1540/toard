@@ -34,13 +34,21 @@ impl LogAdapter for Gemini {
 
     /// GEMINI_DATA_DIR(csv) 설정 시 그 경로들만, 기본 ~/.gemini/tmp — json/jsonl 재귀 수집
     fn discover_files(&self) -> Vec<PathBuf> {
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
         let mut files = Vec::new();
+        let mut failures = 0;
         for root in data_dirs() {
-            walk_files(&root, &["json", "jsonl"], &mut files, 0);
+            failures += walk_files(&root, &["json", "jsonl"], &mut files, 0);
         }
         files.sort();
         files.dedup();
-        files
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -65,7 +73,7 @@ fn data_dirs() -> Vec<PathBuf> {
             .filter(|p| !p.is_empty())
         {
             let path = PathBuf::from(raw);
-            if path.is_dir() && !dirs.contains(&path) {
+            if !dirs.contains(&path) {
                 dirs.push(path);
             }
         }
@@ -74,9 +82,7 @@ fn data_dirs() -> Vec<PathBuf> {
     }
     if let Some(home) = crate::fsx::home_dir() {
         let path = home.join(".gemini").join("tmp");
-        if path.is_dir() {
-            dirs.push(path);
-        }
+        dirs.push(path);
     }
     dirs
 }
@@ -147,6 +153,7 @@ fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
     let jsonl = path.extension().and_then(|ext| ext.to_str()) == Some("jsonl");
     let mut session_id = file_stem(path);
     let mut current_model: Option<String> = None;
+    let mut project = None;
     let mut usage_indexes = HashMap::<String, usize>::new();
     let mut content_indexes = HashMap::<(String, &'static str), usize>::new();
     let chunks: Box<dyn Iterator<Item = &[u8]>> = if jsonl {
@@ -166,11 +173,21 @@ fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
             }
         };
         if let Some(id) = record.session_id() {
+            if id != session_id {
+                project = None;
+            }
             session_id = id;
+        }
+        if let Some(hash) = value.get("projectHash") {
+            project = hash
+                .as_str()
+                .and_then(|hash| crate::collection_scope::LocalProject::group("gemini", hash))
+                .map(std::sync::Arc::new);
         }
         if let Some(model) = record.model.clone() {
             current_model = Some(model);
         }
+        parsed.remember_project(&project);
         let session_timestamp = record
             .start_time
             .as_deref()
@@ -188,11 +205,12 @@ fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
                     vec![obj]
                 };
                 for message in messages {
-                    if let Some(content) = content_from_message(
+                    if let Some(mut content) = content_from_message(
                         message,
                         &session_id,
                         if jsonl { fallback } else { session_timestamp },
                     ) {
+                        content.project = project.clone();
                         if jsonl {
                             if let Some(id) = content.message_id.clone() {
                                 let key = (id, content.role);
@@ -220,14 +238,19 @@ fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
                             message.get("type").and_then(Value::as_str) == Some("gemini")
                         })
                         .filter_map(|message| {
-                            parse_direct_event(message, None, &session_id, session_timestamp)
+                            parse_direct_event(message, None, &session_id, session_timestamp).map(
+                                |mut event| {
+                                    event.project = project.clone();
+                                    event
+                                },
+                            )
                         }),
                 );
                 continue;
             }
         }
         if record.r#type.as_deref() == Some("gemini") {
-            let Some(event) = parse_direct_event_record(
+            let Some(mut event) = parse_direct_event_record(
                 &record,
                 if jsonl {
                     current_model.as_deref()
@@ -239,6 +262,7 @@ fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
             ) else {
                 continue;
             };
+            event.project = project.clone();
             if jsonl {
                 if let Some(id) = record.id.clone() {
                     if let Some(index) = usage_indexes.get(&id).copied() {
@@ -252,16 +276,23 @@ fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
             }
             parsed.usage.push(event);
         } else {
-            parsed.usage.extend(parse_stats_events(
-                record.stats(),
-                current_model.as_deref(),
-                &session_id,
-                record
-                    .timestamp
-                    .as_deref()
-                    .and_then(iso_to_epoch_ms)
-                    .unwrap_or(fallback),
-            ));
+            parsed.usage.extend(
+                parse_stats_events(
+                    record.stats(),
+                    current_model.as_deref(),
+                    &session_id,
+                    record
+                        .timestamp
+                        .as_deref()
+                        .and_then(iso_to_epoch_ms)
+                        .unwrap_or(fallback),
+                )
+                .into_iter()
+                .map(|mut event| {
+                    event.project = project.clone();
+                    event
+                }),
+            );
         }
     }
     parsed
@@ -387,6 +418,7 @@ fn build_event(
         return None;
     }
     Some(RawUsage {
+        project: None,
         ts_ms,
         session_id: Some(session_id.to_string()),
         model: Some(model.to_string()),

@@ -27,12 +27,34 @@ pub fn run(args: &[String]) -> ! {
             println!("multi-target-v1");
             std::process::exit(0);
         }
+        Some("capabilities")
+            if args.get(1).is_some_and(|arg| arg == "--scope") && args.len() == 2 =>
+        {
+            println!("collection-scope-v1");
+            std::process::exit(0);
+        }
         Some("targets") => std::process::exit(targets_cmd(&args[1..])),
         Some("target") => std::process::exit(target_cmd(&args[1..])),
         Some("doctor") => std::process::exit(doctor_cmd(&args[1..])),
         Some("claude-env") => std::process::exit(claude_env_cmd(&args[1..])),
         Some("cursor-hook") => std::process::exit(crate::cursor_hook::run(&args[1..])),
         Some("collect") => std::process::exit(collect_cmd(&args[1..])),
+        Some("scope") => std::process::exit(crate::scope_control::run(&args[1..])),
+        Some("otlp") if args.get(1).is_some_and(|arg| arg == "off") && args.len() == 2 => {
+            let result = crate::targets::TargetStore::from_home()
+                .map_err(|_| "local_settings_unavailable")
+                .and_then(|store| crate::legacy_otlp::disable_owned(store.root()));
+            match result {
+                Ok(()) => {
+                    println!("toard 관리 OTLP 설정을 제거했습니다. 실행 중인 AI 도구를 다시 시작하고 TOARD_EXPERIMENTAL_OTLP를 해제하세요.");
+                    std::process::exit(0);
+                }
+                Err(error) => {
+                    eprintln!("toard-shim: {error}");
+                    std::process::exit(1);
+                }
+            }
+        }
         Some("daemon") => std::process::exit(crate::daemon::run(&args[1..])),
         Some("local") => std::process::exit(crate::local_bridge::run(&args[1..])),
         Some("e2ee") => std::process::exit(e2ee_cmd(&args[1..])),
@@ -66,6 +88,10 @@ fn usage_text() -> String {
 
   capabilities                  installer 호환 capability 출력
   targets list                 등록된 전송 대상 목록 출력 (토큰 제외)
+  scope preview --target-env   로컬 프로젝트와 전송 항목 미리보기 (전송하지 않음)
+  scope set --target-env --file <policy.json>
+                               선택한 서버의 수집 범위 적용
+  otlp off                     toard 관리 experimental OTLP 설정 제거
   target upsert                installer env의 endpoint·token·정책 추가/갱신
   target remove --machine      installer env의 endpoint 대상 제거 결과 출력
   doctor                       설치·자격 증명·endpoint·PATH 상태 진단
@@ -188,20 +214,35 @@ fn target_upsert() -> i32 {
     let update_content_since = content_since
         .as_deref()
         .is_some_and(|value| !value.trim().is_empty());
-    let credentials = match crate::credentials::from_installer_input(InstallerCredentialsInput {
-        token,
-        endpoint,
-        ui_origin: env::var("TOARD_UI_ORIGIN").ok(),
-        collect_content: env::var("TOARD_SHIM_COLLECT_CONTENT").ok(),
-        collect_tools: env::var("TOARD_SHIM_COLLECT_TOOLS").ok(),
-        collect_content_since: content_since,
-    }) {
-        Ok(credentials) => credentials,
-        Err(error) => {
-            eprintln!("toard-shim: installer 입력이 올바르지 않습니다: {error}");
+    let mut credentials =
+        match crate::credentials::from_installer_input(InstallerCredentialsInput {
+            token,
+            endpoint,
+            ui_origin: env::var("TOARD_UI_ORIGIN").ok(),
+            collect_content: env::var("TOARD_SHIM_COLLECT_CONTENT").ok(),
+            collect_tools: env::var("TOARD_SHIM_COLLECT_TOOLS").ok(),
+            collect_content_since: content_since,
+        }) {
+            Ok(credentials) => credentials,
+            Err(error) => {
+                eprintln!("toard-shim: installer 입력이 올바르지 않습니다: {error}");
+                return 2;
+            }
+        };
+    match env::var("TOARD_SHIM_SCOPE")
+        .ok()
+        .as_deref()
+        .unwrap_or("all")
+    {
+        "all" => {}
+        "review" => {
+            credentials.collection_scope = crate::collection_scope::CollectionScope::paused()
+        }
+        _ => {
+            eprintln!("toard-shim: TOARD_SHIM_SCOPE는 all 또는 review여야 합니다");
             return 2;
         }
-    };
+    }
     let store = match crate::targets::TargetStore::from_home() {
         Ok(store) => store,
         Err(error) => {
@@ -209,6 +250,15 @@ fn target_upsert() -> i32 {
             return 1;
         }
     };
+    if !credentials.collection_scope.is_unrestricted() {
+        if let Err(error) = crate::legacy_otlp::ensure_disabled(
+            store.root(),
+            credentials.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT),
+        ) {
+            eprintln!("toard-shim: {error}; toard-shim otlp off 실행 및 AI 도구 재시작 후 다시 시도하세요");
+            return 1;
+        }
+    }
     match store.upsert_installer(credentials, update_content_since) {
         Ok(target) => {
             println!("target={} endpoint={}", &target.id[..12], target.endpoint);
@@ -417,43 +467,59 @@ fn claude_env_cmd(args: &[String]) -> i32 {
             // 파일만 있으면 재시작·env 주입 없이 수집된다. claude-env(=settings.json OTEL 주입)는
             // experimental OTLP(TOARD_EXPERIMENTAL_OTLP + 서버 collection_method='otel')용으로만 남는다.
             warn("claude-env 는 experimental OTLP 전용으로 강등됐습니다 — 일반 사용량 수집엔 불필요(트랜스크립트 pull 로 자동 수집).");
-            let creds = match singleton_credentials_for_legacy_push() {
-                Ok(credentials) => credentials,
+            let store = match crate::targets::TargetStore::from_home() {
+                Ok(store) => store,
                 Err(error) => {
                     eprintln!("toard-shim: {error}");
                     return 1;
                 }
             };
-            let Some(token) = creds.token else {
-                eprintln!(
+            let result = store.with_legacy_push_credentials(|creds| {
+                let settings_text = std::fs::read_to_string(&settings_path).unwrap_or_default();
+                let prev_state = std::fs::read_to_string(&state_path)
+                    .map(|text| claude_env::state_from_json(&text))
+                    .unwrap_or_default();
+                let Some(token) = creds.token else {
+                    eprintln!(
                     "toard-shim: 선택된 target의 자격 증명 또는 TOARD_INGEST_TOKEN 설정 후 재시도"
                 );
-                return 1;
-            };
-            let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
-            match claude_env::plan_on(&settings_text, &prev_state, endpoint, &token) {
-                Ok(r) => {
-                    // 토큰이 평문으로 들어가므로 settings.json 을 0600 으로 조인다
-                    if let Some(text) = &r.settings {
-                        if let Err(e) = fsx::write_atomic(&settings_path, text, 0o600) {
-                            eprintln!("toard-shim: settings.json 쓰기 실패: {e}");
-                            return 1;
+                    return 1;
+                };
+                let endpoint = creds.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
+                match claude_env::plan_on(&settings_text, &prev_state, endpoint, &token) {
+                    Ok(r) => {
+                        // 토큰이 평문으로 들어가므로 settings.json 을 0600 으로 조인다
+                        if let Some(text) = &r.settings {
+                            if let Err(e) = fsx::write_atomic(&settings_path, text, 0o600) {
+                                eprintln!("toard-shim: settings.json 쓰기 실패: {e}");
+                                return 1;
+                            }
                         }
+                        let _ = fsx::write_atomic(
+                            &state_path,
+                            &claude_env::state_to_json(&r.state),
+                            0o600,
+                        );
+                        for w in &r.warnings {
+                            warn(w);
+                        }
+                        ok(&format!(
+                            "claude-env on — {} 개 키 관리 중 ({})",
+                            r.state.len(),
+                            settings_path.display()
+                        ));
+                        0
                     }
-                    let _ =
-                        fsx::write_atomic(&state_path, &claude_env::state_to_json(&r.state), 0o600);
-                    for w in &r.warnings {
-                        warn(w);
+                    Err(e) => {
+                        eprintln!("toard-shim: {e}");
+                        1
                     }
-                    ok(&format!(
-                        "claude-env on — {} 개 키 관리 중 ({})",
-                        r.state.len(),
-                        settings_path.display()
-                    ));
-                    0
                 }
-                Err(e) => {
-                    eprintln!("toard-shim: {e}");
+            });
+            match result {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("toard-shim: {error}");
                     1
                 }
             }
@@ -505,20 +571,6 @@ fn claude_env_cmd(args: &[String]) -> i32 {
             eprintln!("toard-shim: claude-env 사용법: on|off|status (받은 값: {other})");
             2
         }
-    }
-}
-
-fn singleton_credentials_for_legacy_push() -> Result<crate::credentials::Credentials, String> {
-    let targets = crate::targets::TargetStore::from_home()
-        .and_then(|store| store.load_or_migrate())
-        .map_err(|error| format!("target 저장소를 읽을 수 없습니다: {error}"))?;
-    match targets.as_slice() {
-        [] => Ok(read_credentials()),
-        [target] => Ok(target.credentials.clone()),
-        _ => Err(
-            "이 기능은 target이 정확히 하나일 때만 사용할 수 있습니다 — 멀티 target은 pull 수집을 사용하세요"
-                .into(),
-        ),
     }
 }
 

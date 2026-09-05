@@ -27,17 +27,29 @@ impl LogAdapter for CursorUsage {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let mut files = crate::cursor_hook::usage_log_path()
-            .filter(|path| path.is_file())
-            .into_iter()
-            .collect::<Vec<_>>();
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
+        let mut files = Vec::new();
+        let mut failures = 0;
+        if let Some(path) = crate::cursor_hook::usage_log_path() {
+            match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => files.push(path),
+                Ok(_) => failures += 1,
+                Err(error) => failures += u64::from(error.kind() != std::io::ErrorKind::NotFound),
+            }
+        }
         if let Some(root) = cursor_home().map(|home| home.join("projects")) {
-            walk_files(&root, &["jsonl", "txt"], &mut files, 0);
+            failures += walk_files(&root, &["jsonl", "txt"], &mut files, 0);
             files.retain(|path| is_agent_transcript(path) || is_usage_log(path));
         }
         files.sort();
         files.dedup();
-        files
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -48,12 +60,33 @@ impl LogAdapter for CursorUsage {
         if is_usage_log(path) {
             return parse_usage_log(path);
         }
-        match path.extension().and_then(|extension| extension.to_str()) {
+        let mut parsed = match path.extension().and_then(|extension| extension.to_str()) {
             Some("jsonl") => parse_jsonl_transcript(path, include_content, include_tools),
             Some("txt") => parse_legacy_transcript(path, include_content, include_tools),
             _ => ParsedLog::default(),
+        };
+        let project = transcript_group(path).map(Arc::new);
+        parsed.remember_project(&project);
+        for record in &mut parsed.content {
+            record.project = project.clone();
         }
+        for record in &mut parsed.tools {
+            record.project = project.clone();
+        }
+        parsed
     }
+}
+
+fn transcript_group(path: &Path) -> Option<crate::collection_scope::LocalProject> {
+    let parts = path
+        .components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let group = parts
+        .windows(3)
+        .rev()
+        .find(|parts| parts[0] == "projects" && parts[2] == "agent-transcripts")?[1];
+    crate::collection_scope::LocalProject::group("cursor", group)
 }
 
 fn cursor_home() -> Option<PathBuf> {
@@ -100,7 +133,17 @@ fn parse_usage_log(path: &Path) -> ParsedLog {
         if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        let usage = match serde_json::from_slice::<CapturedUsage>(line) {
+        let Some(value) = parsed.json_line(line) else {
+            continue;
+        };
+        if value
+            .get("schemaVersion")
+            .is_some_and(|version| version.as_u64() != Some(1))
+        {
+            parsed.diagnostics.as_mut().unwrap().unsupported_schema = true;
+            continue;
+        }
+        let usage = match serde_json::from_value::<CapturedUsage>(value) {
             Ok(usage) => usage,
             Err(_) => {
                 parsed.diagnostics.as_mut().unwrap().parse_errors += 1;
@@ -118,6 +161,26 @@ fn parse_usage_log(path: &Path) -> ParsedLog {
             continue;
         }
         parsed.usage.push(RawUsage {
+            project: usage
+                .project_id
+                .as_deref()
+                .filter(|id| crate::collection_scope::LocalProject::valid_id(id))
+                .map(|id| {
+                    let recalled = path.parent().and_then(Path::parent).and_then(|root| {
+                        crate::collection_scope::LocalProject::recalled(
+                            &root.join("state"),
+                            "cursor",
+                            id,
+                        )
+                    });
+                    Arc::new(
+                        recalled.unwrap_or_else(|| crate::collection_scope::LocalProject {
+                            id: id.into(),
+                            label: format!("Cursor project {}", &id[..12]),
+                            kind: "opaque",
+                        }),
+                    )
+                }),
             ts_ms: usage.ts_ms,
             session_id: usage.session_id,
             model: usage.model,
@@ -380,6 +443,7 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
             let text = text_from_content(content, role);
             if !text.is_empty() {
                 parsed.content.push(RawContent {
+                    project: None,
                     ts_ms,
                     session_id: session.clone(),
                     message_id,
@@ -423,6 +487,7 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
                     });
                 let index = parsed.tools.len();
                 parsed.tools.push(RawToolActivity {
+                    project: None,
                     ts_ms,
                     session_id: session_arc.clone(),
                     call_id: call_id.clone(),
@@ -492,6 +557,7 @@ fn flush_legacy_content(
         return;
     }
     parsed.content.push(RawContent {
+        project: None,
         ts_ms,
         session_id: session.clone(),
         message_id: Some(format!(
@@ -545,6 +611,7 @@ fn parse_legacy_transcript(path: &Path, include_content: bool, include_tools: bo
             if let Some(name) = legacy_tool_name(line) {
                 if let Some(item_key) = parse_mcp_name(name) {
                     parsed.tools.push(RawToolActivity {
+                        project: None,
                         ts_ms,
                         session_id: session.as_deref().map(Arc::from),
                         call_id: format!(

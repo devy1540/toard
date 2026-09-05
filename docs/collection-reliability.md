@@ -45,7 +45,7 @@ PostgreSQL 모드는 usage row, ClickHouse 모드는 PostgreSQL durable outbox r
 
 ## 배포 순서와 검증 범위
 
-서버 migration `1700000055`와 앱을 먼저 적용하고 shim을 업데이트한다. 이전 shim의 요청은 계속 수신하지만 자체 health 보고와 로컬 보관함은 shim 업데이트 뒤에 생긴다. 기존에 손실된 사용량을 새 큐가 복원하지는 않는다.
+`collection-scope-v1`을 지원하는 shim 바이너리를 먼저 공개하고 서버 migration `1700000055`와 앱을 적용한다. 새 설치 화면의 기본 검토 경로가 해당 capability를 요구하므로 서버 UI만 먼저 공개하지 않는다. 설치된 기존 shim도 업데이트한다. 이전 shim의 요청은 계속 수신하지만 자체 health 보고와 로컬 보관함은 shim 업데이트 뒤에 생긴다. 기존에 손실된 사용량을 새 큐가 복원하지는 않는다.
 
 회귀 검증은 합성 데이터와 임시 DB로 수행한다.
 
@@ -54,3 +54,5 @@ PostgreSQL 모드는 usage row, ClickHouse 모드는 PostgreSQL durable outbox r
 - `tests/browser/trust.spec.ts`: 연결 확인 뒤 첫 저장까지 설치 화면이 기다리는지 검증.
 
 이 테스트는 운영 환경의 장애 복구 훈련이나 외부 팀 파일럿을 대체하지 않는다.
+
+설정의 로컬 수집 범위는 사용량·본문·도구 활동과 전송 대기열에 적용한다. 범위를 바꿔도 서버에 이미 저장된 기록을 삭제하지 않는다. 직접 experimental OTLP와의 전환 및 세부 문맥은 [수집 범위 구현](collection-scope-implementation.md)을 참고한다.

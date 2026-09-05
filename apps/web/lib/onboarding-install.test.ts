@@ -24,7 +24,7 @@ test("content opt-in Windows command selects server-managed collection and escap
 
   assert.equal(
     command,
-    "$env:TOARD_INGEST_TOKEN='tk_a''b'; $env:TOARD_UI_ORIGIN='https://dashboard.example'; $env:TOARD_SHIM_COLLECT_CONTENT='1'; irm 'https://toard.example/install.ps1' | iex",
+    "$env:TOARD_INGEST_TOKEN='tk_a''b'; $env:TOARD_UI_ORIGIN='https://dashboard.example'; $env:TOARD_SHIM_COLLECT_CONTENT='1'; $env:TOARD_SHIM_SCOPE='all'; irm 'https://toard.example/install.ps1' | iex",
   );
   assert.doesNotMatch(command, /\bsh\b|install\.sh/);
   assert.doesNotMatch(command, /e2ee_v1|recovery|mnemonic|uck/i);
@@ -53,7 +53,7 @@ test("macOS and Linux commands use safely quoted POSIX shell", () => {
         token: "tk_a'b",
         collectContent: false,
       }),
-      "curl -fsSL 'https://toard.example/install.sh' | TOARD_INGEST_TOKEN='tk_a'\"'\"'b' TOARD_UI_ORIGIN='https://dashboard.example' TOARD_SHIM_COLLECT_CONTENT='0' sh",
+      "curl -fsSL 'https://toard.example/install.sh' | TOARD_INGEST_TOKEN='tk_a'\"'\"'b' TOARD_UI_ORIGIN='https://dashboard.example' TOARD_SHIM_COLLECT_CONTENT='0' TOARD_SHIM_SCOPE='all' sh",
     );
   }
 });

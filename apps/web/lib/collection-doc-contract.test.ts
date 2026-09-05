@@ -28,8 +28,9 @@ test("공개 수집 문서는 pull-primary와 experimental OTLP 경계를 같은
   for (const document of [architecture, deploy]) {
     assert.match(document, /단방향 HTTPS/);
     assert.match(document, /target별 (?:파일 stamp와 전송 진행 )?cursor/);
-    assert.match(document, /별도 durable (?:shim )?outbox는 없다/);
-    assert.match(document, /원본 session 파일을 삭제하면|원본 파일을 삭제하면/);
+    assert.match(document, /SQLite/);
+    assert.match(document, /ACK/);
+    assert.match(document, /본문[\s\S]{0,100}원본|원본[\s\S]{0,100}본문/);
     assert.match(document, /dedup/);
   }
 });

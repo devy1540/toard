@@ -168,6 +168,35 @@ impl TargetStore {
     }
 
     pub fn load_readonly(&self) -> Result<Vec<Target>, TargetError> {
+        let path = self.root.join("registry.lock");
+        for _ in 0..3 {
+            match OpenOptions::new().read(true).open(&path) {
+                Ok(lock) => {
+                    FileExt::lock_shared(&lock)?;
+                    let result = self.load_readonly_unlocked();
+                    FileExt::unlock(&lock)?;
+                    return result;
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    let result = self.load_readonly_unlocked();
+                    // A first writer may create the lock while this read runs.
+                    // In that case discard the optimistic read and acquire it.
+                    if path.exists() {
+                        continue;
+                    }
+                    return result;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "target registry changed during read",
+        )
+        .into())
+    }
+
+    fn load_readonly_unlocked(&self) -> Result<Vec<Target>, TargetError> {
         let mut targets = self.load_unlocked()?;
         if self.root.join("credentials").is_file() {
             match self.legacy_fallback() {
@@ -195,6 +224,51 @@ impl TargetStore {
         })
     }
 
+    pub fn set_collection_scope(
+        &self,
+        endpoint: &str,
+        expected_revision: &str,
+        scope: crate::collection_scope::CollectionScope,
+    ) -> Result<Target, TargetError> {
+        scope.validate().map_err(TargetError::InvalidCredentials)?;
+        let endpoint = normalize_endpoint(endpoint)?;
+        self.with_lock(|| {
+            if !scope.is_unrestricted() {
+                crate::legacy_otlp::ensure_disabled(&self.root, &endpoint)
+                    .map_err(TargetError::InvalidCredentials)?;
+            }
+            let target = self
+                .load_readonly_unlocked()?
+                .into_iter()
+                .find(|target| target.endpoint == endpoint)
+                .ok_or(TargetError::InvalidCredentials("target no longer exists"))?;
+            if target.revision != expected_revision {
+                return Err(TargetError::InvalidCredentials(
+                    "target changed during scope confirmation",
+                ));
+            }
+            let mut credentials = target.credentials;
+            if target.credentials_path == self.root.join("credentials") {
+                self.migrate_legacy_unlocked()?;
+                let migrated = self
+                    .load_unlocked()?
+                    .into_iter()
+                    .find(|item| item.endpoint == endpoint)
+                    .ok_or(TargetError::InvalidCredentials(
+                        "target migration did not complete",
+                    ))?;
+                if migrated.credentials != credentials {
+                    return Err(TargetError::InvalidCredentials(
+                        "target changed during scope confirmation",
+                    ));
+                }
+                credentials = migrated.credentials;
+            }
+            credentials.collection_scope = scope;
+            self.write_target_unlocked(&mut credentials)
+        })
+    }
+
     pub fn upsert_installer(
         &self,
         mut credentials: Credentials,
@@ -203,12 +277,21 @@ impl TargetStore {
         self.with_lock(|| {
             self.migrate_before_write_unlocked()?;
             let endpoint = validate_credentials(&credentials)?;
+            if credentials.collection_scope.mode == crate::collection_scope::ScopeMode::Paused {
+                crate::legacy_otlp::ensure_disabled(&self.root, &endpoint)
+                    .map_err(TargetError::InvalidCredentials)?;
+            }
             let credentials_path = self
                 .targets_dir()
                 .join(target_id(&endpoint))
                 .join("credentials");
             if let Ok(content) = fs::read_to_string(credentials_path) {
                 let existing = credentials::parse(&content);
+                // Reinstalling or rotating a token must not silently widen the
+                // scope previously selected in the local confirmation window.
+                if credentials.collection_scope.mode != crate::collection_scope::ScopeMode::Paused {
+                    credentials.collection_scope = existing.collection_scope;
+                }
                 if !update_content_since {
                     credentials.collect_content_since = existing.collect_content_since;
                 }
@@ -226,6 +309,24 @@ impl TargetStore {
                 }
             }
             self.write_target_unlocked(&mut credentials)
+        })
+    }
+
+    /// Hold the same lock as scope changes until owned exporter writes finish.
+    pub(crate) fn with_legacy_push_credentials<T>(
+        &self,
+        operation: impl FnOnce(Credentials) -> T,
+    ) -> Result<T, TargetError> {
+        self.with_lock(|| {
+            self.migrate_before_write_unlocked()?;
+            let targets = self.load_unlocked()?;
+            let credentials = match targets.as_slice() {
+                [] => credentials::read_credentials(),
+                [target] => target.credentials.clone(),
+                _ => return Err(TargetError::InvalidCredentials("이 기능은 target이 정확히 하나일 때만 사용할 수 있습니다 — 멀티 target은 pull 수집을 사용하세요")),
+            };
+            if !credentials.collection_scope.is_unrestricted() { return Err(TargetError::InvalidCredentials("프로젝트 범위 제한 중에는 experimental OTLP를 주입할 수 없습니다")); }
+            Ok(operation(credentials))
         })
     }
 
@@ -470,9 +571,23 @@ impl TargetStore {
         let mut credentials = credentials::parse(&content);
         let endpoint = validate_credentials(&credentials)?;
         credentials.endpoint = Some(endpoint.clone());
+        if let Ok(existing) = fs::read_to_string(
+            self.targets_dir()
+                .join(target_id(&endpoint))
+                .join("credentials"),
+        ) {
+            merge_unmentioned_legacy_fields(
+                &content,
+                &mut credentials,
+                &credentials::parse(&existing),
+            );
+        }
+        if let Some(origin) = credentials.ui_origin.as_deref() {
+            credentials.ui_origin = Some(normalize_origin(origin)?);
+        }
         Ok(Target {
             id: target_id(&endpoint),
-            revision: String::new(),
+            revision: format!("{:x}", Sha256::digest(content.as_bytes())),
             endpoint,
             credentials_path,
             state_dir: self.root.join("state"),
@@ -604,6 +719,9 @@ fn merge_unmentioned_legacy_fields(
     incoming: &mut Credentials,
     existing: &Credentials,
 ) {
+    if !has_key(source, "collection_scope") {
+        incoming.collection_scope = existing.collection_scope.clone();
+    }
     let preserve_e2ee = existing.collect_content
         == credentials::ContentCollectionMode::LegacyE2eeV1
         && incoming.collect_content != credentials::ContentCollectionMode::LegacyE2eeV1;
@@ -775,6 +893,132 @@ mod tests {
     use super::*;
     use crate::credentials::Credentials;
     use std::fs;
+
+    #[test]
+    fn readonly_snapshots_wait_for_credentials_and_revision_to_be_committed_together() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+        let temp = TempRoot::new("consistent-readonly");
+        let store = Arc::new(TargetStore::from_root(temp.path().join(".toard")));
+        let target = store
+            .upsert(credentials("fixture", "https://fixture.example/api"))
+            .unwrap();
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(store.root().join("registry.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&lock).unwrap();
+        fs::write(
+            target.credentials_path.parent().unwrap().join("revision"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap();
+        let reader = Arc::clone(&store);
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let child = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            done_tx.send(reader.load_readonly()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let mut changed = target.credentials;
+        changed.collection_scope = crate::collection_scope::CollectionScope::paused();
+        fs::write(
+            &target.credentials_path,
+            crate::credentials::serialize(&changed),
+        )
+        .unwrap();
+        FileExt::unlock(&lock).unwrap();
+        let observed = done_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap()
+            .remove(0);
+        assert_eq!(observed.revision, "a".repeat(64));
+        assert_eq!(
+            observed.credentials.collection_scope,
+            changed.collection_scope
+        );
+        child.join().unwrap();
+    }
+
+    #[test]
+    fn stale_scope_confirmation_cannot_replace_rotated_credentials_and_reinstall_preserves_scope() {
+        let temp = TempRoot::new("scope-reinstall");
+        let store = TargetStore::from_root(temp.path().join(".toard"));
+        let original = store
+            .upsert(credentials("old", "https://fixture.example/api"))
+            .unwrap();
+        let mut scoped = original.credentials.clone();
+        scoped.collection_scope = crate::collection_scope::CollectionScope::paused();
+        let current = store.upsert(scoped).unwrap();
+        assert!(store
+            .set_collection_scope(
+                &original.endpoint,
+                &original.revision,
+                crate::collection_scope::CollectionScope::default()
+            )
+            .is_err());
+        let updated = store
+            .upsert_installer(credentials("new", &original.endpoint), false)
+            .unwrap();
+        assert_eq!(updated.credentials.token.as_deref(), Some("new"));
+        assert_eq!(
+            updated.credentials.collection_scope,
+            current.credentials.collection_scope
+        );
+        assert_ne!(updated.revision, current.revision);
+        assert!(store
+            .set_collection_scope(
+                &current.endpoint,
+                &current.revision,
+                crate::collection_scope::CollectionScope::default()
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn approved_legacy_scope_migrates_only_the_reviewed_credentials() {
+        let temp = TempRoot::new("legacy-scope-approval");
+        let root = temp.path().join(".toard");
+        write_legacy_fixture(&root, "fixture", "https://fixture.example/api");
+        let store = TargetStore::from_root(root.clone());
+        let viewed = store.load_readonly().unwrap().remove(0);
+        assert!(!viewed.revision.is_empty());
+        let updated = store
+            .set_collection_scope(
+                &viewed.endpoint,
+                &viewed.revision,
+                crate::collection_scope::CollectionScope::paused(),
+            )
+            .unwrap();
+        assert_eq!(
+            updated.credentials_path,
+            store.targets_dir().join(&updated.id).join("credentials")
+        );
+        assert_eq!(
+            updated.credentials.collection_scope.mode,
+            crate::collection_scope::ScopeMode::Paused
+        );
+        assert!(!root.join("credentials").exists());
+        // A later legacy installer reimport must preserve an unmentioned scope.
+        write_legacy_fixture(&root, "rotated", &updated.endpoint);
+        let legacy_view = store.load_readonly().unwrap().remove(0);
+        assert_eq!(
+            legacy_view.credentials.collection_scope.mode,
+            crate::collection_scope::ScopeMode::Paused
+        );
+        let imported = store.load_or_migrate().unwrap().remove(0);
+        assert_eq!(
+            imported.credentials.collection_scope.mode,
+            crate::collection_scope::ScopeMode::Paused
+        );
+    }
     use std::path::{Path, PathBuf};
 
     struct TempRoot(PathBuf);

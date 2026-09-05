@@ -125,6 +125,7 @@ pub fn content_from_message(
         })
         .unwrap_or(fallback_ts);
     Some(RawContent {
+        project: None,
         ts_ms,
         session_id: Some(session_id.to_string()),
         message_id: non_empty_json_string(obj.get("id")),

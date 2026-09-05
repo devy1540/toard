@@ -28,6 +28,10 @@ jobs:
       - run: pnpm test:release-version
       - run: pnpm typecheck
       - run: pnpm test
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: shim/rust
       - run: pnpm exec playwright install --with-deps chromium
       # test:browser builds and runs the same standalone entry point as Docker,
       # with its own loopback-only PostgreSQL fixture and synthetic identities.

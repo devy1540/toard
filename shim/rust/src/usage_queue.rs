@@ -6,8 +6,11 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::collection_scope::ProviderScope;
 use crate::json;
 use crate::usage_event::UsageEvent;
+
+const PROJECT_PREDICATE: &str = "($mode=0 OR (project_id IS NOT NULL AND (($mode=2 AND project_id IN (SELECT value FROM json_each($projects))) OR ($mode=3 AND project_id NOT IN (SELECT value FROM json_each($projects))))))";
 
 pub const DEFAULT_MAX_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
@@ -80,6 +83,7 @@ impl From<std::io::Error> for QueueError {
     }
 }
 
+#[derive(Clone)]
 pub struct QueueInput {
     pub event: UsageEvent,
     /// Local opaque project identity. Never part of the transmitted usage payload.
@@ -98,6 +102,76 @@ pub struct QueuedUsage {
 pub struct QueueStatus {
     pub records: u64,
     pub bytes: u64,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingProject {
+    pub provider_key: String,
+    pub project_id: Option<String>,
+    pub records: u64,
+}
+
+pub fn project_counts(state_dir: &Path) -> Result<Vec<PendingProject>, QueueError> {
+    if read_status(state_dir)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let connection = Connection::open_with_flags(
+        state_dir.join("usage-queue.sqlite3"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    let mut statement = connection.prepare("SELECT provider_key, project_id, count(*) FROM pending_usage GROUP BY provider_key, project_id")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok(PendingProject {
+                provider_key: row.get(0)?,
+                project_id: row.get(1)?,
+                records: row.get(2)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Remote-origin status exposes only the current credential's permitted rows.
+/// The local confirmation window can separately inspect all retained metadata.
+pub fn scoped_status(
+    state_dir: &Path,
+    identity: QueueIdentity,
+    scope: &crate::collection_scope::CollectionScope,
+) -> Result<Option<QueueStatus>, QueueError> {
+    if scope.validate().is_err() {
+        return Err(QueueError::IdentityChanged);
+    }
+    if read_status(state_dir)?.is_none() {
+        return Ok(None);
+    }
+    let mut connection = Connection::open_with_flags(
+        state_dir.join("usage-queue.sqlite3"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    connection.busy_timeout(Duration::from_secs(5))?;
+    let transaction = connection.transaction()?;
+    ensure_identity(&transaction, &identity)?;
+    let mut statement = transaction.prepare("SELECT provider_key, project_id, count(*), sum(payload_bytes) FROM pending_usage GROUP BY provider_key, project_id")?;
+    let rows = statement.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, u64>(2)?,
+            row.get::<_, u64>(3)?,
+        ))
+    })?;
+    let mut total = QueueStatus::default();
+    for row in rows {
+        let (provider, project, records, bytes) = row?;
+        if scope.provider(&provider).allows(project.as_deref()) {
+            total.records += records;
+            total.bytes += bytes;
+        }
+    }
+    Ok(Some(total))
 }
 
 /// Doctor/status must never create a journal, bind its identity or read payloads.
@@ -121,6 +195,17 @@ pub fn read_status(state_dir: &Path) -> Result<Option<QueueStatus>, QueueError> 
         "SELECT (SELECT count(*) FROM pending_usage), pending_bytes FROM queue_meta WHERE singleton=1", [],
         |row| Ok(QueueStatus { records: row.get(0)?, bytes: row.get(1)? }),
     )?))
+}
+
+pub fn stored_destination(state_dir: &Path) -> Result<Option<String>, QueueError> {
+    if read_status(state_dir)?.is_none() {
+        return Ok(None);
+    }
+    let connection = Connection::open_with_flags(
+        state_dir.join("usage-queue.sqlite3"),
+        OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    Ok(read_identity(&connection)?.map(|identity| identity.destination))
 }
 
 pub struct UsageQueue {
@@ -155,6 +240,52 @@ fn ensure_identity(connection: &Connection, expected: &QueueIdentity) -> Result<
 }
 
 impl UsageQueue {
+    /// Transfer an older shared journal without copying live SQLite/WAL files.
+    /// A source ACK follows the destination commit; interruption can only replay.
+    pub fn import_pending(&mut self, source: &mut UsageQueue) -> Result<usize, QueueError> {
+        if self.path == source.path || !self.identity.compatible(&source.identity) {
+            return Err(QueueError::IdentityChanged);
+        }
+        let mut imported = 0;
+        for _ in 0..32 {
+            let batch = source.peek_provider(None, &ProviderScope::All {}, 250)?;
+            if batch.is_empty() {
+                break;
+            }
+            let mut size = batch.len();
+            loop {
+                let inputs = batch[..size]
+                    .iter()
+                    .map(|row| {
+                        let value = json::parse(&row.payload).map_err(|_| QueueError::Corrupt)?;
+                        let event =
+                            UsageEvent::from_json(&value).map_err(|_| QueueError::Corrupt)?;
+                        Ok(QueueInput {
+                            event,
+                            project_id: row.project_id.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, QueueError>>()?;
+                match self.enqueue(&inputs) {
+                    Ok(_) => {
+                        source.acknowledge(
+                            &batch[..size]
+                                .iter()
+                                .map(|row| row.sequence)
+                                .collect::<Vec<_>>(),
+                        )?;
+                        imported += size;
+                        break;
+                    }
+                    Err(QueueError::Full) if size > 1 => size /= 2,
+                    Err(QueueError::Full) => return Ok(imported),
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        Ok(imported)
+    }
+
     pub fn open(
         state_dir: &Path,
         requested: QueueIdentity,
@@ -354,28 +485,36 @@ impl UsageQueue {
 
     #[cfg(test)]
     pub fn peek(&self, limit: usize) -> Result<Vec<QueuedUsage>, QueueError> {
-        self.peek_provider(None, limit)
+        self.peek_provider(None, &ProviderScope::All {}, limit)
     }
 
-    pub fn peek_for(&self, provider: &str, limit: usize) -> Result<Vec<QueuedUsage>, QueueError> {
-        self.peek_provider(Some(provider), limit)
+    pub fn peek_for(
+        &self,
+        provider: &str,
+        scope: &ProviderScope,
+        limit: usize,
+    ) -> Result<Vec<QueuedUsage>, QueueError> {
+        self.peek_provider(Some(provider), scope, limit)
     }
 
     fn peek_provider(
         &self,
         provider: Option<&str>,
+        scope: &ProviderScope,
         limit: usize,
     ) -> Result<Vec<QueuedUsage>, QueueError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_identity(&transaction, &self.identity)?;
-        let sql = if provider.is_some() {
-            "SELECT sequence,provider_key,project_id,payload FROM pending_usage WHERE provider_key=?2 ORDER BY sequence LIMIT ?1"
+        let provider_guard = if provider.is_some() {
+            "provider_key=$provider"
         } else {
-            "SELECT sequence,provider_key,project_id,payload FROM pending_usage WHERE ?2 IS NULL ORDER BY sequence LIMIT ?1"
+            "$provider IS NULL"
         };
-        let mut statement = transaction.prepare(sql)?;
-        let rows = statement.query_map(params![limit.min(500) as i64, provider], |row| {
+        let sql = format!("SELECT sequence,provider_key,project_id,payload FROM pending_usage WHERE {provider_guard} AND {PROJECT_PREDICATE} ORDER BY sequence LIMIT $limit");
+        let mut statement = transaction.prepare(&sql)?;
+        let (mode, projects) = scope.query_parameters();
+        let rows = statement.query_map(rusqlite::named_params! { "$limit": limit.min(500) as i64, "$provider": provider, "$mode": mode, "$projects": projects }, |row| {
             Ok(QueuedUsage {
                 sequence: row.get(0)?,
                 provider_key: row.get(1)?,
@@ -431,13 +570,18 @@ impl UsageQueue {
         )?)
     }
 
-    pub fn pending_for(&self, provider: &str) -> Result<u64, QueueError> {
+    pub fn pending_for_scope(
+        &self,
+        provider: &str,
+        scope: &ProviderScope,
+    ) -> Result<u64, QueueError> {
         let mut connection = self.connect()?;
         let transaction = connection.transaction()?;
         ensure_identity(&transaction, &self.identity)?;
+        let (mode, projects) = scope.query_parameters();
         Ok(transaction.query_row(
-            "SELECT count(*) FROM pending_usage WHERE provider_key=?1",
-            [provider],
+            &format!("SELECT count(*) FROM pending_usage WHERE provider_key=$provider AND {PROJECT_PREDICATE}"),
+            rusqlite::named_params! { "$provider": provider, "$mode": mode, "$projects": projects },
             |row| row.get(0),
         )?)
     }
@@ -638,5 +782,74 @@ mod tests {
         std::fs::write(&path, "not a database").unwrap();
         assert!(UsageQueue::open(&directory, identity("token", None), DEFAULT_MAX_BYTES).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "not a database");
+    }
+
+    #[test]
+    fn project_selection_reaches_allowed_rows_after_an_excluded_prefix_and_preserves_others() {
+        use std::collections::BTreeSet;
+        let directory = directory();
+        let mut queue =
+            UsageQueue::open(&directory, identity("token", None), DEFAULT_MAX_BYTES).unwrap();
+        let excluded = "a".repeat(64);
+        let allowed = "b".repeat(64);
+        let mut records = (0..300)
+            .map(|index| {
+                let mut record = record(&format!("excluded-{index}"));
+                record.project_id = Some(excluded.clone());
+                record
+            })
+            .collect::<Vec<_>>();
+        let mut unknown = record("unidentified");
+        unknown.project_id = None;
+        records.push(unknown);
+        let mut permitted = record("permitted");
+        permitted.project_id = Some(allowed.clone());
+        records.push(permitted);
+        queue.enqueue(&records).unwrap();
+        let include = ProviderScope::Include {
+            projects: BTreeSet::from([allowed]),
+        };
+        let exclude = ProviderScope::Exclude {
+            projects: BTreeSet::from([excluded]),
+        };
+        for scope in [&include, &exclude] {
+            assert_eq!(queue.pending_for_scope("codex", scope).unwrap(), 1);
+            let batch = queue.peek_for("codex", scope, 250).unwrap();
+            assert_eq!(batch.len(), 1);
+            assert!(batch[0].payload.contains("permitted"));
+        }
+        let batch = queue.peek_for("codex", &include, 250).unwrap();
+        queue.acknowledge(&[batch[0].sequence]).unwrap();
+        assert_eq!(queue.status().unwrap().records, 301);
+        assert_eq!(queue.pending_for_scope("codex", &include).unwrap(), 0);
+        assert!(queue
+            .peek_for("codex", &ProviderScope::Off {}, 250)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn journal_import_cannot_transfer_between_connection_identities() {
+        let original = directory();
+        let destination = directory();
+        let mut source = UsageQueue::open(
+            &original,
+            identity("fixture", Some("owner-a")),
+            DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
+        source.enqueue(&[record("one")]).unwrap();
+        let mut other = UsageQueue::open(
+            &destination,
+            QueueIdentity::new("other-server", Some("owner-a"), "fixture"),
+            DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
+        assert_eq!(
+            other.import_pending(&mut source),
+            Err(QueueError::IdentityChanged)
+        );
+        assert_eq!(source.status().unwrap().records, 1);
+        assert_eq!(other.status().unwrap().records, 0);
     }
 }

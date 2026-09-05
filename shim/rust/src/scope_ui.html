@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>toard · 이 컴퓨터의 수집 범위</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}*{box-sizing:border-box}body{margin:0;background:light-dark(#fafafa,#111);color:light-dark(#222,#eee)}main{max-width:900px;margin:auto;padding:28px 20px}h1{font-size:24px;margin:8px 0}h2{font-size:17px;margin:0}p{line-height:1.6}.muted{color:light-dark(#666,#aaa);font-size:13px}.endpoint{overflow-wrap:anywhere}label{display:block;font-size:14px}select,input,button{font:inherit}select,button,input[type=search]{padding:9px 12px;border:1px solid light-dark(#ddd,#444);border-radius:7px;background:light-dark(white,#222);color:inherit}button{cursor:pointer}button:disabled{opacity:.55;cursor:wait}.primary{background:light-dark(#222,#eee);color:light-dark(white,#111)}.card{border:1px solid light-dark(#ddd,#333);border-radius:10px;padding:16px;margin:16px 0;background:light-dark(white,#171717)}.row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}.projects{max-height:350px;overflow:auto}.project{border-top:1px solid light-dark(#eee,#333);padding:12px 0}.project label{display:flex;gap:10px;align-items:flex-start;overflow-wrap:anywhere}.project input{margin-top:5px;flex-shrink:0}.project span{min-width:0}.project small{display:block}.project details{margin:8px 0 0 26px;font-size:12px}pre{white-space:pre-wrap;overflow-wrap:anywhere}.actions{padding:16px 0;background:light-dark(#fafafa,#111);border-top:1px solid light-dark(#ddd,#333)}#status{min-height:24px}.error{color:light-dark(#ad1f24,#ff9a9d)}[hidden]{display:none!important}#search{width:100%;margin-top:12px}
+</style></head><body><main>
+<p class="muted">toard · 로컬 설정</p><h1>이 컴퓨터의 수집 범위</h1><p id="endpoint" class="endpoint"></p>
+<p class="muted">범위 설정용 프로젝트 목록과 경로는 이 로컬 창에서만 확인합니다. 서버에는 선택한 범위의 사용 기록을 보냅니다. 범위를 바꿔도 서버에 이미 저장된 기록은 삭제되지 않습니다.</p>
+<p id="status" role="status" aria-live="polite">로컬 기록과 전송 대기 항목을 확인하고 있습니다…</p>
+<form id="form" hidden>
+<section class="card"><label for="mode">수집 방식</label><select id="mode"><option value="all">모든 도구와 프로젝트 수집</option><option value="custom">도구·프로젝트별로 선택</option><option value="paused">이 서버로의 수집 일시 중지</option></select><p id="fields" class="muted"></p></section>
+<section id="custom" hidden><input id="search" type="search" placeholder="로컬 프로젝트 검색" aria-label="로컬 프로젝트 검색"><p class="muted">포함·제외 모드에서는 프로젝트를 식별하지 못한 기록을 보내지 않습니다. 경로와 로그 그룹은 구분해서 표시합니다. Cursor의 사용량 경로와 대화 기록 그룹은 각각 선택할 수 있습니다.</p><div id="providers"></div></section>
+<section class="card"><h2>전송 전 확인</h2><p id="summary"></p><p class="muted">사용량에는 도구·모델·시각·토큰 수·세션 ID·컴퓨터 이름이 포함됩니다. 범위 설정용 경로와 선택 목록은 서버에 추가로 보내지 않습니다. 본문 수집을 켠 경우에는 선택한 기록의 본문도 기존 정책대로 전송합니다. 프로젝트 제한을 사용하면 전역 도구 목록 전송도 중지됩니다. 범위 밖의 사용량 대기 기록은 로컬 보관함에 남습니다.</p></section>
+<div class="actions row"><button type="button" id="cancel">닫기</button><button type="submit" class="primary" id="save">이 범위 적용</button></div>
+</form></main>
+<script nonce="__SCRIPT_NONCE__">
+const boot = __BOOTSTRAP__;
+__SCOPE_SCRIPT__
+</script></body></html>

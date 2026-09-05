@@ -70,6 +70,8 @@ pub fn spawn_detached_collector() -> ! {
 /// 어댑터가 로그에서 뽑아내는 원시 사용 레코드 (도구 중립).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RawUsage {
+    /// Local-only collection scope; deliberately absent from UsageEvent wire JSON.
+    pub project: Option<Arc<crate::collection_scope::LocalProject>>,
     pub ts_ms: i64,
     pub session_id: Option<String>,
     pub model: Option<String>,
@@ -89,6 +91,7 @@ pub struct RawUsage {
 /// 사용하고, 기존 e2ee_v1 자격 증명은 전송 전 로컬 암호화를 계속 사용한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawContent {
+    pub project: Option<Arc<crate::collection_scope::LocalProject>>,
     pub ts_ms: i64,
     pub session_id: Option<String>,
     /// 로그 상 메시지 고유 id — dedup 1차 키 (있으면)
@@ -117,6 +120,7 @@ struct PromptAgentMetadataReconciliation {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawToolActivity {
+    pub project: Option<Arc<crate::collection_scope::LocalProject>>,
     pub ts_ms: i64,
     pub session_id: Option<Arc<str>>,
     pub call_id: String,
@@ -129,6 +133,7 @@ pub struct RawToolActivity {
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedLog {
+    pub projects: HashMap<String, Arc<crate::collection_scope::LocalProject>>,
     pub diagnostics: Option<ParseDiagnostics>,
     pub usage: Vec<RawUsage>,
     /// fork/subagent rollout에 복사되어 과거 parser가 이미 전송한 부모 사용량.
@@ -142,9 +147,17 @@ pub struct ParsedLog {
 pub struct ParseDiagnostics {
     pub parse_errors: u64,
     pub read_failed: bool,
+    pub unsupported_schema: bool,
 }
 
 impl ParsedLog {
+    fn remember_project(&mut self, project: &Option<Arc<crate::collection_scope::LocalProject>>) {
+        if let Some(project) = project {
+            self.projects
+                .entry(project.id.clone())
+                .or_insert_with(|| Arc::clone(project));
+        }
+    }
     fn diagnosed() -> Self {
         Self {
             diagnostics: Some(ParseDiagnostics::default()),
@@ -168,6 +181,8 @@ impl ParsedLog {
             Some("read_failed")
         } else if diagnostic.parse_errors > 0 {
             Some("parse_failed")
+        } else if diagnostic.unsupported_schema {
+            Some("unsupported_schema")
         } else {
             None
         }
@@ -191,6 +206,12 @@ impl ParsedLog {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct Discovery {
+    pub files: Vec<PathBuf>,
+    pub read_failures: Option<u64>,
+}
+
 pub trait LogAdapter {
     /// provider_key 이자 log_adapter 식별자
     fn key(&self) -> &'static str;
@@ -200,6 +221,12 @@ pub trait LogAdapter {
         true
     }
     fn discover_files(&self) -> Vec<PathBuf>;
+    fn discovery(&self) -> Discovery {
+        Discovery {
+            files: self.discover_files(),
+            read_failures: None,
+        }
+    }
     fn file_stamp(&self, path: &Path) -> Option<cursor::FileStamp> {
         cursor::stamp(path)
     }
@@ -211,6 +238,7 @@ pub trait LogAdapter {
     }
     fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
         ParsedLog {
+            projects: HashMap::new(),
             diagnostics: None,
             usage: self.parse_file(path),
             replayed_usage: Vec::new(),
@@ -237,6 +265,7 @@ pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
 struct CachedAdapter {
     key: &'static str,
     files: Vec<PathBuf>,
+    read_failures: Option<u64>,
     stamps: HashMap<String, cursor::FileStamp>,
     parsed: HashMap<String, ParsedLog>,
 }
@@ -248,6 +277,13 @@ impl LogAdapter for CachedAdapter {
 
     fn discover_files(&self) -> Vec<PathBuf> {
         self.files.clone()
+    }
+
+    fn discovery(&self) -> Discovery {
+        Discovery {
+            files: self.files.clone(),
+            read_failures: self.read_failures,
+        }
     }
 
     fn file_stamp(&self, path: &Path) -> Option<cursor::FileStamp> {
@@ -308,19 +344,35 @@ fn prepare_cached_adapters(
     only: Option<&str>,
     dry_run: bool,
 ) -> Vec<Box<dyn LogAdapter>> {
-    let include_content = targets
-        .iter()
-        .any(|target| target_content_mode(&target.credentials).is_enabled());
-    let include_tools = targets
-        .iter()
-        .any(|target| target_collect_tools(&target.credentials));
     let mut prepared: Vec<Box<dyn LogAdapter>> = Vec::new();
 
     for adapter in source_adapters {
         if only.is_some_and(|selected| selected != adapter.key()) {
             continue;
         }
-        let files = adapter.discover_files();
+        let enabled_targets = targets
+            .iter()
+            .filter(|target| {
+                !target
+                    .credentials
+                    .collection_scope
+                    .provider(adapter.key())
+                    .is_off()
+                    && target.credentials.collection_scope.validate().is_ok()
+            })
+            .collect::<Vec<_>>();
+        let include_content = enabled_targets
+            .iter()
+            .any(|target| target_content_mode(&target.credentials).is_enabled());
+        let include_tools = enabled_targets
+            .iter()
+            .any(|target| target_collect_tools(&target.credentials));
+        let discovery = if enabled_targets.is_empty() {
+            Discovery::default()
+        } else {
+            adapter.discovery()
+        };
+        let files = discovery.files;
         let mut stamps = files
             .iter()
             .filter_map(|file| {
@@ -330,7 +382,11 @@ fn prepare_cached_adapters(
             })
             .collect::<HashMap<_, _>>();
         let mut changed_paths = HashSet::new();
-        for target in targets {
+        for target in enabled_targets {
+            let force_rescan = target
+                .credentials
+                .collection_scope
+                .needs_rescan(&target.state_dir);
             let usage_cursor = cursor::load(&target.state_dir, adapter.key());
             let tool_cursor_key = format!("{}-tools", adapter.key());
             let tool_cursor = cursor::load(&target.state_dir, &tool_cursor_key);
@@ -366,7 +422,8 @@ fn prepare_cached_adapters(
                     && tool_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
                 let content_changed = content_active
                     && content_cursor.files.get(&path).map(|state| state.stamp()) != Some(stamp);
-                if usage_changed
+                if force_rescan
+                    || usage_changed
                     || tools_changed
                     || content_changed
                     || reconciliation_scan
@@ -395,6 +452,7 @@ fn prepare_cached_adapters(
         prepared.push(Box::new(CachedAdapter {
             key: adapter.key(),
             files,
+            read_failures: discovery.read_failures,
             stamps,
             parsed,
         }));
@@ -447,17 +505,33 @@ fn prompt_agent_metadata_reconciliation_active(
 }
 
 /// 디렉토리를 재귀 순회하며 확장자가 일치하는 파일 수집 (심링크 루프 방지 깊이 캡).
-pub fn walk_files(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>, depth: u32) {
+pub fn walk_files(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>, depth: u32) -> u64 {
     if depth > 12 {
-        return;
+        return 1;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => return u64::from(error.kind() != std::io::ErrorKind::NotFound),
     };
-    for entry in entries.flatten() {
+    let mut failures = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                failures += 1;
+                continue;
+            }
+        };
         let path = entry.path();
-        if path.is_dir() {
-            walk_files(&path, exts, out, depth + 1);
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                failures += u64::from(error.kind() != std::io::ErrorKind::NotFound);
+                continue;
+            }
+        };
+        if metadata.is_dir() {
+            failures += walk_files(&path, exts, out, depth + 1);
         } else if path
             .extension()
             .and_then(|e| e.to_str())
@@ -466,6 +540,7 @@ pub fn walk_files(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>, depth: u32)
             out.push(path);
         }
     }
+    failures
 }
 
 /// 어댑터 파서의 타임스탬프 폴백용 (ccusage file_modified_timestamp 대체)
@@ -1116,7 +1191,17 @@ fn classify_transport_error(error: &str) -> crate::delivery::DeliveryKind {
 
 fn target_still_exists(target: &Target, global_state: &Path) -> bool {
     if target.state_dir == global_state {
-        return true;
+        if target.revision.is_empty() {
+            return !global_state.parent().is_some_and(|root| {
+                root.join("targets")
+                    .join(&target.id)
+                    .join("credentials")
+                    .is_file()
+            });
+        }
+        return std::fs::read_to_string(&target.credentials_path)
+            .ok()
+            .is_some_and(|content| sha256_hex(&content) == target.revision);
     }
     let Some(target_dir) = target.credentials_path.parent() else {
         return false;
@@ -1142,6 +1227,16 @@ fn run_target(
     let creds = &target.credentials;
     let endpoint = &target.endpoint;
     let mut diagnostics = TargetDiagnostics::default();
+    if creds.collection_scope.validate().is_err() {
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::Disabled,
+            "toard-shim: 수집 범위 설정을 적용할 수 없어 전송을 중지했습니다".into(),
+        );
+        return TargetRunResult {
+            code: 1,
+            diagnostics,
+        };
+    }
     let token = match (&creds.token, dry_run) {
         (Some(t), _) => Some(t.clone()),
         (None, true) => None,
@@ -1159,6 +1254,8 @@ fn run_target(
             };
         }
     };
+    let scope = &creds.collection_scope;
+    let force_rescan = scope.needs_rescan(state_dir);
     let collect_tools = target_collect_tools(creds);
     let tools_since = tool_since_ms(state_dir, dry_run);
 
@@ -1188,6 +1285,7 @@ fn run_target(
     };
     let mut delivery_available = true;
     let mut failed_providers = HashSet::new();
+    let mut remembered_projects = HashSet::new();
     if let Some(prepared) = prepared_queue.as_mut() {
         let pending_providers = match prepared.queue.providers() {
             Ok(providers) => providers,
@@ -1203,7 +1301,9 @@ fn run_target(
             }
         };
         for provider in pending_providers {
-            if only.is_some_and(|selected| selected != provider) {
+            if only.is_some_and(|selected| selected != provider)
+                || scope.provider(&provider).is_off()
+            {
                 continue;
             }
             match durable::drain(
@@ -1244,32 +1344,49 @@ fn run_target(
             continue;
         }
         matched = true;
+        let provider_scope = scope.provider(key);
+        if provider_scope.is_off() {
+            health_records.push(serde_json::json!({ "providerKey": key, "state": "paused",
+                "scannedFiles": null, "parsedEvents": null, "parseErrors": null, "pendingEvents": null, "errorCode": null }));
+            continue;
+        }
         // 사용량 미수집 어댑터(있다면)는 usage 루프를 건너뛴다 — 본문은 아래 content 루프에서.
         // (현재 모든 어댑터가 사용량을 수집하지만, 향후 본문 전용 어댑터를 위한 일반 가드로 유지.)
         if !adapter.collects_usage() {
             continue;
         }
 
-        let files = adapter.discover_files();
+        let discovery = adapter.discovery();
+        let files = discovery.files;
         let mut cur = cursor::load(state_dir, key);
-        let reconciliation_scan = reconciliation_active(
-            key,
-            cur.reconciliation_version,
-            post::unsupported_probe_due(state_dir, "usage-reconciliation"),
-            dry_run,
-        );
+        if force_rescan {
+            cur.files.clear();
+        }
+        let reconciliation_scan = scope.is_unrestricted()
+            && reconciliation_active(
+                key,
+                cur.reconciliation_version,
+                post::unsupported_probe_due(state_dir, "usage-reconciliation"),
+                dry_run,
+            );
         let tool_cursor_key = format!("{key}-tools");
         let mut tool_cur = cursor::load(state_dir, &tool_cursor_key);
+        if force_rescan {
+            tool_cur.files.clear();
+        }
         let tool_probe_due = collect_tools && post::unsupported_probe_due(state_dir, "tool-events");
         let tool_active = tool_probe_due;
 
         let mut changed = 0usize;
+        let mut scoped_files = 0usize;
         let mut parsed_total = 0usize;
         let mut parse_errors = Some(0u64);
-        let mut source_error = None;
+        let mut source_error = (provider_scope.is_all()
+            && discovery.read_failures.is_some_and(|count| count > 0))
+        .then_some("read_failed");
         let mut replayed_total = 0usize;
         let mut replayed_tokens = 0u64;
-        let mut events: Vec<UsageEvent> = Vec::new();
+        let mut events: Vec<QueueInput> = Vec::new();
         let mut replay_keys: Vec<String> = Vec::new();
         let mut legitimate_keys = std::collections::HashSet::new();
         let mut tool_events: Vec<RawToolActivity> = Vec::new();
@@ -1293,19 +1410,47 @@ fn run_target(
             }
             changed += 1;
             let parsed = adapter.parse_changed(file, false, tool_active);
-            parse_errors = parse_errors
-                .zip(parsed.diagnostics.as_ref())
-                .map(|(count, diagnostic)| count.saturating_add(diagnostic.parse_errors));
-            let file_error = parsed.source_error();
-            if let Some(error) = file_error {
-                source_error = Some(error);
+            let allows = |project: &Option<Arc<crate::collection_scope::LocalProject>>| {
+                provider_scope.allows(project.as_ref().map(|project| project.id.as_str()))
+            };
+            let has_allowed = parsed.usage.iter().any(|row| allows(&row.project))
+                || parsed.tools.iter().any(|row| allows(&row.project))
+                || parsed.content.iter().any(|row| allows(&row.project));
+            if provider_scope.is_all() || has_allowed {
+                scoped_files += 1;
             }
-            let file_events: Vec<UsageEvent> = parsed
+            // An unparseable line has no proven project. Under project restrictions
+            // its error count must not disclose excluded activity to the server.
+            if provider_scope.is_all() {
+                parse_errors = parse_errors
+                    .zip(parsed.diagnostics.as_ref())
+                    .map(|(count, diagnostic)| count.saturating_add(diagnostic.parse_errors));
+            } else {
+                parse_errors = None;
+            }
+            let file_error = parsed.source_error();
+            if provider_scope.is_all() {
+                source_error = source_error.or(file_error);
+            }
+            let file_events: Vec<QueueInput> = parsed
                 .usage
                 .iter()
-                .map(|raw| to_usage_event(key, raw, host))
+                .filter(|raw| allows(&raw.project))
+                .map(|raw| QueueInput {
+                    event: to_usage_event(key, raw, host),
+                    project_id: raw.project.as_ref().map(|project| project.id.clone()),
+                })
                 .collect();
-            legitimate_keys.extend(file_events.iter().map(|event| event.dedup_key.clone()));
+            if !dry_run {
+                for raw in parsed.usage.iter().filter(|raw| allows(&raw.project)) {
+                    if let Some(project) = &raw.project {
+                        if remembered_projects.insert(project.id.clone()) {
+                            let _ = project.remember(global_state, key);
+                        }
+                    }
+                }
+            }
+            legitimate_keys.extend(parsed.usage.iter().map(|raw| dedup_key(key, raw)));
             if reconciliation_scan {
                 replayed_total += parsed.replayed_usage.len();
                 replayed_tokens =
@@ -1326,7 +1471,7 @@ fn run_target(
             parsed_total += file_events.len();
             let keyed_events = file_events
                 .into_iter()
-                .map(|event| (event.dedup_key.clone(), event))
+                .map(|input| (input.event.dedup_key.clone(), input))
                 .collect::<Vec<_>>();
             let plan = fanout::plan_records(&path, stamp, &cur, &keyed_events);
             if file_error.is_none() {
@@ -1338,7 +1483,7 @@ fn run_target(
                 let file_tools = parsed
                     .tools
                     .into_iter()
-                    .filter(|event| event.ts_ms >= tools_since)
+                    .filter(|event| event.ts_ms >= tools_since && allows(&event.project))
                     .collect::<Vec<_>>();
                 let tool_keys = file_tools
                     .iter()
@@ -1391,15 +1536,7 @@ fn run_target(
         while offset < events.len() {
             let mut chunk_size = CHUNK.min(events.len() - offset);
             loop {
-                let inputs = events[offset..offset + chunk_size]
-                    .iter()
-                    .cloned()
-                    .map(|event| QueueInput {
-                        event,
-                        project_id: None,
-                    })
-                    .collect::<Vec<_>>();
-                match prepared.queue.enqueue(&inputs) {
+                match prepared.queue.enqueue(&events[offset..offset + chunk_size]) {
                     Ok(inserted) => {
                         if !quiet && inserted > 0 {
                             println!(
@@ -1468,7 +1605,7 @@ fn run_target(
                 }
             }
         }
-        let pending = prepared.queue.pending_for(key).ok();
+        let pending = prepared.queue.pending_for_scope(key, provider_scope).ok();
         if source_error.is_some() {
             failed = true;
             diagnostics.fail(crate::delivery::DeliveryKind::ServerError,
@@ -1478,7 +1615,9 @@ fn run_target(
             ((!delivery_available || failed_providers.contains(key)) && pending.unwrap_or(0) > 0)
                 .then_some("transport_failed")
         });
-        let report_state = if report_error.is_some() || pending.is_none() {
+        let report_state = if report_error == Some("unsupported_schema") {
+            "unsupported"
+        } else if report_error.is_some() || pending.is_none() {
             "error"
         } else if parsed_total == 0 && pending == Some(0) {
             "no_records"
@@ -1486,7 +1625,7 @@ fn run_target(
             "ok"
         };
         health_records.push(serde_json::json!({
-            "providerKey": key, "state": report_state, "scannedFiles": files.len(),
+            "providerKey": key, "state": report_state, "scannedFiles": scoped_files,
             "parsedEvents": parsed_total, "parseErrors": if changed == 0 { None } else { parse_errors }, "pendingEvents": pending,
             "errorCode": report_error,
         }));
@@ -1505,6 +1644,12 @@ fn run_target(
                 let mut reconciled = 0u64;
                 let mut reconciliation_ok = true;
                 for chunk in replay_keys.chunks(CHUNK) {
+                    if !target_still_exists(target, global_state) {
+                        return TargetRunResult {
+                            code: 0,
+                            diagnostics,
+                        };
+                    }
                     match transport.post_usage_reconciliation(
                         endpoint,
                         token,
@@ -1558,7 +1703,9 @@ fn run_target(
                 .iter()
                 .map(|file| file.display().to_string())
                 .collect::<std::collections::HashSet<_>>();
-            cur.files.retain(|path, _| alive.contains(path));
+            if !discovery.read_failures.is_some_and(|failures| failures > 0) {
+                cur.files.retain(|path, _| alive.contains(path));
+            }
             if reconciliation_scan && reconciliation_complete {
                 cur.reconciliation_version = CODEX_REPLAY_RECONCILIATION_VERSION;
             }
@@ -1570,6 +1717,12 @@ fn run_target(
             if !tool_events.is_empty() {
                 let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
                 for chunk in tool_events.chunks(CHUNK) {
+                    if !target_still_exists(target, global_state) {
+                        return TargetRunResult {
+                            code: 0,
+                            diagnostics,
+                        };
+                    }
                     match transport.post_tool_events(
                         endpoint,
                         token,
@@ -1642,7 +1795,7 @@ fn run_target(
             since_ms,
             state_dir,
             transport,
-            credentials_path: &target.credentials_path,
+            target,
             global_state,
             diagnostics: &mut diagnostics,
         };
@@ -1657,12 +1810,22 @@ fn run_target(
         }
     }
 
-    if collect_tools && only.is_none() && post::unsupported_probe_due(state_dir, "tool-inventory") {
+    if collect_tools
+        && scope.is_unrestricted()
+        && only.is_none()
+        && post::unsupported_probe_due(state_dir, "tool-inventory")
+    {
         if let Some(pending) = inventory::prepare_inventory(global_state, host, dry_run) {
             if inventory::needs_delivery(state_dir, &pending) && dry_run {
                 println!("도구 인벤토리: 변경 감지 → 전송 대상 [dry-run]");
             } else if inventory::needs_delivery(state_dir, &pending) {
                 let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
+                if !target_still_exists(target, global_state) {
+                    return TargetRunResult {
+                        code: 0,
+                        diagnostics,
+                    };
+                }
                 match transport.put_tool_inventory(endpoint, token, &pending.body) {
                     post::EndpointResult::Ok(_) => {
                         post::clear_unsupported(state_dir, "tool-inventory");
@@ -1769,6 +1932,15 @@ fn run_target(
             &report.to_string(),
         );
     }
+    if !failed && !dry_run && only.is_none() && target_still_exists(target, global_state) {
+        if let Err(error) = scope.record_applied(state_dir) {
+            failed = true;
+            diagnostics.fail(
+                crate::delivery::DeliveryKind::ServerError,
+                format!("toard-shim: 수집 범위 적용 상태를 보존하지 못했습니다 — {error}"),
+            );
+        }
+    }
     TargetRunResult {
         code: i32::from(failed),
         diagnostics,
@@ -1807,7 +1979,7 @@ struct ContentRunContext<'a> {
     since_ms: i64,
     state_dir: &'a Path,
     transport: &'a dyn post::Transport,
-    credentials_path: &'a Path,
+    target: &'a Target,
     global_state: &'a Path,
     diagnostics: &'a mut TargetDiagnostics,
 }
@@ -1822,12 +1994,17 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         since_ms,
         state_dir,
         transport,
-        credentials_path,
+        target,
         global_state,
         diagnostics,
     } = context;
     let content_mode = target_content_mode(credentials);
     let key = adapter.key();
+    let scope = &credentials.collection_scope;
+    let provider_scope = scope.provider(key);
+    if provider_scope.is_off() {
+        return false;
+    }
     // 본문은 https(또는 로컬) endpoint 로만 — 평문 http 로 원격 전송 차단
     let secure = endpoint_is_secure(endpoint);
     if !*dry_run && !secure {
@@ -1842,12 +2019,16 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
     let cursor_key = format!("{key}-content");
     let files = adapter.discover_files();
     let mut cur = cursor::load(state_dir, &cursor_key);
-    let reconciliation_scan = prompt_agent_metadata_reconciliation_active(
-        key,
-        cur.reconciliation_version,
-        post::unsupported_probe_due(state_dir, "prompt-agent-metadata-reconciliation"),
-        *dry_run,
-    );
+    if scope.needs_rescan(state_dir) {
+        cur.files.clear();
+    }
+    let reconciliation_scan = scope.is_unrestricted()
+        && prompt_agent_metadata_reconciliation_active(
+            key,
+            cur.reconciliation_version,
+            post::unsupported_probe_due(state_dir, "prompt-agent-metadata-reconciliation"),
+            *dry_run,
+        );
 
     // usage 루프와 동일한 파일별 전송 필터 — since 는 최초 opt-in 시각으로 고정되므로
     // 컷오프 필터 결과도 파일 내용에 대해 결정적이라 prefix 판정이 유효하다.
@@ -1869,10 +2050,13 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         changed += 1;
         let parsed = adapter.parse_changed(file, true, false);
         let file_failed = parsed.source_error().is_some();
-        source_failed |= file_failed;
+        source_failed |= file_failed && provider_scope.is_all();
         let mut file_records = parsed.content;
         // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
-        file_records.retain(|r| r.ts_ms >= *since_ms);
+        file_records.retain(|r| {
+            r.ts_ms >= *since_ms
+                && provider_scope.allows(r.project.as_ref().map(|project| project.id.as_str()))
+        });
         parsed_total += file_records.len();
         if reconciliation_scan {
             reconciliation_records.extend(file_records.iter().filter_map(|record| {
@@ -1971,6 +2155,9 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         let token = token.expect("dry_run 아니면 토큰 존재");
         let (mut inserted, mut deduped) = (0u64, 0u64);
         for chunk in records.chunks(CHUNK) {
+            if !target_still_exists(target, global_state) {
+                return false;
+            }
             let body = match &e2ee_material {
                 Some((owner_id, key_version, uck)) => {
                     match to_e2ee_prompts_body(key, owner_id, *key_version, uck, chunk) {
@@ -1988,6 +2175,9 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
                 }
                 None => to_prompts_body(key, chunk),
             };
+            if !target_still_exists(target, global_state) {
+                return false;
+            }
             match transport.post_prompts(endpoint, token, &body) {
                 Ok(Some(r)) => {
                     inserted += r.inserted;
@@ -2025,6 +2215,9 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
             let mut reconciled = 0u64;
             let mut reconciliation_ok = true;
             for chunk in reconciliation_records.chunks(CHUNK) {
+                if !target_still_exists(target, global_state) {
+                    return false;
+                }
                 match transport.post_prompt_agent_metadata_reconciliation(
                     endpoint,
                     token,
@@ -2032,7 +2225,7 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
                 ) {
                     post::EndpointResult::Ok(result) => reconciled += result.reconciled,
                     post::EndpointResult::Unsupported => {
-                        if *state_dir == *global_state || credentials_path.is_file() {
+                        if target_still_exists(target, global_state) {
                             post::mark_unsupported(
                                 state_dir,
                                 "prompt-agent-metadata-reconciliation",
@@ -2070,7 +2263,7 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         }
     }
 
-    if *state_dir != *global_state && !credentials_path.is_file() {
+    if !target_still_exists(target, global_state) {
         return false;
     }
     for (path, state) in updates {
@@ -2133,6 +2326,72 @@ mod tests {
         }
     }
 
+    #[test]
+    fn discovery_failures_are_not_reported_as_an_empty_usage_history() {
+        use gemini_family::testutil::{EnvGuard, TempDir};
+        let temp = TempDir::new("discovery-failure");
+        let codex_home = temp.path().join("codex-home");
+        let source = temp.write(
+            "codex-home/sessions",
+            "this is a file, not a readable session directory",
+        );
+        let _environment = EnvGuard::set("CODEX_HOME", codex_home.as_os_str());
+        let store = TargetStore::from_root(temp.path().join(".toard"));
+        store
+            .upsert(crate::credentials::Credentials {
+                token: Some("fixture-token".into()),
+                endpoint: Some("https://fixture.example/api".into()),
+                collect_tools: false,
+                ..Default::default()
+            })
+            .unwrap();
+        let transport = FanoutTestTransport::default();
+        transport.support_health.set(true);
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(codex::Codex)],
+                Some("codex"),
+                false,
+                true
+            ),
+            1
+        );
+        let report = transport.health_reports.borrow().last().unwrap().1.clone();
+        assert_eq!(report["collectors"][0]["state"], "error");
+        assert_eq!(report["collectors"][0]["errorCode"], "read_failed");
+        std::fs::remove_file(source).unwrap();
+        assert_eq!(
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(codex::Codex)],
+                Some("codex"),
+                false,
+                true
+            ),
+            0
+        );
+        assert_eq!(
+            transport.health_reports.borrow().last().unwrap().1["collectors"][0]["state"],
+            "no_records"
+        );
+    }
+
+    #[test]
+    fn future_cursor_usage_schema_is_reported_without_treating_it_as_current_usage() {
+        let temp = gemini_family::testutil::TempDir::new("future-cursor-schema");
+        let file = temp.write(
+            ".toard/cursor/usage.jsonl",
+            "{\"schemaVersion\":2,\"newPrivateData\":\"never-send\"}\n",
+        );
+        let parsed = cursor_usage::CursorUsage.parse_changed(&file, false, false);
+        assert!(parsed.usage.is_empty());
+        assert_eq!(parsed.source_error(), Some("unsupported_schema"));
+        assert_eq!(parsed.diagnostics.unwrap().parse_errors, 0);
+    }
+
     struct FanoutTestAdapter {
         file: PathBuf,
         parse_calls: Rc<Cell<usize>>,
@@ -2175,6 +2434,7 @@ mod tests {
             ParsedLog {
                 tools: include_tools
                     .then(|| RawToolActivity {
+                        project: None,
                         ts_ms: (crate::bg::now_unix() * 1000) as i64 + 1_000,
                         session_id: Some(Arc::from("session-1")),
                         call_id: "call-1".into(),
@@ -2218,6 +2478,7 @@ mod tests {
             ParsedLog {
                 content: include_content
                     .then(|| RawContent {
+                        project: None,
                         ts_ms: 1_700_000_000_000,
                         session_id: Some("session-1".into()),
                         message_id: Some("content-1".into()),
@@ -2278,6 +2539,7 @@ mod tests {
         fn parse_file(&self, _path: &Path) -> Vec<RawUsage> {
             self.parse_calls.set(self.parse_calls.get() + 1);
             vec![RawUsage {
+                project: None,
                 ts_ms: 1_700_000_000_000,
                 session_id: Some("session-1".into()),
                 model: Some("test-model".into()),
@@ -2297,7 +2559,12 @@ mod tests {
         remove_target: RefCell<Option<PathBuf>>,
         replace_target_revision: RefCell<Option<PathBuf>>,
         prompt_calls: RefCell<Vec<String>>,
+        prompt_bodies: RefCell<Vec<(String, String)>>,
         tool_calls: RefCell<Vec<String>>,
+        tool_bodies: RefCell<Vec<(String, String)>>,
+        health_reports: RefCell<Vec<(String, serde_json::Value)>>,
+        support_health: Cell<bool>,
+        inventory_calls: Cell<usize>,
         prompt_agent_reconciliation_calls: RefCell<Vec<(String, String)>>,
         fail_company_prompts: Cell<bool>,
         disable_prompts: Cell<bool>,
@@ -2306,6 +2573,25 @@ mod tests {
     }
 
     impl post::Transport for FanoutTestTransport {
+        fn post_collection_health(
+            &self,
+            endpoint: &str,
+            _token: &str,
+            body: &str,
+        ) -> post::EndpointResult {
+            if !self.support_health.get() {
+                return post::EndpointResult::Unsupported;
+            }
+            self.health_reports
+                .borrow_mut()
+                .push((endpoint.into(), serde_json::from_str(body).unwrap()));
+            post::EndpointResult::Ok(post::PostResult {
+                user_id: Some("00000000-0000-4000-8000-000000000001".into()),
+                events_receipt_version: Some(1),
+                ..Default::default()
+            })
+        }
+
         fn post_events(
             &self,
             endpoint: &str,
@@ -2323,12 +2609,12 @@ mod tests {
             if endpoint.contains("company") && self.fail_company.get() {
                 Err("unreachable".into())
             } else {
+                let count = serde_json::from_str::<Vec<serde_json::Value>>(body)
+                    .unwrap()
+                    .len() as u64;
                 Ok(post::PostResult {
-                    inserted: serde_json::from_str::<serde_json::Value>(body)
-                        .unwrap()
-                        .as_array()
-                        .unwrap()
-                        .len() as u64,
+                    inserted: count,
+                    confirmed: Some(count),
                     ..post::PostResult::default()
                 })
             }
@@ -2338,9 +2624,12 @@ mod tests {
             &self,
             endpoint: &str,
             _token: &str,
-            _body: &str,
+            body: &str,
         ) -> Result<Option<post::PostResult>, String> {
             self.prompt_calls.borrow_mut().push(endpoint.to_string());
+            self.prompt_bodies
+                .borrow_mut()
+                .push((endpoint.into(), body.into()));
             if self.disable_prompts.get() {
                 Ok(None)
             } else if endpoint.contains("company") && self.fail_company_prompts.get() {
@@ -2357,9 +2646,12 @@ mod tests {
             &self,
             endpoint: &str,
             _token: &str,
-            _body: &str,
+            body: &str,
         ) -> post::EndpointResult {
             self.tool_calls.borrow_mut().push(endpoint.to_string());
+            self.tool_bodies
+                .borrow_mut()
+                .push((endpoint.into(), body.into()));
             post::EndpointResult::Ok(post::PostResult {
                 inserted: 1,
                 ..post::PostResult::default()
@@ -2400,6 +2692,7 @@ mod tests {
             _token: &str,
             _body: &str,
         ) -> post::EndpointResult {
+            self.inventory_calls.set(self.inventory_calls.get() + 1);
             if self.support_inventory.get() {
                 post::EndpointResult::Ok(post::PostResult::default())
             } else {
@@ -2424,6 +2717,189 @@ mod tests {
     }
 
     #[test]
+    fn scoped_targets_filter_every_stream_and_recheck_pending_usage_after_a_policy_change() {
+        use crate::collection_scope::{CollectionScope, LocalProject, ProviderScope, ScopeMode};
+        use std::collections::{BTreeMap, BTreeSet};
+        struct FixtureAdapter {
+            file: PathBuf,
+            calls: Rc<Cell<usize>>,
+        }
+        impl LogAdapter for FixtureAdapter {
+            fn key(&self) -> &'static str {
+                "claude_code"
+            }
+            fn discover_files(&self) -> Vec<PathBuf> {
+                vec![self.file.clone()]
+            }
+            fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
+                claude::Claude.parse_file(path)
+            }
+            fn parse_changed(&self, path: &Path, content: bool, tools: bool) -> ParsedLog {
+                self.calls.set(self.calls.get() + 1);
+                claude::Claude.parse_changed(path, content, tools)
+            }
+        }
+        let temp = gemini_family::testutil::TempDir::new("scoped-fanout");
+        let fixture_rows = [Some("/fixture/company"), Some("/fixture/personal"), None].into_iter().enumerate().flat_map(|(index, cwd)| {
+            let marker = ["company", "personal", "unknown"][index];
+            [serde_json::json!({ "type": "user", "cwd": cwd, "sessionId": marker,
+                "uuid": format!("user-{marker}"), "timestamp": "2026-09-06T00:00:00Z",
+                "message": { "content": format!("{marker}-prompt") } }),
+             serde_json::json!({ "type": "assistant", "cwd": cwd, "sessionId": marker,
+                "timestamp": "2026-09-06T00:00:01Z", "message": {
+                    "id": format!("usage-{marker}"), "model": "fixture-model",
+                    "usage": { "input_tokens": 10, "output_tokens": 2 },
+                    "content": [{ "type": "text", "text": format!("{marker}-answer") },
+                        { "type": "tool_use", "id": format!("call-{marker}"), "name": format!("mcp__{marker}__read"), "input": { "secret": "never-transmit" } }]
+                } })]
+        }).map(|row| row.to_string()).collect::<Vec<_>>().join("\n");
+        let file = temp.write("mixed.jsonl", &fixture_rows);
+        let company_project = LocalProject::cwd("claude_code", "/fixture/company").unwrap();
+        let personal_project = LocalProject::cwd("claude_code", "/fixture/personal").unwrap();
+        let policy = |rule| CollectionScope {
+            schema_version: 1,
+            mode: ScopeMode::Custom,
+            providers: BTreeMap::from([("claude_code".into(), rule)]),
+        };
+        let store = TargetStore::from_root(temp.path().join(".toard"));
+        let credentials = |endpoint: &str, scope| crate::credentials::Credentials {
+            token: Some("fixture-token".into()),
+            endpoint: Some(endpoint.into()),
+            collect_content: crate::credentials::ContentCollectionMode::ServerManaged,
+            collect_content_since: Some("all".into()),
+            collect_tools: true,
+            collection_scope: scope,
+            ..Default::default()
+        };
+        let company = store
+            .upsert(credentials(
+                "https://company.example/api",
+                policy(ProviderScope::Include {
+                    projects: BTreeSet::from([company_project.id.clone()]),
+                }),
+            ))
+            .unwrap();
+        let personal = store
+            .upsert(credentials(
+                "https://personal.example/api",
+                policy(ProviderScope::Exclude {
+                    projects: BTreeSet::from([company_project.id.clone()]),
+                }),
+            ))
+            .unwrap();
+        for target in [&company, &personal] {
+            std::fs::write(target.state_dir.join("tool-since"), "0").unwrap();
+        }
+        let calls = Rc::new(Cell::new(0));
+        let transport = FanoutTestTransport::default();
+        transport.support_health.set(true);
+        transport.support_inventory.set(true);
+        transport.fail_company.set(true);
+        let run = || {
+            run_with(
+                &store,
+                &transport,
+                vec![Box::new(FixtureAdapter {
+                    file: file.clone(),
+                    calls: Rc::clone(&calls),
+                })],
+                None,
+                false,
+                true,
+            )
+        };
+        assert_eq!(run(), 1);
+        assert_eq!(
+            calls.get(),
+            1,
+            "one source snapshot serves both scoped targets"
+        );
+        for (endpoint, body) in transport
+            .prompt_bodies
+            .borrow()
+            .iter()
+            .chain(transport.tool_bodies.borrow().iter())
+        {
+            let (allowed, denied) = if endpoint.contains("company") {
+                ("company", "personal")
+            } else {
+                ("personal", "company")
+            };
+            assert!(body.contains(allowed));
+            assert!(!body.contains(denied));
+            assert!(!body.contains("unknown-prompt"));
+            assert!(!body.contains("unknown.read"));
+            assert!(!body.contains("\"sessionId\":\"unknown\""));
+            assert!(!body.contains("never-transmit"));
+            assert!(!body.contains("/fixture/"));
+        }
+        assert_eq!(transport.inventory_calls.get(), 0);
+        assert!(transport
+            .prompt_agent_reconciliation_calls
+            .borrow()
+            .is_empty());
+        assert_eq!(
+            crate::usage_queue::read_status(&company.state_dir)
+                .unwrap()
+                .unwrap()
+                .records,
+            1
+        );
+        for (_, report) in transport
+            .health_reports
+            .borrow()
+            .iter()
+            .filter(|(_, report)| !report["collectors"].as_array().unwrap().is_empty())
+        {
+            assert_eq!(report["collectors"][0]["parsedEvents"], 1);
+            assert!(report["collectors"][0]["parseErrors"].is_null());
+            assert!(!report.to_string().contains("/fixture/"));
+            assert!(!report.to_string().contains(&company_project.id));
+        }
+
+        // Change the failing server's scope before recovery. Its old queued
+        // company record must stay local while the newly allowed record is sent.
+        let mut updated = company.credentials.clone();
+        updated.collection_scope = policy(ProviderScope::Include {
+            projects: BTreeSet::from([personal_project.id.clone()]),
+        });
+        store.upsert(updated).unwrap();
+        transport.fail_company.set(false);
+        transport.calls.borrow_mut().clear();
+        transport.usage_bodies.borrow_mut().clear();
+        transport.prompt_bodies.borrow_mut().clear();
+        transport.tool_bodies.borrow_mut().clear();
+        assert_eq!(run(), 0);
+        assert_eq!(calls.get(), 2, "policy changes rescan an unchanged source");
+        let endpoints = transport.calls.borrow();
+        let bodies = transport.usage_bodies.borrow();
+        assert_eq!(bodies.len(), 1);
+        assert!(endpoints[0].contains("company"));
+        let sent: Vec<serde_json::Value> = serde_json::from_str(&bodies[0]).unwrap();
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0]["sessionId"], "personal");
+        assert!(!bodies[0].contains(&personal_project.id));
+        assert_eq!(
+            crate::usage_queue::read_status(&company.state_dir)
+                .unwrap()
+                .unwrap()
+                .records,
+            1,
+            "excluded pending usage is retained"
+        );
+        for (endpoint, body) in transport
+            .prompt_bodies
+            .borrow()
+            .iter()
+            .chain(transport.tool_bodies.borrow().iter())
+        {
+            assert!(endpoint.contains("company"));
+            assert!(body.contains("personal"));
+            assert!(!body.contains("company"));
+        }
+    }
+
+    #[test]
     fn append_after_parsing_does_not_mark_unread_data_as_collected() {
         struct AppendingAdapter {
             file: PathBuf,
@@ -2445,6 +2921,7 @@ mod tests {
                 snapshot
                     .lines()
                     .map(|id| RawUsage {
+                        project: None,
                         ts_ms: 1_700_000_000_000,
                         model: Some("fixture".into()),
                         message_id: Some(id.into()),
@@ -2855,6 +3332,7 @@ mod tests {
             })
             .unwrap();
         let record = RawContent {
+            project: None,
             ts_ms: 1_700_000_000_000,
             session_id: Some("root-session".into()),
             message_id: Some("message-1".into()),
@@ -3206,6 +3684,7 @@ mod tests {
     #[test]
     fn dedup_key_prefers_message_id_and_is_stable() {
         let r = RawUsage {
+            project: None,
             ts_ms: 1_700_000_000_000,
             session_id: Some("s1".into()),
             model: Some("gemini-2.5-pro".into()),
@@ -3234,6 +3713,7 @@ mod tests {
     #[test]
     fn to_usage_event_enforces_trust_boundary() {
         let r = RawUsage {
+            project: None,
             ts_ms: 1_782_907_200_000,
             session_id: Some("s".into()),
             model: Some("m".into()),
@@ -3260,6 +3740,7 @@ mod tests {
 
     fn sample_content() -> RawContent {
         RawContent {
+            project: None,
             ts_ms: 1_782_907_200_000,
             session_id: Some("s".into()),
             message_id: Some("m1".into()),
@@ -3291,6 +3772,7 @@ mod tests {
 
         // usage 키(dedup_key)와 네임스페이스 분리 — 같은 재료라도 충돌하지 않는다
         let usage = RawUsage {
+            project: None,
             ts_ms: base.ts_ms,
             session_id: base.session_id.clone(),
             model: None,
@@ -3303,6 +3785,7 @@ mod tests {
     #[test]
     fn to_prompts_body_wire_shape() {
         let r = RawContent {
+            project: None,
             session_id: None,
             message_id: None,
             role: "assistant",

@@ -31,13 +31,21 @@ impl LogAdapter for Codex {
 
     /// (CODEX_HOME|~/.codex)/sessions 아래 롤아웃(*.jsonl) 재귀 수집.
     fn discover_files(&self) -> Vec<PathBuf> {
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
         let mut files = Vec::new();
-        if let Some(root) = sessions_dir() {
-            walk_files(&root, &["jsonl"], &mut files, 0);
+        let mut failures = 0;
+        for root in sessions_dir().into_iter() {
+            failures += walk_files(&root, &["jsonl"], &mut files, 0);
         }
         files.sort();
         files.dedup();
-        files
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -150,6 +158,8 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
         return ParsedLog::read_failed();
     };
     let mut parsed = ParsedLog::diagnosed();
+    let mut project = None;
+    let mut metadata_count = 0;
     let mut session_id: Option<Arc<str>> = None;
     let mut model: Option<String> = None;
     let mut last_seen_total: Option<(u64, u64)> = None;
@@ -176,6 +186,12 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             .and_then(iso_to_epoch_ms)
             .unwrap_or(fallback);
         if ty == Some("session_meta") {
+            metadata_count += 1;
+            project = payload
+                .and_then(|item| item.get("cwd"))
+                .and_then(Value::as_str)
+                .and_then(|cwd| crate::collection_scope::LocalProject::cwd("codex", cwd))
+                .map(Arc::new);
             let next_session_id = payload
                 .and_then(|item| item.get("session_id"))
                 .and_then(Value::as_str)
@@ -200,12 +216,19 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             continue;
         }
         if ty == Some("turn_context") {
+            if let Some(cwd) = payload.and_then(|item| item.get("cwd")) {
+                project = cwd
+                    .as_str()
+                    .and_then(|cwd| crate::collection_scope::LocalProject::cwd("codex", cwd))
+                    .map(Arc::new);
+            }
             if let Some(value) = payload
                 .and_then(|item| item.get("model"))
                 .and_then(Value::as_str)
             {
                 model = Some(value.to_string());
             }
+            parsed.remember_project(&project);
             continue;
         }
         if ty == Some("event_msg") {
@@ -249,6 +272,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                     let count = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
                     let cached = count("cached_input_tokens");
                     let usage = RawUsage {
+                        project: project.clone(),
                         ts_ms,
                         session_id: session_id.as_deref().map(str::to_string),
                         model: Some(current_model.clone()),
@@ -272,6 +296,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                         positioned_content.push((
                             line_index,
                             RawContent {
+                                project: project.clone(),
                                 ts_ms,
                                 session_id: session_id.as_deref().map(str::to_string),
                                 message_id: None,
@@ -315,6 +340,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
         };
         if let Some(item_key) = parse_mcp_name(name) {
             parsed.tools.push(RawToolActivity {
+                project: project.clone(),
                 ts_ms,
                 session_id: session_id.clone(),
                 call_id: call_id.to_string(),
@@ -341,6 +367,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
                 .unwrap_or_default();
             for (skill, plugin_key) in skill_names_from_input(&input) {
                 parsed.tools.push(RawToolActivity {
+                    project: project.clone(),
                     ts_ms,
                     session_id: session_id.clone(),
                     call_id: format!("{call_id}:{skill}"),
@@ -375,6 +402,24 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
             content.agent = current_prompt_agent.clone();
         }
         parsed.content.push(content);
+    }
+    // A replay/fork file can interleave parent and live session metadata. Until
+    // ownership is proven for those transitions, restricted delivery must not
+    // infer one workspace for them from the last observed cwd.
+    if metadata_count > 1 {
+        for record in parsed
+            .usage
+            .iter_mut()
+            .chain(parsed.replayed_usage.iter_mut())
+        {
+            record.project = None;
+        }
+        for record in &mut parsed.content {
+            record.project = None;
+        }
+        for record in &mut parsed.tools {
+            record.project = None;
+        }
     }
     parsed
 }

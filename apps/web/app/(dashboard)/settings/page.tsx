@@ -14,7 +14,7 @@ import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims } from "@/lib/host-shims";
-import { getPublicBaseUrl, getRequestOrigin } from "@/lib/public-url";
+import { getPublicBaseUrl, getRequestOrigin, localShimTargetId } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
@@ -30,6 +30,7 @@ import { DeviceActions, type DeviceControlClientView } from "./device-actions";
 import { DeviceInventory } from "./device-inventory";
 import { OnboardingPanel } from "./onboarding-panel";
 import { OnboardingWizard } from "./onboarding-wizard";
+import { CollectionScopePanel } from "./collection-scope-panel";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
@@ -207,6 +208,7 @@ async function InstallTab({ userId }: { userId: string }) {
         <CardContent className="min-w-0 space-y-6">
           <OnboardingWizard
             baseUrl={baseUrl}
+            targetId={localShimTargetId(`${baseUrl}/api`)}
             uiOrigin={uiOrigin}
             contentEnabled={contentEnabled}
             contentDefaultOn={contentDefaultOn}
@@ -218,6 +220,7 @@ async function InstallTab({ userId }: { userId: string }) {
       </Card>
 
       <TokenManagementPanel tokens={tokenRows} />
+      <CollectionScopePanel targetId={localShimTargetId(`${baseUrl}/api`)} />
       <CollectionHealthPanel rows={health} formatTime={(date) => fmtWhen.format(date)} />
       <DeviceList
         devices={devices}

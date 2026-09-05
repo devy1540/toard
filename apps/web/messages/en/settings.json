@@ -117,27 +117,37 @@
       "action": {
         "collect": "Collect now",
         "doctor": "Run diagnostics",
-        "update": "Update shim"
+        "update": "Update shim",
+        "scope": "Choose collection scope"
       },
       "running": {
         "collect": "Collecting…",
         "doctor": "Diagnosing…",
-        "update": "Updating…"
+        "update": "Updating…",
+        "scope": "Reviewing scope in the local window"
       },
       "success": {
         "collect": "Collection for this server completed.",
         "doctor": "Local diagnostics completed.",
-        "update": "Shim update completed."
+        "update": "Shim update completed.",
+        "scope": "Collection scope saved."
       },
       "failure": {
         "collect": "Local collection failed.",
         "doctor": "Local diagnostics failed.",
-        "update": "Shim update failed."
+        "update": "Shim update failed.",
+        "scope": "Could not save collection scope. Allow pop-ups and try again."
       },
       "queue": {
         "pending": "Usage awaiting delivery: {count} events · {bytes} bytes",
         "not_created": "The local usage journal has not been created yet.",
         "unavailable": "The local usage journal could not be read. Preserve its files and run diagnostics."
+      },
+      "scopeLabel": "Collection scope",
+      "scopeMode": {
+        "all": "All",
+        "custom": "Selected tools and projects",
+        "paused": "Paused"
       }
     },
     "tokensTitle": "Token management",
@@ -155,7 +165,22 @@
     "revokeTokenTitle": "Revoke this token?",
     "revokeTokenDescription": "Only the {label} token will be revoked. Machines using this token stop collecting until they are reinstalled with a new token.",
     "revokeTokenCancel": "Cancel",
-    "revokeTokenConfirm": "Revoke token"
+    "revokeTokenConfirm": "Revoke token",
+    "scope": {
+      "title": "Collection scope on this computer",
+      "description": "Choose which tools and projects this computer sends to this server.",
+      "open": "Choose scope locally",
+      "opening": "Reviewing in the local window…",
+      "saved": "Collection scope saved.",
+      "failed": "Could not open or save local settings. Allow pop-ups and check that the shim is running.",
+      "unsupported": "The installed shim does not support collection scopes. Update it and try again.",
+      "localOnly": "Project names and paths appear only in the local window. Configure other computers from those computers.",
+      "mode": {
+        "all": "Current scope: all",
+        "custom": "Current scope: selected tools and projects",
+        "paused": "Current scope: paused"
+      }
+    }
   },
   "password": {
     "currentLabel": "Current password",
@@ -249,7 +274,15 @@
     "waitingForUsageDescription": "The server received an authenticated request. We are checking that actual usage has been stored.",
     "connectedEmptyTitle": "Connected, with no stored usage yet",
     "connectedEmptyDescription": "Connection and usage storage are checked separately. Use a supported AI tool and check again. If you already have usage records, inspect collector health.",
-    "checkUsageAgain": "Check usage storage again"
+    "checkUsageAgain": "Check usage storage again",
+    "scopeChoice": "Records to send to this server",
+    "scopeReview": "Choose projects after installation",
+    "scopeAll": "Collect all tools and projects",
+    "scopeReviewDescription": "Delivery starts paused. Review and apply a scope in the local window to begin collection.",
+    "scopeAllDescription": "Collect usage from all supported tools on this computer. Existing records may also be included.",
+    "ranAndReviewScope": "Command completed · choose scope",
+    "reviewingScope": "Reviewing scope in the local window…",
+    "scopePaused": "Collection is paused. Reopen scope settings and enable collection before checking for stored usage."
   },
   "mfa": {
     "passkeyTitle": "Passkey security",

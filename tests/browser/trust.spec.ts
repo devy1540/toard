@@ -122,6 +122,7 @@ test("onboarding distinguishes an authenticated connection and health report fro
   await page.goto("/settings?tab=install");
   await page.getByRole("button", { name: "이 컴퓨터 연결하기", exact: true }).click();
   await page.getByRole("button", { name: "macOS", exact: true }).click();
+  await page.getByLabel("이 서버로 보낼 기록", { exact: true }).selectOption("all");
   await page.getByRole("button", { name: "네, 계속할게요", exact: true }).click();
   const command = await page.locator("pre code").first().innerText();
   const deviceToken = command.match(/tk_[a-f0-9]{48}/)?.[0];

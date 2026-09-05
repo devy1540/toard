@@ -35,19 +35,25 @@ impl LogAdapter for Qwen {
     /// QWEN_DATA_DIR(csv) 우선, 기본 ~/.qwen —
     /// projects/<project>/chats/<file>.jsonl (정확히 3계층) 만 수집
     fn discover_files(&self) -> Vec<PathBuf> {
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
         let mut files = Vec::new();
+        let mut failures = 0;
         for root in data_dirs() {
             let projects = root.join("projects");
-            if !projects.is_dir() {
-                continue;
-            }
             let mut root_files = Vec::new();
-            walk_files(&projects, &["jsonl"], &mut root_files, 0);
+            failures += walk_files(&projects, &["jsonl"], &mut root_files, 0);
             root_files.retain(|file| is_chat_file(&projects, file));
             files.extend(root_files);
         }
         files.sort();
-        files
+        files.dedup();
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -78,7 +84,7 @@ fn data_dirs() -> Vec<PathBuf> {
     };
     let mut dirs: Vec<PathBuf> = Vec::new();
     for path in candidates {
-        if path.is_dir() && !dirs.contains(&path) {
+        if !dirs.contains(&path) {
             dirs.push(path);
         }
     }
@@ -159,6 +165,11 @@ fn parse_chat_log(path: &Path, include_content: bool) -> ParsedLog {
         return ParsedLog::read_failed();
     };
     let mut parsed = ParsedLog::diagnosed();
+    let local_project = project_from_file(path)
+        .as_deref()
+        .and_then(|group| crate::collection_scope::LocalProject::group("qwen", group))
+        .map(std::sync::Arc::new);
+    parsed.remember_project(&local_project);
     let project = project_from_file(path).unwrap_or_else(|| "unknown".to_string());
     let stem = path
         .file_stem()
@@ -174,7 +185,9 @@ fn parse_chat_log(path: &Path, include_content: bool) -> ParsedLog {
                 if let Some(id) = session_id_of(obj) {
                     session_id = id;
                 }
-                if let Some(record) = content_from_message(obj, &session_id, fallback_timestamp) {
+                if let Some(mut record) = content_from_message(obj, &session_id, fallback_timestamp)
+                {
+                    record.project = local_project.clone();
                     parsed.content.push(record);
                 }
             }
@@ -184,7 +197,8 @@ fn parse_chat_log(path: &Path, include_content: bool) -> ParsedLog {
         }
         match serde_json::from_value::<QwenLine>(value) {
             Ok(record) => {
-                if let Some(event) = parse_line(path, fallback_timestamp, &record) {
+                if let Some(mut event) = parse_line(path, fallback_timestamp, &record) {
+                    event.project = local_project.clone();
                     parsed.usage.push(event);
                 }
             }
@@ -231,6 +245,7 @@ fn parse_line(file: &Path, fallback_timestamp: i64, record: &QwenLine) -> Option
         .clone()
         .unwrap_or_else(|| DEFAULT_QWEN_MODEL.to_string());
     Some(RawUsage {
+        project: None,
         ts_ms,
         session_id: Some(session_id),
         model: Some(model),

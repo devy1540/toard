@@ -44,12 +44,34 @@ pub fn open(
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value >= 1024 && *value <= 1024 * 1024 * 1024)
         .unwrap_or(DEFAULT_MAX_BYTES);
-    let queue = UsageQueue::open(
-        &target.state_dir,
-        QueueIdentity::new(&target.id, owner.as_deref(), token),
-        max_bytes,
-    )
-    .map_err(|error| error.to_string())?;
+    let identity = QueueIdentity::new(&target.id, owner.as_deref(), token);
+    let mut queue = UsageQueue::open(&target.state_dir, identity.clone(), max_bytes)
+        .map_err(|error| error.to_string())?;
+    // An env-only/legacy collector may have journaled data before registration.
+    // Keep the shared journal in place for any in-flight older process and import
+    // it on every pass, including after the original logs have disappeared.
+    if let Some(targets_dir) = target
+        .credentials_path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .filter(|path| path.file_name().is_some_and(|name| name == "targets"))
+    {
+        if let Some(root) = targets_dir.parent() {
+            let legacy_state = root.join("state");
+            match crate::usage_queue::stored_destination(&legacy_state) {
+                Ok(Some(destination)) if destination == target.id => {
+                    match UsageQueue::open(&legacy_state, identity, max_bytes).and_then(|mut source| queue.import_pending(&mut source)) {
+                        Ok(_) => {}
+                        Err(error) => eprintln!("toard-shim: 기존 사용량 보관함을 보존합니다. 새 보관함으로 옮기지 못했습니다 — {error}"),
+                    }
+                }
+                Err(error) => eprintln!(
+                    "toard-shim: 이전 로컬 보관함을 읽지 못했습니다. 파일을 보존합니다 — {error}"
+                ),
+                _ => {}
+            }
+        }
+    }
     Ok(PreparedQueue {
         queue,
         health_supported,
@@ -99,7 +121,11 @@ pub fn drain(
             return Ok(progress);
         }
         let batch = queue
-            .peek_for(provider, 250)
+            .peek_for(
+                provider,
+                target.credentials.collection_scope.provider(provider),
+                250,
+            )
             .map_err(|error| error.to_string())?;
         if batch.is_empty() {
             return Ok(progress);

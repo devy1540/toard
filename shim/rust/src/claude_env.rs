@@ -81,9 +81,8 @@ pub fn plan_on(
             Some(Value::String(cur)) if *cur == want => state.push((key, want)),
             Some(Value::String(cur)) if Some(cur.as_str()) == ours_before => {
                 // 예전에 우리가 넣은 값 → 갱신(endpoint/토큰 변경 추종)
-                let cur = cur.clone();
                 env.set(&key, Value::String(want.clone()));
-                warnings.push(format!("{key}: toard 관리 값 갱신 ({cur} → {want})"));
+                warnings.push(format!("{key}: toard 관리 값 갱신"));
                 state.push((key, want));
             }
             Some(_) => warnings.push(format!(
@@ -161,6 +160,28 @@ pub fn state_from_json(text: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn credential_rotation_warnings_do_not_include_old_or_new_values() {
+        let first = plan_on(
+            "{}",
+            &[],
+            "https://fixture.example/api",
+            "fixture-old-secret",
+        )
+        .unwrap();
+        let second = plan_on(
+            first.settings.as_deref().unwrap(),
+            &first.state,
+            "https://fixture.example/api",
+            "fixture-new-secret",
+        )
+        .unwrap();
+        assert!(!second.warnings.is_empty());
+        let warnings = second.warnings.join("\n");
+        assert!(!warnings.contains("fixture-old-secret"));
+        assert!(!warnings.contains("fixture-new-secret"));
+    }
 
     const EP: &str = "https://toard.example.com/api";
     const TK: &str = "tk_test";

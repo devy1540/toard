@@ -125,6 +125,7 @@ export function LocalShimPanel({
                 label={t("periodicCollection")}
                 value={status.daemon.active ? t("active") : t("inactive")}
               />
+              {status.target.scope ? <StatusItem label={t("scopeLabel")} value={t(`scopeMode.${status.target.scope.mode}`)} /> : null}
             </div>
             {status.target.usageQueue ? (
               <p className="text-muted-foreground text-sm" data-usage-queue={status.target.usageQueue.state}>
@@ -137,7 +138,7 @@ export function LocalShimPanel({
               </p>
             ) : null}
             <div className="flex flex-wrap gap-2">
-              {(["collect", "doctor", "update"] as const).map((action) => (
+              {(["collect", "scope", "doctor", "update"] as const).map((action) => (
                 <Button
                   key={action}
                   type="button"

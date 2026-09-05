@@ -15,8 +15,8 @@
 ## 2. 수집 신뢰성과 통제
 
 - [x] 연결 성공과 첫 이벤트 영속 저장 완료를 분리해 표시.
-- [ ] 공급자별 마지막 성공·파싱 실패·미지원·미사용 상태를 표시.
-- [ ] 서버별 공급자·프로젝트 포함/제외 설정과 전송 항목 미리보기. 원본 경로는 로컬에 유지.
+- [x] 공급자별 마지막 성공·파싱 실패·미지원·미사용 상태를 표시.
+- [x] 서버별 공급자·프로젝트 포함/제외 설정과 전송 항목 미리보기. 원본 경로는 로컬에 유지.
 - [x] 사용량 이벤트의 크기 제한 영속 전송 큐와 ACK 이후 정리. 장애·재시도·중복·원본 삭제 시나리오 검증.
 - [x] 실제 브라우저에서 가입 경계, 로그인, 권한, 수집 완료, 부분 비용 표시를 검증하는 회귀 테스트와 CI.
 
@@ -53,7 +53,7 @@
 ## 남은 배포 및 외부 검증
 
 - [ ] 전체 코드 변경을 검증한 후 배포할 구체적 결과를 제시하고 공개 사이트 반영 범위를 확정한다. 반영 후 demo HTTP 200을 실제 확인한다.
-- [ ] 2단계 수집 완료/건강도/범위/영속 큐 구현 및 실제 브라우저·Rust·DB 회귀 확장.
+- [x] 2단계 수집 완료/상태/범위/영속 큐 구현 및 실제 브라우저·Rust·DB 회귀 확장. 플랫폼별 릴리스 CI는 별도 확인 대상이다.
 - [ ] 3단계 원인 분해/주간 보고서/CSV/파일럿 준비 및 실제 외부 팀 검증. 연락은 명시적 승인 없이 하지 않는다.
 
 ### 2단계 진행 중 (아직 미완료)
@@ -80,3 +80,30 @@
 - Rust 전체 검사 중 doctor의 이전 설명을 요구하는 테스트 1건이 실패했고 새 계약으로 수정했다. 라이브러리 단위 260건·background helper 2건·doctor CLI 2건은 통과했으며 multi-target CLI 6건과 usage queue CLI 2건도 수정 후 모두 통과했다. Clippy(-D warnings) 통과. Windows/Linux 실행은 CI에서 아직 확인하지 않았다.
 - 남은 수집 범위: provider/project 정책, 로컬 미리보기와 승인 UI, 제한 정책을 usage/content/tools/inventory/대기열/health에 일관되게 적용. 원본 경로와 프로젝트 목록은 원격 서버에 보내지 않는다. 프로젝트를 식별하지 못한 기록은 제한 모드에서 전송하지 않는다.
 - 남은 상태 관측: 디렉터리 열기 실패와 형식 미지원/의도적 일시정지 표시를 실제 수집 동작에 연결. 위 health 항목 전체는 아직 완료 표시하지 않는다.
+
+### 수집 범위 착수 (미완료)
+
+- 수집 신뢰성 변경은 `1364956`에 커밋했다.
+- `collection_scope.rs`에 All/Custom/Paused, provider All/Off/Include/Exclude, opaque local project ID 및 fail-closed decoding을 추가 중이다. 정책 테스트 3건과 credentials 11건, target 18건 통과.
+- credentials에 scope를 같은 파일로 보존하고 reinstall 시 기존 정책을 유지한다. 실제 원본별 프로젝트 배정·필터·큐 선택·로컬 승인 UI는 미구현이며, 제한 정책은 현재 임시 guard로 수집을 중지한다. 이 guard는 모든 outgoing stream에 정책을 적용한 뒤에만 제거한다.
+- 상세 구현 경계와 남은 작업은 `docs/collection-scope-implementation.md`에 기록했다. 이 문서는 완료 기능을 설명하는 사용자 안내가 아니다.
+
+- RawUsage/RawContent/RawToolActivity에 local-only Arc<LocalProject>를 추가했다. Claude 메시지 cwd, 일반 Codex session/turn cwd, Gemini projectHash, Qwen 로그 group을 붙인다. Codex 다중 session_meta와 Cursor는 아직 미식별로 보류한다. wire 변환에는 project 필드를 추가하지 않았다. 상세 남은 작업 문서를 갱신했다.
+
+### 2단계 수집 범위·상태 구현 및 검증 (2026-09-06)
+
+- 로컬 범위 창과 실제 설정 화면을 연결했다. 새 설치는 기본 review → Paused 등록 → 로컬 확인 → 첫 저장 확인 순서다. 구버전 shim에는 capability 오류로 멈추며 조용히 전체 전송으로 바꾸지 않는다.
+- usage/content/tools/대기열/보정/inventory/원격 상태에 같은 정책을 적용했다. 프로젝트 미식별은 Include/Exclude에서 차단한다. 작업 경로와 provider 로그 그룹을 실제 Git repository라고 추정하지 않는다.
+- scope와 token 변경은 registry snapshot/CAS로 검증한다. 공유 legacy 보관함은 identity를 확인하고 새 SQLite commit 후 원래 sequence를 정리해 가져온다. 원본 삭제 후 등록한 env-only collector의 실제 CLI 복구 테스트가 통과했다.
+- 디렉터리 열기 실패를 NoRecords로 처리하지 않는다. JSON 파싱 실패와 미래 Cursor schema도 상태에 표시하고 cursor를 보존한다. NoRecords는 AI 미사용의 증거가 아님을 UI에 표시한다.
+- 같은 서버의 직접 OTLP exporter가 있으면 제한 scope 적용을 막는다. `otlp off`는 관리 설정만 정리한다. scope 저장과 새 exporter 주입은 같은 lock을 사용하며 사용자 설정과 실행 중인 외부 프로세스를 임의 삭제·종료하지 않는다.
+- Claude env 토큰 갱신 경고에서 이전/새 비밀값을 출력하던 기존 코드를 수정하고 회귀 테스트를 추가했다.
+- 전체 Node/DB 검사 **1,346 pass / 3 skip / 0 fail**: `/tmp/toard-scope-final-tests.log`.
+- Rust 전체 **287 pass / 1 ignored / 0 fail**: `/tmp/toard-scope-final-rust.log` (마지막 직접 exporter CLI 사례 추가 전). 이후 추가한 직접 exporter CLI 사례를 포함한 CLI 4건도 통과했다. 확인창 준비 handshake 이후 관련 Node 82건, 실제 브라우저 2건, typecheck와 clippy(-D warnings)가 통과했다.
+- 실제 브라우저 **9개 시나리오 통과**: `/tmp/toard-scope-final-browser.log`. 회사/개인 프로젝트 분리, 승인 전 미전송, 실제 저장, stale/foreign/replay/HTML 라벨 차단, 모바일 너비를 검증했다. UI 스크린샷도 시각 확인했다.
+- 브라우저 scope fixture와 기존 빈 사용자 검증을 별도 계정으로 분리했다. 병렬 CLI fixture의 임시 경로 충돌도 고쳤다. 초기 실패를 숨기거나 테스트 조건을 약하게 만들지 않았다.
+- 상세 경계: `docs/collection-scope-implementation.md`. 실제 Windows/Linux CI 실행과 공개 배포는 아직 확인하지 않았다.
+- 다음 작업은 3단계 비용 변화 원인 분해, 주간 보고서/CSV, 운영·업그레이드 문서와 파일럿 준비다. 실제 외부 팀 검증과 공개 배포는 여전히 남아 있다.
+
+- 마지막 시각 확인에서 적용 버튼이 일부 항목 위에 겹치던 sticky 배치를 일반 문서 흐름으로 수정했다. 설치→선택→저장 브라우저 흐름을 다시 검증했다.
+- 1·2단계 코드 구현은 완료했으며 아래 남은 공개 배포·플랫폼 CI·외부 사용자 검증은 완료로 간주하지 않는다. 이후에는 3단계 기능을 진행한다.

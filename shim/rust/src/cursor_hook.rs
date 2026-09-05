@@ -21,6 +21,10 @@ const CAPTURE_COMMAND: &str = "cursor-hook capture-toard-v1";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CapturedUsage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     pub generation_id: String,
     pub session_id: Option<String>,
     pub model: Option<String>,
@@ -124,6 +128,8 @@ fn parse_payload(value: &Value, captured_at_ms: i64) -> Option<CapturedUsage> {
         return None;
     }
     Some(CapturedUsage {
+        schema_version: Some(1),
+        project_id: workspace_project(value).map(|project| project.id),
         generation_id,
         session_id: string_field(
             value,
@@ -141,6 +147,14 @@ fn parse_payload(value: &Value, captured_at_ms: i64) -> Option<CapturedUsage> {
         cache_read_tokens,
         cache_creation_tokens,
     })
+}
+
+fn workspace_project(value: &Value) -> Option<crate::collection_scope::LocalProject> {
+    let roots = value.get("workspace_roots")?.as_array()?;
+    if roots.len() != 1 {
+        return None;
+    }
+    crate::collection_scope::LocalProject::cwd("cursor", roots[0].as_str()?)
 }
 
 fn append_usage(path: &Path, usage: &CapturedUsage) -> std::io::Result<()> {
@@ -174,6 +188,12 @@ fn capture_stdin() -> i32 {
         if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
             if let Some(usage) = parse_payload(&value, current_time_ms()) {
                 if let Some(path) = usage_log_path() {
+                    if let (Some(project), Some(root)) = (
+                        workspace_project(&value),
+                        path.parent().and_then(Path::parent),
+                    ) {
+                        let _ = project.remember(&root.join("state"), "cursor");
+                    }
                     let _ = append_usage(&path, &usage);
                 }
             }
@@ -390,6 +410,8 @@ mod tests {
         assert_eq!(
             parse_payload(&value, 1_800_000_000_000),
             Some(CapturedUsage {
+                schema_version: Some(1),
+                project_id: workspace_project(&value).map(|project| project.id),
                 generation_id: "generation-1".into(),
                 session_id: Some("conversation-1".into()),
                 model: Some("claude-4.5-sonnet".into()),

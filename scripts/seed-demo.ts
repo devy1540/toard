@@ -14,7 +14,7 @@ const DEPTS: Array<{ name: string; members: Array<[string, string]> }> = [
 
 const PRICE: Record<string, [number, number]> = {
   "claude-sonnet-4-5": [3, 15],
-  "claude-opus-4-5": [15, 75],
+  "claude-opus-4-5": [5, 25],
 };
 const MODELS = Object.keys(PRICE);
 

@@ -74,7 +74,7 @@ const PROVIDERS: Array<{ key: ProviderKey; label: string }> = [
 
 const MODELS: ModelDef[] = [
   { provider: "claude_code", model: "claude-sonnet-4-5", input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-  { provider: "claude_code", model: "claude-opus-4-5", input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+  { provider: "claude_code", model: "claude-opus-4-5", input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
   { provider: "codex", model: "gpt-5-codex", input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 1.25 },
   { provider: "gemini", model: "gemini-2.5-pro", input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 1.25 },
   { provider: "qwen", model: "qwen3-coder-plus", input: 0.6, output: 2.4, cacheRead: 0.06, cacheCreate: 0.6 },

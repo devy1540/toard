@@ -11,7 +11,7 @@
     "providerLabel": "Provider",
     "allProviders": "All providers",
     "metricLabel": "Metric",
-    "cost": "Cost",
+    "cost": "API estimate",
     "tokens": "Tokens"
   },
   "freshness": {
@@ -32,7 +32,7 @@
     "empty": "No changes exceeded the highlight thresholds."
   },
   "kpi": {
-    "cost": "Cost",
+    "cost": "API estimate",
     "sessions": "Sessions",
     "tokens": "Tokens",
     "previousPeriod": "vs previous period",

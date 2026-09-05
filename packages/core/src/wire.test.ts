@@ -66,3 +66,10 @@ test("userId·costUsd 는 와이어에서 선택적 (서버가 덮어씀)", () =
   assert.equal(e.userId, null);
   assert.equal(e.costUsd, 0);
 });
+
+test("unsafe token counts and impossible cache subsets are rejected before storage", () => {
+  const valid = { dedupKey: "d", providerKey: "p", ts: "2026-07-01T00:00:00Z", inputTokens: 1, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 1 };
+  assert.throws(() => parseUsageEventWire({ ...valid, inputTokens: Number.MAX_SAFE_INTEGER + 1 }), /inputTokens/);
+  assert.throws(() => parseUsageEventWire({ ...valid, cacheCreation1hTokens: 2 }), /cacheCreation1hTokens/);
+  assert.equal(parseUsageEventWire({ ...valid, cacheCreation1hTokens: 1 }).cacheCreation1hTokens, 1);
+});

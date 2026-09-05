@@ -1,5 +1,5 @@
 import type { StorageBackend } from "@toard/core";
-import { resolveCostAt, type PricingSchedule } from "@toard/pricing";
+import { COST_CALCULATION_VERSION, resolveCostAt, type PricingSchedule } from "@toard/pricing";
 import { revalidateTag } from "next/cache";
 import type { Pool } from "pg";
 import { getPool } from "./db";
@@ -318,7 +318,7 @@ function supportedPricingTargets(
       cacheReadTokens: 0,
       cacheCreationTokens: 0,
     });
-    if (probe.status !== "priced") continue;
+    if (probe.status === "unpriced") continue;
     if (diagnostic.model) models.add(diagnostic.model);
     else if (diagnostic.providerKey === "codex" && diagnostic.logAdapter === "codex") {
       includeCodexModelFallback = true;
@@ -446,8 +446,8 @@ export async function runPricingRepairTaskWith(
           schedule,
           mode: "calculate",
         });
-        return resolved.status === "priced" && resolved.pricingRevisionId
-          ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId }
+        return resolved.status !== "unpriced" && resolved.pricingRevisionId
+          ? { costUsd: resolved.costUsd, pricingRevisionId: resolved.pricingRevisionId, costStatus: resolved.status, costCalculationVersion: COST_CALCULATION_VERSION }
           : null;
       });
     }

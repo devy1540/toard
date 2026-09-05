@@ -99,6 +99,7 @@ export default async function HistoryPage({
     partial: t("costCoverage.partial"),
     unpriced: t("costCoverage.unpriced"),
     legacy: t("costCoverage.legacy"),
+    estimated: t("costCoverage.estimated"),
   };
   const userId = await getCurrentUserId();
   if (!userId) {

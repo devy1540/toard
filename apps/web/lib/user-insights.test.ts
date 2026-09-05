@@ -26,9 +26,9 @@ test("인사이트 캐시 인자에 사용자·기간·provider·타임존이 �
   ]);
 });
 
-test("coverage 응답 shape는 v2 캐시 namespace를 사용한다", () => {
+test("추정 비용 coverage 응답은 v3 캐시 namespace를 사용한다", () => {
   const source = readFileSync(new URL("./user-insights.ts", import.meta.url), "utf8");
-  assert.match(source, /\["user-insights-v2"\]/);
+  assert.match(source, /\["user-insights-v3"\]/);
   assert.match(source, /tags: \["user-insights"\]/);
   assert.doesNotMatch(source, /\["user-insights-v1"\]/);
 });

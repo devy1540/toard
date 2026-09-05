@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import { readdir, readFile } from "node:fs/promises";
 import { Client, Pool } from "pg";
 
 const exec = promisify(execFile);
 
 /** An isolated, loopback-only, tmpfs database. Never reads deployment credentials. */
-export async function startTestPostgres(prefix: string) {
+export async function startTestPostgres(prefix: string, options: { beforeMigration?: string } = {}) {
   const container = `toard-test-${prefix}-${randomUUID().slice(0, 8)}`;
   const password = randomUUID();
   let started = false;
@@ -22,9 +23,9 @@ export async function startTestPostgres(prefix: string) {
     await exec("docker", [
       "run", "-d", "--rm", "--name", container,
       "--tmpfs", "/var/lib/postgresql/data",
-      "-e", `POSTGRES_PASSWORD=${password}`, "-e", "POSTGRES_DB=toard_test",
+      "-e", "POSTGRES_PASSWORD", "-e", "POSTGRES_DB=toard_test",
       "-p", "127.0.0.1::5432", "postgres:16-alpine",
-    ]);
+    ], { env: { ...process.env, POSTGRES_PASSWORD: password } });
     started = true;
     const { stdout } = await exec("docker", ["port", container, "5432/tcp"]);
     const port = stdout.trim().match(/:(\d+)$/)?.[1];
@@ -44,8 +45,16 @@ export async function startTestPostgres(prefix: string) {
       if (ready) break;
     }
     if (!ready) throw new Error("TEST_POSTGRES_NOT_READY");
-    await exec("pnpm", ["migrate"], { env: { ...process.env, DATABASE_URL: connectionString }, maxBuffer: 4 * 1024 * 1024 });
     pool = new Pool({ connectionString, max: 5 });
+    if (options.beforeMigration) {
+      const files = (await readdir("migrations")).filter((name) => name.endsWith(".sql") && name < options.beforeMigration!).sort();
+      for (const file of files) {
+        const up = (await readFile(`migrations/${file}`, "utf8")).split("-- Down Migration", 1)[0]!;
+        await pool.query(up);
+      }
+    } else {
+      await exec("pnpm", ["migrate"], { env: { ...process.env, DATABASE_URL: connectionString }, maxBuffer: 4 * 1024 * 1024 });
+    }
     return { pool, connectionString, close };
   } catch (error) {
     await close();

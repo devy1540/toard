@@ -6,6 +6,8 @@ import {
 import { createHash } from "node:crypto";
 import type {
   BucketOptions,
+  CostEvidenceQuery,
+  CostEvidencePage,
   DailyPoint,
   DeviceInfo,
   FinalizedUsageEvent,
@@ -244,6 +246,7 @@ function clickHouseTimestampToIso(value: unknown): string | null {
 
 interface CostCoverageRow {
   priced_events?: string | number;
+  estimated_events?: string | number;
   unpriced_events?: string | number;
   legacy_events?: string | number;
 }
@@ -273,6 +276,7 @@ interface OrganizationUsageBundleRow {
   cache_read: OrganizationDashboardNumeric;
   cache_creation: OrganizationDashboardNumeric;
   priced_events: OrganizationDashboardNumeric;
+  estimated_events: OrganizationDashboardNumeric;
   unpriced_events: OrganizationDashboardNumeric;
   legacy_events: OrganizationDashboardNumeric;
 }
@@ -284,6 +288,7 @@ interface OrganizationBreakdownBundleRow {
   tokens: OrganizationDashboardNumeric;
   sessions: OrganizationDashboardNumeric;
   priced_events: OrganizationDashboardNumeric;
+  estimated_events: OrganizationDashboardNumeric;
   unpriced_events: OrganizationDashboardNumeric;
   legacy_events: OrganizationDashboardNumeric;
 }
@@ -351,6 +356,7 @@ function parseOrganizationUsageBundleRow(value: unknown): OrganizationUsageBundl
     cache_read: organizationDashboardNumeric(row, "usage", rawKind, "cache_read"),
     cache_creation: organizationDashboardNumeric(row, "usage", rawKind, "cache_creation"),
     priced_events: organizationDashboardNumeric(row, "usage", rawKind, "priced_events"),
+    estimated_events: row.estimated_events == null ? 0 : organizationDashboardNumeric(row, "usage", rawKind, "estimated_events"),
     unpriced_events: organizationDashboardNumeric(row, "usage", rawKind, "unpriced_events"),
     legacy_events: organizationDashboardNumeric(row, "usage", rawKind, "legacy_events"),
   };
@@ -375,6 +381,7 @@ function parseOrganizationBreakdownBundleRow(value: unknown): OrganizationBreakd
     tokens: organizationDashboardNumeric(row, "breakdown", rawKind, "tokens"),
     sessions: organizationDashboardNumeric(row, "breakdown", rawKind, "sessions"),
     priced_events: organizationDashboardNumeric(row, "breakdown", rawKind, "priced_events"),
+    estimated_events: row.estimated_events == null ? 0 : organizationDashboardNumeric(row, "breakdown", rawKind, "estimated_events"),
     unpriced_events: organizationDashboardNumeric(row, "breakdown", rawKind, "unpriced_events"),
     legacy_events: organizationDashboardNumeric(row, "breakdown", rawKind, "legacy_events"),
   };
@@ -382,6 +389,7 @@ function parseOrganizationBreakdownBundleRow(value: unknown): OrganizationBreakd
 
 const costCoverage = (row: CostCoverageRow | undefined): UsageCostCoverage => ({
   pricedEvents: n(row?.priced_events),
+  ...(n(row?.estimated_events) > 0 ? { estimatedEvents: n(row?.estimated_events) } : {}),
   unpricedEvents: n(row?.unpriced_events),
   legacyEvents: n(row?.legacy_events),
 });
@@ -408,6 +416,9 @@ interface OutboxRow {
   cost_status: FinalizedUsageEvent["costStatus"];
   log_adapter: string | null;
   host: string | null;
+  cost_calculation_version?: string;
+  cache_creation_1h_tokens?: string | number | null;
+  is_fast?: boolean | number | null;
 }
 
 type PricingRepairClickHouseRow = OutboxRow;
@@ -502,6 +513,9 @@ const CLICKHOUSE_SCHEMA_DDL = [
   "ALTER TABLE usage_events MODIFY SETTING non_replicated_deduplication_window = 10000",
   "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS pricing_revision_id String DEFAULT '' AFTER cost_usd",
   "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_status LowCardinality(String) DEFAULT 'legacy' AFTER pricing_revision_id",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cost_calculation_version LowCardinality(String) DEFAULT 'cost-v1'",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS cache_creation_1h_tokens Nullable(UInt64) DEFAULT NULL",
+  "ALTER TABLE usage_events ADD COLUMN IF NOT EXISTS is_fast Nullable(UInt8) DEFAULT NULL",
   "ALTER TABLE raw_events MODIFY TTL toDateTime(received_at) + INTERVAL 7 DAY DELETE",
   "DROP VIEW IF EXISTS usage_hourly_rollup_mv",
   `CREATE TABLE IF NOT EXISTS usage_hourly_rollup
@@ -1635,7 +1649,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rawRows = await this.queryJson<OutboxRow>(
       `SELECT dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-              cost_usd, pricing_revision_id, cost_status, log_adapter, host
+              cost_usd, pricing_revision_id, cost_status, log_adapter, host, cost_calculation_version, cache_creation_1h_tokens, is_fast
          FROM usage_events FINAL
         WHERE user_id = {user_id:String}
           AND team_id = ''
@@ -1734,6 +1748,9 @@ export class ClickHouseStorage implements StorageBackend {
       cost_usd: row.cost_usd,
       pricing_revision_id: row.pricing_revision_id ?? "",
       cost_status: row.cost_status,
+      cost_calculation_version: row.cost_calculation_version ?? "cost-v1",
+      cache_creation_1h_tokens: row.cache_creation_1h_tokens == null ? null : n(row.cache_creation_1h_tokens),
+      is_fast: row.is_fast == null ? null : Number(row.is_fast),
       log_adapter: row.log_adapter ?? "",
       host: row.host ?? "",
     };
@@ -2306,7 +2323,7 @@ export class ClickHouseStorage implements StorageBackend {
     const rows = await this.queryJson<PricingRepairClickHouseRow>(
       `SELECT dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-              cost_usd, pricing_revision_id, cost_status, log_adapter, host
+              cost_usd, pricing_revision_id, cost_status, log_adapter, host, cost_calculation_version, cache_creation_1h_tokens, is_fast
        FROM usage_events FINAL
        WHERE ts >= {from:DateTime64(3)}
          AND ts < {to:DateTime64(3)}
@@ -2349,6 +2366,8 @@ export class ClickHouseStorage implements StorageBackend {
         outputTokens: n(row.output_tokens),
         cacheReadTokens: n(row.cache_read_tokens),
         cacheCreationTokens: n(row.cache_creation_tokens),
+        cacheCreation1hTokens: row.cache_creation_1h_tokens == null ? undefined : n(row.cache_creation_1h_tokens),
+        isFast: row.is_fast == null ? undefined : Boolean(row.is_fast),
         costUsd: n(row.cost_usd),
         logAdapter: row.log_adapter || null,
         host: row.host || null,
@@ -2359,7 +2378,8 @@ export class ClickHouseStorage implements StorageBackend {
         ts,
         cost_usd: String(resolved.costUsd),
         pricing_revision_id: resolved.pricingRevisionId,
-        cost_status: "priced",
+        cost_status: resolved.costStatus ?? "priced",
+        cost_calculation_version: resolved.costCalculationVersion ?? "cost-v1",
       });
     }
 
@@ -2387,24 +2407,7 @@ export class ClickHouseStorage implements StorageBackend {
         .digest("hex");
       await this.operationRunner.run("repair_pricing_usage", () => this.ch.insert({
         table: "usage_events",
-        values: replacements.map((row) => ({
-          dedup_key: row.dedup_key,
-          provider_key: row.provider_key,
-          user_id: row.user_id ?? "",
-          team_id: row.team_id ?? "",
-          session_id: row.session_id ?? "",
-          model: row.model ?? "",
-          ts: chTs(new Date(row.ts)),
-          input_tokens: n(row.input_tokens),
-          output_tokens: n(row.output_tokens),
-          cache_read_tokens: n(row.cache_read_tokens),
-          cache_creation_tokens: n(row.cache_creation_tokens),
-          cost_usd: row.cost_usd,
-          pricing_revision_id: row.pricing_revision_id ?? "",
-          cost_status: row.cost_status,
-          log_adapter: row.log_adapter ?? "",
-          host: row.host ?? "",
-        })),
+        values: replacements.map((row) => this.clickHouseUsageRow(row)),
         format: "JSONEachRow",
         clickhouse_settings: {
           insert_deduplication_token: `pricing-repair:${digest}`,
@@ -2458,6 +2461,7 @@ export class ClickHouseStorage implements StorageBackend {
       `WITH raw AS (
          SELECT toStartOfInterval(ts, INTERVAL 15 minute, 'UTC') AS bucket_15m,
                 count() AS raw_events,
+                countIf(cost_status = 'estimated') AS raw_estimated_events,
                 countIf(cost_status = 'priced') AS raw_priced_events,
                 countIf(cost_status = 'unpriced') AS raw_unpriced_events,
                 countIf(cost_status = 'legacy') AS raw_legacy_events,
@@ -2469,6 +2473,7 @@ export class ClickHouseStorage implements StorageBackend {
        ), rollup AS (
          SELECT bucket_15m,
                 sum(event_count) AS rollup_events,
+                sumIf(event_count, cost_status = 'estimated') AS rollup_estimated_events,
                 sumIf(event_count, cost_status = 'priced') AS rollup_priced_events,
                 sumIf(event_count, cost_status = 'unpriced') AS rollup_unpriced_events,
                 sumIf(event_count, cost_status = 'legacy') AS rollup_legacy_events,
@@ -2486,6 +2491,7 @@ export class ClickHouseStorage implements StorageBackend {
          AND NOT has({dirty_buckets:Array(DateTime64(3))}, raw.bucket_15m)
          AND (
            raw.raw_priced_events != ifNull(rollup.rollup_priced_events, 0)
+           OR raw.raw_estimated_events != ifNull(rollup.rollup_estimated_events, 0)
            OR raw.raw_unpriced_events != ifNull(rollup.rollup_unpriced_events, 0)
            OR raw.raw_legacy_events != ifNull(rollup.rollup_legacy_events, 0)
            OR raw.raw_cost != ifNull(rollup.rollup_cost, 0)
@@ -2545,8 +2551,8 @@ export class ClickHouseStorage implements StorageBackend {
           `INSERT INTO clickhouse_usage_outbox
              (dedup_key, batch_id, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter, host, pricing_revision_id, cost_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+              log_adapter, host, pricing_revision_id, cost_status, cost_calculation_version, cache_creation_1h_tokens, is_fast)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey,
@@ -2566,6 +2572,7 @@ export class ClickHouseStorage implements StorageBackend {
             e.host ?? null,
             e.pricingRevisionId,
             e.costStatus,
+            e.costCalculationVersion ?? "cost-v1", e.cacheCreation1hTokens ?? null, e.isFast ?? null,
           ],
         );
         if (r.rowCount === 1) inserted++;
@@ -2617,7 +2624,7 @@ export class ClickHouseStorage implements StorageBackend {
           `SELECT dedup_key, provider_key, user_id::text, team_id::text, session_id, model, ts,
                   input_tokens::text, output_tokens::text, cache_read_tokens::text,
                   cache_creation_tokens::text, cost_usd::text, log_adapter, host,
-                  pricing_revision_id::text, cost_status
+                  pricing_revision_id::text, cost_status, cost_calculation_version, cache_creation_1h_tokens, is_fast
            FROM clickhouse_usage_outbox
            WHERE batch_id = $1
            ORDER BY dedup_key`,
@@ -2700,24 +2707,7 @@ export class ClickHouseStorage implements StorageBackend {
 
   private async insertOutboxRows(batch: OutboxBatch, rows: OutboxRow[]): Promise<void> {
     if (rows.length === 0) return;
-    const rawRows = rows.map((e) => ({
-      dedup_key: e.dedup_key,
-      provider_key: e.provider_key,
-      user_id: e.user_id ?? "",
-      team_id: e.team_id ?? "",
-      session_id: e.session_id ?? "",
-      model: e.model ?? "",
-      ts: chTs(new Date(e.ts)),
-      input_tokens: Number(e.input_tokens),
-      output_tokens: Number(e.output_tokens),
-      cache_read_tokens: Number(e.cache_read_tokens),
-      cache_creation_tokens: Number(e.cache_creation_tokens),
-      cost_usd: e.cost_usd,
-      pricing_revision_id: e.pricing_revision_id ?? "",
-      cost_status: e.cost_status,
-      log_adapter: e.log_adapter ?? "",
-      host: e.host ?? "",
-    }));
+    const rawRows = rows.map((row) => this.clickHouseUsageRow(row));
     await this.operationRunner.run("flush_usage_outbox_raw", () => this.ch.insert({
       table: "usage_events",
       values: rawRows,
@@ -3214,6 +3204,7 @@ export class ClickHouseStorage implements StorageBackend {
               sum(output_tokens) AS output,
               sum(cache_read_tokens)     AS cache_read,
               sum(cache_creation_tokens) AS cache_creation,
+              sumIf(event_count, cost_status = 'estimated') AS estimated_events,
               sumIf(event_count, cost_status = 'priced') AS priced_events,
               sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
               sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3272,6 +3263,7 @@ export class ClickHouseStorage implements StorageBackend {
               sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '')         AS sessions,
+              sumIf(event_count, cost_status = 'estimated') AS estimated_events,
               sumIf(event_count, cost_status = 'priced') AS priced_events,
               sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
               sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3321,6 +3313,7 @@ export class ClickHouseStorage implements StorageBackend {
               sumIf(cost_usd, cost_status != 'unpriced')        AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '')         AS sessions,
+              sumIf(event_count, cost_status = 'estimated') AS estimated_events,
               sumIf(event_count, cost_status = 'priced') AS priced_events,
               sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
               sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3465,6 +3458,7 @@ SELECT 'current_overview' AS result_kind, CAST(NULL AS Nullable(String)) AS day,
        sumIf(cost_usd, cost_status != 'unpriced') AS cost,
        sum(input_tokens) AS input, sum(output_tokens) AS output,
        sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'estimated') AS estimated_events,
        sumIf(event_count, cost_status = 'priced') AS priced_events,
        sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
        sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3476,6 +3470,7 @@ SELECT 'previous_overview' AS result_kind, CAST(NULL AS Nullable(String)) AS day
        sumIf(cost_usd, cost_status != 'unpriced') AS cost,
        sum(input_tokens) AS input, sum(output_tokens) AS output,
        sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'estimated') AS estimated_events,
        sumIf(event_count, cost_status = 'priced') AS priced_events,
        sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
        sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3487,6 +3482,7 @@ SELECT 'daily' AS result_kind, CAST(${bucketExpr} AS Nullable(String)) AS day,
        sumIf(cost_usd, cost_status != 'unpriced') AS cost,
        sum(input_tokens) AS input, sum(output_tokens) AS output,
        sum(cache_read_tokens) AS cache_read, sum(cache_creation_tokens) AS cache_creation,
+       sumIf(event_count, cost_status = 'estimated') AS estimated_events,
        sumIf(event_count, cost_status = 'priced') AS priced_events,
        sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
        sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3496,12 +3492,13 @@ GROUP BY day ORDER BY result_kind, day`;
     const teamBranch = q.includeTeamLeaderboard ? `
 UNION ALL
 SELECT 'team_leader' AS result_kind, key, cost, tokens, sessions,
-       priced_events, unpriced_events, legacy_events
+       estimated_events, priced_events, unpriced_events, legacy_events
 FROM (
   SELECT team_id AS key,
          sumIf(cost_usd, cost_status != 'unpriced') AS cost,
          sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
          uniqExactIf(session_id, session_id != '') AS sessions,
+         sumIf(event_count, cost_status = 'estimated') AS estimated_events,
          sumIf(event_count, cost_status = 'priced') AS priced_events,
          sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
          sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3511,12 +3508,13 @@ FROM (
 
     const breakdownSql = `WITH '/* organization-dashboard-breakdown */' AS query_tag
 SELECT 'user_leader' AS result_kind, key, cost, tokens, sessions,
-       priced_events, unpriced_events, legacy_events
+       estimated_events, priced_events, unpriced_events, legacy_events
 FROM (
   SELECT user_id AS key,
          sumIf(cost_usd, cost_status != 'unpriced') AS cost,
          sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
          uniqExactIf(session_id, session_id != '') AS sessions,
+         sumIf(event_count, cost_status = 'estimated') AS estimated_events,
          sumIf(event_count, cost_status = 'priced') AS priced_events,
          sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
          sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3529,6 +3527,7 @@ SELECT 'provider' AS result_kind, provider_key AS key,
        sumIf(cost_usd, cost_status != 'unpriced') AS cost,
        sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
        uniqExactIf(session_id, session_id != '') AS sessions,
+       sumIf(event_count, cost_status = 'estimated') AS estimated_events,
        sumIf(event_count, cost_status = 'priced') AS priced_events,
        sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
        sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3658,6 +3657,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
                 sumIf(cost_usd, cost_status != 'unpriced') AS cost,
                 uniqExactIf(session_id, session_id != '') AS sessions,
                 sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'estimated') AS estimated_events,
                 sumIf(event_count, cost_status = 'priced') AS priced_events,
                 sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
                 sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3667,6 +3667,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
                 sumIf(cost_usd, cost_status != 'unpriced') AS cost,
                 uniqExactIf(session_id, session_id != '') AS sessions,
                 sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'estimated') AS estimated_events,
                 sumIf(event_count, cost_status = 'priced') AS priced_events,
                 sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
                 sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3694,6 +3695,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
          )
          SELECT 'model' AS dimension, model AS key, period,
                 sumIf(cost_usd, cost_status != 'unpriced') AS cost, sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'estimated') AS estimated_events,
                 sumIf(event_count, cost_status = 'priced') AS priced_events,
                 sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
                 sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3701,6 +3703,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
          UNION ALL
          SELECT 'provider' AS dimension, provider_key AS key, period,
                 sumIf(cost_usd, cost_status != 'unpriced') AS cost, sum(tokens) AS tokens,
+                sumIf(event_count, cost_status = 'estimated') AS estimated_events,
                 sumIf(event_count, cost_status = 'priced') AS priced_events,
                 sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
                 sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3771,6 +3774,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
               sum(cache_creation_tokens) AS cache_creation,
               sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               count()                    AS events,
+              countIf(cost_status = 'estimated')   AS estimated_events,
               countIf(cost_status = 'priced')   AS priced_events,
               countIf(cost_status = 'unpriced') AS unpriced_events,
               countIf(cost_status = 'legacy')   AS legacy_events
@@ -3791,6 +3795,40 @@ GROUP BY provider_key ORDER BY tokens DESC`;
       eventCount: n(r.events),
       costCoverage: costCoverage(r),
     }));
+  }
+
+  async getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage> {
+    await this.ensureSchema();
+    const limit = Math.max(1, Math.min(100, Math.trunc(query.limit ?? 50)));
+    const rows = await this.queryJson<OutboxRow>(
+      `SELECT dedup_key, provider_key, session_id, model, ts, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, is_fast,
+              cost_usd, cost_status, pricing_revision_id, cost_calculation_version, log_adapter, host
+       FROM usage_events FINAL
+       WHERE user_id = {uid:String} AND ts >= {from:DateTime64(3)} AND ts < {to:DateTime64(3)}
+         ${query.providerKey ? "AND provider_key = {provider:String}" : ""}
+         ${query.before ? "AND (ts, dedup_key) < ({cursor_ts:DateTime64(3)}, {cursor_key:String})" : ""}
+       ORDER BY ts DESC, dedup_key DESC LIMIT {limit:UInt32}`,
+      {
+        uid: userId, from: chTs(query.from), to: chTs(query.to), limit: limit + 1,
+        ...(query.providerKey ? { provider: query.providerKey } : {}),
+        ...(query.before ? { cursor_ts: chTs(query.before.ts), cursor_key: query.before.dedupKey } : {}),
+      },
+    );
+    const events: FinalizedUsageEvent[] = rows.slice(0, limit).map((row) => ({
+      dedupKey: row.dedup_key, providerKey: row.provider_key, userId,
+      sessionId: row.session_id || null, model: row.model || null,
+      ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
+      inputTokens: n(row.input_tokens), outputTokens: n(row.output_tokens),
+      cacheReadTokens: n(row.cache_read_tokens), cacheCreationTokens: n(row.cache_creation_tokens),
+      cacheCreation1hTokens: row.cache_creation_1h_tokens == null ? undefined : n(row.cache_creation_1h_tokens),
+      isFast: row.is_fast == null ? undefined : Boolean(row.is_fast),
+      costUsd: n(row.cost_usd), costStatus: row.cost_status,
+      pricingRevisionId: row.pricing_revision_id || null, costCalculationVersion: row.cost_calculation_version ?? "cost-v1",
+      logAdapter: row.log_adapter || null, host: row.host || null,
+    }));
+    const last = events.at(-1);
+    return { events, next: rows.length > limit && last ? { ts: last.ts, dedupKey: last.dedupKey } : null };
   }
 
   // 한 세션의 사용 이벤트(ts ASC) — 히스토리 상세의 턴별 매칭용.
@@ -3842,6 +3880,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
               sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(event_count, cost_status = 'estimated') AS estimated_events,
               sumIf(event_count, cost_status = 'priced') AS priced_events,
               sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
               sumIf(event_count, cost_status = 'legacy') AS legacy_events
@@ -3872,6 +3911,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
               sumIf(cost_usd, cost_status != 'unpriced') AS cost,
               sum(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
               uniqExactIf(session_id, session_id != '') AS sessions,
+              sumIf(event_count, cost_status = 'estimated') AS estimated_events,
               sumIf(event_count, cost_status = 'priced') AS priced_events,
               sumIf(event_count, cost_status = 'unpriced') AS unpriced_events,
               sumIf(event_count, cost_status = 'legacy') AS legacy_events

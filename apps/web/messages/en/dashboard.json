@@ -3,16 +3,16 @@
   "loginRequiredTitle": "Login required",
   "loginRequiredDescription": "Sign in to view your usage.",
   "costLabel": {
-    "today": "Today's cost",
-    "week": "This week's cost",
-    "month": "This month's cost",
-    "quarter": "Last 3 calendar months cost",
-    "year": "Last 12 calendar months cost",
-    "7": "Last 7 days cost",
-    "30": "Last 30 days cost",
-    "90": "Last 90 days cost",
-    "custom": "Selected period cost",
-    "all": "All-time cost"
+    "today": "Today's API estimate",
+    "week": "This week's API estimate",
+    "month": "This month's API estimate",
+    "quarter": "Last 3 calendar months API estimate",
+    "year": "Last 12 calendar months API estimate",
+    "7": "Last 7 days API estimate",
+    "30": "Last 30 days API estimate",
+    "90": "Last 90 days API estimate",
+    "custom": "Selected period API estimate",
+    "all": "All-time API estimate"
   },
   "vsPrevToday": "vs yesterday",
   "vsPrevPeriod": "vs previous period",
@@ -37,14 +37,14 @@
   "sessions": "Sessions",
   "sessionCount": "{count} sessions",
   "tokens": "Tokens",
-  "cost": "Cost",
+  "cost": "API estimate",
   "noModelDataTitle": "No model data",
   "breakdownSub": "{tokens} tokens · {sessions} sessions",
   "moreModels": "+{n} more models",
   "byHostTitle": "Usage by device",
   "computer": "Device",
   "unknownHost": "(unknown)",
-  "summaryPrimaryHint": "Total cost for the selected period",
+  "summaryPrimaryHint": "API-rate estimate · not the actual bill",
   "topModel": "Top model",
   "topDevice": "Top device",
   "trendTitle": "Usage trend",
@@ -117,7 +117,8 @@
     "partial": "Partial total",
     "unpriced": "Price unconfirmed",
     "legacy": "Stored legacy cost",
-    "legacyHint": "{count} events use earlier stored prices"
+    "legacyHint": "{count} events use earlier stored prices",
+    "estimated": "Includes assumptions"
   },
   "chart": {
     "cost": "Cost",
@@ -268,5 +269,50 @@
         "error": "Conversion cannot continue ({code})."
       }
     }
+  },
+  "costBasis": {
+    "description": "Estimated at API token rates. Actual bills may differ due to subscriptions, discounts, and additional charges.",
+    "details": "Calculation method",
+    "estimatedTitle": "{count} usage events include pricing assumptions",
+    "estimatedDescription": "Some records use assumptions about the model, cache duration, or session-wide billing context."
+  },
+  "costEvidence": {
+    "title": "My cost calculation ledger",
+    "retention": "Up to 50 retained usage records per page, newest first. Older aggregates may no longer have individual records.",
+    "empty": "No retained usage records for this period.",
+    "unknownModel": "Unknown model",
+    "input": "Uncached input tokens",
+    "output": "Output tokens",
+    "cache": "Cache read / creation tokens",
+    "calculator": "Calculation rule version",
+    "priceModel": "Matched pricing model",
+    "source": "Pricing source",
+    "effective": "Price effective from",
+    "revision": "Pricing revision ID",
+    "context": "Rates were selected using {count} input-context tokens.",
+    "unavailable": "This uses an older calculator or lacks enough evidence to reproduce its breakdown. The recorded amount has not been relabelled as a new calculation.",
+    "back": "My usage",
+    "next": "Next records",
+    "status": {
+      "priced": "Rate identified",
+      "estimated": "Includes assumptions",
+      "unpriced": "Unpriced",
+      "legacy": "Legacy cost"
+    },
+    "components": {
+      "input": "Uncached input",
+      "output": "Output",
+      "cacheRead": "Cache read",
+      "cacheCreate": "Cache creation",
+      "cacheCreate1h": "1-hour cache creation"
+    },
+    "reason": {
+      "missing_price": "No applicable pricing revision.",
+      "missing_rate": "A rate for some tokens is unavailable.",
+      "inferred_model": "The recorded model was inferred from a pricing-catalog model.",
+      "session_context_unavailable": "This request-based estimate lacks the session-wide billing context.",
+      "cache_ttl_unavailable": "Cache duration was unavailable; the default duration was assumed."
+    },
+    "rate": "{rate} USD per million tokens"
   }
 }

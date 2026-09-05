@@ -8,9 +8,9 @@
 - [x] 가입 기본값을 초대 전용으로 변경. 이메일 문자열만으로 자체 가입 불가. 기존 계정 로그인과 최초 관리자 설치 보존.
 - [x] 공개 가입은 검증된 OAuth identity로 제한. OAuth 초대 수락을 원자 처리하고 팀·권한은 관리자 초대에서 결정.
 - [x] 임의 팀 셀프 가입을 제거하고 승인된 소속만 적용.
-- [ ] 요청 컨텍스트 기준 모델별 과금 규칙, 캐시, 출력 단가를 공식 사례로 검증.
-- [ ] API 요율 환산액, 모델 추정, 미확정 비용을 구분. 계산 규칙 버전과 가격 근거 보존 및 기존 데이터 전환 검증.
-- [ ] 랜딩 설명 및 데모 진입 복구. 합성 데이터만 사용하는 실제 제품 미리보기와 문서 정리.
+- [x] 요청 컨텍스트 기준 모델별 과금 규칙, 캐시, 출력 단가를 공식 사례로 검증.
+- [x] API 요율 환산액, 모델 추정, 미확정 비용을 구분. 계산 규칙 버전과 가격 근거 보존 및 기존 데이터 전환 검증.
+- [x] 랜딩 설명 및 데모 진입 코드 복구. 합성 데이터만 사용하는 실제 제품 미리보기와 문서 정리.
 
 ## 2. 수집 신뢰성과 통제
 
@@ -40,3 +40,18 @@
 - 가입 경계 구현: `registration.ts`, signup/초대/OAuth/팀 온보딩 경로, Compose·K8s·Helm 설정 및 문서.
 - 검증: PostgreSQL 격리 integration 6/6 통과(동시 password/OAuth 수락, 만료, identity mismatch, 초대 권한 적용); 설치된 Auth.js callback의 검증 metadata 보존 및 bootstrap linking 테스트 통과; typecheck 통과.
 - 전체 TS 단위/계약 검사에서 폐기된 팀 self-selection을 요구하던 source contract 1건 실패. 해당 계약을 admin-only 배정으로 갱신 후 관련 13건 통과. 브라우저 검증은 2단계에 남아 있음.
+
+- 1단계 구현: `cost-v2` 계산, 128/200/256/272/512k 입력 컨텍스트 단가, 추정 상태, pricing_details 영속화, 원본/outbox 계산 버전 및 힌트 보존, `/costs` 개인 근거 조회, 임시 seed 가격 제거. 이전 금액은 cost-v1로 보존하며 자동으로 전부 재계산했다고 주장하지 않는다.
+- 마이그레이션: 1700000054. `LATEST_SCHEMA_VERSION`도 54로 갱신. 향후 새로운 마이그레이션마다 함께 갱신할 것.
+- 1단계 전체 회귀: `pnpm test` 1,332 pass / 3 skip / 0 fail, 로그 `/tmp/toard-phase-one-suite.60Fvwm` (후속 fast-rate 방어 전). 그 뒤 가격 22건, 관련 app 서비스 69건과 typecheck 통과.
+- 실제 PostgreSQL/ClickHouse에서 비용·추정 상태·계산 버전·1h/fast 힌트·사용자 범위·cursor·조직 snapshot 검증 통과. 각 테스트는 자체 loopback tmpfs 컨테이너를 생성/종료한다.
+- standalone production build 및 브라우저 6개 시나리오 통과. 실제 수집 HTTP, $0.90 ledger, 위조 userId, 초대 재사용, admin 접근, 모바일 overflow, 정적 미리보기 image load를 확인했다. 새 disclosure/surface UI로 캡처한 공개 샘플 이미지 3개를 시각 확인했다.
+- Rust `cargo fmt --check` 및 `usage_event::tests` 5건 통과. 전체 Rust 테스트는 아직 실행하지 않았다.
+- Next standalone와 외부 pnpm global virtual store가 비호환이라 프로젝트 기본을 local virtual store로 통일했다. 잘못 생성된 이전 빌드 산출물은 `/var/folders/yz/1vt_3thn5jg4g8vnnqdjpd0w0000gn/T/toard-build-layout-qtda2yk4`로 보존했다.
+- `/site/demo/index.html`은 실제 앱의 합성 데이터 스크린샷을 보여주는 정적 미리보기이다. 공개 서버에는 아직 배포하지 않았으며 기존 공개 URL의 수정 완료를 주장하지 않는다.
+
+## 남은 배포 및 외부 검증
+
+- [ ] 전체 코드 변경을 검증한 후 배포할 구체적 결과를 제시하고 공개 사이트 반영 범위를 확정한다. 반영 후 demo HTTP 200을 실제 확인한다.
+- [ ] 2단계 수집 완료/건강도/범위/영속 큐 구현 및 실제 브라우저·Rust·DB 회귀 확장.
+- [ ] 3단계 원인 분해/주간 보고서/CSV/파일럿 준비 및 실제 외부 팀 검증. 연락은 명시적 승인 없이 하지 않는다.

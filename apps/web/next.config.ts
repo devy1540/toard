@@ -7,7 +7,7 @@ import createNextIntlPlugin from "next-intl/plugin";
 // 이미 설정된 셸/플랫폼 env·apps/web/.env* 가 우선(dotenv 는 기존 키를 덮지 않음)하므로
 // 배포(Docker/K8s, env 직접 주입)에는 영향 없음. @next/env 는 Next 가 앞서 로드한
 // 전역 캐시를 반환해 여기서 재호출해도 no-op 이라 dotenv 를 직접 사용한다.
-loadRootEnv({ path: path.join(import.meta.dirname, "../../.env") });
+loadRootEnv({ path: process.env.DOTENV_CONFIG_PATH ?? path.join(import.meta.dirname, "../../.env") });
 
 const config: NextConfig = {
   async headers() {

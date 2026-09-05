@@ -34,7 +34,7 @@ function nullableString(v: unknown, field: string): string | null {
 }
 
 function tokenCount(v: unknown, field: string): number {
-  if (typeof v !== "number" || !Number.isInteger(v) || v < 0) {
+  if (typeof v !== "number" || !Number.isSafeInteger(v) || v < 0) {
     throw new WireParseError(`${field} 는 0 이상의 정수여야 합니다`);
   }
   return v;
@@ -62,7 +62,7 @@ export function parseUsageEventWire(v: unknown): UsageEvent {
   if (typeof costUsd !== "number" || !Number.isFinite(costUsd) || costUsd < 0) {
     throw new WireParseError("costUsd 는 0 이상의 숫자여야 합니다");
   }
-  return {
+  const event: UsageEvent = {
     dedupKey,
     providerKey,
     userId,
@@ -78,6 +78,10 @@ export function parseUsageEventWire(v: unknown): UsageEvent {
     logAdapter: nullableString(v.logAdapter, "logAdapter"),
     host: nullableString(v.host, "host"),
   };
+  if ((event.cacheCreation1hTokens ?? 0) > event.cacheCreationTokens) {
+    throw new WireParseError("cacheCreation1hTokens 는 cacheCreationTokens 를 초과할 수 없습니다");
+  }
+  return event;
 }
 
 /** POST /api/v1/events 본문(UsageEvent[] JSON) 파싱. */

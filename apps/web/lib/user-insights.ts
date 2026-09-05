@@ -35,7 +35,7 @@ const readCached = unstable_cache(
     })),
     calculatedAt: new Date().toISOString(),
   }),
-  ["user-insights-v2"],
+  ["user-insights-v3"],
   { revalidate: 600, tags: ["user-insights"] },
 );
 

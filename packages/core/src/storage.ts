@@ -71,8 +71,10 @@ export interface UsageEvent {
   cacheCreationTokens: number;
   /** cacheCreationTokens 중 1시간 TTL 분량(subset). pricing 전용 힌트 — 서버가 1h=input×2,
    *  5m=input×1.25 로 차등 가격(§design-usage-pull 리스크 B). pull(claude) 경로만 채움,
-   *  없으면 0(전량 5m 로 취급). DB 미영속(cost 는 인제스트 시 확정·저장). */
+   *  새 기록은 DB에 보존한다. 과거 미제공 힌트는 재계산 때 추정으로 취급한다. */
   cacheCreation1hTokens?: number;
+  /** Explicit provider speed hint; omitted means the old collector did not report it. */
+  isFast?: boolean;
   /** pricing 엔진이 채움 */
   costUsd: number;
   /** logfile 경로 전용(§5.6): shim 벤더 어댑터 식별자. otel 경로는 없음/ null */
@@ -82,11 +84,13 @@ export interface UsageEvent {
   host?: string | null;
 }
 
-export type UsageCostStatus = "priced" | "unpriced" | "legacy";
+export type UsageCostStatus = "priced" | "estimated" | "unpriced" | "legacy";
 
 /** 비용 합계가 어떤 가격 확정 상태의 이벤트로 구성됐는지 설명한다. */
 export interface UsageCostCoverage {
   pricedEvents: number;
+  /** Model or billing context was inferred. Optional for older API/cache payloads. */
+  estimatedEvents?: number;
   unpricedEvents: number;
   legacyEvents: number;
 }
@@ -95,7 +99,13 @@ export interface UsageCostCoverage {
 export interface FinalizedUsageEvent extends UsageEvent {
   pricingRevisionId: string | null;
   costStatus: UsageCostStatus;
+  /** Set by the server; missing in old internal writers means cost-v1. */
+  costCalculationVersion?: string;
 }
+
+export type CostEvidenceCursor = { ts: Date; dedupKey: string };
+export type CostEvidenceQuery = PeriodQuery & { before?: CostEvidenceCursor; limit?: number };
+export type CostEvidencePage = { events: FinalizedUsageEvent[]; next: CostEvidenceCursor | null };
 
 export interface OverviewStats {
   totalSessions: number;
@@ -299,7 +309,7 @@ export interface PricingRecoveryModelDiagnostic {
 
 export type PricingRepairResolver = (
   event: UsageEvent,
-) => { costUsd: number; pricingRevisionId: string } | null;
+) => { costUsd: number; pricingRevisionId: string; costStatus?: "priced" | "estimated"; costCalculationVersion?: string } | null;
 
 export interface PricingRepairRequest {
   from: Date;
@@ -409,6 +419,8 @@ export interface StorageBackend {
   ): Promise<UsageEventReconciliationResult>;
 
   // ── 읽기 (대시보드) ──
+  /** Personal, bounded raw cost ledger. The caller's userId is never a URL filter. */
+  getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage>;
   /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */
   getOverview(q: PeriodQuery & { userId?: string; teamId?: string }): Promise<OverviewStats>;
   getDailyTimeseries(

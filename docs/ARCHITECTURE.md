@@ -62,6 +62,13 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 - **결정:** LiteLLM(+models.dev 보조) 가격을 **per-million USD로 저장**하고 토큰→USD 계산. 캐시·fast·200k+ 차등 지원.
 - **근거:** day1co·zeude 모두 per-million 저장으로 float 정밀도 손실을 줄인다. ccusage 비용 모드(display/auto/calculate)는 정합.
 
+### 비용 계산 개정 (2026-09-06)
+- `cost-v2`는 cache를 포함한 입력 컨텍스트로 구간을 결정하고 전체 input/output에 해당 단가를 적용한다. 예전 초과분 누진 계산은 폐기한다.
+- immutable pricing revision의 `pricing_details`에 임계값별 단가와 캐시·세션 조건을 보존한다. 같은 날짜 내 변경도 fingerprint source를 사용해 기존 가격 이력을 덮어쓰지 않는다.
+- `estimated`는 모델/과금 조건 추정이다. API 환산 추정액과 실제 청구액은 제품에서 명시적으로 구분한다.
+- 원본과 ClickHouse outbox에 `cost_calculation_version`, `cache_creation_1h_tokens`, `is_fast`를 보존한다. 기존 금액은 `cost-v1`로 유지하며 임시 seed 요율은 authoritative 소스에서 제외한다.
+- 개인 `/costs`는 인증 사용자 범위의 raw ledger만 조회한다. 세부 계산은 저장 금액을 같은 규칙으로 재현할 수 있을 때만 제공한다. 상세: [비용 방법론](cost-methodology.md).
+
 ### ADR-005 — 프론트엔드: Next.js 15 + TanStack Query + shadcn/ui + Recharts
 - **결정/근거:** 세 벤치마크 공통 스택. TanStack Query는 zeude 검증.
 

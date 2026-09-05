@@ -1,5 +1,7 @@
 import type {
   BucketOptions,
+  CostEvidenceQuery,
+  CostEvidencePage,
   DailyPoint,
   DeviceInfo,
   FinalizedUsageEvent,
@@ -52,12 +54,14 @@ const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
 type CostCoverageRow = {
   priced_events?: string | number;
+  estimated_events?: string | number;
   unpriced_events?: string | number;
   legacy_events?: string | number;
 };
 
 const costCoverage = (row: CostCoverageRow): UsageCostCoverage => ({
   pricedEvents: n(row.priced_events),
+  ...(n(row.estimated_events) > 0 ? { estimatedEvents: n(row.estimated_events) } : {}),
   unpricedEvents: n(row.unpriced_events),
   legacyEvents: n(row.legacy_events),
 });
@@ -114,6 +118,36 @@ export class PostgresStorage implements StorageBackend {
   }
 
   // ── 쓰기 ──
+  async getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage> {
+    const limit = Math.max(1, Math.min(100, Math.trunc(query.limit ?? 50)));
+    const { where, params } = this.periodWhere({ ...query, userId });
+    let cursorClause = "";
+    if (query.before) {
+      params.push(query.before.ts, query.before.dedupKey);
+      cursorClause = ` AND (ts, dedup_key) < ($${params.length - 1}::timestamptz, $${params.length}::text)`;
+    }
+    params.push(limit + 1);
+    const rows = await this.pool.query(
+      `SELECT dedup_key, provider_key, session_id, model, ts, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, is_fast,
+              cost_usd, cost_status, pricing_revision_id, cost_calculation_version, log_adapter, host
+       FROM usage_events ${where}${cursorClause}
+       ORDER BY ts DESC, dedup_key DESC LIMIT $${params.length}`, params,
+    );
+    const events: FinalizedUsageEvent[] = rows.rows.slice(0, limit).map((row) => ({
+      dedupKey: row.dedup_key, providerKey: row.provider_key, userId,
+      sessionId: row.session_id, model: row.model, ts: new Date(row.ts),
+      inputTokens: n(row.input_tokens), outputTokens: n(row.output_tokens),
+      cacheReadTokens: n(row.cache_read_tokens), cacheCreationTokens: n(row.cache_creation_tokens),
+      cacheCreation1hTokens: row.cache_creation_1h_tokens == null ? undefined : n(row.cache_creation_1h_tokens),
+      isFast: row.is_fast ?? undefined, costUsd: n(row.cost_usd), costStatus: row.cost_status,
+      pricingRevisionId: row.pricing_revision_id, costCalculationVersion: row.cost_calculation_version,
+      logAdapter: row.log_adapter, host: row.host,
+    }));
+    const last = events.at(-1);
+    return { events, next: rows.rows.length > limit && last ? { ts: last.ts, dedupKey: last.dedupKey } : null };
+  }
+
   async saveRawEvent(providerKey: string, payload: unknown): Promise<number> {
     const res = await this.pool.query<{ id: string }>(
       "INSERT INTO raw_events (provider_key, payload) VALUES ($1, $2) RETURNING id",
@@ -136,8 +170,8 @@ export class PostgresStorage implements StorageBackend {
           `INSERT INTO usage_events
              (dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter, host, pricing_revision_id, cost_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+              log_adapter, host, pricing_revision_id, cost_status, cost_calculation_version, cache_creation_1h_tokens, is_fast)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
@@ -146,6 +180,7 @@ export class PostgresStorage implements StorageBackend {
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
             e.logAdapter ?? null, e.host ?? null,
             e.pricingRevisionId, e.costStatus,
+            e.costCalculationVersion ?? "cost-v1", e.cacheCreation1hTokens ?? null, e.isFast ?? null,
           ],
         );
         if (r.rowCount === 1) {
@@ -581,14 +616,16 @@ export class PostgresStorage implements StorageBackend {
         cache_read_tokens: string | number;
         cache_creation_tokens: string | number;
         cost_usd: string | number;
-        cost_status: "priced" | "unpriced" | "legacy";
+        cost_status: "priced" | "estimated" | "unpriced" | "legacy";
+        cache_creation_1h_tokens?: string | number | null;
+        is_fast?: boolean | null;
         log_adapter: string | null;
         host: string | null;
         local_day: string;
       }>(
         `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                cost_usd, cost_status, log_adapter, host,
+                cost_usd, cost_status, log_adapter, host, cache_creation_1h_tokens, is_fast,
                 to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
          FROM usage_events
          WHERE ts >= $1 AND ts < $2
@@ -634,6 +671,8 @@ export class PostgresStorage implements StorageBackend {
           outputTokens: n(row.output_tokens),
           cacheReadTokens: n(row.cache_read_tokens),
           cacheCreationTokens: n(row.cache_creation_tokens),
+          cacheCreation1hTokens: row.cache_creation_1h_tokens == null ? undefined : n(row.cache_creation_1h_tokens),
+          isFast: row.is_fast ?? undefined,
           costUsd: n(row.cost_usd),
           logAdapter: row.log_adapter,
           host: row.host,
@@ -643,13 +682,14 @@ export class PostgresStorage implements StorageBackend {
           `UPDATE usage_events
            SET cost_usd = $2,
                pricing_revision_id = $3,
-               cost_status = 'priced'
+               cost_status = $5,
+               cost_calculation_version = $6
            WHERE dedup_key = $1
              AND (
                cost_status IN ('unpriced', 'legacy')
                OR pricing_revision_id = ANY($4::uuid[])
              )`,
-          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
+          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds, resolved.costStatus ?? "priced", resolved.costCalculationVersion ?? "cost-v1"],
         );
         if (update.rowCount === 1) {
           if (row.cost_status === "legacy") repricedLegacy += 1;
@@ -694,6 +734,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(output_tokens),0) AS output,
               COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
               COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -790,6 +831,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id)  AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -812,6 +854,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id)  AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -920,6 +963,7 @@ export class PostgresStorage implements StorageBackend {
                 COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost,
                 COUNT(DISTINCT session_id) AS sessions,
                 COALESCE(SUM(tokens), 0) AS tokens,
+                COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
                 COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -957,6 +1001,7 @@ export class PostgresStorage implements StorageBackend {
          SELECT 'model' AS dimension, model AS key, period,
                 COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost,
                 SUM(tokens) AS tokens,
+                COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
                 COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -1053,6 +1098,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COUNT(*)                               AS events,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -1125,6 +1171,7 @@ export class PostgresStorage implements StorageBackend {
                   COALESCE(SUM(e.cost_usd) FILTER (WHERE e.cost_status <> 'unpriced'),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'estimated') AS estimated_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'priced') AS priced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'unpriced') AS unpriced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'legacy') AS legacy_events
@@ -1135,6 +1182,7 @@ export class PostgresStorage implements StorageBackend {
                   COALESCE(SUM(e.cost_usd) FILTER (WHERE e.cost_status <> 'unpriced'),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'estimated') AS estimated_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'priced') AS priced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'unpriced') AS unpriced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'legacy') AS legacy_events
@@ -1156,6 +1204,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id) AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events

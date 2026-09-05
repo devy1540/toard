@@ -27,17 +27,17 @@ test("calculate 모드는 제공값 무시", () => {
   assert.equal(c, 3);
 });
 
-test("캐시 fallback: 미제공 모델은 생성 input×1.25 / 읽기 input×0.1", () => {
-  const m: PricingMap = new Map([["m", { inputPerM: 10, outputPerM: 20 }]]);
+test("Claude의 문서화된 캐시 fallback은 생성 input×1.25 / 읽기 input×0.1", () => {
+  const m: PricingMap = new Map([["claude-test", { inputPerM: 10, outputPerM: 20 }]]);
   // read: 1M×(10×0.1)/1e6=1, create: 1M×(10×1.25)/1e6=12.5
-  const c = resolveCost({ model: "m", inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000, cacheCreationTokens: 1_000_000, pricing: m });
+  const c = resolveCost({ model: "claude-test", inputTokens: 0, outputTokens: 0, cacheReadTokens: 1_000_000, cacheCreationTokens: 1_000_000, pricing: m });
   assert.equal(c, 13.5);
 });
 
 test("캐시생성 5m/1h 차등: 1h=input×2, 5m=cacheCreate(§리스크 B)", () => {
-  const m: PricingMap = new Map([["m", { inputPerM: 10, outputPerM: 20 }]]);
+  const m: PricingMap = new Map([["claude-test", { inputPerM: 10, outputPerM: 20 }]]);
   const cc = (creation: number, oneH: number) =>
-    resolveCost({ model: "m", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: creation, cacheCreation1hTokens: oneH, pricing: m });
+    resolveCost({ model: "claude-test", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: creation, cacheCreation1hTokens: oneH, pricing: m });
   // 전량 1h: 1M×(10×2)/1e6 = 20
   assert.equal(cc(1_000_000, 1_000_000), 20);
   // 전량 5m: 1M×(10×1.25)/1e6 = 12.5
@@ -49,17 +49,17 @@ test("캐시생성 5m/1h 차등: 1h=input×2, 5m=cacheCreate(§리스크 B)", ()
 });
 
 test("캐시생성 1h 미제공(구 클라·OTLP)이면 전량 5m — 종전 동작 불변", () => {
-  const m: PricingMap = new Map([["m", { inputPerM: 10, outputPerM: 20 }]]);
-  const withZero = resolveCost({ model: "m", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 1_000_000, cacheCreation1hTokens: 0, pricing: m });
-  const without = resolveCost({ model: "m", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 1_000_000, pricing: m });
+  const m: PricingMap = new Map([["claude-test", { inputPerM: 10, outputPerM: 20 }]]);
+  const withZero = resolveCost({ model: "claude-test", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 1_000_000, cacheCreation1hTokens: 0, pricing: m });
+  const without = resolveCost({ model: "claude-test", inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 1_000_000, pricing: m });
   assert.equal(withZero, without);
   assert.equal(without, 12.5); // 전량 5m = 1M×(10×1.25)/1e6
 });
 
-test("200k tiered: 처음 200k 기본가 + 초과분 차등가", () => {
-  // 300k input: 200k×15 + 100k×30, /1e6 = 6
+test("200k context tier applies the selected rate to all input tokens", () => {
+  // 300k input at $30/M = $9; graduated $6 pricing is incorrect.
   const c = resolveCost({ ...base, model: "claude-opus", inputTokens: 300_000 });
-  assert.equal(c, (200_000 * 15 + 100_000 * 30) / 1e6);
+  assert.equal(c, (300_000 * 30) / 1e6);
 });
 
 test("fast 배수 적용", () => {
@@ -141,7 +141,7 @@ test("resolveCostAt은 codex-auto-review를 사용 날짜의 최신 Codex 모델
     cacheCreationTokens: 0,
     schedule,
     mode: "calculate",
-  }), { costUsd: 4, pricingRevisionId: "gpt-5.4-revision", status: "priced" });
+  }), { costUsd: 4, pricingRevisionId: "gpt-5.4-revision", status: "estimated" });
 
   assert.deepEqual(resolveCostAt({
     model: "codex-auto-review",
@@ -152,7 +152,7 @@ test("resolveCostAt은 codex-auto-review를 사용 날짜의 최신 Codex 모델
     cacheCreationTokens: 0,
     schedule,
     mode: "calculate",
-  }), { costUsd: 5, pricingRevisionId: "gpt-5.5-revision", status: "priced" });
+  }), { costUsd: 5, pricingRevisionId: "gpt-5.5-revision", status: "estimated" });
 });
 
 test("resolveCostAt은 모델이 없는 과거 Codex 로그만 gpt-5로 제한 해석한다", () => {
@@ -177,7 +177,7 @@ test("resolveCostAt은 모델이 없는 과거 Codex 로그만 gpt-5로 제한 �
     ...baseArgs,
     providerKey: "codex",
     logAdapter: "codex",
-  }), { costUsd: 2, pricingRevisionId: "gpt-5-revision", status: "priced" });
+  }), { costUsd: 2, pricingRevisionId: "gpt-5-revision", status: "estimated" });
   assert.deepEqual(resolveCostAt({
     ...baseArgs,
     providerKey: "openai",

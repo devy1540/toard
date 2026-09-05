@@ -154,7 +154,7 @@ test("Postgres usage_events는 pricing revision과 모든 cost status를 보존�
     assert.match(sql, /pricing_revision_id, cost_status/);
   }
   assert.deepEqual(
-    usageInserts.map(({ params }) => params.slice(-2)),
+    usageInserts.map(({ params }) => params.slice(14, 16)),
     [
       ["rev-1", "priced"],
       [null, "unpriced"],
@@ -686,7 +686,9 @@ test("Postgres 가격 복구는 unpriced와 legacy를 잠그고 revision과 mart
   assert.equal(select.params?.[6], true);
   assert.ok(update);
   assert.match(update.sql, /pricing_revision_id = \$3/);
-  assert.match(update.sql, /cost_status = 'priced'/);
+  assert.match(update.sql, /cost_status = \$5/);
+  assert.equal(update.params?.[4], "priced");
+  assert.equal(update.params?.[5], "cost-v1", "old resolver fixtures cannot claim the new calculator");
   assert.match(update.sql, /cost_status IN \('unpriced', 'legacy'\)[\s\S]*pricing_revision_id = ANY/);
   assert.ok(queries.some(({ sql }) => sql.includes("DELETE FROM usage_daily_user")));
   assert.ok(queries.some(({ sql }) => sql.includes("DELETE FROM usage_daily_team")));

@@ -27,8 +27,11 @@ jobs:
       - run: pnpm verify:release-version
       - run: pnpm test:release-version
       - run: pnpm typecheck
-      - run: pnpm build
       - run: pnpm test
+      - run: pnpm exec playwright install --with-deps chromium
+      # test:browser builds and runs the same standalone entry point as Docker,
+      # with its own loopback-only PostgreSQL fixture and synthetic identities.
+      - run: pnpm test:browser
       - run: bash -n scripts/test-k8s-manifests.sh scripts/test-k8s-secret-helpers.sh scripts/k8s-create-toard-secret.sh scripts/k8s-create-tunnel-secret.sh
       - run: ./scripts/test-k8s-secret-helpers.sh
       - run: ./scripts/test-k8s-manifests.sh all

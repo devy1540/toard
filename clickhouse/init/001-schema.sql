@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS toard.usage_events
   cost_usd              Decimal(18, 8),
   pricing_revision_id   String DEFAULT '',
   cost_status           LowCardinality(String) DEFAULT 'legacy',
+  cost_calculation_version LowCardinality(String) DEFAULT 'cost-v1',
+  cache_creation_1h_tokens Nullable(UInt64) DEFAULT NULL,
+  is_fast               Nullable(UInt8) DEFAULT NULL,
   log_adapter           LowCardinality(String) DEFAULT '',  -- logfile 경로 전용(§5.6), otel = ''
   host                  LowCardinality(String) DEFAULT '',  -- 발생 컴퓨터(호스트) 라벨, 미상 = ''
   inserted_at           DateTime64(3, 'UTC') DEFAULT now64(3)

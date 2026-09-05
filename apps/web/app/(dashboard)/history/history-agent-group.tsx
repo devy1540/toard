@@ -38,7 +38,7 @@ export function HistoryAgentGroup({
     showLess: string;
     contentUnavailable: string;
   };
-  costLabels: { partial: string; unpriced: string; legacy: string };
+  costLabels: { partial: string; unpriced: string; legacy: string; estimated?: string };
   idPrefix: string;
 }) {
   return (

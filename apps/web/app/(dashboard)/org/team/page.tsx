@@ -32,7 +32,7 @@ export const dynamic = "force-dynamic";
 type TeamStatusSearchParams = DashboardSearchParams & { team?: string };
 type TeamPeriod = ReturnType<typeof parseDashboardPeriod>;
 type TeamOption = { id: string; name: string };
-type CostLabels = { partial: string; unpriced: string; legacy: string };
+type CostLabels = { partial: string; unpriced: string; legacy: string; estimated?: string };
 
 function overviewTokens(overview: OverviewStats): number {
   return totalUsageTokens({
@@ -431,6 +431,7 @@ async function TeamDetailOverview({
     partial: dashboardT("costCoverage.partial"),
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
+    estimated: dashboardT("costCoverage.estimated"),
   };
   const legacyCount = legacyCostHintCount(overview.costCoverage);
   const costSub = legacyCount == null

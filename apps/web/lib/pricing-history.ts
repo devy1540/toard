@@ -1,4 +1,4 @@
-import { resolvePricingEntry, type ModelPricing, type PricingMap } from "@toard/pricing";
+import { pricingDetails, type PricingDetails, resolvePricingEntry, type ModelPricing, type PricingMap } from "@toard/pricing";
 import type { Pool, PoolClient } from "pg";
 import { getPool } from "./db";
 import { dayStartUtc, getOrgTimezone } from "./org-time";
@@ -16,7 +16,7 @@ const INVALID_SNAPSHOT_SKIP_AFTER_FAILURES = 2;
 const SOURCE_RETRY_BASE_MS = 60_000;
 const SOURCE_RETRY_MAX_MS = 60 * 60_000;
 const HISTORY_SOURCE = "litellm-git-history";
-const HISTORY_ALGORITHM_VERSION = 2;
+const HISTORY_ALGORITHM_VERSION = 3;
 
 export type HistoricalPricingJobState =
   | "pending"
@@ -179,6 +179,7 @@ type OpenCandidateRow = {
   fast_multiplier: string | number;
   source_commit_sha: string;
   source_committed_at: Date | string;
+  pricing_details?: PricingDetails;
 };
 
 function parseCommitRefs(value: unknown): PricingHistoryCommitRef[] {
@@ -411,13 +412,15 @@ function samePricing(left: ModelPricing, right: ModelPricing): boolean {
     (left.cacheCreatePerM ?? null) === (right.cacheCreatePerM ?? null) &&
     (left.inputAbove200kPerM ?? null) === (right.inputAbove200kPerM ?? null) &&
     (left.outputAbove200kPerM ?? null) === (right.outputAbove200kPerM ?? null) &&
-    (left.fastMultiplier ?? 1) === (right.fastMultiplier ?? 1);
+    (left.fastMultiplier ?? 1) === (right.fastMultiplier ?? 1) &&
+    JSON.stringify(pricingDetails(left)) === JSON.stringify(pricingDetails(right));
 }
 
 function candidatePricing(row: OpenCandidateRow): ModelPricing {
   const value: ModelPricing = {
     inputPerM: Number(row.input_price_per_mtok),
     outputPerM: Number(row.output_price_per_mtok),
+    ...row.pricing_details,
   };
   if (row.cache_read_price_per_mtok != null) value.cacheReadPerM = Number(row.cache_read_price_per_mtok);
   if (row.cache_creation_price_per_mtok != null) value.cacheCreatePerM = Number(row.cache_creation_price_per_mtok);
@@ -568,8 +571,8 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
            input_price_per_mtok, output_price_per_mtok,
            cache_read_price_per_mtok, cache_creation_price_per_mtok,
            input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
-           fast_multiplier, source_commit_sha, source_committed_at
-         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           fast_multiplier, source_commit_sha, source_committed_at, pricing_details
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)
          ON CONFLICT (job_id, model_id, effective_at) DO UPDATE SET
            source_model_id = EXCLUDED.source_model_id,
            input_price_per_mtok = EXCLUDED.input_price_per_mtok,
@@ -581,6 +584,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
            fast_multiplier = EXCLUDED.fast_multiplier,
            source_commit_sha = EXCLUDED.source_commit_sha,
            source_committed_at = EXCLUDED.source_committed_at,
+           pricing_details = EXCLUDED.pricing_details,
            valid_until = NULL`,
         [
           job.id,
@@ -596,6 +600,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
           value.fastMultiplier ?? 1,
           snapshot.ref.sha,
           committedAt,
+          JSON.stringify(pricingDetails(value)),
         ],
       );
       open.set(model, {
@@ -611,6 +616,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
         fast_multiplier: value.fastMultiplier ?? 1,
         source_commit_sha: snapshot.ref.sha,
         source_committed_at: committedAt,
+        pricing_details: pricingDetails(value),
       });
       seen.add(model);
     }
@@ -637,7 +643,7 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
            input_price_per_mtok, output_price_per_mtok,
            cache_read_price_per_mtok, cache_creation_price_per_mtok,
            input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
-           fast_multiplier, source_commit_sha, source_committed_at
+           fast_multiplier, source_commit_sha, source_committed_at, pricing_details
          FROM pricing_history_candidates
          WHERE job_id = $1 AND valid_until IS NULL
          FOR UPDATE`,
@@ -749,13 +755,13 @@ export class PgPricingHistoryRepository implements HistoricalPricingRepository {
              input_price_per_mtok, output_price_per_mtok,
              cache_read_price_per_mtok, cache_creation_price_per_mtok,
              input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
-             fast_multiplier, source, authoritative, source_ref, source_model_id, observed_at
+             fast_multiplier, source, authoritative, source_ref, source_model_id, observed_at, pricing_details
            )
            SELECT model_id, effective_at, valid_until,
              input_price_per_mtok, output_price_per_mtok,
              cache_read_price_per_mtok, cache_creation_price_per_mtok,
              input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
-             fast_multiplier, $2, TRUE, source_commit_sha, source_model_id, $3
+             fast_multiplier, $2, TRUE, source_commit_sha, source_model_id, $3, pricing_details
            FROM pricing_history_candidates
            WHERE job_id = $1 AND valid_until IS NOT NULL
            ORDER BY model_id, effective_at

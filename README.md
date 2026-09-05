@@ -25,13 +25,17 @@
 
 ---
 
+![Personal usage dashboard with synthetic data](site/assets/screenshots/my-usage.png)
+
+[Preview actual screens](https://dev.devy.dev/toard/demo/) — synthetic data, no account required.
+
 ## ✨ Features
 
 - **🔌 Multi-provider** — bring Claude Code, Codex, Cursor, Gemini, Qwen, and other tools into one dashboard
 - **🪶 Lightweight collection** — the shim collects usage and AI-tool activity from local session files and Cursor's minimal token hook; devices are identified automatically, idempotent deduplication is built in, and experimental OTLP push ingestion is also available
 - **🧰 AI-tool visibility** — inspect MCP and skill activity, plus plugin, skill, and MCP installation status by device, using metadata only
 - **🧭 AI utilization index** — personal dashboards provide a two-axis composite score relative to the individual, with failure recovery shown as a separate diagnostic; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
-- **💰 Accurate cost calculation** — a LiteLLM-price-based engine supports per-million, tiered 200k, cache, and fast-mode pricing with daily automatic synchronization
+- **💰 Auditable cost estimates** — estimate API-equivalent token costs with versioned calculation rules, context-dependent input/output/cache rates, daily price synchronization, and a personal calculation ledger. Inferred models and missing billing context remain visibly estimated; this is not your subscription invoice ([methodology](docs/cost-methodology.md)).
 - **👥 Organization views** — organization and team aggregates, leaderboards, personal dashboards, an admin panel, and invitation-based self-onboarding
 - **🗄️ Scalable storage** — PostgreSQL is the default single backend; ClickHouse is an opt-in option for medium and larger installations through the `StorageBackend` abstraction
 - **🔐 Flexible authentication** — choose OAuth with GitHub or Google, credentials, or open mode to fit your environment
@@ -66,9 +70,14 @@ flowchart LR
 The fastest way to try toard is the all-in-one Docker Compose stack with the app, PostgreSQL, and migrations. It pulls prebuilt images from GHCR and starts immediately:
 
 ```bash
+git clone https://github.com/devy1540/toard.git
+cd toard
 export BOOTSTRAP_SETUP_TOKEN="$(openssl rand -hex 32)"
-AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000/setup
+export AUTH_SECRET="$(openssl rand -base64 33)"
+docker compose up -d   # → http://localhost:3000/setup
 ```
+
+Keep `AUTH_SECRET` in your deployment secret store or a protected `.env` file for subsequent restarts. Never commit it.
 
 Paste `BOOTSTRAP_SETUP_TOKEN` into the one-time setup form, create the first administrator, then remove the token from the deployment environment and restart the app. The setup transaction is serialized and sign-up/OAuth user creation stays closed until an administrator exists. Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
@@ -87,7 +96,7 @@ cp .env.example .env          # Replace AUTH_SECRET and BOOTSTRAP_SETUP_TOKEN fo
 pnpm db:up                    # Local PostgreSQL and ClickHouse containers
 pnpm migrate                  # Apply the schema
 pnpm seed                     # Seed provider and pricing baselines
-pnpm dev                      # http://localhost:3000
+PRICING_AUTO_SYNC=on pnpm dev # http://localhost:3000; fetch observed pricing in development
 # Open /setup, enter BOOTSTRAP_SETUP_TOKEN, and create the first administrator
 ```
 
@@ -340,7 +349,7 @@ toard provides container deployment artifacts. See [docs/DEPLOY.md](docs/DEPLOY.
 |---|---|---|
 | Ingestion | Shim pulls local session files and sends normalized usage to `/api/v1/events`; OTLP `/api/v1/logs` is experimental | ADR-001 |
 | Storage | PostgreSQL only by default, with opt-in ClickHouse behind the `StorageBackend` abstraction | ADR-003 |
-| Cost | LiteLLM per-million, tiered 200k, cache, and fast-mode pricing | ADR-004 |
+| Cost | API-equivalent estimates; immutable rates, request-context tiers, cache and calculation-version evidence | [Methodology](docs/cost-methodology.md) |
 | Authentication | Auth.js with OAuth, credentials, and open modes using JWT sessions | ADR-007 |
 | Time zones | Display in the viewer's browser or configured user time zone; use `ORG_TIMEZONE`, an IANA identifier defaulting to UTC, for mart cutoffs and fallback | ADR-008 |
 

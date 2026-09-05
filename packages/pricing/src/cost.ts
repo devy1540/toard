@@ -1,7 +1,8 @@
-import { resolvePricing, resolvePricingRevisions } from "./aliases";
-import type { CostMode, CostResolution, PricingMap, PricingRevision, PricingSchedule } from "./types";
+import { resolvePricingEntry, resolvePricingRevisionEntry } from "./aliases";
+import type { CostMode, CostResolution, ContextPricingTier, ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "./types";
 
-const TIER_THRESHOLD = 200_000;
+export const COST_CALCULATION_VERSION = "cost-v2";
+
 const CODEX_AUTO_REVIEW_MODELS = [
   ["2026-04-23", "gpt-5.5"],
   ["2026-03-05", "gpt-5.4"],
@@ -12,109 +13,132 @@ const CODEX_AUTO_REVIEW_MODELS = [
   ["2025-08-07", "gpt-5"],
 ] as const;
 
-/**
- * 구간 누적 비용 (ccusage tiered_cost): 처음 200k 는 기본가, 초과분만 차등가.
- * 단위 per-million → /1e6.
- */
-function tiered(tokens: number, basePerM: number, abovePerM?: number): number {
-  if (abovePerM == null || tokens <= TIER_THRESHOLD) {
-    return (tokens * basePerM) / 1e6;
-  }
-  return (TIER_THRESHOLD * basePerM + (tokens - TIER_THRESHOLD) * abovePerM) / 1e6;
-}
-
 export interface ResolveCostArgs {
   model: string | null;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreationTokens: number;
-  /** cacheCreationTokens 중 1h TTL 분량(subset). 있으면 input×2 로 차등 가격(나머지 5m 는
-   *  cacheCreatePerM≈input×1.25). 미제공(구 클라·OTLP)이면 0 → 전량 5m 로 계산(종전 동작). */
   cacheCreation1hTokens?: number;
-  /** api_request 의 speed 어트리뷰트가 'fast' 일 때 */
   isFast?: boolean;
-  /** 프로바이더 제공 비용 (Claude 는 제공, Codex 는 없음) */
   providedCostUsd?: number | null;
   pricing: PricingMap;
-  /** 기본 'auto' */
   mode?: CostMode;
 }
 
-/**
- * 토큰 → USD (설계 §6.3).
- *  - display: 제공값 그대로 / auto: 제공값 없으면 계산 / calculate: 강제 계산
- *  - 캐시생성 5m = cacheCreatePerM ?? input×1.25, 1h = input×2, 캐시읽기 = input×0.1 (Anthropic 표준·ccusage 동일)
- *  - 캐시는 200k tiered 미적용(설계 §6.3 의도적 차이)
- *  - inputTokens 는 이미 캐시 제외(UsageEvent 불변식)이므로 이중계상 없음
- */
+type Rates = { input: number; output: number; cacheRead?: number; cacheCreate?: number; cacheCreate1h?: number };
+export type CostBreakdown = {
+  contextTokens: number;
+  ratesPerMillion: Rates;
+  componentsUsd: { input: number; output: number; cacheRead: number; cacheCreate: number; cacheCreate1h: number };
+  totalUsd: number;
+};
+
+/** Context tiers apply to the entire request, including output, not just the
+ * tokens beyond a threshold. inputTokens already excludes cache buckets. */
+export function calculateTokenCost(a: Omit<ResolveCostArgs, "pricing">, p: ModelPricing): CostBreakdown | null {
+  const quantities = [a.inputTokens, a.outputTokens, a.cacheReadTokens, a.cacheCreationTokens, a.cacheCreation1hTokens ?? 0];
+  if (quantities.some((value) => !Number.isSafeInteger(value) || value < 0)) return null;
+  const contextTokens = a.inputTokens + a.cacheReadTokens + a.cacheCreationTokens;
+  const anthropic = /(?:^|[./])claude[-.]/.test(a.model ?? "");
+  const gemini = /(?:^|[./])gemini-/.test(a.model ?? "");
+  const rates: Rates = {
+    input: p.inputPerM,
+    output: p.outputPerM,
+    cacheRead: p.cacheReadPerM ?? (anthropic ? p.inputPerM * 0.1 : undefined),
+    cacheCreate: p.cacheCreatePerM ?? (anthropic ? p.inputPerM * 1.25 : undefined),
+    cacheCreate1h: p.cacheCreate1hPerM ?? (anthropic ? p.inputPerM * 2 : undefined),
+  };
+  const tiers: ContextPricingTier[] = [...(p.contextTiers ?? [])];
+  if (!tiers.some((tier) => tier.aboveTokens === 200_000) && (p.inputAbove200kPerM != null || p.outputAbove200kPerM != null)) {
+    tiers.push({ aboveTokens: 200_000, inputPerM: p.inputAbove200kPerM, outputPerM: p.outputAbove200kPerM });
+  }
+  for (const tier of tiers.sort((left, right) => left.aboveTokens - right.aboveTokens)) {
+    if (contextTokens <= tier.aboveTokens) continue;
+    const previousInput = rates.input;
+    rates.input = tier.inputPerM ?? rates.input;
+    rates.output = tier.outputPerM ?? rates.output;
+    const scale = previousInput > 0 ? rates.input / previousInput : 1;
+    // Older snapshots lack explicit long-context cache rates. Only documented
+    // Claude/Gemini cache ratios may supply this fallback; other models fail closed.
+    const cacheFallback = (value: number | undefined) =>
+      scale === 1 ? value : (anthropic || gemini) && value != null ? value * scale : undefined;
+    rates.cacheRead = tier.cacheReadPerM ?? cacheFallback(rates.cacheRead);
+    rates.cacheCreate = tier.cacheCreatePerM ?? cacheFallback(rates.cacheCreate);
+    rates.cacheCreate1h = tier.cacheCreate1hPerM ?? cacheFallback(rates.cacheCreate1h);
+  }
+  const oneHour = Math.min(a.cacheCreation1hTokens ?? 0, a.cacheCreationTokens);
+  const units = { input: a.inputTokens, output: a.outputTokens, cacheRead: a.cacheReadTokens, cacheCreate: a.cacheCreationTokens - oneHour, cacheCreate1h: oneHour };
+  const multiplier = a.isFast ? p.fastMultiplier : 1;
+  // A persisted default of 1 is not evidence of a fast-mode tariff.
+  if (a.isFast && (multiplier == null || multiplier <= 1)) return null;
+  if (multiplier == null || !Number.isFinite(multiplier) || multiplier <= 0) return null;
+  const components = { input: 0, output: 0, cacheRead: 0, cacheCreate: 0, cacheCreate1h: 0 };
+  for (const key of Object.keys(units) as Array<keyof typeof units>) {
+    const rate = rates[key];
+    if (units[key] === 0) continue;
+    if (rate == null || !Number.isFinite(rate) || rate < 0) return null;
+    components[key] = units[key] * rate * multiplier / 1_000_000;
+  }
+  const totalUsd = Object.values(components).reduce((sum, value) => sum + value, 0);
+  return Number.isFinite(totalUsd) ? { contextTokens, ratesPerMillion: rates, componentsUsd: components, totalUsd } : null;
+}
+
+/** Compatibility API: callers needing confidence/provenance use explainCostAt. */
 export function resolveCost(a: ResolveCostArgs): number {
   const mode = a.mode ?? "auto";
   if (mode === "display") return a.providedCostUsd ?? 0;
   if (mode === "auto" && a.providedCostUsd != null) return a.providedCostUsd;
-
-  const p = resolvePricing(a.model, a.pricing);
-  if (!p) return 0; // 미상 모델: 0 (호출측이 경고 로깅)
-
-  const cacheCreate5mBase = p.cacheCreatePerM ?? p.inputPerM * 1.25;
-  const cacheCreate1hBase = p.inputPerM * 2; // 1h TTL 캐시생성 = input×2 (ccusage 동일)
-  const cacheReadBase = p.cacheReadPerM ?? p.inputPerM * 0.1;
-
-  // 캐시생성을 5m/1h 로 분리 가격. 1h 힌트 미제공이면 cc1h=0 → 전량 5m(종전 동작).
-  // min 으로 1h ≤ total 방어(정상 데이터는 항상 성립: total = 5m + 1h).
-  const cc1h = Math.min(a.cacheCreation1hTokens ?? 0, a.cacheCreationTokens);
-  const cc5m = a.cacheCreationTokens - cc1h;
-
-  const cost =
-    tiered(a.inputTokens, p.inputPerM, p.inputAbove200kPerM) +
-    tiered(a.outputTokens, p.outputPerM, p.outputAbove200kPerM) +
-    (a.cacheReadTokens * cacheReadBase) / 1e6 +
-    (cc5m * cacheCreate5mBase) / 1e6 +
-    (cc1h * cacheCreate1hBase) / 1e6;
-
-  return a.isFast ? cost * (p.fastMultiplier ?? 1) : cost;
+  const entry = resolvePricingEntry(a.model, a.pricing);
+  return entry ? calculateTokenCost({ ...a, model: entry.modelId }, entry.pricing)?.totalUsd ?? 0 : 0;
 }
 
-export function resolveCostAt(
-  args: Omit<ResolveCostArgs, "pricing"> & {
-    occurredAt: Date;
-    schedule: PricingSchedule;
-    providerKey?: string | null;
-    logAdapter?: string | null;
-  },
-): CostResolution {
+type ResolveAtArgs = Omit<ResolveCostArgs, "pricing"> & {
+  occurredAt: Date;
+  schedule: PricingSchedule;
+  providerKey?: string | null;
+  logAdapter?: string | null;
+};
+
+export type CostExplanation = {
+  resolution: CostResolution;
+  calculationVersion: typeof COST_CALCULATION_VERSION;
+  pricingModel: string | null;
+  modelMatch: "exact" | "normalized" | "inferred" | "unknown";
+  reason: "missing_price" | "missing_rate" | "inferred_model" | "session_context_unavailable" | "cache_ttl_unavailable" | null;
+  breakdown: CostBreakdown | null;
+};
+
+export function explainCostAt(args: ResolveAtArgs): CostExplanation {
   const occurredOn = args.occurredAt.toISOString().slice(0, 10);
   const pricingModel = args.model === "codex-auto-review"
     ? CODEX_AUTO_REVIEW_MODELS.find(([releasedOn]) => occurredOn >= releasedOn)?.[1] ?? "gpt-5"
     : args.model == null && args.providerKey === "codex" && args.logAdapter === "codex"
-      ? "gpt-5"
-      : args.model;
-  const revisions = resolvePricingRevisions(pricingModel, args.schedule);
+      ? "gpt-5" : args.model;
+  const entry = resolvePricingRevisionEntry(pricingModel, args.schedule);
   let selected: PricingRevision | undefined;
-  for (const revision of revisions ?? []) {
-    const withinValidity = revision.validUntil == null || args.occurredAt < revision.validUntil;
-    if (
-      revision.effectiveAt <= args.occurredAt &&
-      withinValidity &&
-      (!selected || revision.effectiveAt >= selected.effectiveAt)
-    ) {
-      selected = revision;
-    }
+  for (const revision of entry?.value ?? []) {
+    if (revision.effectiveAt <= args.occurredAt && (revision.validUntil == null || args.occurredAt < revision.validUntil)
+      && (!selected || revision.effectiveAt >= selected.effectiveAt)) selected = revision;
   }
-  if (!selected) {
-    return { costUsd: 0, pricingRevisionId: null, status: "unpriced" };
+  let modelMatch = pricingModel !== args.model ? "inferred" as const : entry?.match ?? "unknown" as const;
+  if (selected?.sourceModelId && modelMatch !== "inferred") {
+    modelMatch = resolvePricingRevisionEntry(args.model, new Map([[selected.sourceModelId, [selected]]]))?.match ?? "inferred";
   }
-
-  const { occurredAt: _occurredAt, schedule: _schedule, ...costArgs } = args;
+  const base = { calculationVersion: COST_CALCULATION_VERSION, pricingModel: selected?.modelId ?? null, modelMatch } as const;
+  const unpriced: CostResolution = { costUsd: 0, pricingRevisionId: null, status: "unpriced" };
+  if (!selected) return { ...base, resolution: unpriced, reason: "missing_price", breakdown: null };
+  const breakdown = calculateTokenCost({ ...args, model: selected.sourceModelId ?? selected.modelId }, selected.pricing);
+  if (!breakdown) return { ...base, resolution: { ...unpriced, pricingRevisionId: selected.id }, reason: "missing_rate", breakdown: null };
+  const reason = modelMatch === "inferred" ? "inferred_model"
+    : selected.pricing.contextScope === "session" ? "session_context_unavailable"
+    : args.cacheCreationTokens > 0 && args.cacheCreation1hTokens == null ? "cache_ttl_unavailable" : null;
   return {
-    costUsd: resolveCost({
-      ...costArgs,
-      model: pricingModel,
-      pricing: new Map([[selected.modelId, selected.pricing]]),
-      // FinalizedUsageEvent의 provenance는 선택한 revision이므로 제공 비용으로 덮지 않는다.
-      mode: "calculate",
-    }),
-    pricingRevisionId: selected.id,
-    status: "priced",
+    ...base, reason, breakdown,
+    resolution: { costUsd: breakdown.totalUsd, pricingRevisionId: selected.id, status: reason ? "estimated" : "priced" },
   };
+}
+
+export function resolveCostAt(args: ResolveAtArgs): CostResolution {
+  return explainCostAt(args).resolution;
 }

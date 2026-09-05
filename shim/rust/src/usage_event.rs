@@ -52,7 +52,9 @@ fn token_count(v: Option<&Value>, field: &str) -> Result<u64, String> {
     match v {
         Some(Value::Number(n)) => n
             .parse::<u64>()
-            .map_err(|_| format!("{field} 는 0 이상의 정수여야 합니다")),
+            .ok()
+            .filter(|count| *count <= 9_007_199_254_740_991)
+            .ok_or_else(|| format!("{field} 는 0 이상의 안전한 정수여야 합니다")),
         _ => Err(format!("{field} 는 0 이상의 정수여야 합니다")),
     }
 }
@@ -76,7 +78,7 @@ impl UsageEvent {
                 .ok_or("costUsd 는 0 이상의 숫자여야 합니다")?,
             Some(_) => return Err("costUsd 는 0 이상의 숫자여야 합니다".into()),
         };
-        Ok(UsageEvent {
+        let event = UsageEvent {
             dedup_key: req_string(v.get("dedupKey"), "dedupKey")?,
             provider_key: req_string(v.get("providerKey"), "providerKey")?,
             user_id: opt_string(v.get("userId"), "userId")?,
@@ -97,7 +99,13 @@ impl UsageEvent {
             cost_usd,
             log_adapter: opt_string(v.get("logAdapter"), "logAdapter")?,
             host: opt_string(v.get("host"), "host")?,
-        })
+        };
+        if event.cache_creation_1h_tokens > event.cache_creation_tokens {
+            return Err(
+                "cacheCreation1hTokens 는 cacheCreationTokens 를 초과할 수 없습니다".into(),
+            );
+        }
+        Ok(event)
     }
 
     pub fn to_json(&self) -> Value {
@@ -210,6 +218,16 @@ mod tests {
         let claude1h = UsageEvent::from_json(&items[3]).unwrap();
         assert_eq!(claude1h.cache_creation_tokens, 111174);
         assert_eq!(claude1h.cache_creation_1h_tokens, 111000, "1h TTL 힌트");
+    }
+
+    #[test]
+    fn rejects_unsafe_counts_and_impossible_cache_subsets() {
+        for body in [
+            r#"{"dedupKey":"d","providerKey":"p","ts":"2026-07-01T00:00:00Z","inputTokens":9007199254740992,"outputTokens":0,"cacheReadTokens":0,"cacheCreationTokens":0}"#,
+            r#"{"dedupKey":"d","providerKey":"p","ts":"2026-07-01T00:00:00Z","inputTokens":1,"outputTokens":0,"cacheReadTokens":0,"cacheCreationTokens":1,"cacheCreation1hTokens":2}"#,
+        ] {
+            assert!(UsageEvent::from_json(&json::parse(body).unwrap()).is_err());
+        }
     }
 
     #[test]

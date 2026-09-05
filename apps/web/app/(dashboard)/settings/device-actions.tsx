@@ -29,6 +29,7 @@ const DOCTOR_RESULT_CODES = [
   "target_unavailable",
   "path_misconfigured",
   "doctor_failed",
+  "queue_unavailable",
 ] as const;
 type DoctorResultCode = (typeof DOCTOR_RESULT_CODES)[number];
 

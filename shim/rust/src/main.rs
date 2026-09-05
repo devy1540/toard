@@ -32,6 +32,7 @@ mod tool_deployment;
 mod tool_event;
 mod update;
 mod usage_event;
+mod usage_queue;
 
 use std::env;
 use std::ffi::OsString;

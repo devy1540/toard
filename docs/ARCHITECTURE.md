@@ -45,7 +45,7 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 
 ### ADR-001 — 수집: 로컬 pull 기본, 앱 직접 수신
 - **결정:** shim이 로컬 원본을 읽어 `/api/v1/events`로 직접 전송한다. Collector는 두지 않는다. 서버는 개발자 머신에 접속하지 않으며 개발자 머신에서 서버로의 단방향 HTTPS만 필요하다.
-- **재전송 경계:** 원본 session 파일과 target별 cursor가 SSOT다. 전송 실패 시 해당 target cursor를 전진시키지 않고 다음 회차에 다시 구성한다. 별도 durable shim outbox는 없으므로 장애 중 원본 파일을 삭제하면 누락분을 복구할 수 없다.
+- **재전송 경계:** 정규화한 사용량은 target별 SQLite 전송 보관함에 FULL WAL commit한 뒤 source cursor를 전진시킨다. 서버 ACK를 검증한 뒤에만 해당 sequence를 정리한다. 아직 읽지 못한 로그·본문·도구 활동에는 원본 파일이 필요하다. [수집 신뢰성](collection-reliability.md) 참조.
 - **OTLP 호환:** `/api/v1/logs` 직접 수신은 experimental로 보존한다. Collector를 추가하더라도 이 선택 경로의 endpoint 앞에 둘 수 있다.
 
 ### ADR-002 — 멀티 프로바이더: shim 정규화 후 `UsageEvent[]`로 수렴
@@ -203,7 +203,7 @@ export interface StorageBackend {
   // ─ 쓰기 ─
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 일별 Mart 증분(SUM 지표) — 동일 트랜잭션 */
-  saveUsageEvents(events: UsageEvent[]): Promise<{ inserted: number; deduped: number }>;
+  saveUsageEvents(events: UsageEvent[], context?: { tokenId: string; userId: string }): Promise<{ inserted: number; deduped: number; confirmed?: number }>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: { day: string }[]): Promise<void>;
 
@@ -361,7 +361,7 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 |---|---|
 | **dedup** | shim adapter가 provider·session·원본 이벤트 위치·토큰에서 안정적인 `dedup_key`를 생성한다. 파일 재작성이나 부분 성공 뒤 전체 전송으로 폴백해도 PG=`UNIQUE`+`ON CONFLICT DO NOTHING`, CH outbox/`ReplacingMergeTree`가 중복을 흡수한다. experimental OTLP normalizer도 자체 안정 키를 만든다. |
 | **provider 식별** | **otel 경로:** OTLP `ResourceAttributes['service.name']`을 `providers.service_name_patterns`와 매칭해 `provider_key` 도출(Codex는 `codex`/`codex_cli_rs`). **logfile 경로:** shim이 어떤 어댑터로 읽었는지가 곧 `provider_key`(매칭 불필요, shim이 POST 시 명시). |
-| **재전송 원본** | 기본 경로의 SSOT는 개발자 머신의 local source file과 target별 cursor다. 별도 durable shim outbox는 없다. 실패 target은 cursor를 전진시키지 않고 다음 회차에 재구성하지만, 장애 중 원본을 삭제하면 복구할 수 없다. experimental OTLP만 프롬프트 제거 후 `raw_events`에 보조 원형을 남긴다. |
+| **재전송 원본** | 사용량은 source file → target별 SQLite FULL WAL → 서버 저장 확인 순으로 이동한다. 보관함 commit 이전에는 원본, 이후 ACK 전까지는 보관함이 재전송 근거다. 큐에 저장하지 못한 범위는 source cursor를 전진시키지 않는다. 본문과 도구 활동은 여전히 원본에서 재구성한다. experimental OTLP만 프롬프트 제거 후 `raw_events`에 보조 원형을 남긴다. |
 | **토큰·비용 권위 소스** | token count는 각 shim adapter가 정확한 로컬 이벤트를 해석한다. `user_id`는 bearer token 소유자, 비용은 서버 pricing revision이 최종 권위다. OTEL metrics endpoint는 지원하지 않는다. |
 | **Mart 갱신** | SUM 지표(토큰·비용·`request_count`)는 **당일(미마감)에만** 증분 upsert. DISTINCT(`sessions`·`active_users`)와 **마감된 과거 날짜**는 항상 `recomputeDaily`(DELETE 후 `usage_events`에서 통째 재INSERT). 재처리·지연도착이 건드린 `(user_id, day)`를 dirty로 마킹 → cron이 그 집합만 재계산. |
 | **데이터 보존(TTL)** | `raw_events`=처리 후 14일. `usage_events`=365일(파티션 드롭). Mart=영속. |
@@ -424,10 +424,13 @@ OTEL metrics endpoint는 지원하지 않는다. `doctor`가 빈 `/v1/logs`를 �
 
 ### 5.5 cursor·장애·재전송
 
-- target별 cursor는 파일 stamp(`mtime+size`), 전송 개수, dedup prefix hash를 기록한다. 전송 성공 뒤에만 해당 target 진행 위치를 전진시킨다.
-- 한 target 실패는 다른 target을 막지 않는다. 실패 target만 다음 수집에서 미전송 범위를 로컬 원본으로부터 다시 구성한다.
-- 별도 durable shim outbox는 없다. 장애 중 원본 session 파일을 삭제하면 그 target의 누락분은 복구할 수 없다.
-- 파일 재작성이나 부분 성공 때문에 전체 전송으로 폴백해도 서버 dedup이 중복을 흡수한다.
+- target별 cursor는 파일 stamp(`mtime+size`), 보관 완료 개수, dedup prefix hash를 기록한다. 사용량은 해당 관측분이 SQLite 보관함에 모두 commit된 뒤 전진한다. 파싱·읽기 오류가 있는 파일은 정상 레코드를 보내더라도 cursor를 전진시키지 않는다.
+- 먼저 대기 사용량을 전송하고 그다음 원본을 읽는다. 따라서 한 번 보관된 기록은 원본 파일이 사라져도 재전송된다. 여러 target의 큐·cursor·ACK는 독립적이다.
+- 새 서버의 `/v1/collection-status` handshake가 알려준 owner와 endpoint에 큐를 묶는다. 같은 owner의 토큰 교체만 허용하고, 기존 owner가 불명확한 대기 기록은 token fingerprint가 달라지면 보존하며 전송을 중단한다.
+- `/events`의 `inserted+deduped+expired+ignored`가 배치 크기와 일치해야 한다. 새 서버는 인증 사용자 소유의 저장 키 수 `confirmed`도 검증한다. 구버전 서버에는 기존 ACK 계약을 적용한다.
+- 저장 후 ACK가 유실되면 큐를 보존하고 재전송한다. PG unique constraint와 CH outbox dedup이 중복을 흡수한다. 큐 정리는 monotonic sequence를 사용해 오래된 응답이 새 기록을 지우지 않도록 한다.
+- 본문과 도구 활동은 이 사용량 보관함에 넣지 않는다. 별도 cursor를 사용하고 재전송에 원본이 필요하다. 기본 큐 payload 한도는 64MiB이며 한도 초과 시 해당 관측 범위의 cursor를 보존한다.
+- 인증된 빈 요청은 기기 연결만 확인한다. 첫 저장 표시는 동일 트랜잭션에서 실제로 확인한 사용자 소유 usage row 또는 durable CH outbox row에만 근거한다. 클라이언트 health 보고는 저장 증명이 아니다.
 
 ### 5.6 Experimental OTLP
 

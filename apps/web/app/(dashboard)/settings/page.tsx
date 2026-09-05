@@ -3,6 +3,8 @@ import { getLocale, getTranslations } from "next-intl/server";
 import { oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { SettingsRow } from "@/components/dashboard/settings-row";
+import { CollectionHealthPanel } from "@/components/dashboard/collection-health-panel";
+import { getCollectionHealth } from "@/lib/collection-health";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -168,7 +170,7 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [tokens, baseUrl, uiOrigin, devices, shims, inventories, controls] = await Promise.all([
+  const [tokens, baseUrl, uiOrigin, devices, shims, inventories, controls, health] = await Promise.all([
     listActiveTokens(userId),
     getPublicBaseUrl(),
     getRequestOrigin(),
@@ -176,6 +178,7 @@ async function InstallTab({ userId }: { userId: string }) {
     getHostShims(userId),
     getMyDeviceInventories(userId),
     getDeviceControlRepository().listUserDevices(userId),
+    getCollectionHealth(userId),
   ]);
   const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
@@ -215,6 +218,7 @@ async function InstallTab({ userId }: { userId: string }) {
       </Card>
 
       <TokenManagementPanel tokens={tokenRows} />
+      <CollectionHealthPanel rows={health} formatTime={(date) => fmtWhen.format(date)} />
       <DeviceList
         devices={devices}
         shims={shims}

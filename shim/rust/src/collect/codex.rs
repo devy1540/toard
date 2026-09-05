@@ -147,9 +147,9 @@ fn skill_names_from_input(input: &str) -> Vec<(String, Option<String>)> {
 fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
     let fallback = file_mtime_ms(path);
     let Ok(bytes) = std::fs::read(path) else {
-        return ParsedLog::default();
+        return ParsedLog::read_failed();
     };
-    let mut parsed = ParsedLog::default();
+    let mut parsed = ParsedLog::diagnosed();
     let mut session_id: Option<Arc<str>> = None;
     let mut model: Option<String> = None;
     let mut last_seen_total: Option<(u64, u64)> = None;
@@ -162,7 +162,7 @@ fn parse_rollout_all(path: &Path, include_content: bool, include_tools: bool) ->
     let mut positioned_content = Vec::new();
     let mut current_prompt_agent: Option<RawPromptAgent> = None;
     for (line_index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        let Some(value) = parsed.json_line(line) else {
             continue;
         };
         let Some(obj) = value.as_object() else {

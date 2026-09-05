@@ -21,6 +21,11 @@ export type LocalShimStatus = {
     id: string;
     content: "off" | "server_v1" | "e2ee_v1";
     tools: boolean;
+    usageQueue?: {
+      state: "ready" | "not_created" | "unavailable";
+      pendingEvents: number | null;
+      pendingBytes: number | null;
+    };
     delivery: {
       result: "success" | "unreachable" | "unauthorized" | "unsupported" | "disabled" | "server_error";
       lastAttemptAt: string;

@@ -41,6 +41,7 @@ import type {
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
+  UsageIngestContext,
   UsageCostCoverage,
   UsageEventReconciliationRequest,
   UsageEventReconciliationResult,
@@ -1498,9 +1499,9 @@ export class ClickHouseStorage implements StorageBackend {
     return id;
   }
 
-  async saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult> {
+  async saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
-    const res = await this.enqueueUsageEvents(events);
+    const res = await this.enqueueUsageEvents(events, context);
     if (res.inserted > 0) {
       try {
         await this.flushUsageOutbox();
@@ -1508,7 +1509,7 @@ export class ClickHouseStorage implements StorageBackend {
         console.warn(`[toard] ClickHouse outbox flush failed; queued rows retained: ${String(e)}`);
       }
     }
-    return { inserted: res.inserted, deduped: res.deduped };
+    return { inserted: res.inserted, deduped: res.deduped, ...(res.confirmed != null ? { confirmed: res.confirmed } : {}) };
   }
 
   async previewUnassignedTeamAttribution(
@@ -2532,7 +2533,7 @@ export class ClickHouseStorage implements StorageBackend {
     };
   }
 
-  private async enqueueUsageEvents(events: FinalizedUsageEvent[]): Promise<EnqueueResult> {
+  private async enqueueUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<EnqueueResult> {
     const client = await this.pg.connect();
     try {
       await client.query("BEGIN");
@@ -2580,8 +2581,15 @@ export class ClickHouseStorage implements StorageBackend {
       if (inserted === 0) {
         await client.query("DELETE FROM clickhouse_usage_batches WHERE id = $1", [batchId]);
       }
+      let confirmed: number | undefined;
+      if (context) {
+        const receipt = await client.query<{ confirmed: number }>("SELECT record_ingest_usage_receipt($1, $2, 'clickhouse', $3::text[]) AS confirmed", [
+          context.tokenId, context.userId, events.map((event) => event.dedupKey),
+        ]);
+        confirmed = Number(receipt.rows[0]?.confirmed ?? 0);
+      }
       await client.query("COMMIT");
-      return { inserted, deduped: events.length - inserted, ...(inserted > 0 ? { batchId } : {}) };
+      return { inserted, deduped: events.length - inserted, ...(confirmed != null ? { confirmed } : {}), ...(inserted > 0 ? { batchId } : {}) };
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;

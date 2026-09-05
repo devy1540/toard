@@ -1,5 +1,7 @@
 # Shim Multi-Target Fan-Out Implementation Plan
 
+> 후속 변경(2026-09-06): 이 문서의 사용량 durable outbox 제외 결정은 [수집 신뢰성](../../collection-reliability.md)에서 변경했다. 본문·도구 활동의 원본 의존은 유지한다.
+
 > 상태: 구현 완료. 아래 체크박스는 구현 전에 작성한 실행 절차이며 실시간 상태표가 아니다. 실제 수행 결과와 단계별 리뷰 근거는 문서 끝의 `구현 결과와 단계별 리뷰`에 기록한다.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (- [ ]) syntax for tracking.

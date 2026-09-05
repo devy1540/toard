@@ -14,11 +14,11 @@
 
 ## 2. 수집 신뢰성과 통제
 
-- [ ] 연결 성공과 첫 이벤트 영속 저장 완료를 분리해 표시.
+- [x] 연결 성공과 첫 이벤트 영속 저장 완료를 분리해 표시.
 - [ ] 공급자별 마지막 성공·파싱 실패·미지원·미사용 상태를 표시.
 - [ ] 서버별 공급자·프로젝트 포함/제외 설정과 전송 항목 미리보기. 원본 경로는 로컬에 유지.
-- [ ] 사용량 이벤트의 크기 제한 영속 전송 큐와 ACK 이후 정리. 장애·재시도·중복·원본 삭제 시나리오 검증.
-- [ ] 실제 브라우저에서 가입 경계, 로그인, 권한, 수집 완료, 부분 비용 표시를 검증하는 회귀 테스트와 CI.
+- [x] 사용량 이벤트의 크기 제한 영속 전송 큐와 ACK 이후 정리. 장애·재시도·중복·원본 삭제 시나리오 검증.
+- [x] 실제 브라우저에서 가입 경계, 로그인, 권한, 수집 완료, 부분 비용 표시를 검증하는 회귀 테스트와 CI.
 
 ## 3. 판단에 도움이 되는 분석과 보고
 
@@ -55,3 +55,28 @@
 - [ ] 전체 코드 변경을 검증한 후 배포할 구체적 결과를 제시하고 공개 사이트 반영 범위를 확정한다. 반영 후 demo HTTP 200을 실제 확인한다.
 - [ ] 2단계 수집 완료/건강도/범위/영속 큐 구현 및 실제 브라우저·Rust·DB 회귀 확장.
 - [ ] 3단계 원인 분해/주간 보고서/CSV/파일럿 준비 및 실제 외부 팀 검증. 연락은 명시적 승인 없이 하지 않는다.
+
+### 2단계 진행 중 (아직 미완료)
+
+- 신규 마이그레이션 1700000055: 토큰별 첫/최근 사용량 저장 확인과 provider별 collection_provider_health. LATEST_SCHEMA_VERSION=55.
+- PostgreSQL 사용량 및 ClickHouse outbox 저장 트랜잭션 안에서 `record_ingest_usage_receipt`를 호출한다. 인증/빈 요청/클라이언트 상태 주장/다른 사용자 dedup 충돌은 저장 완료 신호를 만들지 않는다. 관련 DB 통합 7건 통과.
+- 온보딩은 연결과 첫 저장을 분리하고, 연결됐지만 데이터 없는 경우 중립 대기 상태를 보여준다. 해당 실제 브라우저 시나리오 통과.
+- 메타데이터만 받는 `/api/v1/collection-status`, 개인 설정의 수집 상태 표를 추가했다. counts의 null과 0을 구분하고, raw/path/error-text 필드를 거부한다.
+- `/events`는 confirmed(인증 사용자 소유의 실제 저장 키), expired, ignored를 구분한다. collection-status handshake는 인증 userId와 eventsReceiptVersion=1을 반환한다. 이 마지막 ACK 확장 후 Node 전체 회귀는 아직 재실행 전이다.
+- Rust rusqlite 0.40.2 bundled/fallible_uint로 per-target usage-queue.sqlite3를 구현 중이다. FULL WAL, 64MiB payload 한도, destination/owner/token fingerprint binding, DB incarnation, sequence 기반 ACK, Windows 제거 호환을 위한 operation별 connection, identity+read snapshot을 사용한다. Queue 단위 6건 통과.
+- 수집 경로에 큐를 연결했다. 소스 커서는 전체 관측분이 영속 큐에 들어간 뒤에만 전진하고, 서버 확인 뒤 큐에서 제거한다. provider별 drain 및 적응형 enqueue chunk로 큰 backfill과 특정 provider 실패를 처리한다. 삭제 보정은 관련 usage 전달이 끝나기 전에 실행하지 않는다.
+- 현재 Rust collector 통합 검증을 진행 중. 원본 삭제 후 outage 재전송, partial ACK 보존, 크기 제한, target 교체/제거 회귀를 실제 fixture로 증명해야 한다.
+- 아직 필요한 작업: project/provider scope 선택 및 모든 outgoing streams에 적용, 로컬 scope preview/confirmation UI, 실제 parser 오류 수집(현재 parseErrors는 null), queue/health doctor 표출, CLI/cross-platform 검증, 3단계 전체.
+- 현재 QueueInput.project_id는 준비된 필드이고 None으로만 들어간다. 프로젝트 필터가 구현됐다고 주장하지 않는다.
+
+### 수집 저장 확인·보관함 검증 완료 (2026-09-06)
+
+- `/events` ACK 확장 후 전체 `pnpm test`: **1,343 pass / 3 skip / 0 fail**, `/tmp/toard-phase-two-suite.log`. 마지막 UI 추가 후 관련 Node 28건과 typecheck도 통과했다.
+- 새 앱 production build + 실제 브라우저 **7개 시나리오 통과**, `/tmp/toard-phase-two-browser.log`. 가입·초대·권한·부분 비용·미리보기와 연결/첫 저장 분리를 검증했다.
+- 실제 CLI/curl/loopback HTTP **2건 통과**: 장애 → 프로세스 종료 → 원본 삭제 → 서버 저장 후 ACK 유실 → 중복 없는 재전송; 손상된 줄 오류 유지 → 수정 후 정상화. `shim/rust/tests/usage_queue_cli.rs`.
+- 5개 JSON 어댑터의 실제 parse/read 오류를 수집한다. Gemini/Qwen도 usage/content를 같은 파일 snapshot에서 처리한다. 오류 파일의 cursor는 전진시키지 않으며 정상 레코드 전송은 가능하다. Cursor legacy text의 파싱 오류 수는 아직 null이다.
+- 파싱 snapshot과 이후 변경된 file stamp를 혼합하던 경계를 수정했다. 읽기 직후 추가된 suffix를 다음 회차에서 읽는 회귀 테스트가 통과했다.
+- doctor와 로컬 연결 UI에 보관함 대기 건수·bytes·읽기 실패를 추가했다. `docs/collection-reliability.md`에 ACK, 계정 교체, 한도, 본문·도구 활동의 원본 의존 및 업그레이드 순서를 명시했다.
+- Rust 전체 검사 중 doctor의 이전 설명을 요구하는 테스트 1건이 실패했고 새 계약으로 수정했다. 라이브러리 단위 260건·background helper 2건·doctor CLI 2건은 통과했으며 multi-target CLI 6건과 usage queue CLI 2건도 수정 후 모두 통과했다. Clippy(-D warnings) 통과. Windows/Linux 실행은 CI에서 아직 확인하지 않았다.
+- 남은 수집 범위: provider/project 정책, 로컬 미리보기와 승인 UI, 제한 정책을 usage/content/tools/inventory/대기열/health에 일관되게 적용. 원본 경로와 프로젝트 목록은 원격 서버에 보내지 않는다. 프로젝트를 식별하지 못한 기록은 제한 모드에서 전송하지 않는다.
+- 남은 상태 관측: 디렉터리 열기 실패와 형식 미지원/의도적 일시정지 표시를 실제 수집 동작에 연결. 위 health 항목 전체는 아직 완료 표시하지 않는다.

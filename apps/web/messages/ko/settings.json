@@ -38,7 +38,11 @@
     "inventory": {
       "missing": "AI 도구 인벤토리 미수신",
       "summary": "MCP {mcp} · 스킬 {skills} · 플러그인 {plugins}",
-      "kind": { "mcp": "MCP", "skill": "스킬", "plugin": "플러그인" }
+      "kind": {
+        "mcp": "MCP",
+        "skill": "스킬",
+        "plugin": "플러그인"
+      }
     },
     "deviceAction": {
       "collect": "수신 확인",
@@ -70,7 +74,8 @@
         "endpoint_unhealthy": "수집 서버가 정상 응답하지 않았습니다.",
         "target_unavailable": "기기에 이 서버 연결 정보가 없습니다.",
         "path_misconfigured": "AI 도구 실행 경로보다 shim 경로가 뒤에 있습니다.",
-        "doctor_failed": "기기 진단에서 문제가 발견됐습니다."
+        "doctor_failed": "기기 진단에서 문제가 발견됐습니다.",
+        "queue_unavailable": "로컬 사용량 보관함을 읽을 수 없습니다. 파일을 보존하고 기기에서 확인하세요."
       },
       "lastSync": "제어 동기화 {time}",
       "queued": {
@@ -128,6 +133,11 @@
         "collect": "로컬 수집에 실패했습니다.",
         "doctor": "로컬 진단에 실패했습니다.",
         "update": "shim 업데이트에 실패했습니다."
+      },
+      "queue": {
+        "pending": "사용량 전송 대기 {count}건 · {bytes} bytes",
+        "not_created": "첫 수집 전입니다. 로컬 보관함은 아직 생성되지 않았습니다.",
+        "unavailable": "로컬 보관함을 읽을 수 없습니다. 파일을 보존하고 진단을 실행하세요."
       }
     },
     "tokensTitle": "토큰 관리",
@@ -217,8 +227,8 @@
     "verifyTitle": "연결을 확인하고 있어요",
     "verifyDescription": "PowerShell 또는 터미널 창을 닫지 마세요.",
     "waiting": "새 컴퓨터의 첫 신호를 기다리는 중…",
-    "connectedTitle": "연결됐어요",
-    "connectedDescription": "{computer}에서 사용량을 받을 준비가 됐습니다.",
+    "connectedTitle": "첫 사용량 저장을 확인했습니다",
+    "connectedDescription": "{computer}에서 보낸 사용량이 서버에 저장되었습니다. 집계 화면 반영은 서버 상태에 따라 지연될 수 있습니다.",
     "viewUsage": "내 사용량 보러 가기",
     "connectAnother": "다른 컴퓨터도 연결하기",
     "stalledTitle": "아직 연결 신호를 받지 못했어요",
@@ -234,7 +244,12 @@
     "recoveryTitle": "Recovery Kit를 저장하고 확인하세요",
     "recoveryDescription": "같은 터미널에서 아래 명령을 실행하면 24단어 Recovery Kit 저장 화면이 이 컴퓨터에서 열립니다.",
     "recoveryPrivacy": "24단어와 암호화 키는 서버로 전송되지 않습니다. 단어 확인이 끝나야 E2EE 본문 수집이 시작됩니다.",
-    "recoveryWaiting": "로컬 Recovery Kit 확인 완료를 기다리는 중…"
+    "recoveryWaiting": "로컬 Recovery Kit 확인 완료를 기다리는 중…",
+    "waitingForUsage": "컴퓨터 연결 확인 · 첫 사용량 저장 대기",
+    "waitingForUsageDescription": "서버가 수집기의 요청을 확인했습니다. 실제 사용량이 저장되었는지 확인하고 있습니다.",
+    "connectedEmptyTitle": "연결은 확인됐고 사용량은 아직 없습니다",
+    "connectedEmptyDescription": "컴퓨터 연결과 사용량 저장은 별도로 확인합니다. 지원하는 AI 도구를 사용한 뒤 다시 확인하세요. 기존 사용 기록이 있다면 수집기 상태를 확인해 주세요.",
+    "checkUsageAgain": "사용량 저장 다시 확인"
   },
   "mfa": {
     "passkeyTitle": "패스키 보안",
@@ -328,5 +343,38 @@
     "defaultView": "대시보드 뷰",
     "view_overview": "개요",
     "view_classic": "클래식"
+  },
+  "health": {
+    "title": "수집 상태",
+    "description": "서버에 저장된 사용량과 수집기가 보고한 상태를 구분해 보여줍니다. 기록 없음은 AI를 사용하지 않았다는 뜻이 아닙니다.",
+    "empty": "아직 저장 확인이나 수집기 상태 보고가 없습니다.",
+    "computer": "컴퓨터",
+    "provider": "도구",
+    "state": "최근 보고 상태",
+    "lastStored": "마지막 서버 저장",
+    "lastReport": "상태 보고 시각",
+    "parsed": "읽은 사용 기록",
+    "failures": "파싱 오류",
+    "pending": "전송 대기",
+    "unnamed": "이름 없는 컴퓨터",
+    "noReceipt": "아직 저장 확인 없음",
+    "states": {
+      "ok": "수집 실행 완료",
+      "no_records": "이번 확인에서 새 기록 없음",
+      "error": "수집 문제",
+      "unsupported": "형식 미지원",
+      "paused": "수집 일시 중지",
+      "unknown": "상태 보고 없음"
+    },
+    "errors": {
+      "read_failed": "로컬 기록을 읽지 못했습니다.",
+      "parse_failed": "일부 기록의 형식을 읽지 못했습니다.",
+      "queue_full": "로컬 전송 보관함이 가득 찼습니다.",
+      "transport_failed": "서버 전송에 실패했습니다.",
+      "unsupported_schema": "현재 수집기가 지원하지 않는 형식입니다.",
+      "unknown": "수집기에서 문제를 보고했습니다."
+    },
+    "scanned": "파일 {count}개 확인",
+    "stale": "최근 상태 보고가 없어 현재 상태는 확인이 필요합니다."
   }
 }

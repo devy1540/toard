@@ -209,7 +209,7 @@ test("events 경로는 expired를 저장하지 않고 dedup 결과와 expired를
   }));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { inserted: 0, deduped: 1, expired: 1 });
+  assert.deepEqual(await response.json(), { inserted: 0, deduped: 1, expired: 1, ignored: 0, confirmed: 0 });
   assert.equal(saved.length, 1);
   assert.equal(saved[0]?.length, 1);
   assert.equal(saved[0]?.[0]?.dedupKey, "accepted");
@@ -241,7 +241,7 @@ test("events 경로는 logfile이 아닌 provider를 기존처럼 저장하지 �
   }));
 
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { inserted: 0, deduped: 0, expired: 0 });
+  assert.deepEqual(await response.json(), { inserted: 0, deduped: 0, expired: 0, ignored: 1, confirmed: 0 });
   assert.equal(saveCalls, 0);
 });
 
@@ -446,7 +446,7 @@ test("events와 logs는 chunked 4MiB overflow를 취소하고 exact boundary를 
     const exact = streamingRequest(path, [exactBody]);
     const exactResponse = await handler(exact.request);
     assert.equal(exactResponse.status, 200, path);
-    assert.deepEqual(await exactResponse.json(), { inserted: 0, deduped: 0, expired: 0 }, path);
+    assert.deepEqual(await exactResponse.json(), { inserted: 0, deduped: 0, expired: 0, ...(path === "events" ? { ignored: 0, confirmed: 0 } : {}) }, path);
   }
 });
 

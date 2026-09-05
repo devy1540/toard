@@ -733,6 +733,13 @@ fn status_response(target: &Target, session: String) -> Response {
             "lastSuccessAt": status.last_success_at,
         })
     });
+    let queue = match crate::usage_queue::read_status(&target.state_dir) {
+        Ok(Some(status)) => {
+            json!({ "state": "ready", "pendingEvents": status.records, "pendingBytes": status.bytes })
+        }
+        Ok(None) => json!({ "state": "not_created", "pendingEvents": null, "pendingBytes": null }),
+        Err(_) => json!({ "state": "unavailable", "pendingEvents": null, "pendingBytes": null }),
+    };
     let daemon = match crate::daemon::state() {
         crate::daemon::State::Unsupported { os } => {
             json!({ "installed": false, "active": false, "backend": null, "intervalSecs": null, "unsupportedOs": os })
@@ -765,6 +772,7 @@ fn status_response(target: &Target, session: String) -> Response {
                 "content": content,
                 "tools": target.credentials.collect_tools,
                 "delivery": delivery,
+                "usageQueue": queue,
             },
             "capabilities": ["collect", "doctor", "update"],
         }),

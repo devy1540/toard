@@ -1,5 +1,7 @@
 # shim 멀티 target fan-out 설계
 
+> 후속 변경(2026-09-06): 이 문서의 사용량 durable outbox 제외 결정은 [수집 신뢰성](../../collection-reliability.md)에서 변경했다. 본문·도구 활동의 원본 의존은 유지한다.
+
 ## 배경
 
 현재 shim은 한 macOS/Windows/Linux 사용자 계정에서 `~/.toard/credentials` 하나와 `~/.toard/state/cursors/` 하나만 사용한다. 따라서 설치 스크립트를 다른 toard 서버에서 다시 실행하면 기존 endpoint와 token이 덮어써지고, 하나의 cursor를 여러 서버가 공유해 같은 로컬 사용량을 두 서버에 독립적으로 전달할 수 없다.

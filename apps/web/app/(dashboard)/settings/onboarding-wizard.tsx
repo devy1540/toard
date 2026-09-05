@@ -64,10 +64,11 @@ export function OnboardingWizard({
       try {
         const status = await checkTokenConnectionAction(state.tokenId!);
         if (!active) return;
-        if (status.connected) {
-          dispatch({ type: "connected", lastHost: status.lastHost });
+        if (status.usageStored) {
+          dispatch({ type: "usage-stored", lastHost: status.lastHost });
           return;
         }
+        if (status.connected) dispatch({ type: "connected", lastHost: status.lastHost });
       } catch {
         // 일시적인 조회 실패는 2분 제한 안에서 다시 확인한다.
       }
@@ -221,15 +222,28 @@ export function OnboardingWizard({
     return (
       <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t("wizard.verifyTitle")}</h2>
-        <p className="text-muted-foreground text-sm">{t("wizard.verifyDescription")}</p>
+        <p className="text-muted-foreground text-sm">{t(state.connectionSeen ? "wizard.waitingForUsageDescription" : "wizard.verifyDescription")}</p>
         <Surface
           variant="muted"
           padding="lg"
           className="border-0 text-center text-sm"
           role="status"
         >
-          {t("wizard.waiting")}
+          {t(state.connectionSeen ? "wizard.waitingForUsage" : "wizard.waiting")}
         </Surface>
+      </WizardStep>
+    );
+  }
+
+  if (state.step === "connected-empty") {
+    return (
+      <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
+        <h2 className="text-lg font-semibold">{t("wizard.connectedEmptyTitle")}</h2>
+        <p className="text-muted-foreground text-sm">{t("wizard.connectedEmptyDescription")}</p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button onClick={() => dispatch({ type: "verify" })}>{t("wizard.checkUsageAgain")}</Button>
+          <Button asChild variant="outline"><Link href="/">{t("wizard.viewUsage")}</Link></Button>
+        </div>
       </WizardStep>
     );
   }

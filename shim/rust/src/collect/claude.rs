@@ -123,12 +123,12 @@ fn parse_transcript_all(path: &Path, include_content: bool, include_tools: bool)
     let fallback = file_mtime_ms(path);
     let agent_role = prompt_agent_role(path);
     let Ok(bytes) = std::fs::read(path) else {
-        return ParsedLog::default();
+        return ParsedLog::read_failed();
     };
-    let mut parsed = ParsedLog::default();
+    let mut parsed = ParsedLog::diagnosed();
     let mut pending: HashMap<String, usize> = HashMap::new();
     for line in bytes.split(|byte| *byte == b'\n') {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        let Some(value) = parsed.json_line(line) else {
             continue;
         };
         let Some(obj) = value.as_object() else {

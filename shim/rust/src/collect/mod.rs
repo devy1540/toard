@@ -6,6 +6,7 @@ pub mod claude;
 pub mod codex;
 pub mod cursor;
 pub mod cursor_usage;
+mod durable;
 pub mod fanout;
 pub mod gemini;
 pub mod gemini_family;
@@ -25,7 +26,8 @@ use crate::fsx;
 use crate::iso;
 use crate::targets::{Target, TargetStore};
 use crate::tool_event::{to_tool_events_body, ToolActivityKind, ToolDetection, ToolOutcome};
-use crate::usage_event::{to_events_body, UsageEvent};
+use crate::usage_event::UsageEvent;
+use crate::usage_queue::QueueInput;
 
 /// 내부 argv — wrap 실행에 편승하는 백그라운드 수집 (자동 업데이트와 동일 패턴)
 pub const SPAWN_ARG: &str = "___toard-spawn-collector";
@@ -127,12 +129,66 @@ pub struct RawToolActivity {
 
 #[derive(Debug, Clone, Default)]
 pub struct ParsedLog {
+    pub diagnostics: Option<ParseDiagnostics>,
     pub usage: Vec<RawUsage>,
     /// fork/subagent rollout에 복사되어 과거 parser가 이미 전송한 부모 사용량.
     /// 기존 dedup key를 그대로 재현해 서버 reconciliation에만 사용한다.
     pub replayed_usage: Vec<RawUsage>,
     pub content: Vec<RawContent>,
     pub tools: Vec<RawToolActivity>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ParseDiagnostics {
+    pub parse_errors: u64,
+    pub read_failed: bool,
+}
+
+impl ParsedLog {
+    fn diagnosed() -> Self {
+        Self {
+            diagnostics: Some(ParseDiagnostics::default()),
+            ..Self::default()
+        }
+    }
+
+    fn read_failed() -> Self {
+        Self {
+            diagnostics: Some(ParseDiagnostics {
+                read_failed: true,
+                ..Default::default()
+            }),
+            ..Self::default()
+        }
+    }
+
+    fn source_error(&self) -> Option<&'static str> {
+        let diagnostic = self.diagnostics.as_ref()?;
+        if diagnostic.read_failed {
+            Some("read_failed")
+        } else if diagnostic.parse_errors > 0 {
+            Some("parse_failed")
+        } else {
+            None
+        }
+    }
+
+    /// Blank lines are valid. A truncated last JSONL line remains an error until
+    /// the writer completes it; the source cursor must not skip that suffix.
+    fn json_line(&mut self, line: &[u8]) -> Option<serde_json::Value> {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            return None;
+        }
+        match serde_json::from_slice::<serde_json::Value>(line) {
+            Ok(value) => Some(value),
+            Err(_) => {
+                if let Some(diagnostic) = self.diagnostics.as_mut() {
+                    diagnostic.parse_errors = diagnostic.parse_errors.saturating_add(1);
+                }
+                None
+            }
+        }
+    }
 }
 
 pub trait LogAdapter {
@@ -144,6 +200,9 @@ pub trait LogAdapter {
         true
     }
     fn discover_files(&self) -> Vec<PathBuf>;
+    fn file_stamp(&self, path: &Path) -> Option<cursor::FileStamp> {
+        cursor::stamp(path)
+    }
     /// 파일 하나 → 사용 레코드들. 손상 파일은 빈 벡터(수집 전체를 중단시키지 않음).
     fn parse_file(&self, path: &Path) -> Vec<RawUsage>;
     /// 파일 하나 → 본문 레코드들. 기본은 없음(본문 미지원 어댑터). 손상 파일은 빈 벡터.
@@ -152,6 +211,7 @@ pub trait LogAdapter {
     }
     fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
         ParsedLog {
+            diagnostics: None,
             usage: self.parse_file(path),
             replayed_usage: Vec::new(),
             content: if include_content {
@@ -177,6 +237,7 @@ pub fn adapters() -> Vec<Box<dyn LogAdapter>> {
 struct CachedAdapter {
     key: &'static str,
     files: Vec<PathBuf>,
+    stamps: HashMap<String, cursor::FileStamp>,
     parsed: HashMap<String, ParsedLog>,
 }
 
@@ -187,6 +248,10 @@ impl LogAdapter for CachedAdapter {
 
     fn discover_files(&self) -> Vec<PathBuf> {
         self.files.clone()
+    }
+
+    fn file_stamp(&self, path: &Path) -> Option<cursor::FileStamp> {
+        self.stamps.get(&path.display().to_string()).copied()
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -256,6 +321,14 @@ fn prepare_cached_adapters(
             continue;
         }
         let files = adapter.discover_files();
+        let mut stamps = files
+            .iter()
+            .filter_map(|file| {
+                adapter
+                    .file_stamp(file)
+                    .map(|stamp| (file.display().to_string(), stamp))
+            })
+            .collect::<HashMap<_, _>>();
         let mut changed_paths = HashSet::new();
         for target in targets {
             let usage_cursor = cursor::load(&target.state_dir, adapter.key());
@@ -283,7 +356,7 @@ fn prepare_cached_adapters(
                     dry_run,
                 );
             for file in &files {
-                let Some(stamp) = cursor::stamp(file) else {
+                let Some(stamp) = stamps.get(&file.display().to_string()).copied() else {
                     continue;
                 };
                 let path = file.display().to_string();
@@ -312,11 +385,17 @@ fn prepare_cached_adapters(
         );
         let parsed = batches
             .into_iter()
-            .map(|batch| (batch.path, batch.parsed))
+            .map(|batch| {
+                // Keep the pre-read stamp with the parsed snapshot. A file may
+                // grow during parsing or while another target's HTTP call runs.
+                stamps.insert(batch.path.clone(), batch.stamp);
+                (batch.path, batch.parsed)
+            })
             .collect();
         prepared.push(Box::new(CachedAdapter {
             key: adapter.key(),
             files,
+            stamps,
             parsed,
         }));
     }
@@ -1085,6 +1164,80 @@ fn run_target(
 
     let mut failed = false;
     let mut matched = false;
+    let mut health_records = Vec::new();
+    let mut prepared_queue = if dry_run {
+        None
+    } else {
+        match durable::open(
+            target,
+            token.as_deref().expect("authenticated target"),
+            transport,
+        ) {
+            Ok(queue) => Some(queue),
+            Err(error) => {
+                diagnostics.fail(
+                    classify_transport_error(&error),
+                    format!("toard-shim: 사용량 보관함 준비 실패 — {error}"),
+                );
+                return TargetRunResult {
+                    code: 1,
+                    diagnostics,
+                };
+            }
+        }
+    };
+    let mut delivery_available = true;
+    let mut failed_providers = HashSet::new();
+    if let Some(prepared) = prepared_queue.as_mut() {
+        let pending_providers = match prepared.queue.providers() {
+            Ok(providers) => providers,
+            Err(error) => {
+                diagnostics.fail(
+                    crate::delivery::DeliveryKind::ServerError,
+                    error.to_string(),
+                );
+                return TargetRunResult {
+                    code: 1,
+                    diagnostics,
+                };
+            }
+        };
+        for provider in pending_providers {
+            if only.is_some_and(|selected| selected != provider) {
+                continue;
+            }
+            match durable::drain(
+                &mut prepared.queue,
+                target,
+                token.as_deref().unwrap(),
+                transport,
+                &provider,
+                || target_still_exists(target, global_state),
+            ) {
+                Ok(progress) if progress.superseded => {
+                    return TargetRunResult {
+                        code: 0,
+                        diagnostics,
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    let kind = classify_transport_error(&error);
+                    delivery_available = !matches!(
+                        kind,
+                        crate::delivery::DeliveryKind::Unreachable
+                            | crate::delivery::DeliveryKind::Unauthorized
+                    );
+                    failed_providers.insert(provider);
+                    failed = true;
+                    diagnostics.fail(kind, format!("toard-shim: 대기 사용량 전송 실패 — {error}"));
+                    if !delivery_available {
+                        break;
+                    }
+                }
+            }
+        }
+    }
     for adapter in prepared_adapters {
         let key = adapter.key();
         if only.is_some_and(|o| o != key) {
@@ -1112,6 +1265,8 @@ fn run_target(
 
         let mut changed = 0usize;
         let mut parsed_total = 0usize;
+        let mut parse_errors = Some(0u64);
+        let mut source_error = None;
         let mut replayed_total = 0usize;
         let mut replayed_tokens = 0u64;
         let mut events: Vec<UsageEvent> = Vec::new();
@@ -1121,7 +1276,7 @@ fn run_target(
         let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
         let mut tool_updates: Vec<(String, cursor::FileState)> = Vec::new();
         for file in &files {
-            let Some(stamp) = cursor::stamp(file) else {
+            let Some(stamp) = adapter.file_stamp(file) else {
                 continue;
             };
             let path = file.display().to_string();
@@ -1138,6 +1293,13 @@ fn run_target(
             }
             changed += 1;
             let parsed = adapter.parse_changed(file, false, tool_active);
+            parse_errors = parse_errors
+                .zip(parsed.diagnostics.as_ref())
+                .map(|(count, diagnostic)| count.saturating_add(diagnostic.parse_errors));
+            let file_error = parsed.source_error();
+            if let Some(error) = file_error {
+                source_error = Some(error);
+            }
             let file_events: Vec<UsageEvent> = parsed
                 .usage
                 .iter()
@@ -1167,7 +1329,9 @@ fn run_target(
                 .map(|event| (event.dedup_key.clone(), event))
                 .collect::<Vec<_>>();
             let plan = fanout::plan_records(&path, stamp, &cur, &keyed_events);
-            updates.extend(plan.updates);
+            if file_error.is_none() {
+                updates.extend(plan.updates);
+            }
             events.extend(plan.pending);
 
             if tool_active {
@@ -1187,15 +1351,17 @@ fn run_target(
                     previous.map_or("", |state| state.sent_hash.as_str()),
                     &tool_refs,
                 );
-                tool_updates.push((
-                    path,
-                    cursor::FileState {
-                        mtime_ms: stamp.mtime_ms,
-                        size: stamp.size,
-                        sent: tool_refs.len() as u64,
-                        sent_hash: keys_hash(&tool_refs),
-                    },
-                ));
+                if file_error.is_none() {
+                    tool_updates.push((
+                        path,
+                        cursor::FileState {
+                            mtime_ms: stamp.mtime_ms,
+                            size: stamp.size,
+                            sent: tool_refs.len() as u64,
+                            sent_hash: keys_hash(&tool_refs),
+                        },
+                    ));
+                }
                 tool_events.extend(file_tools.into_iter().skip(start));
             }
         }
@@ -1213,43 +1379,125 @@ fn run_target(
         }
 
         let mut usage_ok = true;
-        if events.is_empty() {
-            if !quiet {
-                println!(
-                    "{key}: 새 이벤트 없음 (파일 {}개, 변경 {changed}개)",
-                    files.len()
-                );
-            }
-        } else {
-            let token = token.as_deref().expect("dry_run 아니면 토큰 존재");
-            let (mut inserted, mut deduped) = (0u64, 0u64);
-            for chunk in events.chunks(CHUNK) {
-                match transport.post_events(endpoint, token, &to_events_body(chunk)) {
-                    Ok(result) => {
-                        inserted += result.inserted;
-                        deduped += result.deduped;
+        let mut queue_error_code = None;
+        if !target_still_exists(target, global_state) {
+            return TargetRunResult {
+                code: 0,
+                diagnostics,
+            };
+        }
+        let prepared = prepared_queue.as_mut().expect("non-dry-run queue");
+        let mut offset = 0;
+        while offset < events.len() {
+            let mut chunk_size = CHUNK.min(events.len() - offset);
+            loop {
+                let inputs = events[offset..offset + chunk_size]
+                    .iter()
+                    .cloned()
+                    .map(|event| QueueInput {
+                        event,
+                        project_id: None,
+                    })
+                    .collect::<Vec<_>>();
+                match prepared.queue.enqueue(&inputs) {
+                    Ok(inserted) => {
+                        if !quiet && inserted > 0 {
+                            println!(
+                                "{key}: 사용량 {inserted}건을 로컬 전송 보관함에 저장했습니다"
+                            );
+                        }
+                        offset += chunk_size;
+                        break;
+                    }
+                    Err(crate::usage_queue::QueueError::Full) if chunk_size > 1 => {
+                        chunk_size /= 2;
                     }
                     Err(error) => {
-                        diagnostics.fail(
-                            classify_transport_error(&error),
-                            format!("toard-shim: {key} 전송 실패 — {error}"),
-                        );
                         usage_ok = false;
                         failed = true;
+                        queue_error_code = Some(match error {
+                            crate::usage_queue::QueueError::Full => "queue_full",
+                            crate::usage_queue::QueueError::InvalidEvent => "parse_failed",
+                            _ => "unknown",
+                        });
+                        diagnostics.fail(
+                            crate::delivery::DeliveryKind::ServerError,
+                            format!("toard-shim: {key} 로컬 보관 실패 — {error}"),
+                        );
                         break;
                     }
                 }
             }
-            if usage_ok {
-                println!(
-                    "{key}: 이벤트 {}건 전송 (신규 {inserted} · 중복 {deduped})",
-                    events.len()
-                );
+            if !usage_ok {
+                break;
+            }
+            if delivery_available && !failed_providers.contains(key) {
+                match durable::drain(
+                    &mut prepared.queue,
+                    target,
+                    token.as_deref().unwrap(),
+                    transport,
+                    key,
+                    || target_still_exists(target, global_state),
+                ) {
+                    Ok(progress) if progress.superseded => {
+                        return TargetRunResult {
+                            code: 0,
+                            diagnostics,
+                        }
+                    }
+                    Ok(progress) => {
+                        if !quiet && progress.sent > 0 {
+                            println!(
+                                "{key}: 사용량 {}건의 서버 응답을 확인했습니다",
+                                progress.sent
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        let kind = classify_transport_error(&error);
+                        delivery_available = !matches!(
+                            kind,
+                            crate::delivery::DeliveryKind::Unreachable
+                                | crate::delivery::DeliveryKind::Unauthorized
+                        );
+                        failed_providers.insert(key.to_string());
+                        failed = true;
+                        diagnostics.fail(kind, format!("toard-shim: {key} 전송 실패 — {error}"));
+                    }
+                }
             }
         }
+        let pending = prepared.queue.pending_for(key).ok();
+        if source_error.is_some() {
+            failed = true;
+            diagnostics.fail(crate::delivery::DeliveryKind::ServerError,
+                format!("toard-shim: {key} 원본 기록 일부를 읽지 못했습니다. 해당 파일의 커서를 보존합니다"));
+        }
+        let report_error = queue_error_code.or(source_error).or_else(|| {
+            ((!delivery_available || failed_providers.contains(key)) && pending.unwrap_or(0) > 0)
+                .then_some("transport_failed")
+        });
+        let report_state = if report_error.is_some() || pending.is_none() {
+            "error"
+        } else if parsed_total == 0 && pending == Some(0) {
+            "no_records"
+        } else {
+            "ok"
+        };
+        health_records.push(serde_json::json!({
+            "providerKey": key, "state": report_state, "scannedFiles": files.len(),
+            "parsedEvents": parsed_total, "parseErrors": if changed == 0 { None } else { parse_errors }, "pendingEvents": pending,
+            "errorCode": report_error,
+        }));
+        let ready_to_reconcile = usage_ok
+            && source_error.is_none()
+            && delivery_available
+            && !failed_providers.contains(key)
+            && pending == Some(0);
 
         let mut reconciliation_complete = !reconciliation_scan;
-        if reconciliation_scan {
+        if reconciliation_scan && ready_to_reconcile {
             if replay_keys.is_empty() {
                 reconciliation_complete = true;
             } else {
@@ -1486,6 +1734,41 @@ fn run_target(
             ));
         }
     }
+    if let Some(prepared) = prepared_queue.as_ref() {
+        match prepared.queue.status() {
+            Ok(status) if !quiet && status.records > 0 => println!(
+                "전송 대기 {}건 · {} KiB",
+                status.records,
+                status.bytes.div_ceil(1024)
+            ),
+            Ok(_) => {}
+            Err(error) => {
+                failed = true;
+                diagnostics.fail(
+                    crate::delivery::DeliveryKind::ServerError,
+                    error.to_string(),
+                );
+            }
+        }
+    }
+    if prepared_queue
+        .as_ref()
+        .is_some_and(|prepared| prepared.health_supported)
+        && target_still_exists(target, global_state)
+    {
+        let safe_host = host.filter(|host| {
+            host.len() <= 255
+                && !host
+                    .chars()
+                    .any(|c| c.is_control() || c == '/' || c == '\\')
+        });
+        let report = serde_json::json!({ "schemaVersion": 1, "host": safe_host, "collectors": health_records });
+        let _ = transport.post_collection_health(
+            endpoint,
+            token.as_deref().unwrap(),
+            &report.to_string(),
+        );
+    }
     TargetRunResult {
         code: i32::from(failed),
         diagnostics,
@@ -1570,12 +1853,13 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
     // 컷오프 필터 결과도 파일 내용에 대해 결정적이라 prefix 판정이 유효하다.
     let mut changed = 0usize;
     let mut parsed_total = 0usize;
+    let mut source_failed = false;
     let mut records: Vec<RawContent> = Vec::new();
     let mut reconciliation_records: Vec<PromptAgentMetadataReconciliation> = Vec::new();
     let mut reconciliation_keys = HashSet::new();
     let mut updates: Vec<(String, cursor::FileState)> = Vec::new();
     for file in &files {
-        let Some(stamp) = cursor::stamp(file) else {
+        let Some(stamp) = adapter.file_stamp(file) else {
             continue;
         };
         let path = file.display().to_string();
@@ -1583,7 +1867,10 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
             continue;
         }
         changed += 1;
-        let mut file_records = adapter.parse_content(file);
+        let parsed = adapter.parse_changed(file, true, false);
+        let file_failed = parsed.source_error().is_some();
+        source_failed |= file_failed;
+        let mut file_records = parsed.content;
         // 백필 컷오프 — since 이전 턴은 제외(파일이 append 돼도 옛 턴은 안 보냄).
         file_records.retain(|r| r.ts_ms >= *since_ms);
         parsed_total += file_records.len();
@@ -1607,15 +1894,17 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
             prev.map_or("", |s| s.sent_hash.as_str()),
             &key_refs,
         );
-        updates.push((
-            path,
-            cursor::FileState {
-                mtime_ms: stamp.mtime_ms,
-                size: stamp.size,
-                sent: key_refs.len() as u64,
-                sent_hash: keys_hash(&key_refs),
-            },
-        ));
+        if !file_failed {
+            updates.push((
+                path,
+                cursor::FileState {
+                    mtime_ms: stamp.mtime_ms,
+                    size: stamp.size,
+                    sent: key_refs.len() as u64,
+                    sent_hash: keys_hash(&key_refs),
+                },
+            ));
+        }
         records.extend(file_records.into_iter().skip(start));
     }
 
@@ -1794,7 +2083,15 @@ fn collect_content_for(adapter: &dyn LogAdapter, context: &mut ContentRunContext
         cur.reconciliation_version = PROMPT_AGENT_METADATA_RECONCILIATION_VERSION;
     }
     cursor::save(state_dir, &cursor_key, &cur);
-    false
+    if source_failed {
+        diagnostics.fail(
+            crate::delivery::DeliveryKind::ServerError,
+            format!(
+                "toard-shim: {key} 본문 원본 일부를 읽지 못했습니다. 해당 파일의 커서를 보존합니다"
+            ),
+        );
+    }
+    source_failed
 }
 
 #[cfg(test)]
@@ -1802,6 +2099,39 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+
+    #[test]
+    fn every_json_adapter_reports_corruption_without_treating_blank_lines_as_errors() {
+        let temp = gemini_family::testutil::TempDir::new("collector-diagnostics");
+        let corrupt = temp.write("source.jsonl", "{}\n  \n{\"unfinished\":\n");
+        let empty = temp.write("empty.jsonl", "\n  \n");
+        for adapter in adapters() {
+            let parsed = adapter.parse_changed(&corrupt, false, false);
+            assert_eq!(
+                parsed.source_error(),
+                Some("parse_failed"),
+                "{}",
+                adapter.key()
+            );
+            assert_eq!(
+                parsed.diagnostics.as_ref().unwrap().parse_errors,
+                1,
+                "{}",
+                adapter.key()
+            );
+            assert!(parsed.content.is_empty());
+            let parsed = adapter.parse_changed(&empty, false, false);
+            assert_eq!(parsed.source_error(), None, "{}", adapter.key());
+            let parsed =
+                adapter.parse_changed(&empty.with_file_name("missing.jsonl"), false, false);
+            assert_eq!(
+                parsed.source_error(),
+                Some("read_failed"),
+                "{}",
+                adapter.key()
+            );
+        }
+    }
 
     struct FanoutTestAdapter {
         file: PathBuf,
@@ -1962,6 +2292,7 @@ mod tests {
     #[derive(Default)]
     struct FanoutTestTransport {
         calls: RefCell<Vec<String>>,
+        usage_bodies: RefCell<Vec<String>>,
         fail_company: Cell<bool>,
         remove_target: RefCell<Option<PathBuf>>,
         replace_target_revision: RefCell<Option<PathBuf>>,
@@ -1979,9 +2310,10 @@ mod tests {
             &self,
             endpoint: &str,
             _token: &str,
-            _body: &str,
+            body: &str,
         ) -> Result<post::PostResult, String> {
             self.calls.borrow_mut().push(endpoint.to_string());
+            self.usage_bodies.borrow_mut().push(body.to_string());
             if let Some(path) = self.remove_target.borrow_mut().take() {
                 std::fs::remove_dir_all(path).unwrap();
             }
@@ -1992,7 +2324,11 @@ mod tests {
                 Err("unreachable".into())
             } else {
                 Ok(post::PostResult {
-                    inserted: 1,
+                    inserted: serde_json::from_str::<serde_json::Value>(body)
+                        .unwrap()
+                        .as_array()
+                        .unwrap()
+                        .len() as u64,
                     ..post::PostResult::default()
                 })
             }
@@ -2088,7 +2424,91 @@ mod tests {
     }
 
     #[test]
-    fn failed_target_does_not_block_or_advance_successful_target() {
+    fn append_after_parsing_does_not_mark_unread_data_as_collected() {
+        struct AppendingAdapter {
+            file: PathBuf,
+            calls: Rc<Cell<usize>>,
+        }
+        impl LogAdapter for AppendingAdapter {
+            fn key(&self) -> &'static str {
+                "append_test"
+            }
+            fn discover_files(&self) -> Vec<PathBuf> {
+                vec![self.file.clone()]
+            }
+            fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
+                let snapshot = std::fs::read_to_string(path).unwrap();
+                self.calls.set(self.calls.get() + 1);
+                if snapshot == "1" {
+                    std::fs::write(path, "1\n2").unwrap();
+                }
+                snapshot
+                    .lines()
+                    .map(|id| RawUsage {
+                        ts_ms: 1_700_000_000_000,
+                        model: Some("fixture".into()),
+                        message_id: Some(id.into()),
+                        input_tokens: 10,
+                        ..RawUsage::default()
+                    })
+                    .collect()
+            }
+        }
+        let temp = gemini_family::testutil::TempDir::new("append-during-parse");
+        let file = temp.write("source.jsonl", "1");
+        let store = TargetStore::from_root(temp.path().join(".toard"));
+        let target = store
+            .upsert(crate::credentials::Credentials {
+                token: Some("fixture-token".into()),
+                endpoint: Some("https://fixture.example/api".into()),
+                collect_tools: false,
+                ..Default::default()
+            })
+            .unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let transport = FanoutTestTransport::default();
+        for _ in 0..2 {
+            assert_eq!(
+                run_with(
+                    &store,
+                    &transport,
+                    vec![Box::new(AppendingAdapter {
+                        file: file.clone(),
+                        calls: Rc::clone(&calls)
+                    })],
+                    Some("append_test"),
+                    false,
+                    true
+                ),
+                0
+            );
+        }
+        assert_eq!(
+            calls.get(),
+            2,
+            "the appended suffix must be parsed on the next run"
+        );
+        let events = transport
+            .usage_bodies
+            .borrow()
+            .iter()
+            .flat_map(|body| serde_json::from_str::<Vec<serde_json::Value>>(body).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 2);
+        assert_ne!(events[0]["dedupKey"], events[1]["dedupKey"]);
+        assert_eq!(
+            cursor::load(&target.state_dir, "append_test")
+                .files
+                .values()
+                .next()
+                .unwrap()
+                .sent,
+            2
+        );
+    }
+
+    #[test]
+    fn failed_target_keeps_a_durable_copy_and_recovers_after_source_deletion() {
         let root = std::env::temp_dir().join(format!(
             "toard-fanout-run-{}-{}",
             std::process::id(),
@@ -2134,9 +2554,19 @@ mod tests {
 
         assert_eq!(code, 1);
         assert_eq!(parse_calls.get(), 1);
-        assert!(cursor::load(&company.state_dir, "fanout_test")
-            .files
-            .is_empty());
+        assert_eq!(
+            cursor::load(&company.state_dir, "fanout_test").files.len(),
+            1,
+            "source progress is safe only because the failed delivery was committed locally"
+        );
+        let company_queue = crate::usage_queue::UsageQueue::open(
+            &company.state_dir,
+            crate::usage_queue::QueueIdentity::new(&company.id, None, "company-token"),
+            crate::usage_queue::DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
+        assert_eq!(company_queue.status().unwrap().records, 1);
+        drop(company_queue);
         assert_eq!(
             cursor::load(&personal.state_dir, "fanout_test").files.len(),
             1
@@ -2157,6 +2587,8 @@ mod tests {
 
         transport.fail_company.set(false);
         transport.calls.borrow_mut().clear();
+        transport.usage_bodies.borrow_mut().clear();
+        std::fs::remove_file(root.join("session.jsonl")).unwrap();
         let recovery_code = run_with(
             &store,
             &transport,
@@ -2171,8 +2603,8 @@ mod tests {
         assert_eq!(recovery_code, 0);
         assert_eq!(
             parse_calls.get(),
-            2,
-            "각 collect 실행에서 파일을 한 번만 파싱"
+            1,
+            "the missing source cannot be parsed again; recovery must use the durable queue"
         );
         assert_eq!(
             cursor::load(&company.state_dir, "fanout_test").files.len(),
@@ -2187,6 +2619,17 @@ mod tests {
             ["https://company.example/api"],
             "복구 실행은 실패했던 company suffix만 전송"
         );
+        let recovered: serde_json::Value =
+            serde_json::from_str(&transport.usage_bodies.borrow()[0]).unwrap();
+        assert_eq!(recovered[0]["inputTokens"], 10);
+        assert_eq!(recovered[0]["outputTokens"], 20);
+        let queue = crate::usage_queue::UsageQueue::open(
+            &company.state_dir,
+            crate::usage_queue::QueueIdentity::new(&company.id, None, "company-token"),
+            crate::usage_queue::DEFAULT_MAX_BYTES,
+        )
+        .unwrap();
+        assert_eq!(queue.status().unwrap().records, 0);
         let _ = std::fs::remove_dir_all(root);
     }
 

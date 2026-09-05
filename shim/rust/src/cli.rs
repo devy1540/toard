@@ -708,10 +708,21 @@ fn doctor_report(selected_endpoint: Option<&str>, service_context: bool) -> Doct
                     status.last_success_at.as_deref().unwrap_or("없음")
                 ));
                 if status.result != crate::delivery::DeliveryKind::Success {
-                    info("미전송분 재시도는 로컬 원본 세션 로그가 남아 있는 동안 가능합니다 — 장애 중 원본 로그를 삭제하면 복구할 수 없습니다");
+                    info("로컬 보관함에 저장된 사용량은 원본 로그가 없어도 재전송됩니다. 본문·도구 활동과 아직 읽지 못한 로그는 원본이 필요합니다");
                 }
             }
             None => info("최근 전송 기록 없음"),
+        }
+        match crate::usage_queue::read_status(&target.state_dir) {
+            Ok(Some(status)) => info(&format!(
+                "사용량 전송 대기: {}건 / {} bytes (서버 응답 확인 후 정리)",
+                status.records, status.bytes
+            )),
+            Ok(None) => info("사용량 보관함: 아직 생성되지 않음"),
+            Err(_) => d.fail_with(
+                "queue_unavailable",
+                "사용량 보관함을 읽을 수 없습니다. 파일을 보존하고 로컬 상태를 확인하세요",
+            ),
         }
         println!();
     }

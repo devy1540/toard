@@ -38,7 +38,11 @@
     "inventory": {
       "missing": "AI tool inventory not received",
       "summary": "{mcp} MCP · {skills} skills · {plugins} plugins",
-      "kind": { "mcp": "MCP", "skill": "Skills", "plugin": "Plugins" }
+      "kind": {
+        "mcp": "MCP",
+        "skill": "Skills",
+        "plugin": "Plugins"
+      }
     },
     "deviceAction": {
       "collect": "Check",
@@ -70,7 +74,8 @@
         "endpoint_unhealthy": "The collection server did not return a healthy response.",
         "target_unavailable": "This server connection is missing on the device.",
         "path_misconfigured": "The shim path comes after the AI tool path.",
-        "doctor_failed": "The device diagnostic found a problem."
+        "doctor_failed": "The device diagnostic found a problem.",
+        "queue_unavailable": "The local usage journal could not be read. Preserve its files and inspect the device."
       },
       "lastSync": "Control synced {time}",
       "queued": {
@@ -128,6 +133,11 @@
         "collect": "Local collection failed.",
         "doctor": "Local diagnostics failed.",
         "update": "Shim update failed."
+      },
+      "queue": {
+        "pending": "Usage awaiting delivery: {count} events · {bytes} bytes",
+        "not_created": "The local usage journal has not been created yet.",
+        "unavailable": "The local usage journal could not be read. Preserve its files and run diagnostics."
       }
     },
     "tokensTitle": "Token management",
@@ -217,8 +227,8 @@
     "verifyTitle": "Checking the connection",
     "verifyDescription": "Keep the PowerShell or terminal window open.",
     "waiting": "Waiting for the first signal from this computer…",
-    "connectedTitle": "Connected",
-    "connectedDescription": "{computer} is ready to send usage.",
+    "connectedTitle": "First usage storage confirmed",
+    "connectedDescription": "Usage from {computer} has been stored on the server. Dashboard aggregation may be delayed depending on server health.",
     "viewUsage": "View my usage",
     "connectAnother": "Connect another computer",
     "stalledTitle": "No connection signal yet",
@@ -234,7 +244,12 @@
     "recoveryTitle": "Save and verify your Recovery Kit",
     "recoveryDescription": "Run the command below in the same terminal to open the local 24-word Recovery Kit flow.",
     "recoveryPrivacy": "The 24 words and encryption key never reach the server. E2EE content collection starts only after verification.",
-    "recoveryWaiting": "Waiting for local Recovery Kit verification…"
+    "recoveryWaiting": "Waiting for local Recovery Kit verification…",
+    "waitingForUsage": "Computer connected · waiting for the first stored usage",
+    "waitingForUsageDescription": "The server received an authenticated request. We are checking that actual usage has been stored.",
+    "connectedEmptyTitle": "Connected, with no stored usage yet",
+    "connectedEmptyDescription": "Connection and usage storage are checked separately. Use a supported AI tool and check again. If you already have usage records, inspect collector health.",
+    "checkUsageAgain": "Check usage storage again"
   },
   "mfa": {
     "passkeyTitle": "Passkey security",
@@ -328,5 +343,38 @@
     "defaultView": "Dashboard view",
     "view_overview": "Overview",
     "view_classic": "Classic"
+  },
+  "health": {
+    "title": "Collection health",
+    "description": "Server-confirmed storage and collector-reported health are shown separately. No records does not mean the person did not use AI.",
+    "empty": "No stored-usage receipt or collector health report yet.",
+    "computer": "Computer",
+    "provider": "Tool",
+    "state": "Last reported state",
+    "lastStored": "Last server storage",
+    "lastReport": "Health reported at",
+    "parsed": "Usage records read",
+    "failures": "Parse errors",
+    "pending": "Pending delivery",
+    "unnamed": "Unnamed computer",
+    "noReceipt": "No storage receipt yet",
+    "states": {
+      "ok": "Collection run completed",
+      "no_records": "No new records in this check",
+      "error": "Collection problem",
+      "unsupported": "Unsupported format",
+      "paused": "Collection paused",
+      "unknown": "No health report"
+    },
+    "errors": {
+      "read_failed": "Could not read local records.",
+      "parse_failed": "Some records could not be parsed.",
+      "queue_full": "The local delivery buffer is full.",
+      "transport_failed": "Server delivery failed.",
+      "unsupported_schema": "This collector does not support the record format.",
+      "unknown": "The collector reported a problem."
+    },
+    "scanned": "{count} files checked",
+    "stale": "No recent report; current status is unknown."
   }
 }

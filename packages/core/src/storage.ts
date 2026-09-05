@@ -106,6 +106,7 @@ export interface FinalizedUsageEvent extends UsageEvent {
 export type CostEvidenceCursor = { ts: Date; dedupKey: string };
 export type CostEvidenceQuery = PeriodQuery & { before?: CostEvidenceCursor; limit?: number };
 export type CostEvidencePage = { events: FinalizedUsageEvent[]; next: CostEvidenceCursor | null };
+export type UsageIngestContext = { tokenId: string; userId: string };
 
 export interface OverviewStats {
   totalSessions: number;
@@ -267,6 +268,8 @@ export interface OrganizationDashboardData {
 export interface SaveResult {
   inserted: number;
   deduped: number;
+  /** Distinct requested keys confirmed under the authenticated owner in this transaction. */
+  confirmed?: number;
 }
 
 export type TeamAttributionPreview = {
@@ -383,7 +386,7 @@ export interface StorageBackend {
   /** OTLP 원형을 무손실 보존하고 raw id 반환 */
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
-  saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult>;
   /** 아직 팀이 없는 이벤트 중 지정 사용자·기간에 해당하는 예상 백필 규모. */
   previewUnassignedTeamAttribution(
     input: TeamAttributionRange,

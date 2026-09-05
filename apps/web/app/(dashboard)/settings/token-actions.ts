@@ -31,7 +31,7 @@ export async function checkTokenConnectionAction(
   tokenId: string,
 ): Promise<TokenConnectionStatus> {
   const userId = (await auth())?.user?.id;
-  if (!userId || !tokenId) return { connected: false, lastUsedAt: null, lastHost: null };
+  if (!userId || !tokenId) return { connected: false, usageStored: false, firstUsageStoredAt: null, lastUsageStoredAt: null, lastUsageCount: 0, lastUsedAt: null, lastHost: null };
   return getTokenConnectionStatus(userId, tokenId);
 }
 

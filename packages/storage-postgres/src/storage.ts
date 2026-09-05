@@ -35,6 +35,7 @@ import type {
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
+  UsageIngestContext,
   UsageCostCoverage,
   UsageEventReconciliationRequest,
   UsageEventReconciliationResult,
@@ -156,7 +157,7 @@ export class PostgresStorage implements StorageBackend {
     return Number(res.rows[0]!.id);
   }
 
-  async saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult> {
+  async saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
     const client = await this.pool.connect();
     try {
@@ -192,8 +193,15 @@ export class PostgresStorage implements StorageBackend {
       if (insertedUnpriced) {
         await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
       }
+      let confirmed: number | undefined;
+      if (context) {
+        const receipt = await client.query<{ confirmed: number }>("SELECT record_ingest_usage_receipt($1, $2, 'postgres', $3::text[]) AS confirmed", [
+          context.tokenId, context.userId, events.map((event) => event.dedupKey),
+        ]);
+        confirmed = Number(receipt.rows[0]?.confirmed ?? 0);
+      }
       await client.query("COMMIT");
-      return { inserted, deduped: events.length - inserted };
+      return { inserted, deduped: events.length - inserted, ...(confirmed != null ? { confirmed } : {}) };
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;

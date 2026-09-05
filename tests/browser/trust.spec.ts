@@ -116,3 +116,31 @@ test("landing and preview link to actual synthetic app screenshots without horiz
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBeTruthy();
 });
+
+test("onboarding distinguishes an authenticated connection and health report from committed usage", async ({ page, request }) => {
+  await login(page, "browser.member@example.test");
+  await page.goto("/settings?tab=install");
+  await page.getByRole("button", { name: "이 컴퓨터 연결하기", exact: true }).click();
+  await page.getByRole("button", { name: "macOS", exact: true }).click();
+  await page.getByRole("button", { name: "네, 계속할게요", exact: true }).click();
+  const command = await page.locator("pre code").first().innerText();
+  const deviceToken = command.match(/tk_[a-f0-9]{48}/)?.[0];
+  expect(Boolean(deviceToken)).toBeTruthy();
+  const headers = { Authorization: `Bearer ${deviceToken}` };
+  expect((await request.post("/api/v1/events", { headers, data: [] })).ok()).toBeTruthy();
+  const health = await request.post("/api/v1/collection-status", { headers, data: {
+    schemaVersion: 1, host: "fixture-computer", collectors: [{ providerKey: "gemini", state: "no_records", scannedFiles: 0, parsedEvents: 0, parseErrors: 0, pendingEvents: 0 }],
+  } });
+  expect(health.ok()).toBeTruthy();
+  await page.getByRole("button", { name: "명령을 실행했어요", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "컴퓨터 연결 확인" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "첫 사용량 저장을 확인했습니다" })).toHaveCount(0);
+  expect((await request.post("/api/v1/events", { headers, data: [{
+    dedupKey: `first-device-usage-${Date.now()}`, providerKey: "gemini", model: "gemini-2.5-pro",
+    ts: new Date().toISOString(), host: "fixture-computer", inputTokens: 10, outputTokens: 2, cacheReadTokens: 0, cacheCreationTokens: 0,
+  }] })).ok()).toBeTruthy();
+  await expect(page.getByRole("heading", { name: "첫 사용량 저장을 확인했습니다" })).toBeVisible();
+  await page.reload();
+  await expect(page.locator('[data-collection-health="personal"]')).toContainText("fixture-computer");
+  await expect(page.locator('[data-collection-health="personal"]')).toContainText("Gemini");
+});

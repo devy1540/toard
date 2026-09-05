@@ -126,6 +126,16 @@ export function LocalShimPanel({
                 value={status.daemon.active ? t("active") : t("inactive")}
               />
             </div>
+            {status.target.usageQueue ? (
+              <p className="text-muted-foreground text-sm" data-usage-queue={status.target.usageQueue.state}>
+                {status.target.usageQueue.state === "ready"
+                  ? t("queue.pending", {
+                    count: status.target.usageQueue.pendingEvents ?? 0,
+                    bytes: (status.target.usageQueue.pendingBytes ?? 0).toLocaleString(),
+                  })
+                  : t(`queue.${status.target.usageQueue.state}`)}
+              </p>
+            ) : null}
             <div className="flex flex-wrap gap-2">
               {(["collect", "doctor", "update"] as const).map((action) => (
                 <Button

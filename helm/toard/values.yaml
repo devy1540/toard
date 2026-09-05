@@ -24,6 +24,7 @@ replicaCount: 2
 config:
   authMode: oauth # oauth | open
   authCredentialsEnabled: true
+  authRegistrationMode: invite_only # verified_oauth enables public registration with verified OAuth only
   allowedEmailDomains: "" # 예: corp.com
   authTrustHost: true
   storageBackend: postgres # postgres | clickhouse

@@ -6,6 +6,7 @@ import { AuthPageShell } from "@/components/auth/auth-page-shell";
 import { Button } from "@/components/ui/button";
 import { hasAdminUser } from "@/lib/setup";
 import { LoginForm } from "./login-form";
+import { registrationMode } from "@/lib/registration";
 
 const PROVIDER_LABELS: Record<string, string> = { github: "GitHub", google: "Google" };
 
@@ -54,9 +55,9 @@ export default async function LoginPage() {
         <>
           <LoginForm />
           <p className="text-muted-foreground text-center text-sm">
-            {t("login.noAccount")}{" "}
+            {t(registrationMode() === "invite_only" ? "login.inviteOnly" : "login.verifiedRegistration")}{" "}
             <Link href="/signup" className="text-primary underline-offset-4 hover:underline">
-              {t("login.signupLink")}
+              {t("login.registrationHelp")}
             </Link>
           </p>
         </>

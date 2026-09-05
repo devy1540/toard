@@ -120,8 +120,8 @@ pnpm test                    # Full suite, including Docker-backed migration and
 toard consists of **one server plus a shim on each developer machine**. Collection is pushed from developers to the server, so the server never needs to connect to developer machines. The machines may be on different networks as long as **outbound HTTPS from each developer to the server** is available.
 
 1. **Deploy the server** — run the Compose stack from [Quick start](#-quick-start) at an address reachable by developers, such as an internal DNS name or IP. Create the administrator at `/setup` on first access. See the [deployment guide](docs/DEPLOY.md) for Kubernetes, Helm, and other options.
-2. **Share the link** — the administrator only needs to share the toard URL with the team.
-3. **Self-onboard** — each developer signs in, opens **Settings → Connect computer**, follows the guided installer, and waits for the connection check to complete. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
+2. **Invite members** — in Admin → Invites, choose each member’s email, role, and team and share their one-time invitation link. New installations use invitation-only registration.
+3. **Self-onboard** — each developer accepts the invitation with a password or a verified same-email GitHub/Google identity, signs in, opens **Settings → Connect computer**, follows the guided installer, and waits for the connection check to complete. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
 
 The token is sent as a bearer token, so HTTPS is required for every non-loopback deployment. Set `TOARD_PUBLIC_URL` only when the browser URL and ingestion URL differ behind a proxy; otherwise toard infers the public URL from the request host.
 
@@ -257,7 +257,7 @@ Select the mode appropriate for the organization with `AUTH_MODE`. Authenticatio
 
 | Mode | Behavior | Intended use |
 |---|---|---|
-| `oauth` (default) | GitHub/Google OAuth plus credentials-based sign-in and registration | Public or organization deployments |
+| `oauth` (default) | GitHub/Google OAuth plus credentials-based sign-in; new membership is invitation-only by default | Public or organization deployments |
 | `open` | Access without authentication as the first or configured user; **the dashboard is public** | Trusted internal networks or single-organization deployments |
 
 OAuth and credentials can be enabled together, and both appear on `/login`. Email magic links are planned.
@@ -266,11 +266,16 @@ OAuth and credentials can be enabled together, and both appear on `/login`. Emai
 
 For OAuth-only deployments (`AUTH_CREDENTIALS_ENABLED=false`), configure GitHub or Google before opening `/setup`. The form creates a passwordless administrator whose email must exactly match the provider's verified email. Remove `BOOTSTRAP_SETUP_TOKEN` after the administrator row is created; the first OAuth sign-in links only a verified same-email administrator. GitHub accepts only the verified primary email returned by the `user:email` API and Google requires `email_verified=true`. Same-email automatic linking is disabled for member rows. A headless OAuth-only admin may omit both `BOOTSTRAP_ADMIN_PASSWORD` and the browser setup token, then link the verified same-email provider directly.
 
-**Credentials** — enabled by default. Registration is available at `/signup` with optional domain gating, and passwords can be set or changed at `/settings`:
+**Registration** — `AUTH_REGISTRATION_MODE=invite_only` is the default. Administrators issue one-time invitations with an assigned email, role, and team. Password acceptance consumes the invitation atomically; verified same-email GitHub/Google registration does the same. Team membership is assigned by administrators, never by a public team picker. `/signup` explains how to join and cannot create a password account.
+
+To allow public registration, explicitly set `AUTH_REGISTRATION_MODE=verified_oauth` and configure GitHub or Google. Only a provider-verified email in `ALLOWED_EMAIL_DOMAINS` may self-register; an empty allowlist allows any verified domain. Explicit administrator invitations may include external collaborators. Existing accounts continue to sign in when the registration mode changes.
+
+**Credentials** — enabled by default for existing and invited accounts. Passwords can be set or changed at `/settings`:
 
 ```bash
 AUTH_CREDENTIALS_ENABLED=true               # Set false for OAuth only
-ALLOWED_EMAIL_DOMAINS=example.com           # Optional registration allowlist
+AUTH_REGISTRATION_MODE=invite_only          # Or verified_oauth for public verified-OAuth registration
+ALLOWED_EMAIL_DOMAINS=example.com           # Public verified-OAuth registration allowlist
 BOOTSTRAP_SETUP_TOKEN=...                   # Browser setup only; openssl rand -hex 32
 BOOTSTRAP_ADMIN_PASSWORD=...                # Credentials admin only; OAuth-only may omit
 ```

@@ -114,7 +114,7 @@ test("동일 팀은 no-op이고 존재하지 않는 팀은 rollback한다", asyn
   assert.ok(missing.calls.some((call) => call.sql === "ROLLBACK"));
 });
 
-test("관리자와 온보딩 팀 변경은 공통 소속 서비스만 사용한다", async () => {
+test("관리자는 공통 소속 서비스를 사용하고 공개 온보딩은 팀을 배정하지 않는다", async () => {
   const [admin, onboarding] = await Promise.all([
     readFile(new URL("../app/(dashboard)/admin/team-actions.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/onboarding/team/actions.ts", import.meta.url), "utf8"),
@@ -123,8 +123,8 @@ test("관리자와 온보딩 팀 변경은 공통 소속 서비스만 사용한�
   assert.match(admin, /changeUserTeam\(getPool\(\)/);
   assert.match(admin, /user_team_assignments/);
   assert.doesNotMatch(admin, /UPDATE users SET team_id/);
-  assert.match(onboarding, /changeUserTeam\(/);
-  assert.match(onboarding, /completeOnboarding:\s*true/);
+  assert.match(onboarding, /teamAssignmentByAdmin/);
+  assert.doesNotMatch(onboarding, /changeUserTeam\(|getPool\(|completeOnboarding:\s*true/);
   assert.doesNotMatch(onboarding, /UPDATE users SET team_id/);
 });
 

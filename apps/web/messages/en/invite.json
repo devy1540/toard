@@ -14,6 +14,11 @@
     "invalidInvite": "This invitation is invalid or has expired.",
     "passwordMismatch": "The passwords do not match.",
     "acceptFailed": "Failed to accept the invitation (it expired or the email is already registered).",
-    "autoLoginFailed": "Sign-up succeeded, but automatic sign-in failed. Please sign in from the sign-in page."
-  }
+    "autoLoginFailed": "Sign-up succeeded, but automatic sign-in failed. Please sign in from the sign-in page.",
+    "useOAuth": "Password acceptance is unavailable. Use a configured OAuth provider or contact your administrator.",
+    "tooManyAttempts": "Too many attempts. Try again in {seconds} seconds."
+  },
+  "descriptionAdmission": "You have been invited as {email}.",
+  "verifiedOAuth": "Use a GitHub or Google account whose verified email is exactly {email}.",
+  "continueWith": "Continue with {provider}"
 }

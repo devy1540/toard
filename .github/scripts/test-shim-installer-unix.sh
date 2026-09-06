@@ -56,6 +56,12 @@ cursor_sent_total() {
   node -e 'const fs=require("fs");const c=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));console.log(Object.values(c.files||{}).reduce((n,v)=>n+(v.sent||0),0))' "$1"
 }
 
+queued_usage_total() {
+  HOME="$HOME_DIR" CODEX_HOME="$CODEX_HOME_DIR" PATH="$DOCTOR_PATH" TOARD_INGEST_ENDPOINT="$1" \
+    "$BIN_DIR/toard-shim" scope preview --target-env |
+    node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const r=JSON.parse(s);console.log(r.providers.reduce((n,p)=>n+p.unidentifiedPending+p.projects.reduce((a,v)=>a+v.pendingRecords,0),0))})'
+}
+
 mkdir -p "$HOME_DIR/.toard/state/cursors" "$RELEASE_DIR" "$CODEX_HOME_DIR/sessions/2026/07/18"
 printf 'export PATH="before:$PATH"\n' > "$HOME_DIR/.zshrc"
 case "$(uname -s):$(uname -m)" in
@@ -165,13 +171,15 @@ cat > "$ROLLOUT" <<'EOF'
 {"timestamp":"2026-07-18T01:00:04Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10},"total_token_usage":{"input_tokens":100,"output_tokens":10}}}}
 EOF
 
-# 회사만 503: 개인 usage/content/inventory는 전진하고 회사 usage/content는 멈춘다.
+# 회사만 503: 회사 사용량도 SQLite commit 후 source cursor는 전진한다.
+# 전송 대기열은 보존하며 본문은 원본 재구성을 위한 cursor를 유지한다.
 printf '/company/\n' > "$FAILURE_CONTROL"
 if HOME="$HOME_DIR" CODEX_HOME="$CODEX_HOME_DIR" PATH="$DOCTOR_PATH" "$BIN_DIR/toard-shim" collect; then
   echo "company failure should make collect return non-zero" >&2
   exit 1
 fi
-test "$(cursor_sent_total "$COMPANY_TARGET/state/cursors/codex.json")" = 3
+test "$(cursor_sent_total "$COMPANY_TARGET/state/cursors/codex.json")" = 1
+test "$(queued_usage_total "$COMPANY_ENDPOINT")" = 1
 test "$(cursor_sent_total "$PERSONAL_TARGET/state/cursors/codex.json")" = 1
 test ! -f "$COMPANY_TARGET/state/cursors/codex-content.json"
 test "$(cursor_sent_total "$PERSONAL_TARGET/state/cursors/codex-content.json")" = 2
@@ -193,6 +201,8 @@ HOME="$HOME_DIR" CODEX_HOME="$CODEX_HOME_DIR" PATH="$DOCTOR_PATH" "$BIN_DIR/toar
 
 test "$(cursor_sent_total "$COMPANY_TARGET/state/cursors/codex.json")" = 2
 test "$(cursor_sent_total "$PERSONAL_TARGET/state/cursors/codex.json")" = 2
+test "$(queued_usage_total "$COMPANY_ENDPOINT")" = 0
+test "$(queued_usage_total "$PERSONAL_ENDPOINT")" = 0
 test "$(cursor_sent_total "$COMPANY_TARGET/state/cursors/codex-content.json")" = 4
 test "$(cursor_sent_total "$PERSONAL_TARGET/state/cursors/codex-content.json")" = 4
 test "$(cursor_sent_total "$COMPANY_TARGET/state/cursors/codex-tools.json")" = 1
@@ -215,7 +225,11 @@ const companyEvents = by("company", "/v1/events");
 const personalEvents = by("personal", "/v1/events");
 assert.ok(companyEvents.length >= 2);
 assert.ok(personalEvents.length >= 2);
-assert.notEqual(companyEvents.at(-1).bodyHash, personalEvents.at(-1).bodyHash);
+// Recovery can send the queued prefix separately before the new suffix.
+// Compare accepted logical records, not incidental batch shapes.
+const accepted = records => new Set(records.filter(record => record.accepted).flatMap(record => record.eventKeyHashes));
+assert.equal(accepted(companyEvents).size, 2);
+assert.deepEqual([...accepted(companyEvents)].sort(), [...accepted(personalEvents)].sort());
 assert.ok(by("company", "/v1/prompts").length >= 2);
 assert.ok(by("personal", "/v1/prompts").length >= 2);
 assert.ok(by("company", "/v1/tool-events").length >= 1);

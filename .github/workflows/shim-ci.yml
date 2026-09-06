@@ -157,3 +157,5 @@ jobs:
           sh -n shim/install.sh
           sh -n shim/fake-claude.sh
           sh -n .github/scripts/test-shim-installer-unix.sh
+      - name: installer HTTP fixture
+        run: node --test .github/scripts/shim-e2e-server.test.mjs

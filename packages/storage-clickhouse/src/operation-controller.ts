@@ -14,7 +14,7 @@ export interface ClickHouseOperationRunner {
   run<T>(
     operation: string,
     action: () => Promise<T>,
-    options?: { signal?: AbortSignal; retryTransient?: boolean },
+    options?: { signal?: AbortSignal; retryTransient?: boolean; retryOverload?: boolean },
   ): Promise<T>;
 }
 
@@ -40,6 +40,7 @@ export class ClickHouseOverloadError extends Error {
 type OperationOptions = {
   signal?: AbortSignal;
   retryTransient?: boolean;
+  retryOverload?: boolean;
 };
 
 type AdmissionLease = {
@@ -118,7 +119,7 @@ export class ClickHouseOperationController implements ClickHouseOperationRunner 
       } catch (error) {
         if (isOverloadError(error)) {
           overloadFailures += 1;
-          if (overloadFailures < OVERLOAD_ATTEMPTS) {
+          if (options.retryOverload !== false && overloadFailures < OVERLOAD_ATTEMPTS) {
             await this.sleep(100 + Math.floor(this.random() * 200));
             continue;
           }

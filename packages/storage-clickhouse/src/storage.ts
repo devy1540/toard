@@ -8,6 +8,7 @@ import type {
   BucketOptions,
   CostEvidenceQuery,
   CostEvidencePage,
+  CostReportScope,
   DailyPoint,
   DeviceInfo,
   FinalizedUsageEvent,
@@ -53,6 +54,7 @@ import type {
   UtilizationUsageDay,
   UtilizationUsageQuery,
 } from "@toard/core";
+import { assertCostReportScope } from "@toard/core";
 import {
   addLocalCalendarDays,
   buildUserInsightComparison,
@@ -3806,25 +3808,73 @@ GROUP BY provider_key ORDER BY tokens DESC`;
   }
 
   async getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage> {
+    return this.readCostEvidence({ kind: "user", userId }, query, 100);
+  }
+
+  private reportFilter(scope: CostReportScope, query: PeriodQuery) {
+    assertCostReportScope(scope);
+    return {
+      where: `ts >= {from:DateTime64(3)} AND ts < {to:DateTime64(3)}
+        ${scope.kind === "user" ? "AND user_id = {uid:String}" : scope.kind === "team" ? "AND team_id = {team:String}" : ""}
+        ${query.providerKey ? "AND provider_key = {provider:String}" : ""}`,
+      params: { from: chTs(query.from), to: chTs(query.to),
+        ...(scope.kind === "user" ? { uid: scope.userId } : scope.kind === "team" ? { team: scope.teamId } : {}),
+        ...(query.providerKey ? { provider: query.providerKey } : {}) },
+    };
+  }
+
+  async getReportPricingRevisionIds(scope: CostReportScope, query: PeriodQuery): Promise<string[]> {
+    const filter = this.reportFilter(scope, query);
+    const rows = await this.queryJson<{ pricing_revision_id: string }>(`SELECT DISTINCT pricing_revision_id FROM usage_events FINAL WHERE ${filter.where} AND pricing_revision_id != ''`, filter.params, { optimize_move_to_prewhere_if_final: 0 });
+    return rows.map(row => row.pricing_revision_id);
+  }
+
+  async consumeReportCostEvidence(scope: CostReportScope, query: PeriodQuery, consume: (events: FinalizedUsageEvent[]) => void | Promise<void>): Promise<void> {
     await this.ensureSchema();
-    const limit = Math.max(1, Math.min(100, Math.trunc(query.limit ?? 50)));
+    const filter = this.reportFilter(scope, query);
+    // Do not retry after delivering a partial stream to an accumulator.
+    await this.operationRunner.run("report_cost_evidence", async () => {
+      const result = await this.ch.query({ query: `SELECT dedup_key, user_id, provider_key, model, ts, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, is_fast,
+          cost_usd, cost_status, pricing_revision_id, cost_calculation_version,
+          '' AS session_id, '' AS host, '' AS log_adapter
+        FROM usage_events FINAL WHERE ${filter.where} ORDER BY ts DESC, dedup_key DESC`,
+        query_params: filter.params, format: "JSONEachRow", clickhouse_settings: { optimize_move_to_prewhere_if_final: 0 } });
+      try {
+        for await (const rows of result.stream<OutboxRow>()) await consume(rows.map(row => this.costEvidenceEvent(row.json())));
+      } finally { result.close(); }
+    }, { retryTransient: false, retryOverload: false });
+  }
+
+  private async readCostEvidence(scope: CostReportScope, query: CostEvidenceQuery, maxLimit: number): Promise<CostEvidencePage> {
+    assertCostReportScope(scope);
+    await this.ensureSchema();
+    const limit = Number.isFinite(query.limit) ? Math.max(1, Math.min(maxLimit, Math.trunc(query.limit!))) : 50;
     const rows = await this.queryJson<OutboxRow>(
-      `SELECT dedup_key, provider_key, session_id, model, ts, input_tokens, output_tokens,
+      `SELECT dedup_key, user_id, provider_key, session_id, model, ts, input_tokens, output_tokens,
               cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, is_fast,
               cost_usd, cost_status, pricing_revision_id, cost_calculation_version, log_adapter, host
        FROM usage_events FINAL
-       WHERE user_id = {uid:String} AND ts >= {from:DateTime64(3)} AND ts < {to:DateTime64(3)}
+       WHERE ts >= {from:DateTime64(3)} AND ts < {to:DateTime64(3)}
+         ${scope.kind === "user" ? "AND user_id = {uid:String}" : scope.kind === "team" ? "AND team_id = {team:String}" : ""}
          ${query.providerKey ? "AND provider_key = {provider:String}" : ""}
          ${query.before ? "AND (ts, dedup_key) < ({cursor_ts:DateTime64(3)}, {cursor_key:String})" : ""}
        ORDER BY ts DESC, dedup_key DESC LIMIT {limit:UInt32}`,
       {
-        uid: userId, from: chTs(query.from), to: chTs(query.to), limit: limit + 1,
+        ...(scope.kind === "user" ? { uid: scope.userId } : scope.kind === "team" ? { team: scope.teamId } : {}),
+        from: chTs(query.from), to: chTs(query.to), limit: limit + 1,
         ...(query.providerKey ? { provider: query.providerKey } : {}),
         ...(query.before ? { cursor_ts: chTs(query.before.ts), cursor_key: query.before.dedupKey } : {}),
-      },
+      }, { optimize_move_to_prewhere_if_final: 0 },
     );
-    const events: FinalizedUsageEvent[] = rows.slice(0, limit).map((row) => ({
-      dedupKey: row.dedup_key, providerKey: row.provider_key, userId,
+    const events = rows.slice(0, limit).map(row => this.costEvidenceEvent(row));
+    const last = events.at(-1);
+    return { events, next: rows.length > limit && last ? { ts: last.ts, dedupKey: last.dedupKey } : null };
+  }
+
+  private costEvidenceEvent(row: OutboxRow): FinalizedUsageEvent {
+    return {
+      dedupKey: row.dedup_key, providerKey: row.provider_key, userId: row.user_id || null,
       sessionId: row.session_id || null, model: row.model || null,
       ts: row.ts instanceof Date ? row.ts : chDate(row.ts),
       inputTokens: n(row.input_tokens), outputTokens: n(row.output_tokens),
@@ -3834,9 +3884,7 @@ GROUP BY provider_key ORDER BY tokens DESC`;
       costUsd: n(row.cost_usd), costStatus: row.cost_status,
       pricingRevisionId: row.pricing_revision_id || null, costCalculationVersion: row.cost_calculation_version ?? "cost-v1",
       logAdapter: row.log_adapter || null, host: row.host || null,
-    }));
-    const last = events.at(-1);
-    return { events, next: rows.length > limit && last ? { ts: last.ts, dedupKey: last.dedupKey } : null };
+    };
   }
 
   // 한 세션의 사용 이벤트(ts ASC) — 히스토리 상세의 턴별 매칭용.

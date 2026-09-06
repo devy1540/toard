@@ -1,4 +1,6 @@
 import { Clock3, Inbox, Lightbulb } from "lucide-react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { InsightComparisonChart } from "@/components/charts/insight-comparison-chart";
 import { DashboardToolbar } from "@/components/dashboard/dashboard-toolbar";
@@ -216,6 +218,7 @@ export default async function InsightsPage({
       </header>
 
       <PricingNotice coverage={comparisonCoverage} />
+      <Button asChild variant="outline"><Link href="/reports">{navT("reports")}</Link></Button>
 
       <UtilizationIndexCard result={utilization} />
 

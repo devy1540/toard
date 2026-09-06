@@ -10,6 +10,15 @@ import {
 const nextTurn = (): Promise<void> =>
   new Promise((resolve) => setImmediate(resolve));
 
+test("stream consumers can forbid overload retries after rows have been observed", async () => {
+  let calls = 0;
+  const controller = new ClickHouseOperationController({ log: () => {}, sleep: async () => { throw new Error("unexpected retry"); } });
+  await assert.rejects(controller.run("stream", async () => {
+    calls++; throw new ClickHouseError({ code: "202", type: "TOO_MANY_SIMULTANEOUS_QUERIES", message: "fixture" });
+  }, { retryOverload: false }), ClickHouseOverloadError);
+  assert.equal(calls, 1);
+});
+
 type OperationControllerModule = typeof import("./operation-controller");
 
 function importControllerCopy(copy: string): Promise<OperationControllerModule> {

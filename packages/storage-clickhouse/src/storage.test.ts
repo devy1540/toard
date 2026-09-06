@@ -3426,11 +3426,12 @@ test("ClickHouse client 호출과 readiness ping은 operation controller를 거�
   const source = readFileSync(new URL("./storage.ts", import.meta.url), "utf8");
   const clientCalls = [...source.matchAll(/this\.ch\.(?:query|command|insert)\(/g)];
   const guardedCalls = [...source.matchAll(
-    /this\.operationRunner\.run\(\s*(?:"[^"]+"|operation),\s*(?:async\s*)?\(\)\s*=>\s*this\.ch\.(?:query|command|insert)\(/g,
+    /this\.operationRunner\.run\(\s*(?:"[^"]+"|operation),\s*(?:async\s*)?\(\)\s*=>\s*(?:\{\s*const result = await\s*)?this\.ch\.(?:query|command|insert)\(/g,
   )];
 
   assert.ok(clientCalls.length > 0);
   assert.equal(guardedCalls.length, clientCalls.length);
+  assert.match(source, /report_cost_evidence[\s\S]*?result\.stream<OutboxRow>[\s\S]*?result\.close\(\)[\s\S]*?retryTransient: false, retryOverload: false/);
   assert.equal([...source.matchAll(/retryTransient:\s*true/g)].length, 3);
   assert.match(
     source,

@@ -36,6 +36,8 @@
 - **🧰 AI-tool visibility** — inspect MCP and skill activity, plus plugin, skill, and MCP installation status by device, using metadata only
 - **🧭 AI utilization index** — personal dashboards provide a two-axis composite score relative to the individual, with failure recovery shown as a separate diagnostic; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
 - **💰 Auditable cost estimates** — estimate API-equivalent token costs with versioned calculation rules, context-dependent input/output/cache rates, daily price synchronization, and a personal calculation ledger. Inferred models and missing billing context remain visibly estimated; this is not your subscription invoice ([methodology](docs/cost-methodology.md)).
+- **📄 Weekly reports** — completed-week comparisons with reconciled usage/model/cache/rate contributions, explicit missing evidence, role-scoped team and organization views, and formula-safe CSV exports ([methodology](docs/weekly-reports.md)).
+- **🎛️ Local collection scope** — review projects on the device before delivery; excluded records stay out of that server's usage, content, tool activity, and pending-event delivery.
 - **👥 Organization views** — organization and team aggregates, leaderboards, personal dashboards, an admin panel, and invitation-based self-onboarding
 - **🗄️ Scalable storage** — PostgreSQL is the default single backend; ClickHouse is an opt-in option for medium and larger installations through the `StorageBackend` abstraction
 - **🔐 Flexible authentication** — choose OAuth with GitHub or Google, credentials, or open mode to fit your environment
@@ -362,3 +364,7 @@ Contributions are always welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 ## 📄 License
 
 [MIT](LICENSE)
+
+## Pilot and upgrade checks
+
+Use the [trust roadmap upgrade checklist](docs/trust-roadmap-upgrade.md) before deploying the new onboarding and collection flow. Publish the shim with `collection-scope-v1` support before enabling the web review installer. The [pilot guide](docs/pilot/README.md) defines a two-week, 3–5-team evaluation; its targets are proposed acceptance criteria, not results from real teams.

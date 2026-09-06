@@ -106,6 +106,14 @@ export interface FinalizedUsageEvent extends UsageEvent {
 export type CostEvidenceCursor = { ts: Date; dedupKey: string };
 export type CostEvidenceQuery = PeriodQuery & { before?: CostEvidenceCursor; limit?: number };
 export type CostEvidencePage = { events: FinalizedUsageEvent[]; next: CostEvidenceCursor | null };
+/** Must be resolved from the authenticated viewer by the application. */
+export type CostReportScope = { kind: "user"; userId: string } | { kind: "team"; teamId: string } | { kind: "organization" };
+export function assertCostReportScope(scope: CostReportScope): void {
+  if (scope && (scope.kind === "organization"
+    || (scope.kind === "user" && typeof scope.userId === "string" && scope.userId.trim().length > 0)
+    || (scope.kind === "team" && typeof scope.teamId === "string" && scope.teamId.trim().length > 0))) return;
+  throw new Error("invalid_report_scope");
+}
 export type UsageIngestContext = { tokenId: string; userId: string };
 
 export interface OverviewStats {
@@ -424,6 +432,8 @@ export interface StorageBackend {
   // ── 읽기 (대시보드) ──
   /** Personal, bounded raw cost ledger. The caller's userId is never a URL filter. */
   getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage>;
+  getReportPricingRevisionIds(scope: CostReportScope, query: PeriodQuery): Promise<string[]>;
+  consumeReportCostEvidence(scope: CostReportScope, query: PeriodQuery, consume: (events: FinalizedUsageEvent[]) => void | Promise<void>): Promise<void>;
   /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */
   getOverview(q: PeriodQuery & { userId?: string; teamId?: string }): Promise<OverviewStats>;
   getDailyTimeseries(

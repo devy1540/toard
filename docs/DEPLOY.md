@@ -448,3 +448,9 @@ migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed 
 | **인덱스** | 대량 테이블은 `CREATE INDEX CONCURRENTLY`. 단 node-pg-migrate 는 마이그레이션을 트랜잭션으로 감싸므로 CONCURRENTLY 는 해당 파일을 트랜잭션 밖에서 실행하도록 분리. |
 
 파괴적 변경이 불가피하면 replicas 를 잠깐 1 로 줄여 순단을 감수하거나 유지보수 창을 잡는다.
+
+## 주간 보고서
+
+`/reports`는 완료된 주의 개인·권한 있는 팀/조직 보고서를 제공한다. CSV는 `/api/reports/weekly`에서 같은 권한을 검사한다. 보고서는 상세 원본의 비교 범위를 모두 읽으며, PostgreSQL cursor와 ClickHouse stream으로 메모리 사용을 제한한다. 규모가 큰 조직에서는 전체 기록 처리 시간이 필요하므로 일반 대시보드와 별도로 확인한다.
+
+계산 근거·불확실성·캐시와 조회 기준은 [주간 보고서](weekly-reports.md), 배포 순서는 [전환 안내](trust-roadmap-upgrade.md)를 따른다. 원본 보존 기간 밖의 비교나 미확정 가격을 완전한 0원 결과로 제공하지 않는다.

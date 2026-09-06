@@ -19,10 +19,15 @@ export function encodeCostCursor(cursor: CostEvidenceCursor): string {
 export type CostEvidenceRevision = PricingRevision & { source: string; sourceRef: string | null };
 
 /** IDs originate from an already-authorized personal ledger page, never from the request. */
-export async function getCostEvidenceRevisions(events: FinalizedUsageEvent[]): Promise<Map<string, CostEvidenceRevision>> {
+export async function getCostEvidenceRevisions(events: FinalizedUsageEvent[], pool: Pick<ReturnType<typeof getPool>, "query"> = getPool()): Promise<Map<string, CostEvidenceRevision>> {
   const ids = [...new Set(events.flatMap((event) => event.pricingRevisionId ? [event.pricingRevisionId] : []))];
+  return getCostEvidenceRevisionIds(ids, pool);
+}
+
+/** Internal report readers obtain these IDs from an authorized storage query. */
+export async function getCostEvidenceRevisionIds(ids: string[], pool: Pick<ReturnType<typeof getPool>, "query"> = getPool()): Promise<Map<string, CostEvidenceRevision>> {
   if (!ids.length) return new Map();
-  const result = await getPool().query(
+  const result = await pool.query(
     "SELECT * FROM pricing_revisions WHERE id = ANY($1::uuid[])", [ids],
   );
   return new Map(result.rows.map((row) => [row.id, {

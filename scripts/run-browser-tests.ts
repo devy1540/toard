@@ -10,6 +10,7 @@ import { startTestPostgres } from "./test-support/postgres";
 import { createInvite } from "../apps/web/lib/invites";
 import { syncPricingRevisions } from "../apps/web/lib/pricing-sync";
 import { fromLiteLLM } from "../packages/pricing/src/sync";
+import { reportPeriod } from "../apps/web/lib/report-period";
 
 const exec = promisify(execFile);
 
@@ -97,6 +98,23 @@ try {
     "INSERT INTO users(email, name, password_hash, role, team_onboarding_completed_at) VALUES('browser.scope@example.test','Browser Scope',$1,'member',now())",
     [await bcrypt.hash(password, 12)],
   );
+  const reportUser = (await db.pool.query(
+    "INSERT INTO users(email,name,password_hash,role,team_id,team_role,timezone,team_onboarding_completed_at) VALUES('browser.report@example.test','Browser Report',$1,'member',$2,'leader','Asia/Seoul',now()) RETURNING id",
+    [await bcrypt.hash(password, 12), team],
+  )).rows[0].id;
+  const reportRange = reportPeriod(undefined, "Asia/Seoul");
+  const reportPrice = (await db.pool.query(
+    "INSERT INTO pricing_revisions(model_id,effective_at,input_price_per_mtok,output_price_per_mtok,fast_multiplier,source) VALUES('report-browser-model',$1,1,5,1,'browser-fixture') RETURNING id",
+    [reportRange.previous.from],
+  )).rows[0].id;
+  await db.pool.query(`INSERT INTO usage_events(dedup_key,user_id,team_id,provider_key,model,ts,input_tokens,output_tokens,cache_read_tokens,cache_creation_tokens,cost_usd,cost_status,pricing_revision_id,cost_calculation_version)
+    VALUES('report-browser-before',$1,$2,'gemini','report-browser-model',$3,1000000,0,0,0,1,'priced',$5,'cost-v2'),
+          ('report-browser-current',$1,$2,'gemini','report-browser-model',$4,2000000,0,0,0,2,'priced',$5,'cost-v2'),
+          ('report-browser-unpriced',$1,$2,'gemini','=report-formula',$4,10,0,0,0,0,'unpriced',NULL,'cost-v2')`,
+    [reportUser, team, reportRange.previous.from, reportRange.current.from, reportPrice]);
+  env.TOARD_BROWSER_REPORT_WEEK = reportRange.week;
+  env.TOARD_BROWSER_REPORT_TEAM = team;
+  env.TOARD_BROWSER_REPORT_OTHER_TEAM = (await db.pool.query("SELECT id FROM teams WHERE id<>$1 ORDER BY id LIMIT 1", [team])).rows[0].id;
   await db.pool.query("INSERT INTO ingest_tokens(user_id, token_hash) VALUES($1,$2)", [owner, createHash("sha256").update(token).digest("hex")]);
   const invite = await createInvite("browser.invited@example.test", "member", team, owner, db.pool);
   if (!invite.ok) throw new Error("TEST_INVITATION_FAILED");

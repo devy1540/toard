@@ -1,7 +1,23 @@
 export type CostMode = "display" | "auto" | "calculate";
 
+export interface ContextPricingTier {
+  aboveTokens: number;
+  inputPerM?: number;
+  outputPerM?: number;
+  cacheReadPerM?: number;
+  cacheCreatePerM?: number;
+  cacheCreate1hPerM?: number;
+}
+
+/** Persisted with each immutable pricing revision, including historical snapshots. */
+export interface PricingDetails {
+  contextTiers?: ContextPricingTier[];
+  cacheCreate1hPerM?: number;
+  contextScope?: "request" | "session";
+}
+
 /** 가격 단위: per-million USD (LiteLLM per-token → ×1e6 변환해 저장. 설계 ADR-004) */
-export interface ModelPricing {
+export interface ModelPricing extends PricingDetails {
   inputPerM: number;
   outputPerM: number;
   cacheReadPerM?: number;
@@ -21,6 +37,7 @@ export interface PricingRevision {
   /** historical revision의 exclusive 종료 시각. 없으면 다음 revision 전까지 유효하다. */
   validUntil?: Date;
   pricing: ModelPricing;
+  sourceModelId?: string | null;
 }
 
 export type PricingSchedule = Map<string, readonly PricingRevision[]>;
@@ -28,5 +45,5 @@ export type PricingSchedule = Map<string, readonly PricingRevision[]>;
 export type CostResolution = {
   costUsd: number;
   pricingRevisionId: string | null;
-  status: "priced" | "unpriced";
+  status: "priced" | "estimated" | "unpriced";
 };

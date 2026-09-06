@@ -1,13 +1,13 @@
 import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "./types";
 
 const VENDOR_PREFIXES = ["us.anthropic.", "anthropic.", "openai/", "bedrock/"];
-const DATE_SUFFIX = /-(\d{8})$/; // 8자리 YYYYMMDD (ccusage MODEL_DATE_SUFFIX_DIGITS=8)
+const DATE_SUFFIX = /-(\d{8}|\d{4}-\d{2}-\d{2})$/;
 
 /**
  * 모델 가격 조회 (설계 §6.4).
  * 풀 ID 직접 조회 우선 → 미스 시에만 폴백(프리픽스 strip → 8자리 날짜 제거 → fuzzy).
  */
-type ResolvedAliasEntry<T> = { key: string; value: T };
+type ResolvedAliasEntry<T> = { key: string; value: T; match: "exact" | "normalized" | "inferred" };
 
 function resolveAliasEntry<T>(
   model: string | null,
@@ -17,7 +17,7 @@ function resolveAliasEntry<T>(
 
   // 1) 풀 ID 우선 (LiteLLM 키는 날짜 포함 풀 ID)
   const direct = values.get(model);
-  if (direct !== undefined) return { key: model, value: direct };
+  if (direct !== undefined) return { key: model, value: direct, match: "exact" };
 
   // 2) 벤더 프리픽스 strip
   let key = model;
@@ -28,13 +28,13 @@ function resolveAliasEntry<T>(
     }
   }
   const afterPrefix = values.get(key);
-  if (afterPrefix !== undefined) return { key, value: afterPrefix };
+  if (afterPrefix !== undefined) return { key, value: afterPrefix, match: "normalized" };
 
   // 3) 8자리 날짜 접미사 제거
   const stripped = key.replace(DATE_SUFFIX, "");
   if (stripped !== key) {
     const afterDate = values.get(stripped);
-    if (afterDate !== undefined) return { key: stripped, value: afterDate };
+    if (afterDate !== undefined) return { key: stripped, value: afterDate, match: "normalized" };
   }
 
   // 4) 부분문자열 fuzzy — 가장 긴 매칭 키 우선
@@ -42,7 +42,7 @@ function resolveAliasEntry<T>(
   let bestLen = 0;
   for (const [k, v] of values) {
     if ((key.includes(k) || k.includes(stripped)) && k.length > bestLen) {
-      best = { key: k, value: v };
+      best = { key: k, value: v, match: "inferred" };
       bestLen = k.length;
     }
   }
@@ -76,4 +76,8 @@ export function resolvePricingRevisions(
   schedule: PricingSchedule,
 ): readonly PricingRevision[] | undefined {
   return resolveAlias(model, schedule);
+}
+
+export function resolvePricingRevisionEntry(model: string | null, schedule: PricingSchedule) {
+  return resolveAliasEntry(model, schedule);
 }

@@ -6,6 +6,7 @@ export type OnboardingStep =
   | "install"
   | "verifying"
   | "success"
+  | "connected-empty"
   | "stalled";
 
 export type OnboardingState = {
@@ -14,6 +15,7 @@ export type OnboardingState = {
   token: string | null;
   tokenId: string | null;
   lastHost: string | null;
+  connectionSeen: boolean;
 };
 
 export type OnboardingAction =
@@ -23,6 +25,7 @@ export type OnboardingAction =
   | { type: "issued"; token: string; tokenId: string }
   | { type: "verify" }
   | { type: "connected"; lastHost: string | null }
+  | { type: "usage-stored"; lastHost: string | null }
   | { type: "timeout" }
   | { type: "retry" }
   | { type: "reset" };
@@ -33,6 +36,7 @@ export const initialOnboardingState: OnboardingState = {
   token: null,
   tokenId: null,
   lastHost: null,
+  connectionSeen: false,
 };
 
 export function onboardingReducer(
@@ -58,11 +62,18 @@ export function onboardingReducer(
     case "connected":
       return {
         ...state,
+        connectionSeen: true,
+        lastHost: action.lastHost,
+      };
+    case "usage-stored":
+      return {
+        ...state,
         step: "success",
+        connectionSeen: true,
         lastHost: action.lastHost,
       };
     case "timeout":
-      return { ...state, step: "stalled" };
+      return { ...state, step: state.connectionSeen ? "connected-empty" : "stalled" };
     case "retry":
       return { ...state, step: "install" };
     case "reset":

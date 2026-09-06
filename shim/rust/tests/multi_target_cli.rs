@@ -368,9 +368,11 @@ fn doctor_checks_all_targets_and_target_env_uses_stored_token() {
         "{all_stdout}"
     );
     assert!(
-        all_stdout.contains("로컬 원본 세션 로그가 남아 있는 동안"),
+        all_stdout.contains("로컬 보관함에 저장된 사용량은 원본 로그가 없어도 재전송됩니다"),
         "{all_stdout}"
     );
+    assert!(all_stdout.contains("본문·도구 활동과 아직 읽지 못한 로그는 원본이 필요합니다"));
+    assert!(all_stdout.contains("사용량 보관함: 아직 생성되지 않음"));
 
     let selected = fixture
         .command()

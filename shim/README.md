@@ -62,7 +62,7 @@ toard-shim version                   # 배포 버전 (릴리스 CI 가 태그를
 
 서버별 자격증명과 전송 상태의 기준 저장소는 `~/.toard/targets/<sha256(endpoint)>/`다. 그 아래 `credentials`와 `state/`(usage/content/tool 커서·전송 상태)가 있으므로 회사와 개인 서버가 서로의 진행 위치를 덮어쓰지 않는다. `~/.toard/state/`에는 `last-collect` 같은 shim 전체 스케줄 상태만 둔다.
 
-실패한 target의 미전송분은 로컬 원본 세션 로그가 남아 있는 동안 다음 수집에서 재구성한다. 별도 durable outbox는 없으므로 장기 장애 중 원본 로그를 삭제하면 그 target의 누락분은 복구할 수 없다. 실패 상태의 `toard-shim doctor`에도 이 한계를 표시한다.
+사용량은 target별 SQLite 보관함에 FULL WAL commit한 뒤 cursor를 전진시키고, 서버 ACK를 검증한 뒤 보관함에서 정리한다. 이미 보관한 사용량은 재시작·원본 삭제 후에도 복구한다. 본문·도구 활동과 아직 읽지 못한 사용량은 원본이 필요하다. `toard-shim doctor`와 [수집 신뢰성 안내](../docs/collection-reliability.md)에서 대기량과 복구 경계를 확인할 수 있다.
 
 기존 단일 서버 설치의 `~/.toard/credentials`와 서버별 상태는 신버전 설치 또는 첫 CLI 실행 때 해당 endpoint target으로 자동 이동하고 원본은 `~/.toard/legacy-backup/`에 보관한다. 이후 legacy 경로를 live mirror로 유지하지 않는다. 같은 endpoint의 설치 명령을 다시 실행하면 token·수집 정책만 갱신하고 그 target의 커서는 보존한다.
 
@@ -153,3 +153,22 @@ PoC 로 Go·Rust 둘 다 측정: 바이너리 **Go 1.4MB vs Rust 312KB(4.4배)**
 
 ## 대역 테스트
 `fake-claude.sh` 는 실제 Claude Code 없이 shim → 수집 흐름을 검증하는 대역 도구(주입된 OTEL env 로 OTLP/JSON 전송 — experimental OTLP 경로 검증용).
+
+## 서버별 수집 범위
+
+설정의 **이 컴퓨터의 수집 범위**에서 로컬 창을 열어 전체 수집, 도구별 포함·제외, 일시 중지를 선택한다. 처음 연결할 때 **설치 후 프로젝트를 직접 선택**을 고르면 `TOARD_SHIM_SCOPE=review`로 등록해 승인 전 사용량·본문·도구 활동 전송을 멈춘다. 이 경로는 `capabilities --scope`가 `collection-scope-v1`을 반환하는 shim이 필요하다.
+
+작업 경로와 도구가 제공한 로그 그룹은 별도 항목이다. Codex fork/replay 등 프로젝트를 확인하지 못한 기록은 포함·제외 모드에서 차단한다. 경로·목록·전송 예시는 로컬 창에만 표시하고 원격 페이지에는 저장 결과와 범위 요약만 반환한다. 범위를 좁혀도 기존 서버 기록은 삭제하지 않고, 범위 밖의 로컬 대기 기록도 보존한다.
+
+CLI에서는 endpoint를 지정한 환경에서 다음 명령을 쓸 수 있다.
+
+```sh
+toard-shim scope preview --target-env
+toard-shim scope set --target-env --file policy.json
+```
+
+정책 파일에는 schemaVersion, mode, providers와 로컬 미리보기의 project ID를 사용한다. 재설치·token 갱신 시 기존 범위를 유지하며 `review`를 명시하면 다시 일시 중지한다. 본문 opt-in과 날짜 제한은 별도로 유지된다. 프로젝트 제한 중에는 전역 도구 목록 및 과거 보정 요청을 보내지 않는다.
+
+Cursor stop hook은 `schemaVersion: 1`과 단일 workspace의 opaque project ID를 사용량 로그에 보존한다. 경로 라벨은 private `~/.toard/state/local-projects/`에 별도로 두며 서버에 보내지 않는다. 다중 workspace는 하나의 프로젝트로 임의 배정하지 않는다.
+
+프로젝트 제한과 같은 서버의 직접 experimental OTLP를 함께 사용하지 않는다. 충돌 시 `toard-shim otlp off`로 관리 설정을 정리하고 AI 도구를 다시 시작한다. 사용자 정의 exporter는 별도로 해제하고 서버 provider는 `logfile`로 설정한다. 이미 실행 중인 외부 프로세스의 전송을 강제로 취소하는 기능은 아니다.

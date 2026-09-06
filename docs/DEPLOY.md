@@ -10,6 +10,7 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 | Method | Endpoint | 운영 수준 |
 |---|---|---|
 | `POST` | `/api/v1/events` | 기본 사용량 |
+| `POST` | `/api/v1/collection-status` | 수집기 상태 보고 및 저장 확인 프로토콜 handshake. 원본 로그·경로는 받지 않는다. |
 | `POST` | `/api/v1/events/reconcile` | Codex replay exact-key 정정 |
 | `POST` | `/api/v1/prompts` | opt-in 본문 |
 | `POST` | `/api/v1/prompts/reconcile` | prompt agent metadata 정정 |
@@ -18,8 +19,8 @@ toard 서버(Next.js + Postgres, ClickHouse 옵트인)를 컨테이너로 올리
 | `POST` | `/api/v1/logs` | experimental OTLP/JSON |
 
 - 기본 provider(Claude Code, Codex, Cursor, Gemini, Qwen)는 `collection_method='logfile'`이며 `/events`로 수렴한다. experimental OTLP 전환은 단일 target의 `TOARD_EXPERIMENTAL_OTLP=1`과 서버 provider `collection_method='otel'`을 함께 바꿔야 한다.
-- shim은 target별 파일 stamp와 전송 진행 cursor를 성공 뒤에만 전진시킨다. 앱이 일시 중단되면 그 target만 다음 수집에서 미전송 범위를 다시 구성하고 다른 target은 계속 전송한다.
-- shim에 별도 durable outbox는 없다. 로컬 source file과 target cursor가 재전송 SSOT이므로 장애 중 원본 session 파일을 삭제하면 누락분을 복구할 수 없다.
+- shim은 target별 파일 stamp와 전송 진행 cursor를 해당 사용량이 로컬 SQLite 보관함에 모두 commit된 뒤에만 전진시킨다. 앱이 일시 중단돼도 보관한 사용량을 재전송하며 다른 target은 계속 전송한다.
+- SQLite 보관함의 사용량은 서버 ACK 확인 뒤에만 정리한다. 이미 보관한 사용량은 원본 삭제 뒤에도 재전송하지만, 아직 읽지 못한 로그·본문·도구 활동에는 원본이 필요하다. 기본 payload 한도는 64MiB다. [수집 신뢰성](collection-reliability.md)을 참고한다.
 - 재전송은 동일 `dedup_key`를 포함할 수 있으며 서버의 unique constraint/ClickHouse outbox가 중복을 흡수한다.
 
 ## 이미지
@@ -426,7 +427,7 @@ migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed 
 - Deployment `RollingUpdate maxUnavailable=0, maxSurge=1` — 항상 최소 replica 유지.
 - `readinessProbe=/api/ready`(DB 포함) 로 준비된 파드만 트래픽 수신, `livenessProbe=/api/health`(DB 무관)로 재시작 루프 방지.
 - 종료 시 `preStop sleep` + `terminationGracePeriodSeconds` 로 in-flight HTTP 요청을 드레인.
-- rolling 배포는 가용성과 구/신 schema 호환을 위한 권장사항이다. pull-primary의 실패 target은 cursor를 전진시키지 않으므로 rolling 자체가 재전송 정확성의 유일한 보장은 아니다. experimental OTLP는 별도 local cursor가 없으므로 SDK retry 경계를 따로 확인한다.
+- rolling 배포는 가용성과 구/신 schema 호환을 위한 권장사항이다. pull-primary의 사용량은 SQLite commit과 ACK로 복구하므로 rolling 자체가 재전송 정확성의 유일한 보장은 아니다. experimental OTLP는 별도 local cursor가 없으므로 SDK retry 경계를 따로 확인한다.
 - **스키마 변경**은 파괴적 변경을 한 번에 넣지 말 것 — 아래 expand→contract 절.
 - cron(`sync-pricing`)은 앱 내장 스케줄러가 일 1회 자동 실행 — 별도 등록 불필요. on/off 는 관리 → 시스템 탭 토글(재시작 불필요), env `PRICING_AUTO_SYNC=off` 는 인프라 킬스위치. replica 가 여럿이면 각자 틱을 돌지만 "오늘 이미 동기화됨" 검사 + UPSERT 멱등이라 무해. 외부 스케줄러(Vercel·GH Actions)를 쓸 때만 별도 등록(README 스케줄러 절).
 
@@ -447,3 +448,9 @@ migration이 남은 계정에 대해서만 recovery wrapper/complete와 managed 
 | **인덱스** | 대량 테이블은 `CREATE INDEX CONCURRENTLY`. 단 node-pg-migrate 는 마이그레이션을 트랜잭션으로 감싸므로 CONCURRENTLY 는 해당 파일을 트랜잭션 밖에서 실행하도록 분리. |
 
 파괴적 변경이 불가피하면 replicas 를 잠깐 1 로 줄여 순단을 감수하거나 유지보수 창을 잡는다.
+
+## 주간 보고서
+
+`/reports`는 완료된 주의 개인·권한 있는 팀/조직 보고서를 제공한다. CSV는 `/api/reports/weekly`에서 같은 권한을 검사한다. 보고서는 상세 원본의 비교 범위를 모두 읽으며, PostgreSQL cursor와 ClickHouse stream으로 메모리 사용을 제한한다. 규모가 큰 조직에서는 전체 기록 처리 시간이 필요하므로 일반 대시보드와 별도로 확인한다.
+
+계산 근거·불확실성·캐시와 조회 기준은 [주간 보고서](weekly-reports.md), 배포 순서는 [전환 안내](trust-roadmap-upgrade.md)를 따른다. 원본 보존 기간 밖의 비교나 미확정 가격을 완전한 0원 결과로 제공하지 않는다.

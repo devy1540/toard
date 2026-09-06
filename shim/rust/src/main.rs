@@ -11,6 +11,7 @@ mod claude_env;
 mod cli;
 mod codex;
 pub mod collect;
+pub mod collection_scope;
 mod content_crypto;
 mod content_keys;
 pub mod credentials;
@@ -23,15 +24,19 @@ mod fsx;
 mod host;
 mod iso;
 mod json;
+mod legacy_otlp;
 mod local_bridge;
 mod otel;
 mod recovery;
 mod resolve;
+mod scope_control;
+mod scope_ui;
 pub mod targets;
 mod tool_deployment;
 mod tool_event;
 mod update;
 mod usage_event;
+mod usage_queue;
 
 use std::env;
 use std::ffi::OsString;
@@ -122,16 +127,15 @@ fn main() {
     // OTLP push 주입은 experimental(TOARD_EXPERIMENTAL_OTLP)로만 — 기본은 env/config 주입 없이 순수 패스스루라
     // 재시작·env 주입 dance 가 불필요하다. 토큰이 없으면 collect 도 전송 불가라 그대로 패스스루.
     match &wrapper_mode {
-        WrapperMode::Single(credentials) if otel::experimental_otlp_enabled() => {
-            let token = credentials
-                .token
-                .as_deref()
-                .expect("single wrapper credentials must contain a token");
-            let endpoint = credentials.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
-            otel::inject_env(&tool, endpoint, token);
-            if tool == "codex" {
-                codex::inject_config(endpoint, token);
-            }
+        WrapperMode::Single(credentials) if otel::experimental_otlp_enabled() && credentials.collection_scope.is_unrestricted() => {
+            let result = targets::TargetStore::from_home().and_then(|store| store.with_legacy_push_credentials(|current| {
+                if let Some(token) = current.token.as_deref() {
+                    let endpoint = current.endpoint.as_deref().unwrap_or(DEFAULT_ENDPOINT);
+                    otel::inject_env(&tool, endpoint, token);
+                    if tool == "codex" { codex::inject_config(endpoint, token); }
+                }
+            }));
+            if result.is_err() { notice("설정이 변경되어 experimental OTLP 주입을 건너뜁니다"); }
         }
         WrapperMode::Multiple if otel::experimental_otlp_enabled() => notice(
             "experimental OTLP는 여러 target에 주입할 수 없어 비활성화했습니다 — pull 수집은 모든 target으로 전송됩니다",

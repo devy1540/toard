@@ -71,8 +71,10 @@ export interface UsageEvent {
   cacheCreationTokens: number;
   /** cacheCreationTokens 중 1시간 TTL 분량(subset). pricing 전용 힌트 — 서버가 1h=input×2,
    *  5m=input×1.25 로 차등 가격(§design-usage-pull 리스크 B). pull(claude) 경로만 채움,
-   *  없으면 0(전량 5m 로 취급). DB 미영속(cost 는 인제스트 시 확정·저장). */
+   *  새 기록은 DB에 보존한다. 과거 미제공 힌트는 재계산 때 추정으로 취급한다. */
   cacheCreation1hTokens?: number;
+  /** Explicit provider speed hint; omitted means the old collector did not report it. */
+  isFast?: boolean;
   /** pricing 엔진이 채움 */
   costUsd: number;
   /** logfile 경로 전용(§5.6): shim 벤더 어댑터 식별자. otel 경로는 없음/ null */
@@ -82,11 +84,13 @@ export interface UsageEvent {
   host?: string | null;
 }
 
-export type UsageCostStatus = "priced" | "unpriced" | "legacy";
+export type UsageCostStatus = "priced" | "estimated" | "unpriced" | "legacy";
 
 /** 비용 합계가 어떤 가격 확정 상태의 이벤트로 구성됐는지 설명한다. */
 export interface UsageCostCoverage {
   pricedEvents: number;
+  /** Model or billing context was inferred. Optional for older API/cache payloads. */
+  estimatedEvents?: number;
   unpricedEvents: number;
   legacyEvents: number;
 }
@@ -95,7 +99,22 @@ export interface UsageCostCoverage {
 export interface FinalizedUsageEvent extends UsageEvent {
   pricingRevisionId: string | null;
   costStatus: UsageCostStatus;
+  /** Set by the server; missing in old internal writers means cost-v1. */
+  costCalculationVersion?: string;
 }
+
+export type CostEvidenceCursor = { ts: Date; dedupKey: string };
+export type CostEvidenceQuery = PeriodQuery & { before?: CostEvidenceCursor; limit?: number };
+export type CostEvidencePage = { events: FinalizedUsageEvent[]; next: CostEvidenceCursor | null };
+/** Must be resolved from the authenticated viewer by the application. */
+export type CostReportScope = { kind: "user"; userId: string } | { kind: "team"; teamId: string } | { kind: "organization" };
+export function assertCostReportScope(scope: CostReportScope): void {
+  if (scope && (scope.kind === "organization"
+    || (scope.kind === "user" && typeof scope.userId === "string" && scope.userId.trim().length > 0)
+    || (scope.kind === "team" && typeof scope.teamId === "string" && scope.teamId.trim().length > 0))) return;
+  throw new Error("invalid_report_scope");
+}
+export type UsageIngestContext = { tokenId: string; userId: string };
 
 export interface OverviewStats {
   totalSessions: number;
@@ -257,6 +276,8 @@ export interface OrganizationDashboardData {
 export interface SaveResult {
   inserted: number;
   deduped: number;
+  /** Distinct requested keys confirmed under the authenticated owner in this transaction. */
+  confirmed?: number;
 }
 
 export type TeamAttributionPreview = {
@@ -299,7 +320,7 @@ export interface PricingRecoveryModelDiagnostic {
 
 export type PricingRepairResolver = (
   event: UsageEvent,
-) => { costUsd: number; pricingRevisionId: string } | null;
+) => { costUsd: number; pricingRevisionId: string; costStatus?: "priced" | "estimated"; costCalculationVersion?: string } | null;
 
 export interface PricingRepairRequest {
   from: Date;
@@ -373,7 +394,7 @@ export interface StorageBackend {
   /** OTLP 원형을 무손실 보존하고 raw id 반환 */
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 당일 Mart 증분(SUM 지표) — 동일 트랜잭션 */
-  saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult>;
   /** 아직 팀이 없는 이벤트 중 지정 사용자·기간에 해당하는 예상 백필 규모. */
   previewUnassignedTeamAttribution(
     input: TeamAttributionRange,
@@ -409,6 +430,10 @@ export interface StorageBackend {
   ): Promise<UsageEventReconciliationResult>;
 
   // ── 읽기 (대시보드) ──
+  /** Personal, bounded raw cost ledger. The caller's userId is never a URL filter. */
+  getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage>;
+  getReportPricingRevisionIds(scope: CostReportScope, query: PeriodQuery): Promise<string[]>;
+  consumeReportCostEvidence(scope: CostReportScope, query: PeriodQuery, consume: (events: FinalizedUsageEvent[]) => void | Promise<void>): Promise<void>;
   /** userId 또는 teamId 지정 시 해당 사용자/팀 스코프. */
   getOverview(q: PeriodQuery & { userId?: string; teamId?: string }): Promise<OverviewStats>;
   getDailyTimeseries(

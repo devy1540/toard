@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   connectLocalShim,
+  configureLocalScope,
   connectLocalShimFromBrowser,
   connectLocalShimWithHelper,
   LOCAL_SHIM_BASE_URL,
@@ -163,6 +164,41 @@ test("browser helper uses a top-level one-time RPC and returns only the status c
   assert.equal(session.transport, "helper");
   assert.equal(session.status.host, "my-mac");
   assert.equal(harness.popup.closed, true);
+});
+
+test("project scope uses a local confirmation window even for a direct connection", async () => {
+  const harness = helperHarness();
+  let fetched = false;
+  const pending = runLocalShimAction(
+    { transport: "direct", token: status.session, targetId, status: { ...status, capabilities: ["scope"] } },
+    "scope", async () => { fetched = true; throw new Error("unexpected remote control"); }, harness.environment,
+  );
+  assert.match(harness.openedUrl(), /&mode=scope$/);
+  assert.equal(harness.timerTimeoutMs(), 3_000);
+  harness.emit({ protocol: "toard-helper-v1", nonce: "c".repeat(32), ready: true, scopeReady: true });
+  assert.equal(harness.timerTimeoutMs(), 600_000);
+  const scoped = { ...status, target: { ...status.target, scope: { mode: "custom" } } };
+  harness.emit({ protocol: "toard-helper-v1", nonce: "c".repeat(32), action: "scope", ok: true, value: { status: scoped } });
+  assert.equal(await pending, scoped);
+  assert.equal(fetched, false);
+  assert.equal(harness.popup.closed, true);
+});
+
+test("older helpers cannot turn scope review into an unconfirmed action", async () => {
+  const harness = helperHarness();
+  const pending = configureLocalScope(targetId, harness.environment);
+  harness.emit({ protocol: "toard-helper-v1", nonce: "c".repeat(32), ready: true });
+  await assert.rejects(pending, { name: "LocalScopeUnsupported" });
+  assert.equal(harness.sent.length, 0);
+  assert.equal(harness.popup.closed, true);
+});
+
+test("closing a scope window cancels it without changing settings", async () => {
+  const harness = helperHarness();
+  const pending = configureLocalScope(targetId, harness.environment);
+  harness.emit({ protocol: "toard-helper-v1", nonce: "c".repeat(32), action: "scope", error: "scope_cancelled", ok: false });
+  await assert.rejects(pending, { name: "LocalScopeCancelled" });
+  assert.equal(harness.sent.length, 0);
 });
 
 test("each helper RPC opens a fresh popup browsing context", async () => {

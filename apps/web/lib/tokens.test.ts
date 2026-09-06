@@ -64,7 +64,7 @@ test("connection status lookup requires both owner and token ID", async () => {
 
   const status = await getTokenConnectionStatusWithPool("user-1", "token-1", pool);
 
-  assert.deepEqual(status, { connected: true, lastUsedAt: usedAt, lastHost: null });
+  assert.deepEqual(status, { connected: true, usageStored: false, firstUsageStoredAt: null, lastUsageStoredAt: null, lastUsageCount: 0, lastUsedAt: usedAt, lastHost: null });
   assert.match(queries[0]!.sql, /user_id = \$1 AND id = \$2/);
   assert.deepEqual(queries[0]!.params, ["user-1", "token-1"]);
 });

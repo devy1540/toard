@@ -15,7 +15,8 @@ test("advances install through verification to success", () => {
   state = onboardingReducer(state, { type: "issued", token: "tk_test", tokenId: "token-1" });
   state = onboardingReducer(state, { type: "verify" });
   state = onboardingReducer(state, { type: "connected", lastHost: null });
-
+  assert.equal(state.step, "verifying", "an authenticated ping alone cannot complete usage setup");
+  state = onboardingReducer(state, { type: "usage-stored", lastHost: null });
   assert.equal(state.step, "success");
 });
 
@@ -25,7 +26,15 @@ test("본문 수집을 선택해도 연결 확인 후 recovery 단계 없이 완
   state = onboardingReducer(state, { type: "issued", token: "tk_test", tokenId: "token-1" });
   state = onboardingReducer(state, { type: "verify" });
   state = onboardingReducer(state, { type: "connected", lastHost: "MacBook" });
+  assert.equal(state.step, "verifying");
+  state = onboardingReducer(state, { type: "usage-stored", lastHost: "MacBook" });
   assert.equal(state.step, "success");
+});
+
+test("a connected computer without records is waiting, not a failed installation", () => {
+  const state = onboardingReducer({ ...initialOnboardingState, step: "verifying", connectionSeen: true, tokenId: "token" }, { type: "timeout" });
+  assert.equal(state.step, "connected-empty");
+  assert.equal(onboardingReducer(state, { type: "verify" }).step, "verifying");
 });
 
 test("shows stalled diagnostics after polling timeout", () => {

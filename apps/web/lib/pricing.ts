@@ -1,4 +1,4 @@
-import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule } from "@toard/pricing";
+import type { ModelPricing, PricingMap, PricingRevision, PricingSchedule, PricingDetails } from "@toard/pricing";
 import { getAppSetting } from "./app-settings";
 import { getPool } from "./db";
 export {
@@ -21,6 +21,8 @@ type PricingRevisionRow = {
   input_price_above_200k_per_mtok: string | number | null;
   output_price_above_200k_per_mtok: string | number | null;
   fast_multiplier: string | number | null;
+  pricing_details?: PricingDetails;
+  source_model_id?: string | null;
 };
 
 type PricingRevisionQuery = (sql: string) => Promise<{ rows: PricingRevisionRow[] }>;
@@ -74,7 +76,7 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
     `SELECT id, model_id, effective_at, valid_until,
        input_price_per_mtok, output_price_per_mtok,
        cache_read_price_per_mtok, cache_creation_price_per_mtok,
-       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier
+       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier, pricing_details, source_model_id
      FROM pricing_revisions
      WHERE authoritative
      ORDER BY model_id, effective_at ASC, observed_at ASC, id ASC`,
@@ -85,6 +87,7 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
     const pricing: ModelPricing = {
       inputPerM: Number(r.input_price_per_mtok),
       outputPerM: Number(r.output_price_per_mtok),
+      ...r.pricing_details,
     };
     if (r.cache_read_price_per_mtok != null) pricing.cacheReadPerM = Number(r.cache_read_price_per_mtok);
     if (r.cache_creation_price_per_mtok != null) pricing.cacheCreatePerM = Number(r.cache_creation_price_per_mtok);
@@ -97,6 +100,7 @@ export async function loadPricingSchedule(query: PricingRevisionQuery): Promise<
       modelId: r.model_id,
       effectiveAt: new Date(r.effective_at),
       pricing,
+      ...(r.source_model_id ? { sourceModelId: r.source_model_id } : {}),
     };
     if (r.valid_until != null) revision.validUntil = new Date(r.valid_until);
     const revisions = schedule.get(r.model_id);

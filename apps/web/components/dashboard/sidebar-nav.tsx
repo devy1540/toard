@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { Building2, ChartBar, LibraryBig, Lightbulb, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
+import { Building2, ChartBar, LibraryBig, Lightbulb, FileText, MessageSquare, Settings, ShieldCheck, User, type LucideIcon } from "lucide-react";
 import {
   SidebarGroup,
   SidebarGroupLabel,
@@ -15,7 +15,7 @@ import {
 } from "@/components/ui/sidebar";
 import { featureStatusBadgeClassName } from "./feature-status-badge";
 
-type NavKey = "myUsage" | "insights" | "history" | "org" | "orgTeams" | "myTeam" | "library" | "settings" | "admin";
+type NavKey = "myUsage" | "reports" | "insights" | "history" | "org" | "orgTeams" | "myTeam" | "library" | "settings" | "admin";
 type GroupKey = "groupPersonal" | "groupShared" | "groupSystem";
 type NavBadge = "preview" | "beta" | "experiment";
 type NavItem = { href: string; key: NavKey; icon: LucideIcon; badge?: NavBadge };
@@ -39,6 +39,7 @@ export function SidebarNav({ isAdmin = false }: { isAdmin?: boolean }) {
       items: [
         { href: "/", key: "myUsage", icon: User },
         { href: "/insights", key: "insights", icon: Lightbulb, badge: "beta" },
+        { href: "/reports", key: "reports", icon: FileText },
         { href: "/history", key: "history", icon: MessageSquare, badge: "preview" },
       ],
     },

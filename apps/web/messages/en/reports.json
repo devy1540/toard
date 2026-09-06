@@ -1,0 +1,81 @@
+{
+  "title": "Weekly report",
+  "description": "Compare retained records for a completed week and explain changes in their API-equivalent amount.",
+  "week": "Week starting Sunday",
+  "show": "View report",
+  "download": "Download CSV",
+  "reset": "Open the default report",
+  "range": "{from} – {to} · Previous week starts {previous} · {timezone}",
+  "generated": "Generated {time} · Cached for up to 10 minutes.",
+  "loading": "Reading weekly records and calculation evidence…",
+  "scope": {
+    "label": "Report scope",
+    "personal": "My records",
+    "organization": "Organization",
+    "team": "Team: {name}"
+  },
+  "amount": "Recorded API-equivalent amount",
+  "change": "Change from previous week",
+  "tokens": "Total tokens",
+  "previous": "Previous week {value}",
+  "partial": "Incomplete pricing",
+  "observedOnly": "Based on records included in this report",
+  "basis": "These are API-rate equivalents from stored usage and pricing evidence, not subscription charges or an actual invoice.",
+  "coverage": "Current week: {unpriced} unpriced · {estimated} estimated · {legacy} legacy events. {excluded} events across both weeks are excluded from the driver analysis.",
+  "unpricedNotice": "Unpriced records have no amount included in the total. A lower recorded amount does not establish actual savings.",
+  "updating": "Generated during ingestion or repair activity. Amounts reflect the records read by this query and may change later.",
+  "empty": "No retained records in the comparison period.",
+  "unknownModel": "Unknown model",
+  "drivers": {
+    "title": "Drivers of the recorded change",
+    "description": "Only model groups with reproducible evidence in both periods are decomposed. Other amounts remain unclassified.",
+    "factor": "Factor",
+    "contribution": "Contribution to recorded change",
+    "volume": "Usage volume",
+    "modelMix": "Model mix",
+    "outputMix": "Input/output mix",
+    "cacheMix": "Input cache mix",
+    "effectiveRates": "Effective rates and billing conditions",
+    "unclassified": "Unclassified and rounding",
+    "total": "Displayed total",
+    "evidence": "Amounts analyzed: {previous} in the previous week → {current} in the current week."
+  },
+  "models": {
+    "title": "Model comparison",
+    "model": "Model",
+    "provider": "Tool",
+    "previous": "Previous week",
+    "current": "Current week",
+    "delta": "Change",
+    "coverage": "Current unpriced / estimated"
+  },
+  "health": {
+    "title": "Current collection status",
+    "description": "Checked {time}. This is not a historical incident record or proof of usage during the reported week.",
+    "connections": "Active connection tokens",
+    "unconfirmed": "Tokens without storage confirmation",
+    "noReport": "Tokens without status reports",
+    "errors": "Error or unsupported reports",
+    "paused": "Paused reports",
+    "stale": "Stale status reports",
+    "pendingEvents": "Pending client confirmation",
+    "outboxPending": "Pending server confirmation",
+    "caution": "Missing records do not mean no AI use. Scope changes, missing data and repairs can also affect the comparison. An em dash means unknown."
+  },
+  "methodology": {
+    "title": "Method and pricing evidence",
+    "average": "Each contribution is averaged over every ordering of the five factors. Changing the order cannot assign the difference to a preferred factor. This is an arithmetic decomposition, not evidence of causality.",
+    "missing": "If either period lacks pricing or calculation evidence for a model, that model is excluded from both sides of the decomposition. New models or unobserved token buckets borrow the other period’s observed composition or rates; unobserved price changes are not invented.",
+    "rates": "Effective rates reflect price revisions, long-context tiers, fast mode and the distribution of requests within a model. Do not interpret this contribution as a vendor price increase alone.",
+    "scope": "Scope-setting project paths and conversation text are not included. Team reports use membership at event time; collection status describes current connections.",
+    "ledger": "Inspect my individual calculation evidence"
+  },
+  "errors": {
+    "denied": "You cannot access this report scope. Team reports require the team leader or an administrator; organization reports require an administrator.",
+    "period": "Check the scope and week. Reports require a completed Sunday-start week and a fully retained comparison interval.",
+    "unavailable": "The report could not be completed. Partial results have not been presented as a finished report. Try again shortly."
+  },
+  "outboxNotice": "Server delivery is not yet confirmed for {count} events in the comparison interval. The current query may not include all of them.",
+  "unpricedAmount": "Unpriced",
+  "noBaseline": "There are no records for the previous week. This shows newly observed records, not proof of an equivalent increase in actual usage."
+}

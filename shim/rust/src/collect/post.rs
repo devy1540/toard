@@ -17,6 +17,16 @@ pub struct PostResult {
     pub deduped: u64,
     #[serde(default)]
     pub reconciled: u64,
+    #[serde(default)]
+    pub confirmed: Option<u64>,
+    #[serde(default)]
+    pub expired: u64,
+    #[serde(default)]
+    pub ignored: u64,
+    #[serde(default, rename = "userId")]
+    pub user_id: Option<String>,
+    #[serde(default, rename = "eventsReceiptVersion")]
+    pub events_receipt_version: Option<u32>,
 }
 
 enum Outcome {
@@ -34,13 +44,14 @@ fn curl_args(
     auth_config_path: &Path,
     user_agent: &str,
     url: &str,
+    timeout_seconds: u64,
 ) -> Vec<String> {
     vec![
         "-sS".into(),
         "--connect-timeout".into(),
         "5".into(),
         "--max-time".into(),
-        "60".into(),
+        timeout_seconds.to_string(),
         "--config".into(),
         auth_config_path.display().to_string(),
         "-A".into(),
@@ -96,7 +107,12 @@ fn post_batch(
 
     // User-Agent 로 shim 버전을 알린다 — 서버가 기기별 버전을 기록(구버전 식별)
     let ua = format!("toard-shim/{}", crate::cli::version());
-    let args = curl_args(method, &req_path, &auth_path, &ua, &url);
+    let timeout = if path_suffix == "/v1/collection-status" {
+        5
+    } else {
+        60
+    };
+    let args = curl_args(method, &req_path, &auth_path, &ua, &url, timeout);
     let out = Command::new("curl").args(args).output();
     let _ = std::fs::remove_file(&req_path);
     let _ = std::fs::remove_file(&auth_path);
@@ -111,7 +127,7 @@ fn post_batch(
     match code {
         200 => match serde_json::from_str::<PostResult>(resp_body.trim()) {
             Ok(r) => Outcome::Ok(r),
-            Err(e) => Outcome::Err(format!("응답 파싱 실패: {e}")),
+            Err(_) => Outcome::Err("응답 파싱 실패".into()),
         },
         0 => Outcome::Err(format!(
             "서버 연결 실패: {}",
@@ -153,6 +169,9 @@ pub enum EndpointResult {
 }
 
 pub trait Transport {
+    fn post_collection_health(&self, _endpoint: &str, _token: &str, _body: &str) -> EndpointResult {
+        EndpointResult::Unsupported
+    }
     fn post_events(&self, endpoint: &str, token: &str, body: &str) -> Result<PostResult, String>;
     fn post_prompts(
         &self,
@@ -174,6 +193,24 @@ pub trait Transport {
 pub struct CurlTransport;
 
 impl Transport for CurlTransport {
+    fn post_collection_health(&self, endpoint: &str, token: &str, body: &str) -> EndpointResult {
+        match post_batch(
+            endpoint,
+            token,
+            "POST",
+            "/v1/collection-status",
+            "collection-health",
+            body,
+        ) {
+            Outcome::Ok(result) => EndpointResult::Ok(result),
+            Outcome::Unauthorized => EndpointResult::Unauthorized,
+            Outcome::Unsupported => EndpointResult::Unsupported,
+            Outcome::Disabled => {
+                EndpointResult::Err("collection health temporarily unavailable".into())
+            }
+            Outcome::Err(error) => EndpointResult::Err(error),
+        }
+    }
     fn post_events(&self, endpoint: &str, token: &str, body: &str) -> Result<PostResult, String> {
         post_events(endpoint, token, body)
     }
@@ -390,6 +427,7 @@ mod tests {
             Path::new("/tmp/toard-auth.conf"),
             "toard-shim/test",
             "https://toard.example/api/v1/events",
+            60,
         );
         let joined = args.join(" ");
 

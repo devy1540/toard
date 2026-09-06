@@ -11,7 +11,7 @@
     "providerLabel": "프로바이더",
     "allProviders": "모든 프로바이더",
     "metricLabel": "지표",
-    "cost": "비용",
+    "cost": "API 환산액",
     "tokens": "토큰"
   },
   "freshness": {
@@ -32,7 +32,7 @@
     "empty": "기준을 넘는 두드러진 변화가 없습니다."
   },
   "kpi": {
-    "cost": "비용",
+    "cost": "API 환산액",
     "sessions": "세션",
     "tokens": "토큰",
     "previousPeriod": "이전 기간 대비",

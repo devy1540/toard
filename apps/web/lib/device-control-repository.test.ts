@@ -55,7 +55,7 @@ test("migration은 desired, observed, command, audit을 만들고 자유 형식 
   assert.doesNotMatch(sql, /stdout|stderr|log_output|token_value|secret_value/);
 });
 
-test("설정 화면은 localhost popup 대신 서버 경유 headless 제어를 사용한다", () => {
+test("기기 명령은 서버 경유 제어를 유지하고 프로젝트 범위만 로컬에서 선택한다", () => {
   const page = readFileSync(
     new URL("../app/(dashboard)/settings/page.tsx", import.meta.url),
     "utf8",
@@ -64,7 +64,8 @@ test("설정 화면은 localhost popup 대신 서버 경유 headless 제어를 �
     new URL("../app/(dashboard)/settings/device-actions.tsx", import.meta.url),
     "utf8",
   );
-  assert.doesNotMatch(page, /LocalShimPanel|localShimTargetId/);
+  assert.doesNotMatch(page, /LocalShimPanel/);
+  assert.match(page, /CollectionScopePanel/);
   assert.doesNotMatch(actions, /127\.0\.0\.1|window\.open|navigator\.clipboard/);
   assert.match(actions, /setDeviceHistoryAction/);
   assert.match(actions, /enqueueDeviceCommandAction/);

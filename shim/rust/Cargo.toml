@@ -1,6 +1,6 @@
 [package]
 name = "toard-shim"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2021"
 
 [[bin]]
@@ -31,3 +31,4 @@ toml_edit = "0.25.12"
 socket2 = "0.6.1"
 url = "2"
 zeroize = { version = "1.9.0", features = ["derive"] }
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }

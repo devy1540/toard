@@ -1,4 +1,4 @@
-import type { FinalizedUsageEvent, SaveResult, UsageEvent } from "@toard/core";
+import type { FinalizedUsageEvent, SaveResult, UsageEvent, UsageIngestContext } from "@toard/core";
 import {
   type FlatLogRecord,
   type ProviderNormalizer,
@@ -25,7 +25,7 @@ type LogsPostDeps = {
   identifyProvider: typeof identifyProvider;
   normalizers: Record<string, ProviderNormalizer>;
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
-  saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult>;
   recordTokenHost: typeof recordTokenHost;
   invalidateUtilizationForUser(userId: string): void | Promise<void>;
   withUserUtilizationCacheChange: typeof withUserUtilizationCacheChange;
@@ -40,7 +40,7 @@ const defaultLogsPostDeps: LogsPostDeps = {
   identifyProvider,
   normalizers,
   saveRawEvent: (providerKey, payload) => getStorage().saveRawEvent(providerKey, payload),
-  saveUsageEvents: (events) => getStorage().saveUsageEvents(events),
+  saveUsageEvents: (events, context) => getStorage().saveUsageEvents(events, context),
   recordTokenHost,
   invalidateUtilizationForUser,
   withUserUtilizationCacheChange,
@@ -153,7 +153,7 @@ async function postLogs(req: Request, deps: LogsPostDeps): Promise<Response> {
         expired += finalized.expired;
 
         // 6. 멱등 저장 + 당일 Mart 증분
-        const res = await deps.saveUsageEvents(finalized.events);
+        const res = await deps.saveUsageEvents(finalized.events, { tokenId: auth.tokenId, userId: auth.userId });
         inserted += res.inserted;
         deduped += res.deduped;
       } catch (e) {

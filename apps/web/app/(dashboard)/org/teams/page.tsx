@@ -23,7 +23,7 @@ import { getViewerTimezone } from "@/lib/viewer-time";
 export const dynamic = "force-dynamic";
 
 type TeamPeriod = ReturnType<typeof parseDashboardPeriod>;
-type CostLabels = { partial: string; unpriced: string; legacy: string };
+type CostLabels = { partial: string; unpriced: string; legacy: string; estimated?: string };
 
 function hrefWith(sp: DashboardSearchParams, path = "/org/team"): string {
   const q = new URLSearchParams();
@@ -290,16 +290,18 @@ async function AllTeamsOverview({ period }: { period: TeamPeriod }) {
   const topRows = rows.slice(0, 3);
   const coverage = rows.reduce(
     (total, row) => ({
+      estimatedEvents: (total.estimatedEvents ?? 0) + (row.costCoverage.estimatedEvents ?? 0),
       pricedEvents: total.pricedEvents + row.costCoverage.pricedEvents,
       unpricedEvents: total.unpricedEvents + row.costCoverage.unpricedEvents,
       legacyEvents: total.legacyEvents + row.costCoverage.legacyEvents,
     }),
-    { pricedEvents: 0, unpricedEvents: 0, legacyEvents: 0 },
+    { pricedEvents: 0, estimatedEvents: 0, unpricedEvents: 0, legacyEvents: 0 },
   );
   const costLabels = {
     partial: dashboardT("costCoverage.partial"),
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
+    estimated: dashboardT("costCoverage.estimated"),
   };
   const legacyCount = legacyCostHintCount(coverage);
   const rankedCostSub = legacyCount == null

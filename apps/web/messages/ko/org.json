@@ -47,7 +47,7 @@
     "tokenMoreThanPrev": "직전 기간({prev})보다 {diff} 더 사용했습니다",
     "noTokenComparison": "직전 기간 데이터가 없어 비교를 생략합니다"
   },
-  "totalCost": "총 비용",
+  "totalCost": "총 API 환산액",
   "sessions": "세션",
   "activeUsers": "활성 사용자",
   "totalTokens": "총 토큰",
@@ -71,7 +71,7 @@
   "openRanking": "자세히",
   "viewAllRanking": "전체 순위 →",
   "user": "사용자",
-  "cost": "비용",
+  "cost": "API 환산액",
   "noUsersTitle": "사용자 없음",
   "noTeamsTitle": "팀 데이터 없음",
   "workspaceSignals": "워크스페이스 신호",

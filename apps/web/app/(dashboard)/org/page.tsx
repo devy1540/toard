@@ -90,7 +90,7 @@ function RankRow({
   metric: ChartMetric;
   total: number;
   max: number;
-  costLabels: { partial: string; unpriced: string; legacy: string };
+  costLabels: { partial: string; unpriced: string; legacy: string; estimated?: string };
 }) {
   let width: number;
   let share: number | null;
@@ -155,7 +155,7 @@ function LeaderboardPreview({
   total: number;
   icon: ReactNode;
   trailing?: ReactNode;
-  costLabels: { partial: string; unpriced: string; legacy: string };
+  costLabels: { partial: string; unpriced: string; legacy: string; estimated?: string };
 }) {
   const shown = rows.slice(0, 5);
   const max = metric === "tokens" ? shown[0]?.totalTokens ?? 0 : shown[0]?.costUsd ?? 0;
@@ -475,6 +475,7 @@ async function OverviewTab({
     partial: dashboardT("costCoverage.partial"),
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
+    estimated: dashboardT("costCoverage.estimated"),
   };
   const costValue = formatCoveredCost(overview.totalCostUsd, overview.costCoverage, costLabels);
   const tokens = totalUsageTokens({

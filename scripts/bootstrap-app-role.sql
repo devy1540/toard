@@ -149,6 +149,10 @@ BEGIN
     EXECUTE 'GRANT EXECUTE ON FUNCTION public.complete_team_attribution_fence(UUID) TO toard_app';
   END IF;
 
+  IF to_regprocedure('public.record_ingest_usage_receipt(uuid,uuid,text,text[])') IS NOT NULL THEN
+    EXECUTE 'GRANT EXECUTE ON FUNCTION public.record_ingest_usage_receipt(UUID, UUID, TEXT, TEXT[]) TO toard_app';
+  END IF;
+
   -- credential limiter의 HMAC digest row는 app이 직접 읽거나 수정하지 않고 SECURITY DEFINER 함수로만 접근한다.
   IF to_regclass('public.credential_rate_limits') IS NOT NULL THEN
     EXECUTE 'REVOKE ALL PRIVILEGES ON TABLE public.credential_rate_limits FROM toard_app';

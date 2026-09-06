@@ -25,13 +25,19 @@
 
 ---
 
+![Personal usage dashboard with synthetic data](site/assets/screenshots/my-usage.png)
+
+[Preview actual screens](https://dev.devy.dev/toard/demo/) — synthetic data, no account required.
+
 ## ✨ Features
 
 - **🔌 Multi-provider** — bring Claude Code, Codex, Cursor, Gemini, Qwen, and other tools into one dashboard
 - **🪶 Lightweight collection** — the shim collects usage and AI-tool activity from local session files and Cursor's minimal token hook; devices are identified automatically, idempotent deduplication is built in, and experimental OTLP push ingestion is also available
 - **🧰 AI-tool visibility** — inspect MCP and skill activity, plus plugin, skill, and MCP installation status by device, using metadata only
 - **🧭 AI utilization index** — personal dashboards provide a two-axis composite score relative to the individual, with failure recovery shown as a separate diagnostic; organization dashboards expose only anonymized aggregates for groups of at least five people ([policy](docs/ai-utilization-policy.md) · [methodology](docs/ai-utilization-methodology.md))
-- **💰 Accurate cost calculation** — a LiteLLM-price-based engine supports per-million, tiered 200k, cache, and fast-mode pricing with daily automatic synchronization
+- **💰 Auditable cost estimates** — estimate API-equivalent token costs with versioned calculation rules, context-dependent input/output/cache rates, daily price synchronization, and a personal calculation ledger. Inferred models and missing billing context remain visibly estimated; this is not your subscription invoice ([methodology](docs/cost-methodology.md)).
+- **📄 Weekly reports** — completed-week comparisons with reconciled usage/model/cache/rate contributions, explicit missing evidence, role-scoped team and organization views, and formula-safe CSV exports ([methodology](docs/weekly-reports.md)).
+- **🎛️ Local collection scope** — review projects on the device before delivery; excluded records stay out of that server's usage, content, tool activity, and pending-event delivery.
 - **👥 Organization views** — organization and team aggregates, leaderboards, personal dashboards, an admin panel, and invitation-based self-onboarding
 - **🗄️ Scalable storage** — PostgreSQL is the default single backend; ClickHouse is an opt-in option for medium and larger installations through the `StorageBackend` abstraction
 - **🔐 Flexible authentication** — choose OAuth with GitHub or Google, credentials, or open mode to fit your environment
@@ -66,9 +72,14 @@ flowchart LR
 The fastest way to try toard is the all-in-one Docker Compose stack with the app, PostgreSQL, and migrations. It pulls prebuilt images from GHCR and starts immediately:
 
 ```bash
+git clone https://github.com/devy1540/toard.git
+cd toard
 export BOOTSTRAP_SETUP_TOKEN="$(openssl rand -hex 32)"
-AUTH_SECRET=$(openssl rand -base64 33) docker compose up -d   # → http://localhost:3000/setup
+export AUTH_SECRET="$(openssl rand -base64 33)"
+docker compose up -d   # → http://localhost:3000/setup
 ```
+
+Keep `AUTH_SECRET` in your deployment secret store or a protected `.env` file for subsequent restarts. Never commit it.
 
 Paste `BOOTSTRAP_SETUP_TOKEN` into the one-time setup form, create the first administrator, then remove the token from the deployment environment and restart the app. The setup transaction is serialized and sign-up/OAuth user creation stays closed until an administrator exists. Startup fails immediately if `AUTH_SECRET` is missing; there is no insecure default. Published images support both amd64 and arm64. Add `--build` to build from source, or set `TOARD_TAG=0.0.1` to pin a version. For a real team rollout, see [Deploying to a team](#-deploying-to-a-team).
 
@@ -87,7 +98,7 @@ cp .env.example .env          # Replace AUTH_SECRET and BOOTSTRAP_SETUP_TOKEN fo
 pnpm db:up                    # Local PostgreSQL and ClickHouse containers
 pnpm migrate                  # Apply the schema
 pnpm seed                     # Seed provider and pricing baselines
-pnpm dev                      # http://localhost:3000
+PRICING_AUTO_SYNC=on pnpm dev # http://localhost:3000; fetch observed pricing in development
 # Open /setup, enter BOOTSTRAP_SETUP_TOKEN, and create the first administrator
 ```
 
@@ -120,8 +131,8 @@ pnpm test                    # Full suite, including Docker-backed migration and
 toard consists of **one server plus a shim on each developer machine**. Collection is pushed from developers to the server, so the server never needs to connect to developer machines. The machines may be on different networks as long as **outbound HTTPS from each developer to the server** is available.
 
 1. **Deploy the server** — run the Compose stack from [Quick start](#-quick-start) at an address reachable by developers, such as an internal DNS name or IP. Create the administrator at `/setup` on first access. See the [deployment guide](docs/DEPLOY.md) for Kubernetes, Helm, and other options.
-2. **Share the link** — the administrator only needs to share the toard URL with the team.
-3. **Self-onboard** — each developer signs in, opens **Settings → Connect computer**, follows the guided installer, and waits for the connection check to complete. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
+2. **Invite members** — in Admin → Invites, choose each member’s email, role, and team and share their one-time invitation link. New installations use invitation-only registration.
+3. **Self-onboard** — each developer accepts the invitation with a password or a verified same-email GitHub/Google identity, signs in, opens **Settings → Connect computer**, follows the guided installer, and waits for the connection check to complete. Usage is attributed to that person's account. See [Install the shim](#-install-the-shim-usage-collection).
 
 The token is sent as a bearer token, so HTTPS is required for every non-loopback deployment. Set `TOARD_PUBLIC_URL` only when the browser URL and ingestion URL differ behind a proxy; otherwise toard infers the public URL from the request host.
 
@@ -181,7 +192,7 @@ From a library detail page, an individual can install an already-registered immu
 
 Team updates progress through a minimum one-device 10% canary, then 50%, then 100%. Rollout stops and restores last-known-good when at least two devices fail or failures reach 20% of attempted devices. Permission or source-identity expansion requires a team leader to confirm again.
 
-**One-line installer (recommended)** — after signing in, open **Settings → Connect a computer**, confirm the operating system, and copy the provided command. A token for that computer is issued automatically, and the page verifies the first authenticated request after installation. The same page can then connect to the shim on `127.0.0.1` to show its local status and run collect, doctor, or a checksum-verified update. Every browser uses a short-lived local helper window opened by the user's click, so Chromium-based browsers, Safari, Firefox, and other engines share the same HTTPS-to-loopback flow; if a browser blocks that pop-up but permits direct loopback access, the page falls back to the existing CORS/Private Network Access transport. The result still returns to the original Settings UI without a command-line fallback. Running a command from a new server adds that target without removing existing targets. Rerunning a command for the same server updates only that target's token and policy while preserving its delivery cursor. Legacy single-server installations migrate automatically to the target structure on the first new-version installation. Claude, Codex, Gemini, and Qwen backfill historical usage from local session files. Cursor usage starts after the exact-token stop hook is installed, while existing `.cursor` transcripts are used for opt-in conversation content and MCP or skill activity.
+**One-line installer (recommended)** — after signing in, open **Settings → Connect a computer**, confirm the operating system, and copy the provided command. A token for that computer is issued automatically. Connection alone does not finish setup: the wizard waits for the first usage event to be stored (or durably queued on a ClickHouse server), and the page verifies the first authenticated request after installation. The same page can then connect to the shim on `127.0.0.1` to show its local status and run collect, doctor, or a checksum-verified update. Every browser uses a short-lived local helper window opened by the user's click, so Chromium-based browsers, Safari, Firefox, and other engines share the same HTTPS-to-loopback flow; if a browser blocks that pop-up but permits direct loopback access, the page falls back to the existing CORS/Private Network Access transport. The result still returns to the original Settings UI without a command-line fallback. Running a command from a new server adds that target without removing existing targets. Rerunning a command for the same server updates only that target's token and policy while preserving its delivery cursor. Legacy single-server installations migrate automatically to the target structure on the first new-version installation. Claude, Codex, Gemini, and Qwen backfill historical usage from local session files. Cursor usage starts after the exact-token stop hook is installed, while existing `.cursor` transcripts are used for opt-in conversation content and MCP or skill activity.
 
 ```bash
 curl -fsSL <toard URL>/install.sh | TOARD_INGEST_TOKEN=<my token> sh
@@ -193,7 +204,7 @@ On Windows x64, the same page provides a PowerShell command:
 $env:TOARD_INGEST_TOKEN='<my token>'; irm '<toard URL>/install.ps1' | iex
 ```
 
-**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets, and `toard-shim local start|stop|status` manages the loopback-only UI bridge. The bridge accepts only the exact UI origin and target ID recorded by the installer, uses short-lived origin-and-target-bound sessions, and never returns ingest credentials or raw logs. Browser control uses an origin-checked, one-time local helper window first and retains direct CORS/Private Network Access as a pop-up-blocked fallback. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. There is no separate durable outbox, so deleting the original local session logs during an outage makes missing events for that target unrecoverable. An unprefixed semver tag such as `0.0.1` triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. The former `v*` release line is retired and no longer published. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
+**Manual configuration (advanced)** — `toard-shim targets list` shows targets, policies, and recent delivery status without exposing tokens. `toard-shim doctor` diagnoses all targets, and `toard-shim local start|stop|status` manages the loopback-only UI bridge. The bridge accepts only the exact UI origin and target ID recorded by the installer, uses short-lived origin-and-target-bound sessions, and never returns ingest credentials or raw logs. Browser control uses an origin-checked, one-time local helper window first and retains direct CORS/Private Network Access as a pop-up-blocked fallback. Credentials and cursors are isolated per server under `~/.toard/targets/<sha256(endpoint)>/{credentials,state}`. If one server is temporarily unavailable, other targets continue receiving events, and the failed target retries only its own undelivered range on the next run. Normalized usage is committed to a per-target SQLite journal before source cursors advance and removed only after the server acknowledges the complete batch. Committed usage survives process restarts and source-log deletion; unread records, prompt content, and tool activity still require their source logs. The journal has a 64 MiB payload limit; if full, the affected source cursor stops advancing. See [collection reliability](docs/collection-reliability.md) for receipt semantics, recovery, and upgrade order. An unprefixed semver tag such as `0.0.1` triggers GitHub Actions to publish binaries for macOS and Linux arm64/x64 and Windows x64. The former `v*` release line is retired and no longer published. The Windows installer downloads the GitHub Release binary directly, verifies its SHA256 checksum, and registers scheduled collection in Task Scheduler.
 
 **Uninstall** — on macOS and Linux, run `curl -fsSL <toard>/uninstall.sh | sh`. On Windows, run `irm '<toard>/uninstall.ps1' | iex`. The uninstall command from each server removes only that server target. If other targets remain, the shim, scheduled collection, and PATH entry remain installed. Shared installation files are removed only when the final target is deleted. An uninstall command from an unregistered server is a no-op, and existing Claude/Codex installations and original session logs are always preserved.
 
@@ -257,7 +268,7 @@ Select the mode appropriate for the organization with `AUTH_MODE`. Authenticatio
 
 | Mode | Behavior | Intended use |
 |---|---|---|
-| `oauth` (default) | GitHub/Google OAuth plus credentials-based sign-in and registration | Public or organization deployments |
+| `oauth` (default) | GitHub/Google OAuth plus credentials-based sign-in; new membership is invitation-only by default | Public or organization deployments |
 | `open` | Access without authentication as the first or configured user; **the dashboard is public** | Trusted internal networks or single-organization deployments |
 
 OAuth and credentials can be enabled together, and both appear on `/login`. Email magic links are planned.
@@ -266,11 +277,16 @@ OAuth and credentials can be enabled together, and both appear on `/login`. Emai
 
 For OAuth-only deployments (`AUTH_CREDENTIALS_ENABLED=false`), configure GitHub or Google before opening `/setup`. The form creates a passwordless administrator whose email must exactly match the provider's verified email. Remove `BOOTSTRAP_SETUP_TOKEN` after the administrator row is created; the first OAuth sign-in links only a verified same-email administrator. GitHub accepts only the verified primary email returned by the `user:email` API and Google requires `email_verified=true`. Same-email automatic linking is disabled for member rows. A headless OAuth-only admin may omit both `BOOTSTRAP_ADMIN_PASSWORD` and the browser setup token, then link the verified same-email provider directly.
 
-**Credentials** — enabled by default. Registration is available at `/signup` with optional domain gating, and passwords can be set or changed at `/settings`:
+**Registration** — `AUTH_REGISTRATION_MODE=invite_only` is the default. Administrators issue one-time invitations with an assigned email, role, and team. Password acceptance consumes the invitation atomically; verified same-email GitHub/Google registration does the same. Team membership is assigned by administrators, never by a public team picker. `/signup` explains how to join and cannot create a password account.
+
+To allow public registration, explicitly set `AUTH_REGISTRATION_MODE=verified_oauth` and configure GitHub or Google. Only a provider-verified email in `ALLOWED_EMAIL_DOMAINS` may self-register; an empty allowlist allows any verified domain. Explicit administrator invitations may include external collaborators. Existing accounts continue to sign in when the registration mode changes.
+
+**Credentials** — enabled by default for existing and invited accounts. Passwords can be set or changed at `/settings`:
 
 ```bash
 AUTH_CREDENTIALS_ENABLED=true               # Set false for OAuth only
-ALLOWED_EMAIL_DOMAINS=example.com           # Optional registration allowlist
+AUTH_REGISTRATION_MODE=invite_only          # Or verified_oauth for public verified-OAuth registration
+ALLOWED_EMAIL_DOMAINS=example.com           # Public verified-OAuth registration allowlist
 BOOTSTRAP_SETUP_TOKEN=...                   # Browser setup only; openssl rand -hex 32
 BOOTSTRAP_ADMIN_PASSWORD=...                # Credentials admin only; OAuth-only may omit
 ```
@@ -335,7 +351,7 @@ toard provides container deployment artifacts. See [docs/DEPLOY.md](docs/DEPLOY.
 |---|---|---|
 | Ingestion | Shim pulls local session files and sends normalized usage to `/api/v1/events`; OTLP `/api/v1/logs` is experimental | ADR-001 |
 | Storage | PostgreSQL only by default, with opt-in ClickHouse behind the `StorageBackend` abstraction | ADR-003 |
-| Cost | LiteLLM per-million, tiered 200k, cache, and fast-mode pricing | ADR-004 |
+| Cost | API-equivalent estimates; immutable rates, request-context tiers, cache and calculation-version evidence | [Methodology](docs/cost-methodology.md) |
 | Authentication | Auth.js with OAuth, credentials, and open modes using JWT sessions | ADR-007 |
 | Time zones | Display in the viewer's browser or configured user time zone; use `ORG_TIMEZONE`, an IANA identifier defaulting to UTC, for mart cutoffs and fallback | ADR-008 |
 
@@ -348,3 +364,7 @@ Contributions are always welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
 ## 📄 License
 
 [MIT](LICENSE)
+
+## Pilot and upgrade checks
+
+Use the [trust roadmap upgrade checklist](docs/trust-roadmap-upgrade.md) before deploying the new onboarding and collection flow. Publish the shim with `collection-scope-v1` support before enabling the web review installer. The [pilot guide](docs/pilot/README.md) defines a two-week, 3–5-team evaluation; its targets are proposed acceptance criteria, not results from real teams.

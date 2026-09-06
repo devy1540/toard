@@ -3,7 +3,7 @@ import {
   type FinalizedUsageEvent,
   type UsageEvent,
 } from "@toard/core";
-import { resolveCostAt, type PricingSchedule } from "@toard/pricing";
+import { COST_CALCULATION_VERSION, resolveCostAt, type PricingSchedule } from "@toard/pricing";
 
 export const MAX_USAGE_EVENT_AGE_MS =
   USAGE_EVENT_LOGICAL_RETENTION_DAYS * 24 * 60 * 60 * 1000;
@@ -45,6 +45,9 @@ export function finalizeUsageEvents(
         costUsd: price.costUsd,
         pricingRevisionId: price.pricingRevisionId,
         costStatus: price.status,
+        costCalculationVersion: COST_CALCULATION_VERSION,
+        cacheCreation1hTokens: event.cacheCreation1hTokens == null ? undefined : Math.min(event.cacheCreation1hTokens, event.cacheCreationTokens),
+        isFast: hints?.isFast ?? event.isFast,
       };
     }),
   };

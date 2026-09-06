@@ -1,4 +1,4 @@
-import { fetchLiteLLMPricing, type ModelPricing, type PricingMap } from "@toard/pricing";
+import { fetchLiteLLMPricing, pricingDetails, type ModelPricing, type PricingMap, type PricingDetails } from "@toard/pricing";
 import { getPool } from "./db";
 import { dayStartUtc, getOrgTimezone, orgDate } from "./org-time";
 import {
@@ -24,6 +24,7 @@ type LatestPricingRow = {
   input_price_above_200k_per_mtok: string | number | null;
   output_price_above_200k_per_mtok: string | number | null;
   fast_multiplier: string | number;
+  pricing_details?: PricingDetails;
 };
 
 export type PricingSyncQueryClient = {
@@ -72,7 +73,8 @@ function samePricing(row: LatestPricingRow, pricing: ModelPricing): boolean {
     optionalNumber(row.cache_creation_price_per_mtok) === pricing.cacheCreatePerM &&
     optionalNumber(row.input_price_above_200k_per_mtok) === pricing.inputAbove200kPerM &&
     optionalNumber(row.output_price_above_200k_per_mtok) === pricing.outputAbove200kPerM &&
-    Number(row.fast_multiplier) === (pricing.fastMultiplier ?? 1);
+    Number(row.fast_multiplier) === (pricing.fastMultiplier ?? 1) &&
+    JSON.stringify(pricingDetails({ inputPerM: 0, outputPerM: 0, ...row.pricing_details })) === JSON.stringify(pricingDetails(pricing));
 }
 
 /** 최신 revision과 다른 모델만 새 revision으로 추가한다. 기존 행은 절대 수정하지 않는다. */
@@ -85,7 +87,7 @@ export async function syncPricingRevisions(
     `SELECT DISTINCT ON (model_id)
        model_id, input_price_per_mtok, output_price_per_mtok,
        cache_read_price_per_mtok, cache_creation_price_per_mtok,
-       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier
+       input_price_above_200k_per_mtok, output_price_above_200k_per_mtok, fast_multiplier, pricing_details
      FROM pricing_revisions
      ORDER BY model_id, effective_at DESC, observed_at DESC, id DESC`,
   );
@@ -104,9 +106,15 @@ export async function syncPricingRevisions(
     const params: unknown[] = [effectiveAt];
     const rows: string[] = [];
     for (const [modelId, value] of chunk) {
+      const identity = new TextEncoder().encode(JSON.stringify([
+        value.inputPerM, value.outputPerM, value.cacheReadPerM, value.cacheCreatePerM,
+        value.inputAbove200kPerM, value.outputAbove200kPerM, value.fastMultiplier ?? 1, pricingDetails(value),
+      ]));
+      const digest = await crypto.subtle.digest("SHA-256", identity);
+      const fingerprint = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
       const b = params.length + 1;
       rows.push(
-        `($${b},$1,$${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},'litellm')`,
+        `($${b},$1,$${b + 1},$${b + 2},$${b + 3},$${b + 4},$${b + 5},$${b + 6},$${b + 7},$${b + 9},$${b + 8}::jsonb,clock_timestamp())`,
       );
       params.push(
         modelId,
@@ -117,6 +125,8 @@ export async function syncPricingRevisions(
         value.inputAbove200kPerM ?? null,
         value.outputAbove200kPerM ?? null,
         value.fastMultiplier ?? 1,
+        JSON.stringify(pricingDetails(value)),
+        `litellm:${fingerprint}`,
       );
     }
     const result = await client.query(
@@ -124,7 +134,7 @@ export async function syncPricingRevisions(
          (model_id, effective_at, input_price_per_mtok, output_price_per_mtok,
           cache_read_price_per_mtok, cache_creation_price_per_mtok,
           input_price_above_200k_per_mtok, output_price_above_200k_per_mtok,
-          fast_multiplier, source)
+          fast_multiplier, source, pricing_details, observed_at)
        VALUES ${rows.join(",")}
        ON CONFLICT (model_id, effective_at, source) DO NOTHING
        RETURNING id`,

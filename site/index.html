@@ -1,128 +1,81 @@
 <!doctype html>
 <html lang="ko">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>toard — AI 코딩 사용량을 하나의 대시보드로</title>
-<meta name="description" content="Claude Code · Codex 등이 내보내는 OTLP를 경량으로 수집해 팀·조직 단위 사용량과 비용을 보여주는 오픈소스 셀프호스팅 대시보드." />
-<link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-<link rel="stylesheet" href="assets/app.css" />
-<meta property="og:title" content="toard — AI 코딩 사용량 대시보드" />
-<meta property="og:description" content="OTLP를 수렴해 팀·조직 사용량과 비용을 보여주는 오픈소스 셀프호스팅 대시보드." />
-<meta property="og:type" content="website" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>toard — 여러 AI 코딩 도구의 사용량과 비용을 한곳에서</title>
+  <meta name="description" content="Claude Code, Codex, Cursor, Gemini, Qwen의 사용량과 API 환산 비용을 모으는 오픈소스 셀프호스팅 대시보드. 실제 화면과 계산 근거를 확인하세요." />
+  <meta property="og:title" content="toard — AI 코딩 사용량과 비용을 한곳에서" />
+  <meta property="og:description" content="내 서버에서 모아 보고, 금액의 계산 근거까지 확인하세요." />
+  <meta property="og:type" content="website" />
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="assets/app.css" />
 </head>
 <body>
-
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
-  <defs>
-    <g id="i-merge" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/></g>
-    <g id="i-download" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></g>
-    <g id="i-dollar" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></g>
-    <g id="i-users" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></g>
-    <g id="i-database" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></g>
-    <g id="i-lock" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></g>
-    <g id="i-server" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></g>
-    <g id="i-globe" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></g>
-    <g id="i-github" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></g>
-    <g id="i-arrow-down" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></g>
-    <g id="i-arrow-right" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></g>
-    <g id="i-zap" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></g>
-    <g id="i-terminal" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></g>
-    <g id="i-repeat" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></g>
-    <g id="i-chart" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></g>
-  </defs>
-</svg>
-
 <header class="nav">
   <div class="wrap nav-inner">
-    <a class="brand" href="#top">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-      toard
-    </a>
-    <nav class="nav-links">
-      <a class="hide-sm" href="#features">특징</a>
-      <a class="hide-sm" href="#how">동작 방식</a>
-      <a href="demo/">라이브 데모</a>
-      <a class="nav-ghost" href="https://github.com/devy1540/toard" target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24"><use href="#i-github"/></svg>GitHub</a>
+    <a class="brand" href="#top">toard</a>
+    <nav class="nav-links" aria-label="주 메뉴">
+      <a class="hide-sm" href="#features">사용 사례</a>
+      <a href="demo/">화면 미리보기</a>
+      <a class="nav-ghost" href="https://github.com/devy1540/toard">GitHub</a>
     </nav>
   </div>
 </header>
-
 <main id="top">
   <section class="hero wrap">
-    <span class="pill"><svg viewBox="0 0 24 24" width="14" height="14"><use href="#i-zap"/></svg>오픈소스 · 셀프호스팅</span>
-    <h1>AI 코딩 사용량, 하나의 대시보드로 수렴</h1>
-    <p>Claude Code · Codex 등이 내보내는 OTLP를 경량으로 수집해 팀·조직 단위 사용량과 비용을 보여주는 셀프호스팅 대시보드.</p>
+    <span class="pill">오픈소스 · 셀프호스팅 · MIT</span>
+    <h1>여러 AI 코딩 도구의 사용량과 비용을 한곳에서</h1>
+    <p>Claude Code, Codex, Cursor, Gemini, Qwen의 사용량을 내 서버에 모으고, 개인과 팀의 변화와 금액의 계산 근거를 확인하세요.</p>
     <div class="hero-cta">
-      <a class="btn btn-primary" href="demo/"><svg viewBox="0 0 24 24"><use href="#i-chart"/></svg>라이브 데모 보기</a>
-      <a class="btn" href="https://github.com/devy1540/toard" target="_blank" rel="noreferrer"><svg viewBox="0 0 24 24"><use href="#i-github"/></svg>GitHub에서 보기</a>
+      <a class="btn btn-primary" href="demo/">실제 화면 미리보기</a>
+      <a class="btn" href="https://github.com/devy1540/toard#-quick-start">설치 안내</a>
     </div>
   </section>
-
-  <section id="features" class="section wrap">
-    <h2 class="section-title">필요한 건 다 있고, 무거운 건 없다</h2>
-    <p class="section-sub">수집·비용·조직 뷰까지 — Collector 없이 앱 하나로.</p>
+  <figure class="wrap product-shot">
+    <a href="demo/"><img src="assets/screenshots/my-usage.png" alt="toard의 개인 사용량 화면: API 환산액, 모델별 구성, 사용 추이와 가격 미확정 안내" width="1440" fetchpriority="high" /></a>
+    <figcaption>합성 데이터로 실행한 실제 화면입니다. 표시 금액은 API 요율 환산액이며 실제 청구액과 다를 수 있습니다.</figcaption>
+  </figure>
+  <section class="section wrap" id="features">
+    <h2 class="section-title">사용량을 확인하고, 숫자의 근거를 살펴보세요</h2>
+    <p class="section-sub">여러 기기와 도구를 함께 쓰는 개발자와 팀을 위한 대시보드입니다.</p>
     <div class="features">
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-merge"/></svg></div><h3>멀티 프로바이더</h3><p>Claude Code · Codex 등 OTLP를 내보내는 도구를 하나의 대시보드로 수렴.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-download"/></svg></div><h3>경량 수집</h3><p>Collector·별도 파이프라인 없이 앱이 OTLP/JSON을 직접 수신. 멱등 dedup 내장.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-dollar"/></svg></div><h3>정확한 비용</h3><p>LiteLLM 가격 기반 비용 엔진 — tiered·캐시·fast 요금까지, 일 단위 자동 동기화.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-users"/></svg></div><h3>조직 뷰</h3><p>조직·팀 집계 · 리더보드 · 개인 대시보드 · 관리자 패널 · 초대 기반 온보딩.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-database"/></svg></div><h3>확장 가능한 저장소</h3><p>기본은 Postgres 단일, 중규모 이상은 ClickHouse 옵트인.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-lock"/></svg></div><h3>유연한 인증</h3><p>OAuth(GitHub/Google) · id/pw · open 모드를 조직 환경에 맞게 선택.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-server"/></svg></div><h3>셀프호스팅</h3><p>Docker Compose 한 줄부터 Kubernetes/Helm 무중단 배포까지.</p></div>
-      <div class="feature"><div class="ico"><svg viewBox="0 0 24 24"><use href="#i-globe"/></svg></div><h3>타임존 지원</h3><p>ORG_TIMEZONE 기준 일별 집계 — 어느 조직 시간대든 "하루"가 정확.</p></div>
+      <article class="feature"><h3>내 사용 패턴</h3><p>기간별 사용량과 모델·기기별 구성을 확인하고 이전 기간과 비교합니다.</p></article>
+      <article class="feature"><h3>확인 가능한 비용</h3><p>API 환산액, 추정 조건, 가격 미확정을 구분합니다. 개인 계산 내역에서 토큰과 가격 이력을 확인할 수 있습니다.</p><a class="text-link" href="demo/#costs">계산 내역 보기 →</a></article>
+      <article class="feature"><h3>팀의 전체 현황</h3><p>팀·조직의 사용량을 모아 봅니다. 관리자가 멤버를 초대하고 소속을 배정합니다.</p><a class="text-link" href="demo/#team">조직 화면 보기 →</a></article>
     </div>
   </section>
-
-  <section id="how" class="section band">
-    <div class="wrap">
-      <h2 class="section-title">동작 방식</h2>
-      <p class="section-sub">shim이 CLI를 투명하게 래핑 → OTLP 전송 → 정규화·비용 계산 → 대시보드.</p>
-      <div class="flow">
-        <span class="flow-node"><svg viewBox="0 0 24 24"><use href="#i-terminal"/></svg>claude / codex</span>
-        <span class="flow-arrow"><svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-arrow-right"/></svg></span>
-        <span class="flow-node"><svg viewBox="0 0 24 24"><use href="#i-repeat"/></svg>toard shim</span>
-        <span class="flow-arrow"><svg viewBox="0 0 24 24" width="20" height="20"><use href="#i-arrow-right"/></svg></span>
-        <span class="flow-node accent"><svg viewBox="0 0 24 24"><use href="#i-chart"/></svg>toard 대시보드</span>
-      </div>
+  <section class="section wrap" id="collection">
+    <h2 class="section-title">서버 하나와 컴퓨터별 수집기</h2>
+    <p class="section-sub">수집기는 로컬 기록을 읽어 서버로 전송합니다. 서버가 개발자 컴퓨터에 접속할 필요는 없습니다.</p>
+    <div class="features">
+      <article class="feature"><h3>1. 서버 설치</h3><p>Docker Compose로 앱과 PostgreSQL을 실행하고 첫 관리자를 설정합니다.</p></article>
+      <article class="feature"><h3>2. 멤버 초대</h3><p>관리자가 발급한 초대로 가입합니다. 공개 가입이 필요한 설치는 검증된 OAuth 계정만 허용할 수 있습니다.</p></article>
+      <article class="feature"><h3>3. 컴퓨터 연결</h3><p>설정의 컴퓨터 연결 안내를 따릅니다. Claude Code·Codex·Gemini·Qwen은 로컬 로그, Cursor는 stop hook으로 사용량을 수집합니다.</p></article>
     </div>
   </section>
-
-  <section class="section wrap">
-    <h2 class="section-title">한 줄로 시작</h2>
-    <p class="section-sub">Docker Compose로 띄우고, CLI로 붙이면 끝.</p>
-    <div class="code">
-      <div class="code-head"><span>bash</span><span>toard up</span></div>
-      <div class="code-body">
-        <div><span class="c">$</span> docker compose up -d</div>
-        <div class="c"># 로그인 → 설정 → 컴퓨터 연결에서 설치 명령 복사</div>
-        <div class="c"># → http://localhost:3000 에서 대시보드 확인</div>
-      </div>
+  <section class="section wrap" id="scope">
+    <h2 class="section-title">설치 전에 알아둘 범위</h2>
+    <div class="feature scope-note">
+      <ul>
+        <li>비용은 API 요율로 계산한 추정액입니다. 구독료·할인·추가 과금을 포함한 청구서 대조 기능은 아직 없습니다.</li>
+        <li>MCP·스킬 활동과 설치 현황은 Claude Code·Codex·Cursor에서 지원합니다. Gemini·Qwen은 이 메타데이터를 아직 지원하지 않습니다.</li>
+        <li>대화 본문 수집은 별도 설정입니다. 기본 사용량·비용 확인에 본문 수집은 필요하지 않습니다.</li>
+        <li>OTLP 수신과 자동 도구 배포는 실험 기능입니다. 기본 설치에 필요한 기능은 아닙니다.</li>
+      </ul>
+      <a class="text-link" href="https://github.com/devy1540/toard/blob/main/docs/cost-methodology.md">비용 계산 방법</a>
+      <span aria-hidden="true"> · </span>
+      <a class="text-link" href="https://github.com/devy1540/toard/blob/main/SECURITY.md">보안 모델과 한계</a>
     </div>
   </section>
-
   <section class="section band">
-    <div class="wrap" style="text-align:center;">
-      <h2 class="section-title">직접 눌러보기</h2>
-      <p class="section-sub"><code>seed:demo</code> 합성 데이터로 채운 실제 대시보드 화면 — 로그인 없이 바로.</p>
-      <a class="btn btn-primary" href="demo/"><svg viewBox="0 0 24 24"><use href="#i-chart"/></svg>라이브 데모 열기</a>
+    <div class="wrap">
+      <h2 class="section-title">먼저 화면을 살펴보세요</h2>
+      <p class="section-sub">개인 사용량, 조직 현황, 비용 계산 내역을 로그인 없이 미리 볼 수 있습니다.</p>
+      <div class="hero-cta"><a class="btn btn-primary" href="demo/">화면 미리보기</a><a class="btn" href="https://github.com/devy1540/toard#-quick-start">내 서버에 설치하기</a></div>
     </div>
   </section>
 </main>
-
-<footer class="site">
-  <div class="wrap foot-inner">
-    <span class="brand" style="font-size:15px;">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
-      toard · MIT License
-    </span>
-    <span class="foot-links">
-      <a href="https://github.com/devy1540/toard" target="_blank" rel="noreferrer">GitHub</a>
-      <a href="https://github.com/devy1540/toard/blob/main/CONTRIBUTING.md" target="_blank" rel="noreferrer">기여</a>
-      <a href="https://github.com/devy1540/toard/blob/main/SECURITY.md" target="_blank" rel="noreferrer">보안</a>
-    </span>
-  </div>
-</footer>
-
+<footer class="site"><div class="wrap foot-inner"><span class="brand">toard · MIT</span><span class="foot-links"><a href="https://github.com/devy1540/toard/blob/main/CONTRIBUTING.md">기여 안내</a><a href="https://github.com/devy1540/toard/discussions">질문과 피드백</a></span></div></footer>
 </body>
 </html>

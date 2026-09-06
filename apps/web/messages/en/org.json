@@ -47,7 +47,7 @@
     "tokenMoreThanPrev": "{diff} more than the previous period ({prev})",
     "noTokenComparison": "No previous-period data to compare yet"
   },
-  "totalCost": "Total cost",
+  "totalCost": "Total API estimate",
   "sessions": "Sessions",
   "activeUsers": "Active users",
   "totalTokens": "Total tokens",
@@ -71,7 +71,7 @@
   "openRanking": "Details",
   "viewAllRanking": "Full ranking →",
   "user": "User",
-  "cost": "Cost",
+  "cost": "API estimate",
   "noUsersTitle": "No users",
   "noTeamsTitle": "No team data",
   "workspaceSignals": "Workspace signals",

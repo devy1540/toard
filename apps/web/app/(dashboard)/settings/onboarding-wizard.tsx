@@ -7,6 +7,8 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { FieldLabel } from "@/components/ui/field";
 import { Surface } from "@/components/ui/surface";
+import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
+import { configureLocalScope } from "@/lib/local-shim-client";
 import { Switch } from "@/components/ui/switch";
 import {
   buildInstallCommand,
@@ -29,11 +31,13 @@ type NavigatorWithUserAgentData = Navigator & {
 
 export function OnboardingWizard({
   baseUrl,
+  targetId,
   uiOrigin,
   contentEnabled,
   contentDefaultOn,
 }: {
   baseUrl: string;
+  targetId: string;
   uiOrigin: string;
   contentEnabled: boolean;
   contentDefaultOn: boolean;
@@ -41,6 +45,8 @@ export function OnboardingWizard({
   const t = useTranslations("settings");
   const [state, dispatch] = useReducer(onboardingReducer, initialOnboardingState);
   const [collectContent, setCollectContent] = useState(contentDefaultOn);
+  const [reviewScope, setReviewScope] = useState(true);
+  const [reviewing, setReviewing] = useState(false);
   const [copied, setCopied] = useState<"install" | "doctor" | null>(null);
   const [issuing, startIssuing] = useTransition();
 
@@ -64,10 +70,11 @@ export function OnboardingWizard({
       try {
         const status = await checkTokenConnectionAction(state.tokenId!);
         if (!active) return;
-        if (status.connected) {
-          dispatch({ type: "connected", lastHost: status.lastHost });
+        if (status.usageStored) {
+          dispatch({ type: "usage-stored", lastHost: status.lastHost });
           return;
         }
+        if (status.connected) dispatch({ type: "connected", lastHost: status.lastHost });
       } catch {
         // 일시적인 조회 실패는 2분 제한 안에서 다시 확인한다.
       }
@@ -96,8 +103,23 @@ export function OnboardingWizard({
       uiOrigin,
       token: state.token,
       collectContent,
+      reviewScope,
     });
-  }, [baseUrl, collectContent, state.platform, state.token, uiOrigin]);
+  }, [baseUrl, collectContent, reviewScope, state.platform, state.token, uiOrigin]);
+
+  const verify = async () => {
+    if (!reviewScope) { dispatch({ type: "verify" }); return; }
+    setReviewing(true);
+    try {
+      const status = await configureLocalScope(targetId);
+      if (status.target.scope?.mode === "paused") { toast.info(t("wizard.scopePaused")); return; }
+      dispatch({ type: "verify" });
+    } catch (error) {
+      if (!(error instanceof Error && error.name === "LocalScopeCancelled")) {
+        toast.error(t(error instanceof Error && error.name === "LocalScopeUnsupported" ? "install.scope.unsupported" : "install.scope.failed"));
+      }
+    } finally { setReviewing(false); }
+  };
 
   const copy = async (kind: "install" | "doctor", value: string) => {
     try {
@@ -183,6 +205,13 @@ export function OnboardingWizard({
             {t("wizard.detected", { platform: t(`wizard.${state.platform}`) })}
           </p>
         ) : null}
+        <div className="space-y-2">
+          <FieldLabel htmlFor="wizard-scope">{t("wizard.scopeChoice")}</FieldLabel>
+          <NativeSelect id="wizard-scope" value={reviewScope ? "review" : "all"} onChange={(event) => setReviewScope(event.target.value === "review")}>
+            <NativeSelectOption value="review">{t("wizard.scopeReview")}</NativeSelectOption><NativeSelectOption value="all">{t("wizard.scopeAll")}</NativeSelectOption>
+          </NativeSelect>
+          <p className="text-muted-foreground text-xs">{t(reviewScope ? "wizard.scopeReviewDescription" : "wizard.scopeAllDescription")}</p>
+        </div>
         <Button className="w-full sm:w-auto" disabled={!state.platform || issuing} onClick={issue}>
           {issuing ? t("wizard.issuing") : t("wizard.continue")}
         </Button>
@@ -211,7 +240,7 @@ export function OnboardingWizard({
           <Button variant="outline" onClick={() => void copy("install", installCommand)}>
             {copied === "install" ? t("wizard.copiedInstall") : t("wizard.copyInstall")}
           </Button>
-          <Button onClick={() => dispatch({ type: "verify" })}>{t("wizard.ranCommand")}</Button>
+          <Button disabled={reviewing} onClick={() => void verify()}>{t(reviewing ? "wizard.reviewingScope" : reviewScope ? "wizard.ranAndReviewScope" : "wizard.ranCommand")}</Button>
         </div>
       </WizardStep>
     );
@@ -221,15 +250,28 @@ export function OnboardingWizard({
     return (
       <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
         <h2 className="text-lg font-semibold">{t("wizard.verifyTitle")}</h2>
-        <p className="text-muted-foreground text-sm">{t("wizard.verifyDescription")}</p>
+        <p className="text-muted-foreground text-sm">{t(state.connectionSeen ? "wizard.waitingForUsageDescription" : "wizard.verifyDescription")}</p>
         <Surface
           variant="muted"
           padding="lg"
           className="border-0 text-center text-sm"
           role="status"
         >
-          {t("wizard.waiting")}
+          {t(state.connectionSeen ? "wizard.waitingForUsage" : "wizard.waiting")}
         </Surface>
+      </WizardStep>
+    );
+  }
+
+  if (state.step === "connected-empty") {
+    return (
+      <WizardStep current={3} total={totalSteps} label={t("wizard.progress", { current: 3, total: totalSteps })}>
+        <h2 className="text-lg font-semibold">{t("wizard.connectedEmptyTitle")}</h2>
+        <p className="text-muted-foreground text-sm">{t("wizard.connectedEmptyDescription")}</p>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button onClick={() => dispatch({ type: "verify" })}>{t("wizard.checkUsageAgain")}</Button>
+          <Button asChild variant="outline"><Link href="/">{t("wizard.viewUsage")}</Link></Button>
+        </div>
       </WizardStep>
     );
   }

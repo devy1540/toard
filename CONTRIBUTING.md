@@ -52,7 +52,11 @@ pnpm typecheck
 pnpm build
 pnpm -r test                  # Unit and contract tests without Docker integration
 pnpm test                     # Full suite; requires Docker for migration and security tests
+pnpm exec playwright install chromium
+pnpm test:browser              # Builds standalone app; isolated DB and real browser workflows
 ```
+
+Browser tests create only synthetic accounts and usage in an isolated, loopback-only tmpfs PostgreSQL container. They never connect to a running toard deployment. The runner builds and tests the Docker standalone entry point and cleans up its own server and database. The local pnpm virtual store is required for portable standalone tracing. To refresh the public screenshot preview from this fixture, run `TOARD_UPDATE_DEMO=1 pnpm test:browser` and inspect all images under `site/assets/screenshots` before committing them.
 
 For Rust shim changes, also run:
 

@@ -1,18 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getTranslations } from "next-intl/server";
-import { auth, credentialsEnabled } from "@/auth";
+import { auth } from "@/auth";
 import { AuthPageShell } from "@/components/auth/auth-page-shell";
-import { allowedDomains } from "@/lib/auth-policy";
 import { hasAdminUser } from "@/lib/setup";
-import { SignupForm } from "./signup-form";
+import { registrationMode } from "@/lib/registration";
 
 export default async function SignupPage() {
   const session = await auth();
   if (session?.user) redirect("/");
   if (!(await hasAdminUser())) redirect("/setup");
-  // 비번 가입이 꺼져 있으면 로그인 페이지로.
-  if (!credentialsEnabled) redirect("/login");
 
   const t = await getTranslations("auth");
 
@@ -20,13 +17,12 @@ export default async function SignupPage() {
     <AuthPageShell
       title={t("signup.title")}
       description={
-        allowedDomains.length > 0
-          ? t("signup.descriptionWithDomains", { domains: allowedDomains.join(", ") })
-          : t("signup.descriptionNoDomains")
+        registrationMode() === "verified_oauth"
+          ? t("signup.verifiedOAuthDescription")
+          : t("signup.inviteOnlyDescription")
       }
       contentClassName="flex flex-col gap-4"
     >
-      <SignupForm />
       <p className="text-muted-foreground text-center text-sm">
         {t("signup.haveAccount")}{" "}
         <Link href="/login" className="text-primary underline-offset-4 hover:underline">

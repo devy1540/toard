@@ -1,5 +1,6 @@
 import {
   resolvePricingEntry,
+  pricingDetails,
   type ModelPricing,
   type PricingMap,
 } from "@toard/pricing";
@@ -52,7 +53,8 @@ function samePricing(left: ModelPricing, right: ModelPricing): boolean {
     (left.cacheCreatePerM ?? null) === (right.cacheCreatePerM ?? null) &&
     (left.inputAbove200kPerM ?? null) === (right.inputAbove200kPerM ?? null) &&
     (left.outputAbove200kPerM ?? null) === (right.outputAbove200kPerM ?? null) &&
-    (left.fastMultiplier ?? 1) === (right.fastMultiplier ?? 1);
+    (left.fastMultiplier ?? 1) === (right.fastMultiplier ?? 1) &&
+    JSON.stringify(pricingDetails(left)) === JSON.stringify(pricingDetails(right));
 }
 
 function closeCandidate(

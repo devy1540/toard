@@ -9,9 +9,9 @@ allowBuilds:
   protobufjs: true
   sharp: true
 
-# Reuse dependency-graph directories across local worktrees.
-# CI and Docker disable this explicitly because their stores are ephemeral.
-enableGlobalVirtualStore: true
+# Keep dependencies inside outputFileTracingRoot so local standalone builds match
+# Docker and CI. An external global virtual store creates non-portable Next traces.
+enableGlobalVirtualStore: false
 
 overrides:
   '@azure-rest/core-client': 2.7.0

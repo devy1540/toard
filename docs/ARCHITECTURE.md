@@ -1,6 +1,6 @@
 # toard 아키텍처 설계
 
-> **상태:** 현재 구현 SSOT · **최종 수정:** 2026-08-25
+> **상태:** 현재 구현 SSOT · **최종 수정:** 2026-09-06
 >
 > 기본 사용량 수집은 Rust shim이 Claude Code·Codex·Gemini·Qwen의 로컬 session/transcript와 Cursor stop-hook 로그를 읽고 `UsageEvent[]`로 정규화해 `POST /api/v1/events`로 보내는 **pull-primary** 구조다. `POST /api/v1/logs` OTLP/JSON 수신은 `TOARD_EXPERIMENTAL_OTLP`로 명시적으로 켜는 experimental 호환 경로다.
 >
@@ -45,7 +45,7 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 
 ### ADR-001 — 수집: 로컬 pull 기본, 앱 직접 수신
 - **결정:** shim이 로컬 원본을 읽어 `/api/v1/events`로 직접 전송한다. Collector는 두지 않는다. 서버는 개발자 머신에 접속하지 않으며 개발자 머신에서 서버로의 단방향 HTTPS만 필요하다.
-- **재전송 경계:** 원본 session 파일과 target별 cursor가 SSOT다. 전송 실패 시 해당 target cursor를 전진시키지 않고 다음 회차에 다시 구성한다. 별도 durable shim outbox는 없으므로 장애 중 원본 파일을 삭제하면 누락분을 복구할 수 없다.
+- **재전송 경계:** 정규화한 사용량은 target별 SQLite 전송 보관함에 FULL WAL commit한 뒤 source cursor를 전진시킨다. 서버 ACK를 검증한 뒤에만 해당 sequence를 정리한다. 아직 읽지 못한 로그·본문·도구 활동에는 원본 파일이 필요하다. [수집 신뢰성](collection-reliability.md) 참조.
 - **OTLP 호환:** `/api/v1/logs` 직접 수신은 experimental로 보존한다. Collector를 추가하더라도 이 선택 경로의 endpoint 앞에 둘 수 있다.
 
 ### ADR-002 — 멀티 프로바이더: shim 정규화 후 `UsageEvent[]`로 수렴
@@ -62,6 +62,13 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 - **결정:** LiteLLM(+models.dev 보조) 가격을 **per-million USD로 저장**하고 토큰→USD 계산. 캐시·fast·200k+ 차등 지원.
 - **근거:** day1co·zeude 모두 per-million 저장으로 float 정밀도 손실을 줄인다. ccusage 비용 모드(display/auto/calculate)는 정합.
 
+### 비용 계산 개정 (2026-09-06)
+- `cost-v2`는 cache를 포함한 입력 컨텍스트로 구간을 결정하고 전체 input/output에 해당 단가를 적용한다. 예전 초과분 누진 계산은 폐기한다.
+- immutable pricing revision의 `pricing_details`에 임계값별 단가와 캐시·세션 조건을 보존한다. 같은 날짜 내 변경도 fingerprint source를 사용해 기존 가격 이력을 덮어쓰지 않는다.
+- `estimated`는 모델/과금 조건 추정이다. API 환산 추정액과 실제 청구액은 제품에서 명시적으로 구분한다.
+- 원본과 ClickHouse outbox에 `cost_calculation_version`, `cache_creation_1h_tokens`, `is_fast`를 보존한다. 기존 금액은 `cost-v1`로 유지하며 임시 seed 요율은 authoritative 소스에서 제외한다.
+- 개인 `/costs`는 인증 사용자 범위의 raw ledger만 조회한다. 세부 계산은 저장 금액을 같은 규칙으로 재현할 수 있을 때만 제공한다. 상세: [비용 방법론](cost-methodology.md).
+
 ### ADR-005 — 프론트엔드: Next.js 15 + TanStack Query + shadcn/ui + Recharts
 - **결정/근거:** 세 벤치마크 공통 스택. TanStack Query는 zeude 검증.
 
@@ -76,6 +83,13 @@ toard는 조직(팀·회사)의 AI 코딩 도구 전반(Claude Code · Codex · 
 - **초기화 경계:** browser `/setup`은 32자 이상의 별도 `BOOTSTRAP_SETUP_TOKEN`을 요구하고, 첫 admin 생성은 PostgreSQL transaction advisory lock 안에서 admin 존재 여부를 재검사한다. admin 전에는 credentials 가입과 OAuth adapter `createUser`를 차단한다. 일반 member 행은 초기화 완료로 보지 않는다. credentials 모드는 admin 생성 뒤 setup token을 제거한다. OAuth-only 모드는 passwordless admin의 이메일과 GitHub verified primary/Google `email_verified=true` 이메일이 일치할 때만 admin row를 자동 연결하며 member same-email 자동 연결은 차단한다. browser setup token은 admin row 생성 뒤 제거하고, headless OAuth-only admin은 browser token 없이 verified same-email provider를 직접 연결할 수 있다.
 - **근거:** ADR-003(메타·계정은 항상 PG)과 일치. 조직마다 인증 요구가 달라(OAuth 불필요한 내부망 조직도 존재) 모드 선택이 필요. Supabase Auth(zeude·day1co) 대비 외부 종속 없음. **JWT 트레이드오프:** 강제 로그아웃 즉시성은 토큰 만료/블랙리스트로 보완(database 세션의 즉시 무효화는 포기). **credentials 보안:** 기존 OAuth 이메일로는 가입 불가(계정 탈취 방지), 미존재/OAuth 전용 계정도 더미 해시 비교로 사용자 열거(timing) 완화. login/signup은 bcrypt 전에 PostgreSQL 공유 global·IP·channel-account budget을 원자 소비하고 15분 window에서 5/60/300회 뒤 30초~15분 backoff한다. raw email/IP는 저장하지 않고 `AUTH_SECRET` HMAC-SHA256 digest만 저장하며, 성공 시 해당 account budget만 해제한다. reverse proxy는 client IP header를 덮어써야 하고 header가 없어도 account/global limit은 유지된다.
 - **MFA 확장:** 자체 credentials 로그인은 비밀번호 확인 뒤 WebAuthn 패스키 사용자 검증을 선택적으로 요구한다. OAuth 로그인은 IdP 인증을 중복하지 않되, OAuth 사용자도 `내 히스토리` 전용 패스키 잠금을 켤 수 있다. 로그인과 히스토리는 같은 패스키 목록을 사용하지만 정책은 독립적이다. RP ID·origin·5분 일회용 challenge와 사용자 검증을 필수로 확인하며 서버에는 public key와 counter만 저장한다. 히스토리 잠금 해제는 현재 로그인 세션 ID·사용자·MFA 설정 버전·30분 만료에 결합한 서명 HttpOnly 쿠키이며 서버 렌더링과 `/api/content/history/*`가 같은 검사를 수행한다. 새 로그인 세션은 이전 잠금 해제 쿠키를 승계하지 않는다. 이 인증용 패스키는 기존 E2EE 콘텐츠 키 PRF wrapper와 분리한다.
+
+### 가입 경계 개정 (2026-09-06)
+- `AUTH_REGISTRATION_MODE=invite_only` 기본. 공개 password signup은 생성 없이 거부한다.
+- `verified_oauth`를 명시하면 검증된 GitHub/Google email만 도메인 allowlist에 따라 self-register한다. 메일 문자열의 suffix 검사는 identity 검증을 대신하지 않는다.
+- 신규 OAuth user 생성은 `registrationAdapter`에서 트랜잭션으로 초대/정책을 재검사하고 사용자, 팀 배정 이력, 초대 소진을 함께 확정한다. UI나 signIn preflight만으로 생성 권한을 판단하지 않는다.
+- 초대는 관리자 지정 이메일·역할·팀을 적용한다. credentials 초대도 같은 원자적 경계를 사용하고 bcrypt 전에 공유 rate limiter를 통과한다.
+- 팀 self-selection은 폐기한다. 기존 계정 로그인·초기 admin setup·admin 한정 OAuth bootstrap linking은 유지한다.
 
 ### ADR-008 — 타임존: 조직 단위 설정 (`ORG_TIMEZONE`), 기본 UTC (v4) · **표출은 뷰어 타임존 (v4 개정)**
 - **결정:** 이벤트 `ts`는 항상 **UTC `timestamptz`** 저장(불변). 일별 집계·리더보드의 "하루" 경계는 **조직 단위 타임존 설정 `ORG_TIMEZONE`**(IANA, 기본 `UTC`)으로 결정한다. 앱이 env를 읽어 검증(무효 시 UTC 폴백) 후 `StorageBackend` 생성자에 주입 — 패키지는 env를 직접 읽지 않는다(core 의존성 0 유지).
@@ -189,7 +203,7 @@ export interface StorageBackend {
   // ─ 쓰기 ─
   saveRawEvent(providerKey: string, payload: unknown): Promise<number>;
   /** 멱등 저장(dedup) + 일별 Mart 증분(SUM 지표) — 동일 트랜잭션 */
-  saveUsageEvents(events: UsageEvent[]): Promise<{ inserted: number; deduped: number }>;
+  saveUsageEvents(events: UsageEvent[], context?: { tokenId: string; userId: string }): Promise<{ inserted: number; deduped: number; confirmed?: number }>;
   /** 마감된 날짜의 Mart 전체 재계산(SUM+DISTINCT) — dirty 집합 대상 */
   recomputeDaily(days: { day: string }[]): Promise<void>;
 
@@ -347,7 +361,7 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 |---|---|
 | **dedup** | shim adapter가 provider·session·원본 이벤트 위치·토큰에서 안정적인 `dedup_key`를 생성한다. 파일 재작성이나 부분 성공 뒤 전체 전송으로 폴백해도 PG=`UNIQUE`+`ON CONFLICT DO NOTHING`, CH outbox/`ReplacingMergeTree`가 중복을 흡수한다. experimental OTLP normalizer도 자체 안정 키를 만든다. |
 | **provider 식별** | **otel 경로:** OTLP `ResourceAttributes['service.name']`을 `providers.service_name_patterns`와 매칭해 `provider_key` 도출(Codex는 `codex`/`codex_cli_rs`). **logfile 경로:** shim이 어떤 어댑터로 읽었는지가 곧 `provider_key`(매칭 불필요, shim이 POST 시 명시). |
-| **재전송 원본** | 기본 경로의 SSOT는 개발자 머신의 local source file과 target별 cursor다. 별도 durable shim outbox는 없다. 실패 target은 cursor를 전진시키지 않고 다음 회차에 재구성하지만, 장애 중 원본을 삭제하면 복구할 수 없다. experimental OTLP만 프롬프트 제거 후 `raw_events`에 보조 원형을 남긴다. |
+| **재전송 원본** | 사용량은 source file → target별 SQLite FULL WAL → 서버 저장 확인 순으로 이동한다. 보관함 commit 이전에는 원본, 이후 ACK 전까지는 보관함이 재전송 근거다. 큐에 저장하지 못한 범위는 source cursor를 전진시키지 않는다. 본문과 도구 활동은 여전히 원본에서 재구성한다. experimental OTLP만 프롬프트 제거 후 `raw_events`에 보조 원형을 남긴다. |
 | **토큰·비용 권위 소스** | token count는 각 shim adapter가 정확한 로컬 이벤트를 해석한다. `user_id`는 bearer token 소유자, 비용은 서버 pricing revision이 최종 권위다. OTEL metrics endpoint는 지원하지 않는다. |
 | **Mart 갱신** | SUM 지표(토큰·비용·`request_count`)는 **당일(미마감)에만** 증분 upsert. DISTINCT(`sessions`·`active_users`)와 **마감된 과거 날짜**는 항상 `recomputeDaily`(DELETE 후 `usage_events`에서 통째 재INSERT). 재처리·지연도착이 건드린 `(user_id, day)`를 dirty로 마킹 → cron이 그 집합만 재계산. |
 | **데이터 보존(TTL)** | `raw_events`=처리 후 14일. `usage_events`=365일(파티션 드롭). Mart=영속. |
@@ -386,6 +400,7 @@ FROM usage_events GROUP BY user_id, day, provider_key;
 | Method | Endpoint | 용도 | 수준 |
 |---|---|---|---|
 | `POST` | `/api/v1/events` | 정규화된 사용량 | **기본** |
+| `POST` | `/api/v1/collection-status` | 수집기 상태 보고 및 저장 확인 handshake. 원본 로그·경로는 받지 않는다. | 기본 |
 | `POST` | `/api/v1/events/reconcile` | Codex replay exact-key 정정 | 기본 호환 |
 | `POST` | `/api/v1/prompts` | opt-in 대화 본문 | 선택 |
 | `POST` | `/api/v1/prompts/reconcile` | prompt agent metadata 정정 | 선택 호환 |
@@ -410,10 +425,13 @@ OTEL metrics endpoint는 지원하지 않는다. `doctor`가 빈 `/v1/logs`를 �
 
 ### 5.5 cursor·장애·재전송
 
-- target별 cursor는 파일 stamp(`mtime+size`), 전송 개수, dedup prefix hash를 기록한다. 전송 성공 뒤에만 해당 target 진행 위치를 전진시킨다.
-- 한 target 실패는 다른 target을 막지 않는다. 실패 target만 다음 수집에서 미전송 범위를 로컬 원본으로부터 다시 구성한다.
-- 별도 durable shim outbox는 없다. 장애 중 원본 session 파일을 삭제하면 그 target의 누락분은 복구할 수 없다.
-- 파일 재작성이나 부분 성공 때문에 전체 전송으로 폴백해도 서버 dedup이 중복을 흡수한다.
+- target별 cursor는 파일 stamp(`mtime+size`), 보관 완료 개수, dedup prefix hash를 기록한다. 사용량은 해당 관측분이 SQLite 보관함에 모두 commit된 뒤 전진한다. 파싱·읽기 오류가 있는 파일은 정상 레코드를 보내더라도 cursor를 전진시키지 않는다.
+- 먼저 대기 사용량을 전송하고 그다음 원본을 읽는다. 따라서 한 번 보관된 기록은 원본 파일이 사라져도 재전송된다. 여러 target의 큐·cursor·ACK는 독립적이다.
+- 새 서버의 `/v1/collection-status` handshake가 알려준 owner와 endpoint에 큐를 묶는다. 같은 owner의 토큰 교체만 허용하고, 기존 owner가 불명확한 대기 기록은 token fingerprint가 달라지면 보존하며 전송을 중단한다.
+- `/events`의 `inserted+deduped+expired+ignored`가 배치 크기와 일치해야 한다. 새 서버는 인증 사용자 소유의 저장 키 수 `confirmed`도 검증한다. 구버전 서버에는 기존 ACK 계약을 적용한다.
+- 저장 후 ACK가 유실되면 큐를 보존하고 재전송한다. PG unique constraint와 CH outbox dedup이 중복을 흡수한다. 큐 정리는 monotonic sequence를 사용해 오래된 응답이 새 기록을 지우지 않도록 한다.
+- 본문과 도구 활동은 이 사용량 보관함에 넣지 않는다. 별도 cursor를 사용하고 재전송에 원본이 필요하다. 기본 큐 payload 한도는 64MiB이며 한도 초과 시 해당 관측 범위의 cursor를 보존한다.
+- 인증된 빈 요청은 기기 연결만 확인한다. 첫 저장 표시는 동일 트랜잭션에서 실제로 확인한 사용자 소유 usage row 또는 durable CH outbox row에만 근거한다. 클라이언트 health 보고는 저장 증명이 아니다.
 
 ### 5.6 Experimental OTLP
 

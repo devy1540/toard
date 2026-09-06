@@ -45,6 +45,15 @@ export function createVerifiedGitHubProvider(
 ) {
   return GitHub({
     ...config,
+    profile(profile) {
+      return {
+        id: String(profile.id),
+        name: profile.name ?? profile.login,
+        email: profile.email?.trim().toLowerCase(),
+        image: profile.avatar_url,
+        toardEmailVerified: (profile as VerifiedGitHubProfile).email_verified === true,
+      };
+    },
     userinfo: {
       url: "https://api.github.com/user",
       request: ({ tokens }: { tokens: { access_token?: string } }) =>

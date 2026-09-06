@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { Pool } from "pg";
 import { getPool } from "./db";
 
 export type Invite = {
@@ -36,9 +37,10 @@ export async function createInvite(
   role: string,
   teamId: string,
   createdBy: string,
+  pool: Pick<Pool, "connect"> = getPool(),
 ): Promise<CreateInviteResult> {
   const token = genToken();
-  const client = await getPool().connect();
+  const client = await pool.connect();
   try {
     await client.query("BEGIN");
     const ex = await client.query("SELECT 1 FROM users WHERE email = $1", [email]);
@@ -100,13 +102,14 @@ export async function acceptInvite(
   token: string,
   name: string,
   passwordHash: string,
+  pool: Pick<Pool, "connect"> = getPool(),
 ): Promise<{ email: string } | null> {
-  const client = await getPool().connect();
+  const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    const inv = await client.query<{ id: string; email: string; role: string; team_id: string | null }>(
-      `SELECT id, email, role, team_id FROM invites
-       WHERE token_hash = $1 AND accepted_at IS NULL AND expires_at > now() FOR UPDATE`,
+    const inv = await client.query<{ id: string; email: string; role: string; team_id: string | null; created_by: string | null }>(
+      `SELECT id, email, role, team_id, created_by FROM invites
+       WHERE token_hash = $1 AND accepted_at IS NULL AND expires_at > clock_timestamp() FOR UPDATE`,
       [hashToken(token)],
     );
     const row = inv.rows[0];
@@ -119,16 +122,24 @@ export async function acceptInvite(
       await client.query("ROLLBACK");
       return null;
     }
-    await client.query(
+    const inserted = await client.query<{ id: string }>(
       `INSERT INTO users (email, name, password_hash, role, team_id, team_onboarding_completed_at)
-       VALUES ($1, $2, $3, $4, $5, CASE WHEN $5::uuid IS NOT NULL OR $4 = 'admin' THEN now() ELSE NULL END)`,
+       VALUES ($1, $2, $3, $4, $5, now()) RETURNING id`,
       [row.email, name || null, passwordHash, row.role, row.team_id],
     );
+    if (row.team_id) {
+      await client.query(
+        `INSERT INTO user_team_assignments (user_id, team_id, effective_from, assignment_kind, created_by)
+         VALUES ($1, $2, now(), 'admin', $3)`,
+        [inserted.rows[0]!.id, row.team_id, row.created_by],
+      );
+    }
     await client.query("UPDATE invites SET accepted_at = now() WHERE id = $1", [row.id]);
     await client.query("COMMIT");
     return { email: row.email };
   } catch (e) {
     await client.query("ROLLBACK");
+    if ((e as { code?: string }).code === "23505") return null;
     throw e;
   } finally {
     client.release();

@@ -84,7 +84,8 @@ test("관리자 가격 화면은 수동 action과 DB 토글 없이 읽기 전용
   assert.match(panel, /useLocale/);
   assert.doesNotMatch(panel, /\.toLocaleString\(/);
   assert.doesNotMatch(autoSync, /getAppSetting|setAppSetting|isAutoSyncEnabled/);
-  assert.doesNotMatch(notice, /getSessionUser|href="\/admin|<Link/);
+  assert.doesNotMatch(notice, /getSessionUser|href="\/admin/);
+  assert.match(notice, /href="\/costs"/);
   assert.match(ko.pricingNotice.unpricedAction, /자동|별도 조작 없이/);
   assert.match(en.pricingNotice.unpricedAction, /automatic|without.*action/i);
   assert.match(panel, /status\.history\.state/);

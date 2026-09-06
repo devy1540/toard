@@ -25,6 +25,7 @@ const ingestRoutes = new Map([
   ["/v1/tool-inventory", "PUT"],
   ["/v1/events/reconcile", "POST"],
 ]);
+const acceptedEventKeys = new Map();
 
 function ingestSuffix(pathname) {
   return [...ingestRoutes.keys()].find((suffix) => pathname.endsWith(suffix));
@@ -49,6 +50,11 @@ const server = createServer((request, response) => {
       const body = Buffer.concat(chunks);
       const authorization = request.headers.authorization ?? "";
       const authorizationScheme = authorization.match(/^([^\s]+)\s+/)?.[1] ?? null;
+      let parsed;
+      try { parsed = JSON.parse(body.toString("utf8")); } catch { parsed = null; }
+      const events = suffix === "/v1/events" && Array.isArray(parsed) ? parsed : [];
+      const keys = events.map(event => createHash("sha256").update(String(event.dedupKey)).digest("hex"));
+      const failed = shouldFail(url.pathname);
       if (captureFile) {
         appendFileSync(
           captureFile,
@@ -57,16 +63,26 @@ const server = createServer((request, response) => {
             path: url.pathname,
             authorizationScheme,
             bodyHash: createHash("sha256").update(body).digest("hex"),
+            accepted: !failed,
+            eventKeyHashes: keys,
           })}\n`,
         );
       }
-      if (shouldFail(url.pathname)) {
+      if (failed) {
         response.writeHead(503, { "content-type": "application/json" });
         response.end('{"error":"temporarily unavailable"}');
         return;
       }
+      let inserted = Array.isArray(parsed) ? parsed.length : 1;
+      let deduped = 0;
+      if (suffix === "/v1/events") {
+        const seen = acceptedEventKeys.get(url.pathname) ?? new Set();
+        inserted = 0;
+        for (const key of keys) { if (seen.has(key)) deduped++; else { seen.add(key); inserted++; } }
+        acceptedEventKeys.set(url.pathname, seen);
+      }
       response.writeHead(200, { "content-type": "application/json" });
-      response.end('{"inserted":1,"deduped":0,"reconciled":1}');
+      response.end(JSON.stringify({ inserted, deduped, reconciled: 1 }));
     });
     return;
   }

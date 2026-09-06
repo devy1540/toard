@@ -4,7 +4,6 @@ import NextAuth from "next-auth";
 import type { Provider } from "next-auth/providers";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
-import { isEmailDomainAllowed } from "@/lib/auth-policy";
 import { resolveMfaSessionId } from "@/lib/auth-session";
 import { getCredentialUserById, verifyCredentialUser } from "@/lib/credential-auth";
 import { credentialClientIdentity, CredentialRateLimitError } from "@/lib/credential-rate-limit";
@@ -14,6 +13,7 @@ import { verifySignedMfaToken } from "@/lib/mfa";
 import { isCredentialMfaRequired } from "@/lib/mfa-store";
 import { createVerifiedGitHubProvider } from "@/lib/oauth-provider-security";
 import { hasAdminUser } from "@/lib/setup";
+import { canSignInWithOAuth, registrationAdapter } from "@/lib/registration";
 
 // credentials(id/pw): 기본 활성. AUTH_CREDENTIALS_ENABLED=false 로 OAuth 전용 구성 가능(ADR-007).
 export const credentialsEnabled = (process.env.AUTH_CREDENTIALS_ENABLED ?? "true") !== "false";
@@ -35,6 +35,15 @@ if (process.env.AUTH_GOOGLE_ID && process.env.AUTH_GOOGLE_SECRET) {
     clientId: process.env.AUTH_GOOGLE_ID,
     clientSecret: process.env.AUTH_GOOGLE_SECRET,
     allowDangerousEmailAccountLinking: adminOAuthLinkingEnabled,
+    profile(profile) {
+      return {
+        id: profile.sub,
+        name: profile.name,
+        email: profile.email?.trim().toLowerCase(),
+        image: profile.picture,
+        toardEmailVerified: profile.email_verified === true,
+      };
+    },
   }));
   oauthProviderIds.push("google");
 }
@@ -76,7 +85,7 @@ if (credentialsEnabled) {
 // Auth.js (ADR-007) — 메타·인증은 항상 PG(ADR-003). credentials 대비 JWT 세션.
 export const { handlers, auth, signIn, signOut } = NextAuth({
   adapter: guardAdapterUserCreation(
-    PostgresAdapter(getPool()),
+    registrationAdapter(PostgresAdapter(getPool()), getPool()),
     hasAdminUser,
     () => adminOAuthLinkingEnabled,
   ),
@@ -87,18 +96,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: { signIn: "/login" },
   providers,
   callbacks: {
-    // 이메일 도메인 제한 (검증된 identity 기반 — 설계 §10.4).
-    signIn({ user, account, profile }) {
+    // New OAuth identities require an invitation or explicitly enabled verified registration.
+    async signIn({ user, account, profile }) {
       const email = (user.email ?? "").toLowerCase();
       if (!email) return false;
-      // credentials 는 가입(도메인 게이팅)·seed(신뢰)에서 이미 검증됨. 로그인마다 재검사하면
-      // 도메인 정책 변경 시 기존 계정(부트스트랩 admin 포함)이 잠기므로 스킵.
+      // Existing password accounts and administrator-issued invitations keep working.
       if (account?.provider === "credentials") return true;
       // OAuth(새 identity 연합): 미검증 이메일 거부(도메인 사칭 방지) + 도메인 게이팅.
       if ((profile as { email_verified?: boolean } | undefined)?.email_verified !== true) {
         return false;
       }
-      return isEmailDomainAllowed(email);
+      return canSignInWithOAuth(getPool(), email, undefined, account ?? undefined);
     },
     // JWT 에 user.id 를 실어 세션에 노출 (database 세션이 아니므로 직접 전달)
     jwt({ token, user }) {

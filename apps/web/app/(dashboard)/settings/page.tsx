@@ -3,6 +3,8 @@ import { getLocale, getTranslations } from "next-intl/server";
 import { oauthProviders, signIn } from "@/auth";
 import { LinkTabs } from "@/components/dashboard/link-tabs";
 import { SettingsRow } from "@/components/dashboard/settings-row";
+import { CollectionHealthPanel } from "@/components/dashboard/collection-health-panel";
+import { getCollectionHealth } from "@/lib/collection-health";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +14,7 @@ import { getPool } from "@/lib/db";
 import { fmtNum } from "@/lib/format";
 import { getViewerTimezone } from "@/lib/viewer-time";
 import { getHostShims } from "@/lib/host-shims";
-import { getPublicBaseUrl, getRequestOrigin } from "@/lib/public-url";
+import { getPublicBaseUrl, getRequestOrigin, localShimTargetId } from "@/lib/public-url";
 import { getDashboardViewer } from "@/lib/session-user";
 import { getStorage } from "@/lib/storage";
 import { getMyDeviceInventories } from "@/lib/tool-metadata";
@@ -28,6 +30,7 @@ import { DeviceActions, type DeviceControlClientView } from "./device-actions";
 import { DeviceInventory } from "./device-inventory";
 import { OnboardingPanel } from "./onboarding-panel";
 import { OnboardingWizard } from "./onboarding-wizard";
+import { CollectionScopePanel } from "./collection-scope-panel";
 import { PasswordForm } from "./password-form";
 import { TimezoneForm } from "./timezone-form";
 import { TokenManagementPanel, type TokenManagementRow } from "./token-management-panel";
@@ -168,7 +171,7 @@ async function AccountTab({
 
 async function InstallTab({ userId }: { userId: string }) {
   const t = await getTranslations("settings");
-  const [tokens, baseUrl, uiOrigin, devices, shims, inventories, controls] = await Promise.all([
+  const [tokens, baseUrl, uiOrigin, devices, shims, inventories, controls, health] = await Promise.all([
     listActiveTokens(userId),
     getPublicBaseUrl(),
     getRequestOrigin(),
@@ -176,6 +179,7 @@ async function InstallTab({ userId }: { userId: string }) {
     getHostShims(userId),
     getMyDeviceInventories(userId),
     getDeviceControlRepository().listUserDevices(userId),
+    getCollectionHealth(userId),
   ]);
   const serverVersion = getServerVersion();
   const contentEnabled = contentCollectionEnabled();
@@ -204,6 +208,7 @@ async function InstallTab({ userId }: { userId: string }) {
         <CardContent className="min-w-0 space-y-6">
           <OnboardingWizard
             baseUrl={baseUrl}
+            targetId={localShimTargetId(`${baseUrl}/api`)}
             uiOrigin={uiOrigin}
             contentEnabled={contentEnabled}
             contentDefaultOn={contentDefaultOn}
@@ -215,6 +220,8 @@ async function InstallTab({ userId }: { userId: string }) {
       </Card>
 
       <TokenManagementPanel tokens={tokenRows} />
+      <CollectionScopePanel targetId={localShimTargetId(`${baseUrl}/api`)} />
+      <CollectionHealthPanel rows={health} formatTime={(date) => fmtWhen.format(date)} />
       <DeviceList
         devices={devices}
         shims={shims}

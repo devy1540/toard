@@ -18,11 +18,11 @@ test("login action과 Auth.js direct credentials 경로가 같은 공유 limiter
   assert.ok(credential.indexOf("await verifyPassword") < credential.indexOf("await clearCredentialAccountLimit"));
 });
 
-test("signup은 bcrypt 전에 IP/account/global budget을 소비하고 성공한 account만 해제한다", () => {
-  const signup = source("app/signup/actions.ts");
+test("초대 수락은 bcrypt 전에 IP/account/global budget을 소비하고 성공한 account만 해제한다", () => {
+  const signup = source("app/invite/[token]/actions.ts");
   const consume = signup.indexOf("await consumeCredentialAttempt");
   const hash = signup.indexOf("hashPassword(password)");
-  const insert = signup.indexOf("INSERT INTO users");
+  const insert = signup.indexOf("await acceptInvite(");
   const clear = signup.indexOf("await clearCredentialAccountLimit");
 
   assert.ok(consume >= 0 && consume < hash && hash < insert && insert < clear);

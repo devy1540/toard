@@ -1,5 +1,8 @@
 import type {
   BucketOptions,
+  CostEvidenceQuery,
+  CostEvidencePage,
+  CostReportScope,
   DailyPoint,
   DeviceInfo,
   FinalizedUsageEvent,
@@ -33,6 +36,7 @@ import type {
   TimeBucket,
   TimeseriesScope,
   UsageEvent,
+  UsageIngestContext,
   UsageCostCoverage,
   UsageEventReconciliationRequest,
   UsageEventReconciliationResult,
@@ -44,6 +48,7 @@ import type {
   UtilizationUsageDay,
   UtilizationUsageQuery,
 } from "@toard/core";
+import { assertCostReportScope } from "@toard/core";
 import { buildUserInsightComparison, CACHE_SIGNAL_PROVIDER_KEYS } from "@toard/core";
 import { Pool, type PoolClient } from "pg";
 
@@ -52,12 +57,14 @@ const n = (v: unknown): number => (v == null ? 0 : Number(v));
 
 type CostCoverageRow = {
   priced_events?: string | number;
+  estimated_events?: string | number;
   unpriced_events?: string | number;
   legacy_events?: string | number;
 };
 
 const costCoverage = (row: CostCoverageRow): UsageCostCoverage => ({
   pricedEvents: n(row.priced_events),
+  ...(n(row.estimated_events) > 0 ? { estimatedEvents: n(row.estimated_events) } : {}),
   unpricedEvents: n(row.unpriced_events),
   legacyEvents: n(row.legacy_events),
 });
@@ -114,6 +121,80 @@ export class PostgresStorage implements StorageBackend {
   }
 
   // ── 쓰기 ──
+  async getCostEvidence(userId: string, query: CostEvidenceQuery): Promise<CostEvidencePage> {
+    return this.readCostEvidence({ kind: "user", userId }, query, 100);
+  }
+
+  private reportWhere(scope: CostReportScope, query: PeriodQuery) {
+    assertCostReportScope(scope);
+    return this.periodWhere({ from: query.from, to: query.to, providerKey: query.providerKey,
+      ...(scope.kind === "user" ? { userId: scope.userId } : scope.kind === "team" ? { teamId: scope.teamId } : {}) });
+  }
+
+  async getReportPricingRevisionIds(scope: CostReportScope, query: PeriodQuery): Promise<string[]> {
+    const { where, params } = this.reportWhere(scope, query);
+    const result = await this.pool.query(`SELECT DISTINCT pricing_revision_id FROM usage_events ${where} AND pricing_revision_id IS NOT NULL`, params);
+    return result.rows.map(row => row.pricing_revision_id);
+  }
+
+  async consumeReportCostEvidence(scope: CostReportScope, query: PeriodQuery, consume: (events: FinalizedUsageEvent[]) => void | Promise<void>): Promise<void> {
+    const { where, params } = this.reportWhere(scope, query);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      await client.query(`DECLARE toard_report_usage NO SCROLL CURSOR FOR
+        SELECT dedup_key, user_id, provider_key, model, ts, input_tokens, output_tokens,
+          cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, is_fast,
+          cost_usd, cost_status, pricing_revision_id, cost_calculation_version,
+          NULL::text AS session_id, NULL::text AS host, NULL::text AS log_adapter
+        FROM usage_events ${where} ORDER BY ts DESC, dedup_key DESC`, params);
+      while (true) {
+        const rows = await client.query("FETCH FORWARD 1000 FROM toard_report_usage");
+        if (!rows.rows.length) break;
+        await consume(rows.rows.map(row => this.costEvidenceEvent(row)));
+      }
+    } finally {
+      await client.query("ROLLBACK").catch(() => undefined);
+      client.release();
+    }
+  }
+
+  private async readCostEvidence(scope: CostReportScope, query: CostEvidenceQuery, maxLimit: number): Promise<CostEvidencePage> {
+    assertCostReportScope(scope);
+    const limit = Number.isFinite(query.limit) ? Math.max(1, Math.min(maxLimit, Math.trunc(query.limit!))) : 50;
+    const { where, params } = this.periodWhere({ from: query.from, to: query.to, providerKey: query.providerKey,
+      ...(scope.kind === "user" ? { userId: scope.userId } : scope.kind === "team" ? { teamId: scope.teamId } : {}) });
+    let cursorClause = "";
+    if (query.before) {
+      params.push(query.before.ts, query.before.dedupKey);
+      cursorClause = ` AND (ts, dedup_key) < ($${params.length - 1}::timestamptz, $${params.length}::text)`;
+    }
+    params.push(limit + 1);
+    const rows = await this.pool.query(
+      `SELECT dedup_key, user_id, provider_key, session_id, model, ts, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens, cache_creation_1h_tokens, is_fast,
+              cost_usd, cost_status, pricing_revision_id, cost_calculation_version, log_adapter, host
+       FROM usage_events ${where}${cursorClause}
+       ORDER BY ts DESC, dedup_key DESC LIMIT $${params.length}`, params,
+    );
+    const events = rows.rows.slice(0, limit).map(row => this.costEvidenceEvent(row));
+    const last = events.at(-1);
+    return { events, next: rows.rows.length > limit && last ? { ts: last.ts, dedupKey: last.dedupKey } : null };
+  }
+
+  private costEvidenceEvent(row: Record<string, any>): FinalizedUsageEvent {
+    return {
+      dedupKey: row.dedup_key, providerKey: row.provider_key, userId: row.user_id,
+      sessionId: row.session_id, model: row.model, ts: new Date(row.ts),
+      inputTokens: n(row.input_tokens), outputTokens: n(row.output_tokens),
+      cacheReadTokens: n(row.cache_read_tokens), cacheCreationTokens: n(row.cache_creation_tokens),
+      cacheCreation1hTokens: row.cache_creation_1h_tokens == null ? undefined : n(row.cache_creation_1h_tokens),
+      isFast: row.is_fast ?? undefined, costUsd: n(row.cost_usd), costStatus: row.cost_status,
+      pricingRevisionId: row.pricing_revision_id, costCalculationVersion: row.cost_calculation_version,
+      logAdapter: row.log_adapter, host: row.host,
+    };
+  }
+
   async saveRawEvent(providerKey: string, payload: unknown): Promise<number> {
     const res = await this.pool.query<{ id: string }>(
       "INSERT INTO raw_events (provider_key, payload) VALUES ($1, $2) RETURNING id",
@@ -122,7 +203,7 @@ export class PostgresStorage implements StorageBackend {
     return Number(res.rows[0]!.id);
   }
 
-  async saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult> {
+  async saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult> {
     if (events.length === 0) return { inserted: 0, deduped: 0 };
     const client = await this.pool.connect();
     try {
@@ -136,8 +217,8 @@ export class PostgresStorage implements StorageBackend {
           `INSERT INTO usage_events
              (dedup_key, provider_key, user_id, team_id, session_id, model, ts,
               input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-              log_adapter, host, pricing_revision_id, cost_status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+              log_adapter, host, pricing_revision_id, cost_status, cost_calculation_version, cache_creation_1h_tokens, is_fast)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
            ON CONFLICT (dedup_key) DO NOTHING`,
           [
             e.dedupKey, e.providerKey, e.userId,
@@ -146,6 +227,7 @@ export class PostgresStorage implements StorageBackend {
             e.inputTokens, e.outputTokens, e.cacheReadTokens, e.cacheCreationTokens, e.costUsd,
             e.logAdapter ?? null, e.host ?? null,
             e.pricingRevisionId, e.costStatus,
+            e.costCalculationVersion ?? "cost-v1", e.cacheCreation1hTokens ?? null, e.isFast ?? null,
           ],
         );
         if (r.rowCount === 1) {
@@ -157,8 +239,15 @@ export class PostgresStorage implements StorageBackend {
       if (insertedUnpriced) {
         await client.query("SELECT enqueue_pricing_repair(clock_timestamp())");
       }
+      let confirmed: number | undefined;
+      if (context) {
+        const receipt = await client.query<{ confirmed: number }>("SELECT record_ingest_usage_receipt($1, $2, 'postgres', $3::text[]) AS confirmed", [
+          context.tokenId, context.userId, events.map((event) => event.dedupKey),
+        ]);
+        confirmed = Number(receipt.rows[0]?.confirmed ?? 0);
+      }
       await client.query("COMMIT");
-      return { inserted, deduped: events.length - inserted };
+      return { inserted, deduped: events.length - inserted, ...(confirmed != null ? { confirmed } : {}) };
     } catch (err) {
       await client.query("ROLLBACK");
       throw err;
@@ -581,14 +670,16 @@ export class PostgresStorage implements StorageBackend {
         cache_read_tokens: string | number;
         cache_creation_tokens: string | number;
         cost_usd: string | number;
-        cost_status: "priced" | "unpriced" | "legacy";
+        cost_status: "priced" | "estimated" | "unpriced" | "legacy";
+        cache_creation_1h_tokens?: string | number | null;
+        is_fast?: boolean | null;
         log_adapter: string | null;
         host: string | null;
         local_day: string;
       }>(
         `SELECT dedup_key, provider_key, user_id, session_id, model, ts,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                cost_usd, cost_status, log_adapter, host,
+                cost_usd, cost_status, log_adapter, host, cache_creation_1h_tokens, is_fast,
                 to_char((ts AT TIME ZONE $6)::date, 'YYYY-MM-DD') AS local_day
          FROM usage_events
          WHERE ts >= $1 AND ts < $2
@@ -634,6 +725,8 @@ export class PostgresStorage implements StorageBackend {
           outputTokens: n(row.output_tokens),
           cacheReadTokens: n(row.cache_read_tokens),
           cacheCreationTokens: n(row.cache_creation_tokens),
+          cacheCreation1hTokens: row.cache_creation_1h_tokens == null ? undefined : n(row.cache_creation_1h_tokens),
+          isFast: row.is_fast ?? undefined,
           costUsd: n(row.cost_usd),
           logAdapter: row.log_adapter,
           host: row.host,
@@ -643,13 +736,14 @@ export class PostgresStorage implements StorageBackend {
           `UPDATE usage_events
            SET cost_usd = $2,
                pricing_revision_id = $3,
-               cost_status = 'priced'
+               cost_status = $5,
+               cost_calculation_version = $6
            WHERE dedup_key = $1
              AND (
                cost_status IN ('unpriced', 'legacy')
                OR pricing_revision_id = ANY($4::uuid[])
              )`,
-          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds],
+          [row.dedup_key, resolved.costUsd, resolved.pricingRevisionId, request.replaceRevisionIds, resolved.costStatus ?? "priced", resolved.costCalculationVersion ?? "cost-v1"],
         );
         if (update.rowCount === 1) {
           if (row.cost_status === "legacy") repricedLegacy += 1;
@@ -694,6 +788,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(output_tokens),0) AS output,
               COALESCE(SUM(cache_read_tokens),0)     AS cache_read,
               COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -790,6 +885,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id)  AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -812,6 +908,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id)  AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -920,6 +1017,7 @@ export class PostgresStorage implements StorageBackend {
                 COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost,
                 COUNT(DISTINCT session_id) AS sessions,
                 COALESCE(SUM(tokens), 0) AS tokens,
+                COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
                 COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -957,6 +1055,7 @@ export class PostgresStorage implements StorageBackend {
          SELECT 'model' AS dimension, model AS key, period,
                 COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'), 0) AS cost,
                 SUM(tokens) AS tokens,
+                COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
                 COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
                 COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -1053,6 +1152,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cache_creation_tokens),0) AS cache_creation,
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COUNT(*)                               AS events,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events
@@ -1125,6 +1225,7 @@ export class PostgresStorage implements StorageBackend {
                   COALESCE(SUM(e.cost_usd) FILTER (WHERE e.cost_status <> 'unpriced'),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'estimated') AS estimated_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'priced') AS priced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'unpriced') AS unpriced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'legacy') AS legacy_events
@@ -1135,6 +1236,7 @@ export class PostgresStorage implements StorageBackend {
                   COALESCE(SUM(e.cost_usd) FILTER (WHERE e.cost_status <> 'unpriced'),0) AS cost,
                   COALESCE(SUM(e.input_tokens + e.output_tokens + e.cache_read_tokens + e.cache_creation_tokens),0) AS tokens,
                   COUNT(DISTINCT e.session_id) AS sessions,
+                  COUNT(*) FILTER (WHERE e.cost_status = 'estimated') AS estimated_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'priced') AS priced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'unpriced') AS unpriced_events,
                   COUNT(*) FILTER (WHERE e.cost_status = 'legacy') AS legacy_events
@@ -1156,6 +1258,7 @@ export class PostgresStorage implements StorageBackend {
               COALESCE(SUM(cost_usd) FILTER (WHERE cost_status <> 'unpriced'),0) AS cost,
               COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
               COUNT(DISTINCT session_id) AS sessions,
+              COUNT(*) FILTER (WHERE cost_status = 'estimated') AS estimated_events,
               COUNT(*) FILTER (WHERE cost_status = 'priced') AS priced_events,
               COUNT(*) FILTER (WHERE cost_status = 'unpriced') AS unpriced_events,
               COUNT(*) FILTER (WHERE cost_status = 'legacy') AS legacy_events

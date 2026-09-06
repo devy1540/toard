@@ -1,4 +1,6 @@
 import { Clock3, Inbox, Lightbulb } from "lucide-react";
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { getFormatter, getLocale, getTranslations } from "next-intl/server";
 import { InsightComparisonChart } from "@/components/charts/insight-comparison-chart";
 import { DashboardToolbar } from "@/components/dashboard/dashboard-toolbar";
@@ -104,6 +106,7 @@ export default async function InsightsPage({
     getCachedPersonalUtilization(userId),
   ]);
   const comparisonCoverage = {
+    estimatedEvents: (comparison.current.costCoverage.estimatedEvents ?? 0) + (comparison.previous.costCoverage.estimatedEvents ?? 0),
     pricedEvents: comparison.current.costCoverage.pricedEvents + comparison.previous.costCoverage.pricedEvents,
     unpricedEvents: comparison.current.costCoverage.unpricedEvents + comparison.previous.costCoverage.unpricedEvents,
     legacyEvents: comparison.current.costCoverage.legacyEvents + comparison.previous.costCoverage.legacyEvents,
@@ -117,6 +120,7 @@ export default async function InsightsPage({
     partial: dashboardT("costCoverage.partial"),
     unpriced: dashboardT("costCoverage.unpriced"),
     legacy: dashboardT("costCoverage.legacy"),
+    estimated: dashboardT("costCoverage.estimated"),
   };
   const currentLegacyCount = costComplete
     ? legacyCostHintCount(comparison.current.costCoverage)
@@ -126,7 +130,7 @@ export default async function InsightsPage({
       ? comparison.previous.costUsd === 0
         ? t("kpi.noPrevious")
         : t("kpi.previousPeriod")
-      : comparisonCoverage.pricedEvents + comparisonCoverage.legacyEvents > 0
+      : comparisonCoverage.pricedEvents + comparisonCoverage.estimatedEvents + comparisonCoverage.legacyEvents > 0
         ? costLabels.partial
         : costLabels.unpriced
     : dashboardT("costCoverage.legacyHint", { count: format.number(currentLegacyCount) });
@@ -214,6 +218,7 @@ export default async function InsightsPage({
       </header>
 
       <PricingNotice coverage={comparisonCoverage} />
+      <Button asChild variant="outline"><Link href="/reports">{navT("reports")}</Link></Button>
 
       <UtilizationIndexCard result={utilization} />
 

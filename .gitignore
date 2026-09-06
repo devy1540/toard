@@ -24,3 +24,7 @@ shim/dist/
 
 # k8s 실제 시크릿 (secret.example.yaml 을 복사해 생성)
 k8s/secret.yaml
+
+# Browser regression artifacts (synthetic test data only)
+test-results/
+playwright-report/

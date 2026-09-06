@@ -486,6 +486,7 @@ export function E2eeHistoryClient({
         partial: dashboardT("costCoverage.partial"),
         unpriced: dashboardT("costCoverage.unpriced"),
         legacy: dashboardT("costCoverage.legacy"),
+        estimated: dashboardT("costCoverage.estimated"),
       }) : null,
       noUsageLabel: dashboardT("history.noUsage"),
       latestTs: session.latestTs,
@@ -604,6 +605,7 @@ export function E2eeHistoryClient({
                     partial: dashboardT("costCoverage.partial"),
                     unpriced: dashboardT("costCoverage.unpriced"),
                     legacy: dashboardT("costCoverage.legacy"),
+                    estimated: dashboardT("costCoverage.estimated"),
                   }}
                   idPrefix={`e2ee-agent-${index}`}
                   labels={{

@@ -3,7 +3,7 @@ import { fmtUsd } from "./format";
 import { formatCostForCoverage } from "./cost-coverage";
 
 export type UsageTitleKey = "dailyUsage" | "hourlyUsage" | "usage30m" | "usage15m";
-export type CostCoverageLabels = { partial: string; unpriced: string; legacy: string };
+export type CostCoverageLabels = { partial: string; unpriced: string; legacy: string; estimated?: string };
 
 export function usageTitleKey(bucket: TimeBucket): UsageTitleKey {
   if (bucket === "day") return "dailyUsage";

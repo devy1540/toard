@@ -1,4 +1,4 @@
-import type { FinalizedUsageEvent, SaveResult, UsageEvent } from "@toard/core";
+import type { FinalizedUsageEvent, SaveResult, UsageEvent, UsageIngestContext } from "@toard/core";
 import { parseShimUserAgent, parseUsageEventsBody, WireParseError } from "@toard/core";
 import { recordShimVersions } from "@/lib/host-shims";
 import { authenticateIngestToken, loadProviders } from "@/lib/ingest-auth";
@@ -18,7 +18,7 @@ type EventsPostDeps = {
   authenticateIngestToken: typeof authenticateIngestToken;
   loadProviders: typeof loadProviders;
   getPricingSchedule: typeof getPricingSchedule;
-  saveUsageEvents(events: FinalizedUsageEvent[]): Promise<SaveResult>;
+  saveUsageEvents(events: FinalizedUsageEvent[], context?: UsageIngestContext): Promise<SaveResult>;
   recordTokenHost: typeof recordTokenHost;
   recordShimVersions: typeof recordShimVersions;
   invalidateUtilizationForUser(userId: string): void | Promise<void>;
@@ -30,7 +30,7 @@ const defaultEventsPostDeps: EventsPostDeps = {
   authenticateIngestToken,
   loadProviders,
   getPricingSchedule,
-  saveUsageEvents: (events) => getStorage().saveUsageEvents(events),
+  saveUsageEvents: (events, context) => getStorage().saveUsageEvents(events, context),
   recordTokenHost,
   recordShimVersions,
   invalidateUtilizationForUser,
@@ -63,7 +63,7 @@ async function postEvents(req: Request, deps: EventsPostDeps): Promise<Response>
     throw e;
   }
   if (events.length === 0) {
-    return Response.json({ inserted: 0, deduped: 0, expired: 0 });
+    return Response.json({ inserted: 0, deduped: 0, expired: 0, ignored: 0, confirmed: 0 });
   }
 
   // 3. provider 실재 검증 — shim 이 명시한 provider_key 는 신뢰하되 등록된 것이어야 함 (§4.4)
@@ -84,7 +84,7 @@ async function postEvents(req: Request, deps: EventsPostDeps): Promise<Response>
   );
   const gated = events.filter((e) => logfile.has(e.providerKey));
   if (gated.length === 0) {
-    return Response.json({ inserted: 0, deduped: 0, expired: 0 });
+    return Response.json({ inserted: 0, deduped: 0, expired: 0, ignored: events.length, confirmed: 0 });
   }
 
   // 4. 서버 권위 확정 — userId·비용·가격 revision을 이벤트 시각 기준으로 채운다.
@@ -105,7 +105,7 @@ async function postEvents(req: Request, deps: EventsPostDeps): Promise<Response>
   // 5. 멱등 저장 + 당일 Mart 증분 — dedupKey 는 shim 생성 값 신뢰(멱등이라 무해, §4.4)
   const res = await deps.withUserUtilizationCacheChange(
     auth.userId,
-    () => deps.saveUsageEvents(finalized.events),
+    () => deps.saveUsageEvents(finalized.events, { tokenId: auth.tokenId, userId: auth.userId }),
   );
   if (res.inserted > 0) {
     try {
@@ -131,7 +131,7 @@ async function postEvents(req: Request, deps: EventsPostDeps): Promise<Response>
     }
   }
 
-  return Response.json({ ...res, expired: finalized.expired });
+  return Response.json({ ...res, confirmed: res.confirmed ?? 0, expired: finalized.expired, ignored: events.length - gated.length });
 }
 
 export const POST = Object.assign(createEventsPost(), {

@@ -1,9 +1,11 @@
-export const LOCAL_SHIM_BASE_URL = "http://127.0.0.1:38473";
+const configuredLocalPort = Number(process.env.NEXT_PUBLIC_TOARD_LOCAL_SHIM_PORT);
+const localPort = Number.isInteger(configuredLocalPort) && configuredLocalPort > 0 && configuredLocalPort <= 65535 ? configuredLocalPort : 38473;
+export const LOCAL_SHIM_BASE_URL = `http://127.0.0.1:${localPort}`;
 const LOCAL_SHIM_STATUS_TIMEOUT_MS = 3_000;
 const LOCAL_SHIM_ACTION_TIMEOUT_MS = 30_000;
 const LOCAL_SHIM_LONG_ACTION_TIMEOUT_MS = 120_000;
 
-export type LocalShimAction = "collect" | "doctor" | "update";
+export type LocalShimAction = "collect" | "doctor" | "update" | "scope";
 
 export type LocalShimStatus = {
   protocol: "toard-local-v1";
@@ -21,6 +23,12 @@ export type LocalShimStatus = {
     id: string;
     content: "off" | "server_v1" | "e2ee_v1";
     tools: boolean;
+    scope?: { mode: "all" | "custom" | "paused" };
+    usageQueue?: {
+      state: "ready" | "not_created" | "unavailable";
+      pendingEvents: number | null;
+      pendingBytes: number | null;
+    };
     delivery: {
       result: "success" | "unreachable" | "unauthorized" | "unsupported" | "disabled" | "server_error";
       lastAttemptAt: string;
@@ -48,9 +56,11 @@ type LocalShimHelperMessage = {
   protocol?: unknown;
   nonce?: unknown;
   ready?: unknown;
+  scopeReady?: unknown;
   action?: unknown;
   ok?: unknown;
   value?: unknown;
+  error?: unknown;
 };
 
 export type LocalShimHelperEnvironment = {
@@ -177,7 +187,7 @@ export async function runLocalShimAction(
   if (!session.status.capabilities.includes(action)) {
     throw new Error(`local shim action is not supported: ${action}`);
   }
-  if (session.transport === "helper") {
+  if (session.transport === "helper" || action === "scope") {
     return helperRequest(session.targetId, action, helperEnvironment ?? browserHelperEnvironment());
   }
   const response = await fetchWithTimeout(
@@ -205,7 +215,7 @@ function browserHelperEnvironment(): LocalShimHelperEnvironment {
     open: (url, windowName) => window.open(
       url,
       windowName,
-      "popup,width=420,height=320,resizable=yes,scrollbars=yes",
+      url.includes("mode=scope") ? "popup,width=900,height=850,resizable=yes,scrollbars=yes" : "popup,width=420,height=320,resizable=yes,scrollbars=yes",
     ),
     addMessageListener: (listener) => window.addEventListener("message", listener),
     removeMessageListener: (listener) => window.removeEventListener("message", listener),
@@ -216,6 +226,11 @@ function browserHelperEnvironment(): LocalShimHelperEnvironment {
     setTimer: (callback, timeoutMs) => setTimeout(callback, timeoutMs),
     clearTimer: (timer) => clearTimeout(timer),
   };
+}
+
+/** Scope requires a visible local window; there is no remote CORS mutation fallback. */
+export function configureLocalScope(targetId: string, environment = browserHelperEnvironment()): Promise<LocalShimStatus> {
+  return helperRequest(targetId, "scope", environment);
 }
 
 function helperRequest(
@@ -230,10 +245,11 @@ function helperRequest(
   if (!/^[a-f0-9]{16,64}$/.test(nonce)) {
     return Promise.reject(new Error("invalid local shim helper nonce"));
   }
-  const url = `${LOCAL_SHIM_BASE_URL}/v1/helper?target=${targetId}&nonce=${nonce}`;
+  const url = `${LOCAL_SHIM_BASE_URL}/v1/helper?target=${targetId}&nonce=${nonce}${action === "scope" ? "&mode=scope" : ""}`;
   return new Promise((resolve, reject) => {
     let popup: LocalShimHelperWindow | null = null;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let scopeReady = false;
     const cleanup = () => {
       if (timer !== null) environment.clearTimer(timer);
       environment.removeMessageListener(onMessage);
@@ -248,10 +264,25 @@ function helperRequest(
       const message = event.data as LocalShimHelperMessage;
       if (message.protocol !== "toard-helper-v1" || message.nonce !== nonce) return;
       if (message.ready === true) {
+        if (action === "scope") {
+          if (message.scopeReady === true) {
+            scopeReady = true;
+            if (timer !== null) environment.clearTimer(timer);
+            timer = environment.setTimer(() => fail(new Error("local scope review timed out")), 10 * 60_000);
+            return;
+          }
+          const error = new Error("update the local shim to configure collection scope");
+          error.name = "LocalScopeUnsupported";
+          fail(error);
+          return;
+        }
         popup.postMessage({ protocol: "toard-helper-v1", nonce, action }, LOCAL_SHIM_BASE_URL);
         return;
       }
       if (message.action !== action) return;
+      if (action === "scope" && message.error === "scope_cancelled") {
+        const error = new Error("scope configuration cancelled"); error.name = "LocalScopeCancelled"; fail(error); return;
+      }
       if (message.ok !== true || !message.value || typeof message.value !== "object") {
         fail(new Error("local shim helper action failed"));
         return;
@@ -260,6 +291,9 @@ function helperRequest(
       if (!isStatus(status)) {
         fail(new Error("invalid local shim helper response"));
         return;
+      }
+      if (action === "scope" && (!scopeReady || !["all", "custom", "paused"].includes(status.target.scope?.mode ?? ""))) {
+        fail(new Error("invalid local scope result")); return;
       }
       cleanup();
       resolve(status);
@@ -272,7 +306,7 @@ function helperRequest(
       fail(new Error("local shim helper popup blocked"));
       return;
     }
-    const timeoutMs = action === "status"
+    const timeoutMs = action === "scope" || action === "status"
       ? LOCAL_SHIM_STATUS_TIMEOUT_MS
       : action === "collect" || action === "update"
         ? LOCAL_SHIM_LONG_ACTION_TIMEOUT_MS

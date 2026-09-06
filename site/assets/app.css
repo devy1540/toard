@@ -176,3 +176,16 @@ td.rank { color: var(--text-muted); width: 34px; }
 .chart svg { width: 100%; height: auto; display: block; }
 .axis { font-size: 11px; fill: var(--text-muted); }
 .hidden { display: none; }
+
+/* Actual-app screenshot previews; no simulated dashboard values. */
+.hero.wrap, .section.wrap { padding-inline: 24px; }
+.product-shot { margin-block: 0; }
+.product-shot img { display: block; width: 100%; height: auto; border: 1px solid var(--border); border-radius: var(--card-radius); }
+.product-shot figcaption { margin-top: 12px; color: var(--text-muted); font-size: 13px; text-align: center; }
+.screen-preview { scroll-margin-top: 80px; }
+.screen-preview figure { margin-inline: 0; }
+.text-link { color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; }
+.scope-note ul { margin-top: 0; padding-left: 22px; }
+.scope-note li + li { margin-top: 12px; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }

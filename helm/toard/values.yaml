@@ -6,15 +6,15 @@
 image:
   app:
     repository: ghcr.io/devy1540/toard
-    tag: 0.0.2
+    tag: 0.0.3
     pullPolicy: IfNotPresent
   migrate:
     repository: ghcr.io/devy1540/toard-migrate
-    tag: 0.0.2
+    tag: 0.0.3
     pullPolicy: IfNotPresent
   contentAdmin:
     repository: ghcr.io/devy1540/toard-content-admin
-    tag: 0.0.2
+    tag: 0.0.3
     pullPolicy: IfNotPresent
 imagePullSecrets: []
 
@@ -24,6 +24,7 @@ replicaCount: 2
 config:
   authMode: oauth # oauth | open
   authCredentialsEnabled: true
+  authRegistrationMode: invite_only # verified_oauth enables public registration with verified OAuth only
   allowedEmailDomains: "" # 예: corp.com
   authTrustHost: true
   storageBackend: postgres # postgres | clickhouse

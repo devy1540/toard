@@ -14,12 +14,10 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
-use serde_json::Value;
-
 use super::gemini_family::{
     apply_total_token_fallback, content_from_message, lenient_u64, non_empty_string, session_id_of,
 };
-use super::{file_mtime_ms, walk_files, LogAdapter, RawContent, RawUsage};
+use super::{file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawUsage};
 use crate::iso::iso_to_epoch_ms;
 
 const DEFAULT_QWEN_MODEL: &str = "unknown";
@@ -37,19 +35,25 @@ impl LogAdapter for Qwen {
     /// QWEN_DATA_DIR(csv) 우선, 기본 ~/.qwen —
     /// projects/<project>/chats/<file>.jsonl (정확히 3계층) 만 수집
     fn discover_files(&self) -> Vec<PathBuf> {
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
         let mut files = Vec::new();
+        let mut failures = 0;
         for root in data_dirs() {
             let projects = root.join("projects");
-            if !projects.is_dir() {
-                continue;
-            }
             let mut root_files = Vec::new();
-            walk_files(&projects, &["jsonl"], &mut root_files, 0);
+            failures += walk_files(&projects, &["jsonl"], &mut root_files, 0);
             root_files.retain(|file| is_chat_file(&projects, file));
             files.extend(root_files);
         }
         files.sort();
-        files
+        files.dedup();
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -57,40 +61,12 @@ impl LogAdapter for Qwen {
     }
 
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
-        parse_content_file(path)
+        parse_chat_log(path, true).content
     }
-}
 
-/// user/assistant 라인의 텍스트를 뽑는다. 세션 id 는 라인의 sessionId 를 따르고,
-/// 없으면 project-stem 폴백(토큰 경로와 동일). 텍스트 필드는 "text"/"content" 를 시도한다
-/// — qwen 실로그의 본문 키가 다르면 빈 결과가 되므로(안전) 실배포 전 실로그 검증 대상.
-fn parse_content_file(path: &Path) -> Vec<RawContent> {
-    let fallback_timestamp = file_mtime_ms(path);
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let project = project_from_file(path).unwrap_or_else(|| "unknown".to_string());
-    let stem = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown");
-    let mut session_id = format!("{project}-{stem}");
-    let mut out = Vec::new();
-    for line in bytes.split(|b| *b == b'\n') {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Some(obj) = value.as_object() else {
-            continue;
-        };
-        if let Some(s) = session_id_of(obj) {
-            session_id = s;
-        }
-        if let Some(record) = content_from_message(obj, &session_id, fallback_timestamp) {
-            out.push(record);
-        }
+    fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
+        parse_chat_log(path, include_content)
     }
-    out
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -108,7 +84,7 @@ fn data_dirs() -> Vec<PathBuf> {
     };
     let mut dirs: Vec<PathBuf> = Vec::new();
     for path in candidates {
-        if path.is_dir() && !dirs.contains(&path) {
+        if !dirs.contains(&path) {
             dirs.push(path);
         }
     }
@@ -180,23 +156,56 @@ struct QwenUsageMetadata {
 }
 
 fn parse_chat_file(path: &Path) -> Vec<RawUsage> {
+    parse_chat_log(path, false).usage
+}
+
+fn parse_chat_log(path: &Path, include_content: bool) -> ParsedLog {
     let fallback_timestamp = file_mtime_ms(path);
-    let Ok(content) = std::fs::read(path) else {
-        return Vec::new();
+    let Ok(bytes) = std::fs::read(path) else {
+        return ParsedLog::read_failed();
     };
-    let mut events = Vec::new();
-    for line in content.split(|b| *b == b'\n') {
+    let mut parsed = ParsedLog::diagnosed();
+    let local_project = project_from_file(path)
+        .as_deref()
+        .and_then(|group| crate::collection_scope::LocalProject::group("qwen", group))
+        .map(std::sync::Arc::new);
+    parsed.remember_project(&local_project);
+    let project = project_from_file(path).unwrap_or_else(|| "unknown".to_string());
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown");
+    let mut session_id = format!("{project}-{stem}");
+    for line in bytes.split(|b| *b == b'\n') {
+        let Some(value) = parsed.json_line(line) else {
+            continue;
+        };
+        if include_content {
+            if let Some(obj) = value.as_object() {
+                if let Some(id) = session_id_of(obj) {
+                    session_id = id;
+                }
+                if let Some(mut record) = content_from_message(obj, &session_id, fallback_timestamp)
+                {
+                    record.project = local_project.clone();
+                    parsed.content.push(record);
+                }
+            }
+        }
         if !contains_subslice(line, USAGE_MARKER) {
             continue;
         }
-        let Ok(record) = serde_json::from_slice::<QwenLine>(line) else {
-            continue;
-        };
-        if let Some(event) = parse_line(path, fallback_timestamp, &record) {
-            events.push(event);
+        match serde_json::from_value::<QwenLine>(value) {
+            Ok(record) => {
+                if let Some(mut event) = parse_line(path, fallback_timestamp, &record) {
+                    event.project = local_project.clone();
+                    parsed.usage.push(event);
+                }
+            }
+            Err(_) => parsed.diagnostics.as_mut().unwrap().parse_errors += 1,
         }
     }
-    events
+    parsed
 }
 
 /// upstream parse_line — type=="assistant" 라인의 usageMetadata 를 RawUsage 로.
@@ -236,6 +245,7 @@ fn parse_line(file: &Path, fallback_timestamp: i64, record: &QwenLine) -> Option
         .clone()
         .unwrap_or_else(|| DEFAULT_QWEN_MODEL.to_string());
     Some(RawUsage {
+        project: None,
         ts_ms,
         session_id: Some(session_id),
         model: Some(model),

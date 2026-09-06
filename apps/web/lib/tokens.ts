@@ -6,6 +6,10 @@ export type TokenMeta = { createdAt: Date; lastUsedAt: Date | null };
 export type IssuedIngestToken = { token: string; tokenId: string };
 export type TokenConnectionStatus = {
   connected: boolean;
+  usageStored: boolean;
+  firstUsageStoredAt: Date | null;
+  lastUsageStoredAt: Date | null;
+  lastUsageCount: number;
   lastUsedAt: Date | null;
   lastHost: string | null;
 };
@@ -98,16 +102,20 @@ export async function getTokenConnectionStatusWithPool(
   pool: Queryable,
 ): Promise<TokenConnectionStatus> {
   const result = await pool.query(
-    `SELECT last_used_at, last_host FROM ingest_tokens
+    `SELECT last_used_at, last_host, first_usage_stored_at, last_usage_stored_at, last_usage_count FROM ingest_tokens
      WHERE user_id = $1 AND id = $2 AND revoked_at IS NULL
        AND (expires_at IS NULL OR expires_at > now())`,
     [userId, tokenId],
   );
   const row = result?.rows[0] as
-    | { last_used_at: Date | null; last_host: string | null }
+    | { last_used_at: Date | null; last_host: string | null; first_usage_stored_at: Date | null; last_usage_stored_at: Date | null; last_usage_count: number }
     | undefined;
   return {
-    connected: Boolean(row?.last_used_at),
+    connected: Boolean(row?.last_used_at || row?.first_usage_stored_at),
+    usageStored: Boolean(row?.first_usage_stored_at),
+    firstUsageStoredAt: row?.first_usage_stored_at ?? null,
+    lastUsageStoredAt: row?.last_usage_stored_at ?? null,
+    lastUsageCount: Number(row?.last_usage_count ?? 0),
     lastUsedAt: row?.last_used_at ?? null,
     lastHost: row?.last_host ?? null,
   };

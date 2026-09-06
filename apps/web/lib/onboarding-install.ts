@@ -12,6 +12,7 @@ export type InstallCommandInput = {
   uiOrigin: string;
   token: string;
   collectContent: boolean;
+  reviewScope?: boolean;
 };
 
 export type ManagementCommands = {
@@ -54,11 +55,12 @@ export function buildInstallCommand(input: InstallCommandInput): string {
       `$env:TOARD_INGEST_TOKEN=${quotePowerShell(input.token)}`,
       `$env:TOARD_UI_ORIGIN=${quotePowerShell(input.uiOrigin)}`,
       `$env:TOARD_SHIM_COLLECT_CONTENT=${quotePowerShell(collect)}`,
+      ...(input.reviewScope ? ["$env:TOARD_SHIM_SCOPE='review'"] : ["$env:TOARD_SHIM_SCOPE='all'"]),
       `irm ${quotePowerShell(`${baseUrl}/install.ps1`)} | iex`,
     ].join("; ");
   }
 
-  return `curl -fsSL ${quotePosix(`${baseUrl}/install.sh`)} | TOARD_INGEST_TOKEN=${quotePosix(input.token)} TOARD_UI_ORIGIN=${quotePosix(input.uiOrigin)} TOARD_SHIM_COLLECT_CONTENT=${quotePosix(collect)} sh`;
+  return `curl -fsSL ${quotePosix(`${baseUrl}/install.sh`)} | TOARD_INGEST_TOKEN=${quotePosix(input.token)} TOARD_UI_ORIGIN=${quotePosix(input.uiOrigin)} TOARD_SHIM_COLLECT_CONTENT=${quotePosix(collect)} TOARD_SHIM_SCOPE='${input.reviewScope ? "review" : "all"}' sh`;
 }
 
 export function buildManagementCommands(

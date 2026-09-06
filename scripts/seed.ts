@@ -21,17 +21,9 @@ async function main(): Promise<void> {
   );
   console.log("✓ providers");
 
-  // 가격 시드 (LiteLLM 동기화 전 최소 — per-million USD)
-  await pool.query(
-    `INSERT INTO pricing_revisions
-       (model_id, input_price_per_mtok, output_price_per_mtok, cache_read_price_per_mtok,
-        cache_creation_price_per_mtok, effective_at, source)
-     VALUES
-       ('claude-sonnet-4-5', 3, 15, 0.3, 3.75, TIMESTAMPTZ '2025-01-01T00:00:00Z', 'litellm'),
-       ('claude-opus-4-5', 15, 75, 1.5, 18.75, TIMESTAMPTZ '2025-01-01T00:00:00Z', 'litellm')
-     ON CONFLICT (model_id, effective_at, source) DO NOTHING`,
-  );
-  console.log("✓ pricing_revisions");
+  // Never seed fabricated prices or dates as observed pricing. Production startup
+  // syncs LiteLLM automatically; until then usage is retained as unpriced.
+  console.log("✓ pricing: automatic sync will load observed rates; no placeholder prices inserted");
 
   // admin 부트스트랩 (§10.4)
   const adminEmail = process.env.BOOTSTRAP_ADMIN_EMAIL;

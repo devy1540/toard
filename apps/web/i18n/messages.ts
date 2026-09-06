@@ -10,6 +10,7 @@ import type insights from "../messages/en/insights.json";
 import type org from "../messages/en/org.json";
 import type settings from "../messages/en/settings.json";
 import type admin from "../messages/en/admin.json";
+import type reports from "../messages/en/reports.json";
 import type library from "../messages/en/library.json";
 
 declare module "next-intl" {
@@ -26,6 +27,7 @@ declare module "next-intl" {
       settings: typeof settings;
       admin: typeof admin;
       library: typeof library;
+      reports: typeof reports;
     };
   }
 }

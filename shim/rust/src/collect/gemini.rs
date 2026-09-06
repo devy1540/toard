@@ -17,9 +17,9 @@ use serde_json::{Map, Value};
 
 use super::gemini_family::{
     apply_total_token_fallback, content_from_message, lenient_str, non_empty_json_string,
-    non_empty_string, session_id_of,
+    non_empty_string,
 };
-use super::{file_mtime_ms, walk_files, LogAdapter, RawContent, RawUsage};
+use super::{file_mtime_ms, walk_files, LogAdapter, ParsedLog, RawContent, RawUsage};
 use crate::iso::iso_to_epoch_ms;
 
 const DEFAULT_MODEL: &str = "unknown";
@@ -34,106 +34,34 @@ impl LogAdapter for Gemini {
 
     /// GEMINI_DATA_DIR(csv) 설정 시 그 경로들만, 기본 ~/.gemini/tmp — json/jsonl 재귀 수집
     fn discover_files(&self) -> Vec<PathBuf> {
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
         let mut files = Vec::new();
+        let mut failures = 0;
         for root in data_dirs() {
-            walk_files(&root, &["json", "jsonl"], &mut files, 0);
+            failures += walk_files(&root, &["json", "jsonl"], &mut files, 0);
         }
         files.sort();
         files.dedup();
-        files
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            parse_jsonl_file(path)
-        } else {
-            parse_json_file(path)
-        }
+        parse_log(path, false).usage
     }
 
     fn parse_content(&self, path: &Path) -> Vec<RawContent> {
-        if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-            parse_content_jsonl(path)
-        } else {
-            parse_content_json(path)
-        }
+        parse_log(path, true).content
     }
-}
 
-/// 전체 파일 JSON: messages 배열의 user/gemini 메시지 텍스트를 뽑는다.
-/// 세션 id·타임스탬프 폴백은 토큰 경로(parse_json_file)와 동일 규칙.
-fn parse_content_json(path: &Path) -> Vec<RawContent> {
-    let fallback_timestamp = file_mtime_ms(path);
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&content) else {
-        return Vec::new();
-    };
-    let Some(obj) = value.as_object() else {
-        return Vec::new();
-    };
-    let session_id = session_id_of(obj).unwrap_or_else(|| file_stem(path));
-    let session_ts = obj
-        .get("startTime")
-        .and_then(Value::as_str)
-        .and_then(iso_to_epoch_ms)
-        .or_else(|| {
-            obj.get("lastUpdated")
-                .and_then(Value::as_str)
-                .and_then(iso_to_epoch_ms)
-        })
-        .unwrap_or(fallback_timestamp);
-    if let Some(messages) = obj.get("messages").and_then(Value::as_array) {
-        return messages
-            .iter()
-            .filter_map(Value::as_object)
-            .filter_map(|m| content_from_message(m, &session_id, session_ts))
-            .collect();
+    fn parse_changed(&self, path: &Path, include_content: bool, _include_tools: bool) -> ParsedLog {
+        parse_log(path, include_content)
     }
-    // messages 배열이 없으면 최상위 레코드 자체를 하나의 메시지로 시도
-    content_from_message(obj, &session_id, session_ts)
-        .into_iter()
-        .collect()
-}
-
-/// JSONL: 라인별 user/gemini 텍스트. 세션 id 힌트는 라인을 따라 승계되고,
-/// 같은 id+role 은 교체(제자리 갱신 대응) — 토큰 경로의 direct 이벤트와 같은 의미.
-fn parse_content_jsonl(path: &Path) -> Vec<RawContent> {
-    let fallback_timestamp = file_mtime_ms(path);
-    let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
-    };
-    let mut session_id = file_stem(path);
-    let mut out: Vec<RawContent> = Vec::new();
-    let mut seen: HashMap<(String, &'static str), usize> = HashMap::new();
-    for line in bytes.split(|b| *b == b'\n') {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        let Some(obj) = value.as_object() else {
-            continue;
-        };
-        if let Some(s) = session_id_of(obj) {
-            session_id = s;
-        }
-        let Some(record) = content_from_message(obj, &session_id, fallback_timestamp) else {
-            continue;
-        };
-        match record.message_id.clone() {
-            Some(id) => {
-                let k = (id, record.role);
-                if let Some(&i) = seen.get(&k) {
-                    out[i] = record;
-                } else {
-                    seen.insert(k, out.len());
-                    out.push(record);
-                }
-            }
-            None => out.push(record),
-        }
-    }
-    out
 }
 
 fn data_dirs() -> Vec<PathBuf> {
@@ -145,7 +73,7 @@ fn data_dirs() -> Vec<PathBuf> {
             .filter(|p| !p.is_empty())
         {
             let path = PathBuf::from(raw);
-            if path.is_dir() && !dirs.contains(&path) {
+            if !dirs.contains(&path) {
                 dirs.push(path);
             }
         }
@@ -154,9 +82,7 @@ fn data_dirs() -> Vec<PathBuf> {
     }
     if let Some(home) = crate::fsx::home_dir() {
         let path = home.join(".gemini").join("tmp");
-        if path.is_dir() {
-            dirs.push(path);
-        }
+        dirs.push(path);
     }
     dirs
 }
@@ -216,105 +142,160 @@ struct GeminiTokens {
     total: Option<u64>,
 }
 
-/// 전체 파일이 JSON 문서 하나인 로그 (upstream parse_json_file).
-fn parse_json_file(path: &Path) -> Vec<RawUsage> {
-    let fallback_timestamp = file_mtime_ms(path);
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return Vec::new();
+/// Parse usage and optional content from the same snapshot, preserving replacement
+/// semantics and counting malformed records instead of silently advancing cursors.
+fn parse_log(path: &Path, include_content: bool) -> ParsedLog {
+    let fallback = file_mtime_ms(path);
+    let Ok(bytes) = std::fs::read(path) else {
+        return ParsedLog::read_failed();
     };
-    let Ok(record) = serde_json::from_str::<GeminiRecord>(&content) else {
-        return Vec::new();
-    };
-    let session_id = record.session_id().unwrap_or_else(|| file_stem(path));
-    let session_timestamp = record
-        .start_time
-        .as_deref()
-        .and_then(iso_to_epoch_ms)
-        .or_else(|| record.last_updated.as_deref().and_then(iso_to_epoch_ms))
-        .unwrap_or(fallback_timestamp);
-    if let Some(messages) = record.messages.as_ref().and_then(Value::as_array) {
-        return messages
-            .iter()
-            .filter_map(Value::as_object)
-            .filter(|m| m.get("type").and_then(Value::as_str) == Some("gemini"))
-            .filter_map(|m| parse_direct_event(m, None, &session_id, session_timestamp))
-            .collect();
-    }
-    if record.r#type.as_deref() == Some("gemini") {
-        return parse_direct_event_record(&record, None, &session_id, fallback_timestamp)
-            .into_iter()
-            .collect();
-    }
-    parse_stats_events(
-        record.stats(),
-        record.model.as_deref(),
-        &session_id,
-        record
-            .timestamp
-            .as_deref()
-            .and_then(iso_to_epoch_ms)
-            .unwrap_or(fallback_timestamp),
-    )
-}
-
-/// JSONL 로그 (upstream parse_jsonl_file). 세션 id·모델 힌트는 라인을 따라 승계되고,
-/// 같은 id 의 direct 이벤트는 교체(replace)된다 — 세션 파일이 제자리 갱신되는 형태 대응.
-fn parse_jsonl_file(path: &Path) -> Vec<RawUsage> {
-    let fallback_timestamp = file_mtime_ms(path);
-    let Ok(content) = std::fs::read(path) else {
-        return Vec::new();
-    };
+    let mut parsed = ParsedLog::diagnosed();
+    let jsonl = path.extension().and_then(|ext| ext.to_str()) == Some("jsonl");
     let mut session_id = file_stem(path);
     let mut current_model: Option<String> = None;
-    let mut events: Vec<RawUsage> = Vec::new();
-    let mut direct_event_indexes: HashMap<String, usize> = HashMap::new();
-    for line in content.split(|b| *b == b'\n') {
-        // 파싱 불가 라인은 건너뛴다 (upstream jsonl::records 와 동일)
-        let Ok(record) = serde_json::from_slice::<GeminiRecord>(line) else {
+    let mut project = None;
+    let mut usage_indexes = HashMap::<String, usize>::new();
+    let mut content_indexes = HashMap::<(String, &'static str), usize>::new();
+    let chunks: Box<dyn Iterator<Item = &[u8]>> = if jsonl {
+        Box::new(bytes.split(|byte| *byte == b'\n'))
+    } else {
+        Box::new(std::iter::once(bytes.as_slice()))
+    };
+    for chunk in chunks {
+        let Some(value) = parsed.json_line(chunk) else {
             continue;
         };
-        if let Some(value) = record.session_id() {
-            session_id = value;
+        let record = match serde_json::from_value::<GeminiRecord>(value.clone()) {
+            Ok(record) => record,
+            Err(_) => {
+                parsed.diagnostics.as_mut().unwrap().parse_errors += 1;
+                continue;
+            }
+        };
+        if let Some(id) = record.session_id() {
+            if id != session_id {
+                project = None;
+            }
+            session_id = id;
+        }
+        if let Some(hash) = value.get("projectHash") {
+            project = hash
+                .as_str()
+                .and_then(|hash| crate::collection_scope::LocalProject::group("gemini", hash))
+                .map(std::sync::Arc::new);
         }
         if let Some(model) = record.model.clone() {
             current_model = Some(model);
         }
+        parsed.remember_project(&project);
+        let session_timestamp = record
+            .start_time
+            .as_deref()
+            .and_then(iso_to_epoch_ms)
+            .or_else(|| record.last_updated.as_deref().and_then(iso_to_epoch_ms))
+            .unwrap_or(fallback);
+        if include_content {
+            if let Some(obj) = value.as_object() {
+                let messages: Vec<&Map<String, Value>> = if !jsonl {
+                    obj.get("messages")
+                        .and_then(Value::as_array)
+                        .map(|messages| messages.iter().filter_map(Value::as_object).collect())
+                        .unwrap_or_else(|| vec![obj])
+                } else {
+                    vec![obj]
+                };
+                for message in messages {
+                    if let Some(mut content) = content_from_message(
+                        message,
+                        &session_id,
+                        if jsonl { fallback } else { session_timestamp },
+                    ) {
+                        content.project = project.clone();
+                        if jsonl {
+                            if let Some(id) = content.message_id.clone() {
+                                let key = (id, content.role);
+                                if let Some(index) = content_indexes.get(&key).copied() {
+                                    parsed.content[index] = content;
+                                } else {
+                                    content_indexes.insert(key, parsed.content.len());
+                                    parsed.content.push(content);
+                                }
+                                continue;
+                            }
+                        }
+                        parsed.content.push(content);
+                    }
+                }
+            }
+        }
+        if !jsonl {
+            if let Some(messages) = record.messages.as_ref().and_then(Value::as_array) {
+                parsed.usage.extend(
+                    messages
+                        .iter()
+                        .filter_map(Value::as_object)
+                        .filter(|message| {
+                            message.get("type").and_then(Value::as_str) == Some("gemini")
+                        })
+                        .filter_map(|message| {
+                            parse_direct_event(message, None, &session_id, session_timestamp).map(
+                                |mut event| {
+                                    event.project = project.clone();
+                                    event
+                                },
+                            )
+                        }),
+                );
+                continue;
+            }
+        }
         if record.r#type.as_deref() == Some("gemini") {
-            let Some(event) = parse_direct_event_record(
+            let Some(mut event) = parse_direct_event_record(
                 &record,
-                current_model.as_deref(),
+                if jsonl {
+                    current_model.as_deref()
+                } else {
+                    None
+                },
                 &session_id,
-                fallback_timestamp,
+                fallback,
             ) else {
                 continue;
             };
-            if let Some(id) = record.id.clone() {
-                if let Some(index) = direct_event_indexes.get(&id).copied() {
-                    events[index] = event;
-                } else {
-                    direct_event_indexes.insert(id, events.len());
-                    events.push(event);
+            event.project = project.clone();
+            if jsonl {
+                if let Some(id) = record.id.clone() {
+                    if let Some(index) = usage_indexes.get(&id).copied() {
+                        parsed.usage[index] = event;
+                    } else {
+                        usage_indexes.insert(id, parsed.usage.len());
+                        parsed.usage.push(event);
+                    }
+                    continue;
                 }
-            } else {
-                events.push(event);
             }
-            continue;
-        }
-        let stats = record.stats();
-        if stats.is_some() {
-            events.extend(parse_stats_events(
-                stats,
-                current_model.as_deref(),
-                &session_id,
-                record
-                    .timestamp
-                    .as_deref()
-                    .and_then(iso_to_epoch_ms)
-                    .unwrap_or(fallback_timestamp),
-            ));
+            parsed.usage.push(event);
+        } else {
+            parsed.usage.extend(
+                parse_stats_events(
+                    record.stats(),
+                    current_model.as_deref(),
+                    &session_id,
+                    record
+                        .timestamp
+                        .as_deref()
+                        .and_then(iso_to_epoch_ms)
+                        .unwrap_or(fallback),
+                )
+                .into_iter()
+                .map(|mut event| {
+                    event.project = project.clone();
+                    event
+                }),
+            );
         }
     }
-    events
+    parsed
 }
 
 /// messages 배열 안의 type=="gemini" 메시지 (upstream parse_direct_event).
@@ -437,6 +418,7 @@ fn build_event(
         return None;
     }
     Some(RawUsage {
+        project: None,
         ts_ms,
         session_id: Some(session_id.to_string()),
         model: Some(model.to_string()),

@@ -38,6 +38,8 @@ pub struct Credentials {
     pub collect_content_since: Option<String>,
     /// MCP·스킬·플러그인 메타데이터 수집. 기본 on, 로컬에서 명시적으로 끌 수 있다.
     pub collect_tools: bool,
+    /// Local owner-approved scope. Never overridden by server device-control policy.
+    pub collection_scope: crate::collection_scope::CollectionScope,
     pub content_owner_id: Option<String>,
     pub content_key_version: Option<u16>,
     pub content_device_id: Option<String>,
@@ -61,6 +63,7 @@ impl Default for Credentials {
             collect_content: ContentCollectionMode::Off,
             collect_content_since: None,
             collect_tools: true,
+            collection_scope: crate::collection_scope::CollectionScope::default(),
             content_owner_id: None,
             content_key_version: None,
             content_device_id: None,
@@ -101,11 +104,13 @@ pub fn read_credentials() -> Credentials {
         content_owner_id: file.content_owner_id,
         content_key_version: file.content_key_version,
         content_device_id: file.content_device_id,
+        collection_scope: file.collection_scope,
     }
 }
 
 pub fn parse(content: &str) -> Credentials {
     let mut creds = Credentials::default();
+    let mut saw_scope = false;
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -113,6 +118,16 @@ pub fn parse(content: &str) -> Credentials {
         }
         if let Some((k, v)) = line.split_once('=') {
             let v = v.trim();
+            if k.trim() == "collection_scope" {
+                creds.collection_scope = if saw_scope {
+                    crate::collection_scope::CollectionScope::invalid()
+                } else {
+                    crate::collection_scope::CollectionScope::decode(v)
+                        .unwrap_or_else(|_| crate::collection_scope::CollectionScope::invalid())
+                };
+                saw_scope = true;
+                continue;
+            }
             if v.is_empty() {
                 continue;
             }
@@ -180,6 +195,11 @@ pub fn from_installer_input(input: InstallerCredentialsInput) -> Result<Credenti
 
 pub fn serialize(credentials: &Credentials) -> String {
     let mut output = String::new();
+    output.push_str("collection_scope=");
+    output.push_str(
+        &serde_json::to_string(&credentials.collection_scope).expect("serializable local scope"),
+    );
+    output.push('\n');
     if let Some(token) = credentials.token.as_deref() {
         output.push_str("agent_key=");
         output.push_str(token);
@@ -270,6 +290,30 @@ pub fn with_e2ee_activation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scope_is_preserved_and_malformed_or_duplicate_policies_fail_closed() {
+        assert!(parse("agent_key=fixture\n")
+            .collection_scope
+            .is_unrestricted());
+        for value in [
+            "",
+            "{}",
+            r#"{"schemaVersion":2,"mode":"all","providers":{}}"#,
+        ] {
+            assert!(!parse(&format!("collection_scope={value}\n"))
+                .collection_scope
+                .is_unrestricted());
+        }
+        let policy = crate::collection_scope::CollectionScope::paused();
+        let credentials = Credentials {
+            collection_scope: policy.clone(),
+            ..Default::default()
+        };
+        assert_eq!(parse(&serialize(&credentials)).collection_scope, policy);
+        let duplicate = format!("collection_scope=\n{}", serialize(&Credentials::default()));
+        assert!(!parse(&duplicate).collection_scope.is_unrestricted());
+    }
 
     #[test]
     fn parse_basic() {
@@ -399,6 +443,7 @@ mod tests {
     #[test]
     fn serialized_credentials_round_trip_all_managed_metadata() {
         let original = Credentials {
+            collection_scope: crate::collection_scope::CollectionScope::default(),
             token: Some("secret".into()),
             endpoint: Some("https://toard.example/api".into()),
             ui_origin: Some("https://dashboard.example".into()),

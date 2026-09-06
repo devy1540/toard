@@ -1,4 +1,5 @@
 export * from "./storage";
+export * from "./collection-health";
 export * from "./insights";
 export * from "./domain";
 export * from "./timeseries";

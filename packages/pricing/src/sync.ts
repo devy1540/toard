@@ -1,9 +1,10 @@
-import type { ModelPricing, PricingMap } from "./types";
+import type { ContextPricingTier, ModelPricing, PricingMap, PricingDetails } from "./types";
 
 const PER_TOKEN_TO_PER_M = 1_000_000;
 
 /** LiteLLM JSON 항목(부분) — 단위는 per-token */
 interface LiteLLMEntry {
+  [key: string]: unknown;
   input_cost_per_token?: number;
   output_cost_per_token?: number;
   cache_read_input_token_cost?: number;
@@ -12,19 +13,70 @@ interface LiteLLMEntry {
   output_cost_per_token_above_200k_tokens?: number;
 }
 
+function perM(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value * PER_TOKEN_TO_PER_M : undefined;
+}
+
+export function pricingDetails(pricing: ModelPricing): PricingDetails {
+  return {
+    ...(pricing.contextTiers?.length ? { contextTiers: pricing.contextTiers.map((tier) => ({
+      aboveTokens: tier.aboveTokens,
+      ...(tier.inputPerM != null ? { inputPerM: tier.inputPerM } : {}),
+      ...(tier.outputPerM != null ? { outputPerM: tier.outputPerM } : {}),
+      ...(tier.cacheReadPerM != null ? { cacheReadPerM: tier.cacheReadPerM } : {}),
+      ...(tier.cacheCreatePerM != null ? { cacheCreatePerM: tier.cacheCreatePerM } : {}),
+      ...(tier.cacheCreate1hPerM != null ? { cacheCreate1hPerM: tier.cacheCreate1hPerM } : {}),
+    })).sort((a, b) => a.aboveTokens - b.aboveTokens) } : {}),
+    ...(pricing.cacheCreate1hPerM != null ? { cacheCreate1hPerM: pricing.cacheCreate1hPerM } : {}),
+    ...(pricing.contextScope ? { contextScope: pricing.contextScope } : {}),
+  };
+}
+
+function detailsFromLiteLLM(model: string, entry: LiteLLMEntry): PricingDetails {
+  const tiers = new Map<number, ContextPricingTier>();
+  const fields = {
+    input_cost_per_token: "inputPerM",
+    output_cost_per_token: "outputPerM",
+    cache_read_input_token_cost: "cacheReadPerM",
+    cache_creation_input_token_cost: "cacheCreatePerM",
+    cache_creation_input_token_cost_above_1hr: "cacheCreate1hPerM",
+  } as const;
+  for (const [key, value] of Object.entries(entry)) {
+    const match = key.match(/^(.*)_above_(\d+)k_tokens$/);
+    const field = match ? fields[match[1] as keyof typeof fields] : undefined;
+    const rate = perM(value);
+    if (!match || !field || rate == null) continue;
+    const aboveTokens = Number(match[2]) * 1000;
+    if (!Number.isSafeInteger(aboveTokens) || aboveTokens <= 0) continue;
+    const tier = tiers.get(aboveTokens) ?? { aboveTokens };
+    tier[field] = rate;
+    tiers.set(aboveTokens, tier);
+  }
+  const oneHour = perM(entry.cache_creation_input_token_cost_above_1hr);
+  return {
+    ...(tiers.size ? { contextTiers: [...tiers.values()].sort((a, b) => a.aboveTokens - b.aboveTokens) } : {}),
+    ...(oneHour != null ? { cacheCreate1hPerM: oneHour } : {}),
+    // Official GPT-5.4/5.5 pricing is session-scoped; request-only logs remain estimates.
+    ...(/(?:^|\/)gpt-5\.(?:4|5)(?:-pro)?(?:-\d{4}-\d{2}-\d{2})?$/.test(model) ? { contextScope: "session" as const } : {}),
+  };
+}
+
 /** LiteLLM(per-token) → 내부 per-million 으로 변환 (zeude/day1co 와 동일 단위) */
 export function fromLiteLLM(raw: Record<string, LiteLLMEntry>): PricingMap {
   const map: PricingMap = new Map();
   for (const [model, e] of Object.entries(raw)) {
     if (
-      typeof e.input_cost_per_token !== "number" ||
-      typeof e.output_cost_per_token !== "number"
+      e == null || typeof e !== "object" ||
+      perM(e.input_cost_per_token) == null ||
+      perM(e.output_cost_per_token) == null
     ) {
       continue;
     }
     const p: ModelPricing = {
-      inputPerM: e.input_cost_per_token * PER_TOKEN_TO_PER_M,
-      outputPerM: e.output_cost_per_token * PER_TOKEN_TO_PER_M,
+      inputPerM: perM(e.input_cost_per_token)!,
+      outputPerM: perM(e.output_cost_per_token)!,
+      ...detailsFromLiteLLM(model, e),
     };
     if (typeof e.cache_read_input_token_cost === "number") {
       p.cacheReadPerM = e.cache_read_input_token_cost * PER_TOKEN_TO_PER_M;

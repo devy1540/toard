@@ -1,16 +1,20 @@
 "use server";
 
 import { AuthError } from "next-auth";
+import { headers } from "next/headers";
 import { getTranslations } from "next-intl/server";
-import { signIn } from "@/auth";
+import { credentialsEnabled, signIn } from "@/auth";
 import { acceptInvite, getValidInvite } from "@/lib/invites";
 import { hashPassword, validatePassword } from "@/lib/password";
+import { hasAdminUser } from "@/lib/setup";
+import { clearCredentialAccountLimit, consumeCredentialAttempt, credentialClientIdentity, CredentialRateLimitError } from "@/lib/credential-rate-limit";
 
 export type AcceptState = { error?: string };
 
 /** 초대 수락 — 비번 설정으로 계정 생성 후 자동 로그인 → 설치(온보딩). */
 export async function acceptInviteAction(_prev: AcceptState, formData: FormData): Promise<AcceptState> {
   const t = await getTranslations("invite");
+  if (!credentialsEnabled || !(await hasAdminUser())) return { error: t("errors.useOAuth") };
   const token = String(formData.get("token") ?? "");
   const name = String(formData.get("name") ?? "").trim();
   const password = String(formData.get("password") ?? "");
@@ -22,9 +26,16 @@ export async function acceptInviteAction(_prev: AcceptState, formData: FormData)
   if (pwErr) return { error: pwErr };
   if (password !== confirm) return { error: t("errors.passwordMismatch") };
 
+  try {
+    await consumeCredentialAttempt({ channel: "signup", email: invite.email, clientIdentity: credentialClientIdentity(await headers()) });
+  } catch (error) {
+    if (error instanceof CredentialRateLimitError) return { error: t("errors.tooManyAttempts", { seconds: error.retryAfterSeconds }) };
+    throw error;
+  }
   const hash = await hashPassword(password);
   const res = await acceptInvite(token, name, hash);
   if (!res) return { error: t("errors.acceptFailed") };
+  await clearCredentialAccountLimit({ channel: "signup", email: res.email });
 
   try {
     await signIn("credentials", { email: res.email, password, redirectTo: "/settings?tab=install" });

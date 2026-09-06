@@ -27,17 +27,29 @@ impl LogAdapter for CursorUsage {
     }
 
     fn discover_files(&self) -> Vec<PathBuf> {
-        let mut files = crate::cursor_hook::usage_log_path()
-            .filter(|path| path.is_file())
-            .into_iter()
-            .collect::<Vec<_>>();
+        self.discovery().files
+    }
+
+    fn discovery(&self) -> super::Discovery {
+        let mut files = Vec::new();
+        let mut failures = 0;
+        if let Some(path) = crate::cursor_hook::usage_log_path() {
+            match std::fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() => files.push(path),
+                Ok(_) => failures += 1,
+                Err(error) => failures += u64::from(error.kind() != std::io::ErrorKind::NotFound),
+            }
+        }
         if let Some(root) = cursor_home().map(|home| home.join("projects")) {
-            walk_files(&root, &["jsonl", "txt"], &mut files, 0);
+            failures += walk_files(&root, &["jsonl", "txt"], &mut files, 0);
             files.retain(|path| is_agent_transcript(path) || is_usage_log(path));
         }
         files.sort();
         files.dedup();
-        files
+        super::Discovery {
+            files,
+            read_failures: Some(failures),
+        }
     }
 
     fn parse_file(&self, path: &Path) -> Vec<RawUsage> {
@@ -46,17 +58,35 @@ impl LogAdapter for CursorUsage {
 
     fn parse_changed(&self, path: &Path, include_content: bool, include_tools: bool) -> ParsedLog {
         if is_usage_log(path) {
-            return ParsedLog {
-                usage: parse_usage_file(path),
-                ..ParsedLog::default()
-            };
+            return parse_usage_log(path);
         }
-        match path.extension().and_then(|extension| extension.to_str()) {
+        let mut parsed = match path.extension().and_then(|extension| extension.to_str()) {
             Some("jsonl") => parse_jsonl_transcript(path, include_content, include_tools),
             Some("txt") => parse_legacy_transcript(path, include_content, include_tools),
             _ => ParsedLog::default(),
+        };
+        let project = transcript_group(path).map(Arc::new);
+        parsed.remember_project(&project);
+        for record in &mut parsed.content {
+            record.project = project.clone();
         }
+        for record in &mut parsed.tools {
+            record.project = project.clone();
+        }
+        parsed
     }
+}
+
+fn transcript_group(path: &Path) -> Option<crate::collection_scope::LocalProject> {
+    let parts = path
+        .components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .collect::<Vec<_>>();
+    let group = parts
+        .windows(3)
+        .rev()
+        .find(|parts| parts[0] == "projects" && parts[2] == "agent-transcripts")?[1];
+    crate::collection_scope::LocalProject::group("cursor", group)
 }
 
 fn cursor_home() -> Option<PathBuf> {
@@ -90,21 +120,67 @@ fn is_usage_log(path: &Path) -> bool {
 }
 
 fn parse_usage_file(path: &Path) -> Vec<RawUsage> {
+    parse_usage_log(path).usage
+}
+
+fn parse_usage_log(path: &Path) -> ParsedLog {
     let Ok(bytes) = std::fs::read(path) else {
-        return Vec::new();
+        return ParsedLog::read_failed();
     };
+    let mut parsed = ParsedLog::diagnosed();
     let mut seen = HashSet::new();
-    bytes
-        .split(|byte| *byte == b'\n')
-        .filter_map(|line| serde_json::from_slice::<CapturedUsage>(line).ok())
-        .filter(|usage| seen.insert(usage.generation_id.clone()))
-        .filter(|usage| {
-            usage.input_tokens > 0
-                || usage.output_tokens > 0
-                || usage.cache_read_tokens > 0
-                || usage.cache_creation_tokens > 0
-        })
-        .map(|usage| RawUsage {
+    for line in bytes.split(|byte| *byte == b'\n') {
+        if line.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        let Some(value) = parsed.json_line(line) else {
+            continue;
+        };
+        if value
+            .get("schemaVersion")
+            .is_some_and(|version| version.as_u64() != Some(1))
+        {
+            parsed.diagnostics.as_mut().unwrap().unsupported_schema = true;
+            continue;
+        }
+        let usage = match serde_json::from_value::<CapturedUsage>(value) {
+            Ok(usage) => usage,
+            Err(_) => {
+                parsed.diagnostics.as_mut().unwrap().parse_errors += 1;
+                continue;
+            }
+        };
+        if !seen.insert(usage.generation_id.clone()) {
+            continue;
+        }
+        if !(usage.input_tokens > 0
+            || usage.output_tokens > 0
+            || usage.cache_read_tokens > 0
+            || usage.cache_creation_tokens > 0)
+        {
+            continue;
+        }
+        parsed.usage.push(RawUsage {
+            project: usage
+                .project_id
+                .as_deref()
+                .filter(|id| crate::collection_scope::LocalProject::valid_id(id))
+                .map(|id| {
+                    let recalled = path.parent().and_then(Path::parent).and_then(|root| {
+                        crate::collection_scope::LocalProject::recalled(
+                            &root.join("state"),
+                            "cursor",
+                            id,
+                        )
+                    });
+                    Arc::new(
+                        recalled.unwrap_or_else(|| crate::collection_scope::LocalProject {
+                            id: id.into(),
+                            label: format!("Cursor project {}", &id[..12]),
+                            kind: "opaque",
+                        }),
+                    )
+                }),
             ts_ms: usage.ts_ms,
             session_id: usage.session_id,
             model: usage.model,
@@ -114,8 +190,9 @@ fn parse_usage_file(path: &Path) -> Vec<RawUsage> {
             cache_read_tokens: usage.cache_read_tokens,
             cache_creation_tokens: usage.cache_creation_tokens,
             cache_creation_1h_tokens: 0,
-        })
-        .collect()
+        });
+    }
+    parsed
 }
 
 fn session_id_from_path(path: &Path) -> Option<String> {
@@ -315,13 +392,13 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
     let fallback_session = session_id_from_path(path);
     let path_agent = prompt_agent_from_path(path);
     let Ok(bytes) = std::fs::read(path) else {
-        return ParsedLog::default();
+        return ParsedLog::read_failed();
     };
-    let mut parsed = ParsedLog::default();
+    let mut parsed = ParsedLog::diagnosed();
     let mut pending = HashMap::<String, usize>::new();
 
     for (line_index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
-        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+        let Some(value) = parsed.json_line(line) else {
             continue;
         };
         let message = value.get("message").unwrap_or(&value);
@@ -366,6 +443,7 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
             let text = text_from_content(content, role);
             if !text.is_empty() {
                 parsed.content.push(RawContent {
+                    project: None,
                     ts_ms,
                     session_id: session.clone(),
                     message_id,
@@ -409,6 +487,7 @@ fn parse_jsonl_transcript(path: &Path, include_content: bool, include_tools: boo
                     });
                 let index = parsed.tools.len();
                 parsed.tools.push(RawToolActivity {
+                    project: None,
                     ts_ms,
                     session_id: session_arc.clone(),
                     call_id: call_id.clone(),
@@ -478,6 +557,7 @@ fn flush_legacy_content(
         return;
     }
     parsed.content.push(RawContent {
+        project: None,
         ts_ms,
         session_id: session.clone(),
         message_id: Some(format!(
@@ -497,7 +577,7 @@ fn parse_legacy_transcript(path: &Path, include_content: bool, include_tools: bo
     let session = session_id_from_path(path);
     let agent = prompt_agent_from_path(path);
     let Ok(text) = std::fs::read_to_string(path) else {
-        return ParsedLog::default();
+        return ParsedLog::read_failed();
     };
     let mut parsed = ParsedLog::default();
     let mut role = None;
@@ -531,6 +611,7 @@ fn parse_legacy_transcript(path: &Path, include_content: bool, include_tools: bo
             if let Some(name) = legacy_tool_name(line) {
                 if let Some(item_key) = parse_mcp_name(name) {
                     parsed.tools.push(RawToolActivity {
+                        project: None,
                         ts_ms,
                         session_id: session.as_deref().map(Arc::from),
                         call_id: format!(

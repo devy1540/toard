@@ -8,7 +8,6 @@ import { TimezoneSync } from "@/components/timezone-sync";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { getSessionUser } from "@/lib/session-user";
 import { hasAdminUser } from "@/lib/setup";
-import { hasTeams, isTeamOnboardingPending } from "@/lib/team-onboarding";
 
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   const initialized = await hasAdminUser();
@@ -24,9 +23,6 @@ export default async function DashboardLayout({ children }: { children: ReactNod
 
   // 관리 메뉴 노출 여부 (open 모드는 세션이 없어 미노출 — /admin 은 서버 가드가 재차 차단)
   const sessionUser = await getSessionUser();
-  if (sessionUser && isTeamOnboardingPending(sessionUser) && (await hasTeams())) {
-    redirect("/onboarding/team");
-  }
   const isAdmin = sessionUser?.role === "admin";
 
   // 접힘 상태를 쿠키로 복원해 SSR 첫 페인트부터 일치 (shadcn Sidebar 기본 계약)

@@ -22,6 +22,35 @@ async function loadInstalledAuthJsHandleLogin(): Promise<HandleLogin> {
   return loaded.handleLoginOrRegister;
 }
 
+test("installed Auth.js preserves provider verification evidence at the guarded createUser boundary", async () => {
+  const profile = {
+    id: "provider-id", email: "invited@example.com", name: "Invited", image: null,
+    emailVerified: null, toardEmailVerified: true,
+  };
+  let created = false;
+  const adapter = guardAdapterUserCreation({
+    async getUserByAccount() { return null; },
+    async getUserByEmail() { return null; },
+    async createUser(input) {
+      assert.equal((input as typeof profile).toardEmailVerified, true);
+      created = true;
+      return { ...input, id: "database-user-id" };
+    },
+    async linkAccount(account) { return account; },
+  }, async () => true);
+  const handleLogin = await loadInstalledAuthJsHandleLogin();
+  const result = await handleLogin(null, profile, {
+    provider: "github", providerAccountId: "provider-id", type: "oauth", userId: "",
+  }, {
+    adapter, jwt: { decode: async () => null }, events: {},
+    session: { strategy: "jwt", generateSessionToken: () => "unused" },
+    cookies: { sessionToken: { name: "authjs.session-token" } },
+    provider: { id: "github", type: "oauth", account: (tokens: Record<string, unknown>) => tokens },
+  });
+  assert.equal(created, true);
+  assert.equal(result.user.id, "database-user-id");
+});
+
 test("설치된 Auth.js OAuth flow가 bootstrap admin을 same-email account에 연결한다", async () => {
   const admin = {
     id: "admin-1",

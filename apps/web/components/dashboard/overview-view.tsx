@@ -131,6 +131,7 @@ export async function OverviewView({
     partial: t("costCoverage.partial"),
     unpriced: t("costCoverage.unpriced"),
     legacy: t("costCoverage.legacy"),
+    estimated: t("costCoverage.estimated"),
   };
   // 미설치 추정: 토큰이 없거나 한 번도 수신된 적 없음 → 빈 상태에서 설치 CTA 노출
   const notInstalled = !tokenMeta || !tokenMeta.lastUsedAt;

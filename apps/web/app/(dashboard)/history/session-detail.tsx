@@ -43,6 +43,7 @@ export async function SessionDetail({
     partial: t("costCoverage.partial"),
     unpriced: t("costCoverage.unpriced"),
     legacy: t("costCoverage.legacy"),
+    estimated: t("costCoverage.estimated"),
   };
   const locale = await getLocale();
   const tz = await getViewerTimezone();
